@@ -25,7 +25,7 @@ uint8_t pearson_hash(const char* key) {
     uint8_t h = 0;
     for (int i = 0; key[i] != 0; i++) {
         const uint8_t ch = (uint8_t) key[i];
-        h = pearson_random[h ^ key[i]];
+        h = pearson_random[h ^ ch];
     }
     return h;
 }
@@ -33,10 +33,20 @@ uint8_t pearson_hash(const char* key) {
 hash_table* ht_init(hash_table* ht) {
     uint8_t i = 0;
     do {
-        ht->node[i].next_ = NULL;
-        ht->node[i].key_[0] = 0;
+        ht->node_[i].next_ = NULL;
+        ht->node_[i].key_[0] = 0;
         i++;
     } while (i != 0);
 
     return ht;
+}
+
+void ht_clear(hash_table* ht) {
+    uint8_t i = 0;
+    do {
+        ht->node_[i].key_[0] = 0;
+        for (hash_node* n = ht->node_[i].next_; n != NULL; n = n->next_) {
+            n->key_[0] = 0;
+        }
+    } while (i != 0);
 }

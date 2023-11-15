@@ -64,17 +64,16 @@ bool ht_set(hash_table* ht, const char* key, int value) {
     const uint8_t pos = pearson_hash(key);
     hash_node* node = &ht->node_[pos];
 
-    // If there is no key in the node, add it.
-    if (node->key_[0] == 0) {
-        strncpy(node->key_, key, ksz);
-        node->key_[ksz] = 0;
-        node->value_ = value;
-        return true;
-    }
-
     // Iteratore through all nodes in the chain until we find the key to update
     // or create a new node.
     do {
+        if (node->key_[0] == 0) {
+            strncpy(node->key_, key, ksz);
+            node->key_[ksz] = 0;
+            node->value_ = value;
+            return true;
+        }
+
         if (strncmp(node->key_, key, ksz) == 0) {
             node->value_ = value;
             return true;
@@ -110,6 +109,9 @@ int ht_get(hash_table* ht, const char* key, bool* ok) {
 
     int value = 0;
     for (; n != NULL; n = n->next_) {
+        if (n->key_[0] == 0) {
+            continue;
+        }
         if (strncmp(n->key_, key, ksz) == 0) {
             value = n->value_;
             if (ok) *ok = true;

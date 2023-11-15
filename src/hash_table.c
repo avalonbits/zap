@@ -84,10 +84,37 @@ bool ht_set(hash_table* ht, const char* key, int value) {
         node = node->next_;
     } while (true);
 
+    // Add a new node.
     hash_node* n = (hash_node*) malloc(sizeof(hash_node));
     strncmp(n->key_, key, ksz);
     n->value_ = value;
     node->next_ = n;
 
     return true;
+}
+
+int ht_get(hash_table* ht, const char* key, bool* ok) {
+    if (ok) *ok = false;
+
+    const int ksz = strlen(key);
+    if (ksz > 25) {
+        return 0;
+    }
+
+    const uint8_t pos = pearson_hash(key);
+    hash_node* n = &ht->node_[pos];
+    if (n->key_[0] == 0) {
+        return 0;
+    }
+
+    int value = 0;
+    for (; n != NULL; n = n->next_) {
+        if (strncmp(n->key_, key, ksz) == 0) {
+            value = n->value_;
+            if (ok) *ok = true;
+            break;
+        }
+    }
+
+    return value;
 }

@@ -50,6 +50,7 @@ void ht_clear(hash_table* ht) {
         for (hash_node* n = ht->node_[i].next_; n != NULL; n = n->next_) {
             n->key_[0] = 0;
         }
+        i++;
     } while (i != 0);
 }
 

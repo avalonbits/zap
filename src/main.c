@@ -12,10 +12,20 @@ int main(void) {
     ht_set(&ht, "igop", 9012);
 
     printf("%d %d\n", sizeof(ht.node_[0]), sizeof(ht));
-    printf("%s: %d\n%s: %d\n%s: %d\n%s: %d",
+    printf("%s: %d\n%s: %d\n%s: %d\n%s: %d\n",
             "test", ht_get(&ht, "test", NULL),
             "igor", ht_get(&ht, "igor", NULL),
             "igop", ht_get(&ht, "igop", NULL),
             "random", ht_get(&ht, "random",  NULL));
+
+    ht_clear(&ht);
+    printf("%d %d\n", sizeof(ht.node_[0]), sizeof(ht));
+    printf("%s: %d\n%s: %d\n%s: %d\n%s: %d\n",
+            "test", ht_get(&ht, "test", NULL),
+            "igor", ht_get(&ht, "igor", NULL),
+            "igop", ht_get(&ht, "igop", NULL),
+            "random", ht_get(&ht, "random",  NULL));
+
+
     return 0;
 }

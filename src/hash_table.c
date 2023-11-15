@@ -1,6 +1,8 @@
 #include "hash_table.h"
 
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 static uint8_t pearson_random[256] = {
       1,  87,  49,  12, 176, 178, 102, 166, 121, 193,   6,  84, 249, 230,  44, 163,
@@ -49,4 +51,43 @@ void ht_clear(hash_table* ht) {
             n->key_[0] = 0;
         }
     } while (i != 0);
+}
+
+bool ht_set(hash_table* ht, const char* key, int value) {
+    // Hash table keys MUST have at most 25 characters.
+    const int ksz = strlen(key);
+    if (ksz > 25 || ksz <= 0) {
+        return false;
+    }
+
+    const uint8_t pos = pearson_hash(key);
+    hash_node* node = &ht->node_[pos];
+
+    // If there is no key in the node, add it.
+    if (node->key_[0] == 0) {
+        strncpy(node->key_, key, ksz);
+        node->key_[ksz] = 0;
+        node->value_ = value;
+        return true;
+    }
+
+    // Iteratore through all nodes in the chain until we find the key to update
+    // or create a new node.
+    do {
+        if (strncmp(node->key_, key, ksz) == 0) {
+            node->value_ = value;
+            return true;
+        }
+        if (node->next_ == NULL) {
+            break;
+        }
+        node = node->next_;
+    } while (true);
+
+    hash_node* n = (hash_node*) malloc(sizeof(hash_node));
+    strncmp(n->key_, key, ksz);
+    n->value_ = value;
+    node->next_ = n;
+
+    return true;
 }

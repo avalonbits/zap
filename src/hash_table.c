@@ -86,6 +86,10 @@ bool ht_set(hash_table* ht, const char* key, int value) {
 
     // Add a new node.
     hash_node* n = (hash_node*) malloc(sizeof(hash_node));
+    if (n == NULL) {
+        // out of memory.
+        return false;
+    }
     strncmp(n->key_, key, ksz);
     n->value_ = value;
     node->next_ = n;

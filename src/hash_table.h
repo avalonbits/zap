@@ -1,10 +1,14 @@
-#ifndef _HASH_TABLE_H
-#define _HASH_TABLE_H
+#ifndef _HASH_TABLE_H_
+#define _HASH_TABLE_H_
 
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "hash_node.h"
+typedef struct _hash_node {
+    int value_;
+    struct _hash_node* next_;
+    char key_[26];
+} hash_node;
 
 typedef struct _hash_table {
     hash_node node_[256];

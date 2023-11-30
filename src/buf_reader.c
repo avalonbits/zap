@@ -1,15 +1,14 @@
 #include "buf_reader.h"
 
 #include <mos_api.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define BUF_MIN_SIZE 1024  // 1KiB
+#define BUF_MIN_SIZE 1024 // 1KiB
 
-buf_reader* br_init(buf_reader* br, const char* fname, int bsz) {
-    if (bsz < BUF_MIN_SIZE) {
-        bsz = BUF_MIN_SIZE;
-    }
+buf_reader* br_open(buf_reader* br, const char* fname, int bsz_kb) {
+    int bsz = bsz_kb <= 0 ? BUF_MIN_SIZE : bsz_kb << 10;
     const uint8_t fh = mos_fopen(fname, FA_READ | FA_WRITE | FA_OPEN_ALWAYS);
     if (fh == 0) {
         return NULL;
@@ -47,10 +46,15 @@ buf_reader* br_init(buf_reader* br, const char* fname, int bsz) {
     br->fsz_ = fsz;
     br->fread_ = 0;
     br->buf_ = buf;
-    br->bsz_ = read;;
+    br->bsz_ = read;
     br->bpos_ = 0;
 
     return br;
+}
+
+void br_close(buf_reader* br) {
+    br_suspend(br);
+    free(br->buf_);
 }
 
 void br_destroy(buf_reader* br) {
@@ -112,6 +116,7 @@ int br_read(buf_reader* br, char* buf, int bsz) {
     const int avai = br->bsz_ - br->bpos_;
     int left = avai - bsz;
     if (left >= 0) {
+        br->fread_ += bsz;
         strncpy(buf, &br->buf_[br->bpos_], bsz);
         br->bpos_ += bsz;
         return bsz;
@@ -119,8 +124,14 @@ int br_read(buf_reader* br, char* buf, int bsz) {
 
     // We need to read more data from the file.
     // First read whatever was left from the buffer.
-    int read = avai;
-    strncpy(buf, &br->buf_[br->bpos_], avai);
+    int read = 0;
+    if (avai > 0) {
+        strncpy(buf, &br->buf_[br->bpos_], avai);
+        br->fread_ += avai;
+        bsz -= avai;
+        read += avai;
+        br->bpos_ += avai;
+    }
 
     // Now read new blocks as needed.
     do {
@@ -128,15 +139,28 @@ int br_read(buf_reader* br, char* buf, int bsz) {
         uint24_t frsz = mos_fread(br->fh_, br->buf_, br->bsz_);
         if (frsz == 0) {
             br->bsz_ = 0;
-            return EOF;
+            if (read == 0) {
+                return EOF;
+            } else {
+                return read;
+            }
         }
-/*
-        bsz = bsz + left;
-        const int sz = b a<= read ? left : read;
-        strncpy(
-        if (left < read) {
+
+        const int avai = br->bsz_ - br->bpos_;
+        int left = avai - bsz;
+        if (left >= 0) {
+            br->fread_ += bsz;
+            strncpy(&buf[read], &br->buf_[br->bpos_], bsz);
+            br->bpos_ += bsz;
+            read += bsz;
+            return read;
         }
-        */
+
+        strncpy(&buf[read], &br->buf_[br->bpos_], avai);
+        br->fread_ += avai;
+        bsz -= avai;
+        read += avai;
+        br->bpos_ += avai;
     } while(true);
 }
 

@@ -1,31 +1,29 @@
-#include <mos_api.h>
 #include <stdio.h>
+#include <mos_api.h>
 
+#include "buf_reader.h"
 #include "hash_table.h"
 
-int main(void) {
-    hash_table ht;
-    ht_init(&ht, 32);
+int main(int argc, char** argv) {
+    buf_reader br;
+    const char* fname = "refresh.txt";
+    if (argc > 1) {
+        fname = argv[1];
+    }
+    if (br_open(&br, fname, 1) == NULL) {
+        return -1;
+    }
 
-    ht_set(&ht, "test", 1234);
-    ht_set(&ht, "igor", 5678);
-    ht_set(&ht, "igop", 9012);
-
-    printf("%d %d\n", sizeof(ht.node_[0]), sizeof(ht) + sizeof(ht.node_[0])*ht.sz_);
-    printf("%s: %d\n%s: %d\n%s: %d\n%s: %d\n",
-            "test", ht_get(&ht, "test", NULL),
-            "igor", ht_get(&ht, "igor", NULL),
-            "igop", ht_get(&ht, "igop", NULL),
-            "random", ht_get(&ht, "random",  NULL));
-
-    ht_clear(&ht);
-    printf("%d %d\n", sizeof(ht.node_[0]), sizeof(ht));
-    printf("%s: %d\n%s: %d\n%s: %d\n%s: %d\n",
-            "test", ht_get(&ht, "test", NULL),
-            "igor", ht_get(&ht, "igor", NULL),
-            "igop", ht_get(&ht, "igop", NULL),
-            "random", ht_get(&ht, "random",  NULL));
-
-
+    char buf[157];
+    while (true) {
+        int read = br_read(&br, buf, 157);
+        if (read == EOF) {
+            break;
+        }
+        for (int i = 0; i < read; i++) {
+            putch(buf[i]);
+        }
+    }
+    br_close(&br);
     return 0;
 }

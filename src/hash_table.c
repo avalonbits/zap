@@ -32,26 +32,36 @@ uint8_t pearson_hash(const char* key) {
     return h;
 }
 
-hash_table* ht_init(hash_table* ht) {
-    uint8_t i = 0;
-    do {
+hash_table* ht_init(hash_table* ht, int entries) {
+    if (entries >= 128) {
+        ht->sz_ = 256;
+    } else if (entries >= 64) {
+        ht->sz_ = 64;
+    } else if (entries >= 32) {
+        ht->sz_ = 32;
+    } else {
+        ht->sz_ = 16;
+    }
+    ht->node_ = (hash_node*) malloc(ht->sz_ * sizeof(hash_node));
+    if (ht->node_ == NULL) {
+        return NULL;
+    }
+
+    for (uint24_t i = 0; i < ht->sz_; i++) {
         ht->node_[i].next_ = NULL;
         ht->node_[i].key_[0] = 0;
-        i++;
-    } while (i != 0);
+    }
 
     return ht;
 }
 
 void ht_clear(hash_table* ht) {
-    uint8_t i = 0;
-    do {
+    for (int i = 0; i < ht->sz_; i++) {
         ht->node_[i].key_[0] = 0;
         for (hash_node* n = ht->node_[i].next_; n != NULL; n = n->next_) {
             n->key_[0] = 0;
         }
-        i++;
-    } while (i != 0);
+    }
 }
 
 bool ht_set(hash_table* ht, const char* key, int value) {
@@ -61,7 +71,7 @@ bool ht_set(hash_table* ht, const char* key, int value) {
         return false;
     }
 
-    const uint8_t pos = pearson_hash(key);
+    const uint8_t pos = pearson_hash(key) % ht->sz_;
     hash_node* node = &ht->node_[pos];
 
     // Iteratore through all nodes in the chain until we find the key to update
@@ -105,7 +115,7 @@ int ht_get(hash_table* ht, const char* key, bool* ok) {
         return 0;
     }
 
-    const uint8_t pos = pearson_hash(key);
+    const uint8_t pos = pearson_hash(key) % ht->sz_;
     hash_node* n = &ht->node_[pos];
     if (n->key_[0] == 0) {
         return 0;

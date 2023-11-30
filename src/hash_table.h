@@ -11,12 +11,13 @@ typedef struct _hash_node {
 } hash_node;
 
 typedef struct _hash_table {
-    hash_node node_[256];
+    hash_node* node_;
+    uint24_t sz_;
 } hash_table;
 
 uint8_t pearson_hash(const char* key);
 
-hash_table* ht_init(hash_table* ht);
+hash_table* ht_init(hash_table* ht, int entries);
 void ht_clear(hash_table* ht);
 
 bool ht_set(hash_table* ht, const char* key, int value);

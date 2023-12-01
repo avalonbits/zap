@@ -89,7 +89,7 @@ bool br_suspend(buf_reader* br) {
 
 bool br_resume(buf_reader* br) {
     if (br->bsz_ == 0) {
-        return EOF;
+        return false;
     }
 
     if (br->buf_ == NULL || br->fh_ != 0) {
@@ -102,6 +102,7 @@ bool br_resume(buf_reader* br) {
     }
     br->fh_ = fh;
     mos_flseek(fh, br->fread_);
+    return true;
 }
 
 int br_read(buf_reader* br, char* buf, int bsz) {

@@ -3,13 +3,15 @@
 
 #include <stdint.h>
 
+#include "buf_reader.h"
+
 typedef struct _lexer  {
-    uint8_t fh_;
-    char* buf_;
-    int bsz_;
+    buf_reader rd_;
+    char line[512];
 } lexer;
 
 
 lexer* lex_init(const char* fname);
+void lex_destroy(lexer* lex);
 
 #endif  // _LEXER_H_

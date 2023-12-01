@@ -4,7 +4,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#ifndef EOF
 #define EOF   -1
+#endif
+
 #define ESUSP -2
 
 typedef struct _buf_reader  {

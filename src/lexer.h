@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "buf_reader.h"
+#include "lex_types.h"
 
 typedef struct _lexer  {
     buf_reader rd_;
@@ -13,5 +14,7 @@ typedef struct _lexer  {
 
 lexer* lex_init(const char* fname);
 void lex_destroy(lexer* lex);
+
+token lex_next(lexer* lex);
 
 #endif  // _LEXER_H_

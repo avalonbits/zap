@@ -20,3 +20,8 @@ void lex_destroy(lexer* lex) {
     br_destroy(&lex->rd_);
     free(lex);
 }
+
+token lex_next(lexer* lex) {
+    token tk = {NULL, NONE};
+    return tk;
+}

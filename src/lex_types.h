@@ -5,12 +5,9 @@ typedef enum _TOKEN {
     NONE = 0,
     WHITE_SPACE,
     NEW_LINE,
+    EQUALS,
     L_PAREN,
     R_PAREN,
-    L_BRACE,
-    R_BRACE,
-    L_CURLY,
-    R_CURLY,
     COMMA,
     DOT,
     COLON,
@@ -42,7 +39,11 @@ typedef enum _TOKEN {
 
 typedef struct _token {
     const char* txt_;
+    int sz_;
     TOKEN tk_;
 } token;
+
+void print_token(token tk);
+
 
 #endif  // _LEX_TYPES_H_

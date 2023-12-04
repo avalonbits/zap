@@ -8,7 +8,10 @@
 
 typedef struct _lexer  {
     buf_reader rd_;
-    char line[512];
+    char line_[256];
+    uint8_t pos_;
+    int sz_;
+    int lcount_;
 } lexer;
 
 

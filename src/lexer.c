@@ -93,9 +93,23 @@ token lex_next(lexer* lex) {
                             return tk;
                         }
                     }
+                } else if (is_digit(ch)) {
+                    tk.sz_ = 0;
+                    tk.tk_ = NUMBER;
+                    while (is_digit(ch)) {
+                        tk.sz_++;
+                        ch = lex->line_[++lex->pos_];
+                        if (lex->pos_ == lex->sz_) {
+                            lex->pos_ = 0;
+                            lex->sz_ =0;
+                            return tk;
+                        }
+                    }
                 } else {
+                    tk.sz_ = 0;
                     tk.tk_ = LABEL;
                     while (!is_space(ch)) {
+                        tk.sz_++;
                         ch = lex->line_[++lex->pos_];
                         if (lex->pos_ == lex->sz_) {
                             lex->pos_ = 0;
@@ -107,6 +121,10 @@ token lex_next(lexer* lex) {
                 lex->pos_--;
                 break;
         }
+    }
+    if (lex->pos_ == lex->sz_) {
+        lex->pos_ = 0;
+        lex->sz_ = 0;
     }
     return tk;
 }

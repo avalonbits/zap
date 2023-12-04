@@ -9,6 +9,11 @@ void print_token(token tk) {
         case WHITE_SPACE:
             mos_puts("WS", 0, 0);
             break;
+        case NUMBER:
+            mos_puts("NUMBER(", 0, 0);
+            mos_puts(tk.txt_, tk.sz_, 0);
+            putch(')');
+            break;
         case EQUALS:
             putch('=');
             break;
@@ -37,7 +42,9 @@ void print_token(token tk) {
             putch('$');
             break;
         case LABEL:
-            mos_puts("LABEL", 0, 0);
+            mos_puts("LABEL(", 0, 0);
+            mos_puts(tk.txt_, tk.sz_, 0);
+            putch(')');
             break;
         default:
             mos_puts("SOMETHING", 0, 0);

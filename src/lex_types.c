@@ -17,6 +17,18 @@ void print_token(token tk) {
         case EQUALS:
             putch('=');
             break;
+        case PLUS:
+            putch('+');
+            break;
+        case MINUS:
+            putch('-');
+            break;
+        case QUOTE:
+            putch('\'');
+            break;
+        case D_QUOTE:
+            putch('"');
+            break;
         case L_PAREN:
             putch('(');
             break;
@@ -42,12 +54,33 @@ void print_token(token tk) {
             putch('$');
             break;
         case LABEL:
-            mos_puts("LABEL(", 0, 0);
+            mos_puts("L(", 0, 0);
             mos_puts(tk.txt_, tk.sz_, 0);
             putch(')');
             break;
         case DIRECTIVE:
-            mos_puts("DIRECTIVE(", 0, 0);
+            mos_puts("D(", 0, 0);
+            mos_puts(tk.txt_, tk.sz_, 0);
+            putch(')');
+            break;
+        case INSTRUCTION:
+            mos_puts("I(", 0, 0);
+            mos_puts(tk.txt_, tk.sz_, 0);
+            putch(')');
+            break;
+        case REG_A:
+        case REG_B:
+        case REG_C:
+        case REG_D:
+        case REG_E:
+        case REG_F:
+        case REG_H:
+        case REG_L:
+        case REG_AF:
+        case REG_BC:
+        case REG_DE:
+        case REG_HL:
+            mos_puts("REGISTER(", 0, 0);
             mos_puts(tk.txt_, tk.sz_, 0);
             putch(')');
             break;

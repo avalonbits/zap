@@ -5,8 +5,11 @@
 #include "hash_table.h"
 
 static hash_table directives;
+static hash_table registers;
+static hash_table instructions;
 
-static void ht_directives(hash_table* ht) {
+static void init_ht() {
+    hash_table* ht = &directives;
     ht_init(ht, 32);
     ht_set(ht, "ADL", 255);
     ht_set(ht, "ALIGN", 255);
@@ -34,6 +37,8 @@ static void ht_directives(hash_table* ht) {
     ht_set(ht, "MACRO", 255);
     ht_set(ht, "ENDMACRO", 255);
     ht_set(ht, "ORG", 255);
+
+    ht_print(ht);
 }
 
 lexer* lex_init(const char* fname) {
@@ -51,7 +56,7 @@ lexer* lex_init(const char* fname) {
     lx->sz_ = 0;
     lx->lcount_ = 1;
 
-    ht_directives(&directives);
+    init_ht();
 
     return lx;
 }

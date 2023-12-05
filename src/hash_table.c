@@ -24,10 +24,18 @@ static uint8_t pearson_random[256] = {
      51,  65,  28, 144, 254, 221,  93, 189, 194, 139, 112,  43,  71, 109, 184, 209
 };
 
+static char upper(const char ch) {
+    if (ch >= 0x61 && ch <= 0x7A) {
+        return ch - 0x20;
+    }
+    return ch;
+}
+
+
 uint8_t pearson_hash(const char* key, uint8_t sz) {
     uint8_t h = 0;
     for (uint8_t i = 0; i < sz; i++) {
-        const uint8_t ch = (uint8_t) key[i];
+        const uint8_t ch = (uint8_t) upper(key[i]);
         h = pearson_random[h ^ ch];
     }
     return h;
@@ -81,6 +89,18 @@ void ht_clear(hash_table* ht) {
     }
 }
 
+bool icase_equal(const char* s1, const char* s2, uint8_t ksz) {
+    uint8_t i = 0;
+    for (; i < ksz && s1[i] != 0 && s2[i] != 0; i++) {
+        char ch1 = upper(s1[i]);
+        char ch2 = upper(s2[i]);
+        if (ch1 != ch2) {
+            return false;
+        }
+    }
+    return i == ksz;
+}
+
 bool ht_nset(hash_table* ht, const char* key, uint8_t ksz, int value) {
     // Hash table keys MUST have at most 25 characters.
     if (ksz > 25 || ksz <= 0) {
@@ -101,7 +121,7 @@ bool ht_nset(hash_table* ht, const char* key, uint8_t ksz, int value) {
         }
 
         const uint8_t sz = strlen(node->key_);
-        if (sz == ksz && strncmp(node->key_, key, ksz) == 0) {
+        if (sz == ksz && icase_equal(node->key_, key, ksz)) {
             node->value_ = value;
             return true;
         }
@@ -146,7 +166,7 @@ int ht_nget(hash_table* ht, const char* key, uint8_t ksz, bool* ok) {
         }
 
         const uint8_t sz = strlen(n->key_);
-        if (sz != ksz || strncmp(n->key_, key, ksz) != 0) {
+        if (sz != ksz || !icase_equal(n->key_, key, ksz)) {
             continue;
         }
 

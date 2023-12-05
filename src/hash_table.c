@@ -1,5 +1,6 @@
 #include "hash_table.h"
 
+#include <agon/vdp_vdu.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,9 +51,25 @@ hash_table* ht_init(hash_table* ht, int entries) {
     for (uint24_t i = 0; i < ht->sz_; i++) {
         ht->node_[i].next_ = NULL;
         ht->node_[i].key_[0] = 0;
+        ht->node_[i].value_ = 0;
     }
 
     return ht;
+}
+
+void ht_print(hash_table* ht) {
+    for(uint24_t i = 0; i < ht->sz_; i++) {
+        bool has = false;
+        for (hash_node* n = &ht->node_[i]; n != NULL; n = n->next_) {
+            if (strlen(n->key_) == 0) {
+                continue;
+            }
+            has = true;
+            putch('|');
+            mos_puts(n->key_, 0, 0);
+        }
+        if (has)   mos_puts("\r\n", 0, 0);
+    }
 }
 
 void ht_clear(hash_table* ht) {
@@ -70,7 +87,7 @@ bool ht_nset(hash_table* ht, const char* key, uint8_t ksz, int value) {
         return false;
     }
 
-    const uint8_t pos = pearson_hash(key, ksz) % ht->sz_;
+    const int pos = pearson_hash(key, ksz) % ht->sz_;
     hash_node* node = &ht->node_[pos];
 
     // Iteratore through all nodes in the chain until we find the key to update
@@ -83,7 +100,8 @@ bool ht_nset(hash_table* ht, const char* key, uint8_t ksz, int value) {
             return true;
         }
 
-        if (strncmp(node->key_, key, ksz) == 0) {
+        const uint8_t sz = strlen(node->key_);
+        if (sz == ksz && strncmp(node->key_, key, ksz) == 0) {
             node->value_ = value;
             return true;
         }
@@ -99,8 +117,10 @@ bool ht_nset(hash_table* ht, const char* key, uint8_t ksz, int value) {
         // out of memory.
         return false;
     }
-    strncmp(n->key_, key, ksz);
+    strncpy(n->key_, key, ksz);
+    n->key_[ksz] = 0;
     n->value_ = value;
+    n->next_ = NULL;
     node->next_ = n;
 
     return true;
@@ -117,25 +137,24 @@ int ht_nget(hash_table* ht, const char* key, uint8_t ksz, bool* ok) {
         return 0;
     }
 
-    const uint8_t pos = pearson_hash(key, ksz) % ht->sz_;
+    const int pos = pearson_hash(key, ksz) % ht->sz_;
     hash_node* n = &ht->node_[pos];
-    if (n->key_[0] == 0) {
-        return 0;
-    }
 
-    int value = 0;
     for (; n != NULL; n = n->next_) {
         if (n->key_[0] == 0) {
             continue;
         }
-        if (strncmp(n->key_, key, ksz) == 0) {
-            value = n->value_;
-            if (ok) *ok = true;
-            break;
+
+        const uint8_t sz = strlen(n->key_);
+        if (sz != ksz || strncmp(n->key_, key, ksz) != 0) {
+            continue;
         }
+
+        if (ok) *ok = true;
+        return n->value_;
     }
 
-    return value;
+    return 0;
 }
 
 int ht_get(hash_table* ht, const char* key, bool* ok) {

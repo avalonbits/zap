@@ -46,6 +46,11 @@ void print_token(token tk) {
             mos_puts(tk.txt_, tk.sz_, 0);
             putch(')');
             break;
+        case DIRECTIVE:
+            mos_puts("DIRECTIVE(", 0, 0);
+            mos_puts(tk.txt_, tk.sz_, 0);
+            putch(')');
+            break;
         default:
             mos_puts("SOMETHING", 0, 0);
             break;

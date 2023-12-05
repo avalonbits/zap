@@ -2,6 +2,40 @@
 
 #include <stdlib.h>
 
+#include "hash_table.h"
+
+static hash_table directives;
+
+static void ht_directives(hash_table* ht) {
+    ht_init(ht, 32);
+    ht_set(ht, "ADL", 255);
+    ht_set(ht, "ALIGN", 255);
+    ht_set(ht, "ASSUME", 255);
+    ht_set(ht, "BLKB", 255);
+    ht_set(ht, "BLKW", 255);
+    ht_set(ht, "BLKP", 255);
+    ht_set(ht, "BLKL", 255);
+    ht_set(ht, "DB", 255);
+    ht_set(ht, "DEFB", 255);
+    ht_set(ht, "ASCII", 255);
+    ht_set(ht, "BYTE", 255);
+    ht_set(ht, "ASCIZ", 255);
+    ht_set(ht, "DW", 255);
+    ht_set(ht, "DEFW", 255);
+    ht_set(ht, "DL", 255);
+    ht_set(ht, "DW24", 255);
+    ht_set(ht, "DW32", 255);
+    ht_set(ht, "DS", 255);
+    ht_set(ht, "DEFS", 255);
+    ht_set(ht, "EQU", 255);
+    ht_set(ht, "FILLBYTE", 255);
+    ht_set(ht, "INCBIN", 255);
+    ht_set(ht, "INCLUDE", 255);
+    ht_set(ht, "MACRO", 255);
+    ht_set(ht, "ENDMACRO", 255);
+    ht_set(ht, "ORG", 255);
+}
+
 lexer* lex_init(const char* fname) {
     lexer* lx = (lexer*) malloc(sizeof(lexer));
     if (lx == NULL) {
@@ -16,6 +50,9 @@ lexer* lex_init(const char* fname) {
     lx->pos_ = 0;
     lx->sz_ = 0;
     lx->lcount_ = 1;
+
+    ht_directives(&directives);
+
     return lx;
 }
 
@@ -117,8 +154,11 @@ token lex_next(lexer* lex) {
                             return tk;
                         }
                     }
+                    if (ht_nget(&directives, tk.txt_, tk.sz_, NULL) == 255) {
+                        tk.tk_ = DIRECTIVE;
+                    }
                 }
-                lex->pos_--;
+               lex->pos_--;
                 break;
         }
     }

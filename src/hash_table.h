@@ -5,9 +5,9 @@
 #include <stdint.h>
 
 typedef struct _hash_node {
+    char key_[26];
     int value_;
     struct _hash_node* next_;
-    char key_[26];
 } hash_node;
 
 typedef struct _hash_table {
@@ -19,6 +19,7 @@ uint8_t pearson_hash(const char* key, uint8_t sz);
 
 hash_table* ht_init(hash_table* ht, int entries);
 void ht_clear(hash_table* ht);
+void ht_print(hash_table* ht);
 
 bool ht_set(hash_table* ht, const char* key, int value);
 bool ht_nset(hash_table* ht, const char* key, uint8_t ksz, int value);

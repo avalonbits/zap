@@ -23,9 +23,9 @@ static uint8_t pearson_random[256] = {
      51,  65,  28, 144, 254, 221,  93, 189, 194, 139, 112,  43,  71, 109, 184, 209
 };
 
-uint8_t pearson_hash(const char* key) {
+uint8_t pearson_hash(const char* key, uint8_t sz) {
     uint8_t h = 0;
-    for (int i = 0; key[i] != 0; i++) {
+    for (uint8_t i = 0; i < sz; i++) {
         const uint8_t ch = (uint8_t) key[i];
         h = pearson_random[h ^ ch];
     }
@@ -56,7 +56,7 @@ hash_table* ht_init(hash_table* ht, int entries) {
 }
 
 void ht_clear(hash_table* ht) {
-    for (int i = 0; i < ht->sz_; i++) {
+    for (uint24_t i = 0; i < ht->sz_; i++) {
         ht->node_[i].key_[0] = 0;
         for (hash_node* n = ht->node_[i].next_; n != NULL; n = n->next_) {
             n->key_[0] = 0;
@@ -64,14 +64,13 @@ void ht_clear(hash_table* ht) {
     }
 }
 
-bool ht_set(hash_table* ht, const char* key, int value) {
+bool ht_nset(hash_table* ht, const char* key, uint8_t ksz, int value) {
     // Hash table keys MUST have at most 25 characters.
-    const int ksz = strlen(key);
     if (ksz > 25 || ksz <= 0) {
         return false;
     }
 
-    const uint8_t pos = pearson_hash(key) % ht->sz_;
+    const uint8_t pos = pearson_hash(key, ksz) % ht->sz_;
     hash_node* node = &ht->node_[pos];
 
     // Iteratore through all nodes in the chain until we find the key to update
@@ -107,15 +106,18 @@ bool ht_set(hash_table* ht, const char* key, int value) {
     return true;
 }
 
-int ht_get(hash_table* ht, const char* key, bool* ok) {
+bool ht_set(hash_table* ht, const char* key, int value) {
+    return ht_nset(ht, key, strlen(key), value);
+}
+
+int ht_nget(hash_table* ht, const char* key, uint8_t ksz, bool* ok) {
     if (ok) *ok = false;
 
-    const int ksz = strlen(key);
     if (ksz > 25) {
         return 0;
     }
 
-    const uint8_t pos = pearson_hash(key) % ht->sz_;
+    const uint8_t pos = pearson_hash(key, ksz) % ht->sz_;
     hash_node* n = &ht->node_[pos];
     if (n->key_[0] == 0) {
         return 0;
@@ -134,4 +136,8 @@ int ht_get(hash_table* ht, const char* key, bool* ok) {
     }
 
     return value;
+}
+
+int ht_get(hash_table* ht, const char* key, bool* ok) {
+    return ht_nget(ht, key, strlen(key), ok);
 }

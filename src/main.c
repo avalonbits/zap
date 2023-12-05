@@ -13,15 +13,10 @@ int main(int argc, char** argv) {
     if (lex == NULL) {
         return -1;
     }
-    int i = 0;
-    for (token tk = lex_next(lex); i < 100 && tk.tk_ != NONE; i++, tk = lex_next(lex)) {
-        if (tk.tk_ == NONE) {
-            break;
-        }
-
+    for (token tk = lex_next(lex); tk.tk_ != NONE; tk = lex_next(lex)) {
         print_token(tk);
         if (tk.tk_ == NEW_LINE) {
-            mos_puts("\r\n", 0, 0);
+            mos_puts("NL\r\n", 0, 0);
         } else {
             putch(' ');
         }

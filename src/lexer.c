@@ -1,5 +1,6 @@
 #include "lexer.h"
 
+#include <agon/vdp_vdu.h>
 #include <stdlib.h>
 
 #include "hash_table.h"
@@ -196,114 +197,112 @@ token lex_next(lexer* lex) {
         return tk;
     }
 
-    const char* start = &lex->line_[lex->pos_];
-    if (lex->pos_ == 0 && lex->sz_ == 0) {
+    tk.txt_ = &lex->line_[lex->pos_];
+    if (lex->pos_ == lex->sz_) {
+        lex->pos_ = 0;
+        tk.txt_ = lex->line_;
         lex->sz_ = br_read(&lex->rd_, lex->line_, sizeof(lex->line_));
         if (lex->sz_ == EOF) {
             return tk;
         }
     }
-
-    tk.txt_ = start;
     tk.sz_ = 1;
-    for (; lex->pos_ < lex->sz_ && tk.tk_ == NONE; lex->pos_++) {
-        char ch = lex->line_[lex->pos_];
-        switch (ch) {
-             case '=':
-                tk.tk_ = EQUALS;
+
+    char ch = lex->line_[lex->pos_++];
+    bool done = true;
+    switch (ch) {
+        case '=':
+            tk.tk_ = EQUALS;
+            break;
+        case '+':
+            tk.tk_ = PLUS;
+            break;
+        case '-':
+            tk.tk_ = MINUS;
+            break;
+        case '\n':
+            lex->lcount_++;
+            tk.tk_ = NEW_LINE;
+            break;
+        case '\'':
+            tk.tk_ = QUOTE;
+            break;
+        case '\"':
+            tk.tk_ = D_QUOTE;
+            break;
+        case '(':
+            tk.tk_ = L_PAREN;
+            break;
+        case ')':
+            tk.tk_ = R_PAREN;
+            break;
+        case ',':
+            tk.tk_ = COMMA;
+            break;
+        case '.':
+            tk.tk_ = DOT;
+            break;
+        case ':':
+            tk.tk_ = COLON;
+            break;
+        case ';':
+            tk.tk_ = SEMI_COLON;
+            break;
+        case '#':
+            tk.tk_= HASH;
+            break;
+        case '$':
+            tk.tk_ = DOLLAR;
+            break;
+        default:
+            done = false;
+    }
+    if (done || lex->pos_ == lex->sz_) {
+        return tk;
+    }
+
+    if (is_space(ch)) {
+        tk.tk_ = WHITE_SPACE;
+        while (is_space(ch)) {
+            ch = lex->line_[lex->pos_++];
+            if (lex->pos_ == lex->sz_) {
                 break;
-            case '+':
-                tk.tk_ = PLUS;
+            }
+        }
+    } else if (is_digit(ch)) {
+        tk.sz_ = 0;
+        tk.tk_ = NUMBER;
+        while (is_digit(ch)) {
+            tk.sz_++;
+            ch = lex->line_[lex->pos_++];
+            if (lex->pos_ == lex->sz_) {
                 break;
-            case '-':
-                tk.tk_ = MINUS;
+            }
+        }
+    } else if (is_ascdig(ch)) {
+        tk.sz_ = 0;
+        tk.tk_ = LABEL;
+        while (is_ascdig(ch)) {
+            tk.sz_++;
+            ch = lex->line_[lex->pos_++];
+            if (lex->pos_ == lex->sz_) {
                 break;
-            case '\n':
-                lex->lcount_++;
-                tk.tk_ = NEW_LINE;
-                break;
-            case '\'':
-                tk.tk_ = QUOTE;
-                break;
-            case '\"':
-                tk.tk_ = D_QUOTE;
-                break;
-            case '(':
-                tk.tk_ = L_PAREN;
-                break;
-            case ')':
-                tk.tk_ = R_PAREN;
-                break;
-            case ',':
-                tk.tk_ = COMMA;
-                break;
-            case '.':
-                tk.tk_ = DOT;
-                break;
-            case ':':
-                tk.tk_ = COLON;
-                break;
-            case ';':
-                tk.tk_ = SEMI_COLON;
-                break;
-            case '#':
-                tk.tk_= HASH;
-                break;
-            case '$':
-                tk.tk_ = DOLLAR;
-                break;
-            default:
-                if (is_space(ch)) {
-                    tk.tk_ = WHITE_SPACE;
-                    while (is_space(ch)) {
-                        ch = lex->line_[++lex->pos_];
-                        if (lex->pos_ == lex->sz_) {
-                            lex->pos_ = 0;
-                            lex->sz_ = 0;
-                            return tk;
-                        }
-                    }
-                } else if (is_digit(ch)) {
-                    tk.sz_ = 0;
-                    tk.tk_ = NUMBER;
-                    while (is_digit(ch)) {
-                        tk.sz_++;
-                        ch = lex->line_[++lex->pos_];
-                        if (lex->pos_ == lex->sz_) {
-                            lex->pos_ = 0;
-                            lex->sz_ =0;
-                            return tk;
-                        }
-                    }
-                } else if (is_ascdig(ch)) {
-                    tk.sz_ = 0;
-                    tk.tk_ = LABEL;
-                    while (is_ascdig(ch)) {
-                        tk.sz_++;
-                        ch = lex->line_[++lex->pos_];
-                        if (lex->pos_ == lex->sz_) {
-                            lex->pos_ = 0;
-                            lex->sz_ = 0;
-                            return tk;
-                        }
-                    }
-                    int val = ht_nget(&reserved, tk.txt_, tk.sz_, NULL);
-                    if (val == NONE) {
-                        val = ht_nget(&instructions, tk.txt_, tk.sz_, NULL);
-                    }
-                    if (val != NONE) {
-                        tk.tk_ = val;
-                    }
-                } else {
-                    break;
-                }
-                lex->pos_--;
-                break;
+            }
+        }
+        int val = ht_nget(&reserved, tk.txt_, tk.sz_, NULL);
+        if (val == NONE) {
+            val = ht_nget(&instructions, tk.txt_, tk.sz_, NULL);
+        }
+        if (val != NONE) {
+            tk.tk_ = val;
         }
     }
+
     if (lex->pos_ == lex->sz_) {
         lex->pos_ = 0;
         lex->sz_ = 0;
+    } else {
+        lex->pos_--;
     }
     return tk;
 }

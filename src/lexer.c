@@ -189,14 +189,16 @@ static bool is_ascdig(char ch) {
         || ch == '_' || is_digit(ch);
 }
 
+#define OK_CHAR(ch) (ch != EOF && ch != ESUSP)
+
 token lex_next(lexer* lex) {
     token tk = {NULL, 0, NONE};
     char ch = br_char(&lex->rd_);
-    if (ch == EOF) {
+    if (!OK_CHAR(ch)) {
         return tk;
     }
 
-    tk.txt_ = &lex->line_;
+    tk.txt_ = lex->line_;
     tk.txt_[0] = ch;
     tk.sz_ = 1;
 
@@ -254,33 +256,29 @@ token lex_next(lexer* lex) {
 
     if (is_space(ch)) {
         tk.tk_ = WHITE_SPACE;
+        ch = br_peek(&lex->rd_);
         while (is_space(ch)) {
-            ch = br_char(&lex->rd_);
-            if (ch == EOF) {
-                break;
-            }
             tk.txt_[tk.sz_++] = ch;
+            br_next(&lex->rd_);
+            ch = br_peek(&lex->rd_);
         }
     } else if (is_digit(ch)) {
-        tk.sz_ = 0;
         tk.tk_ = NUMBER;
+        ch = br_peek(&lex->rd_);
         while (is_digit(ch)) {
-            tk.sz_++;
-            ch = lex->line_[lex->pos_++];
-            if (lex->pos_ == lex->sz_) {
-                break;
-            }
+            tk.txt_[tk.sz_++] = ch;
+            br_next(&lex->rd_);
+            ch = br_peek(&lex->rd_);
         }
     } else if (is_ascdig(ch)) {
-        tk.sz_ = 0;
         tk.tk_ = LABEL;
+        ch = br_peek(&lex->rd_);
         while (is_ascdig(ch)) {
-            tk.sz_++;
-            ch = lex->line_[lex->pos_++];
-            if (lex->pos_ == lex->sz_) {
-                break;
-            }
+            tk.txt_[tk.sz_++] = ch;
+            br_next(&lex->rd_);
+            ch = br_peek(&lex->rd_);
         }
+
         int val = ht_nget(&reserved, tk.txt_, tk.sz_, NULL);
         if (val == NONE) {
             val = ht_nget(&instructions, tk.txt_, tk.sz_, NULL);
@@ -290,11 +288,5 @@ token lex_next(lexer* lex) {
         }
     }
 
-    if (lex->pos_ == lex->sz_) {
-        lex->pos_ = 0;
-        lex->sz_ = 0;
-    } else {
-        lex->pos_--;
-    }
     return tk;
 }

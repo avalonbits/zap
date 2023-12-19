@@ -28,5 +28,7 @@ bool br_suspend(buf_reader* br);
 bool br_resume(buf_reader* br);
 
 char br_char(buf_reader* br);
+char br_peek(buf_reader* br);
+void br_next(buf_reader* br);
 
 #endif // _BUF_READER_H_

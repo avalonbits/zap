@@ -42,7 +42,7 @@ typedef enum _TOKEN {
 } TOKEN;
 
 typedef struct _token {
-    const char* txt_;
+    char* txt_;
     int sz_;
     TOKEN tk_;
 } token;

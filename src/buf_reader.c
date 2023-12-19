@@ -105,21 +105,41 @@ bool br_resume(buf_reader* br) {
     return true;
 }
 
-char br_char(buf_reader* br) {
+char br_peek(buf_reader* br) {
     if (br->bsz_ == 0) {
         return EOF;
     }
-    if (bt->buf_ = NULL || br->fh_ == 0) {
+    if (br->buf_ == NULL || br->fh_ == 0) {
         return ESUSP;
     }
-    if (br->pos_ == br->bsz_) {
+    if (br->bpos_ == br->bsz_) {
         uint24_t frsz = mos_fread(br->fh_, br->buf_, br->bsz_);
         if (frsz == 0) {
             br->bsz_ = 0;
             return EOF;
         }
-        br->pos_ = 0;
+        br->bpos_ = 0;
         br->bsz_ = frsz;
     }
-    return br->buf_[br->pos_++];
+    return br->buf_[br->bpos_];
+}
+
+void br_next(buf_reader* br) {
+    if (br->bsz_ == 0) {
+        return;
+    }
+    if (br->buf_ == NULL || br->fh_ == 0) {
+        return;
+    }
+    if (br->bpos_ <= br->bsz_) {
+        br->bpos_++;
+    }
+}
+
+char br_char(buf_reader* br) {
+    char ch = br_peek(br);
+    if (ch != EOF && ch != ESUSP) {
+        br->bpos_++;
+    }
+    return ch;
 }

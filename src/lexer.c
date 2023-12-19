@@ -271,7 +271,7 @@ token lex_next(lexer* lex) {
             ch = br_peek(&lex->rd_);
         }
     } else if (is_ascdig(ch)) {
-        tk.tk_ = LABEL;
+        tk.tk_ = NAME;
         ch = br_peek(&lex->rd_);
         while (is_ascdig(ch)) {
             tk.txt_[tk.sz_++] = ch;

@@ -19,8 +19,7 @@ typedef enum _TOKEN {
     HASH,
     DOLLAR,
     DIRECTIVE,
-    LABEL,
-    INNER_LABEL,
+    NAME,
     NUMBER,
     HEX_NUMBER,
 

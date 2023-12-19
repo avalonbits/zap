@@ -53,8 +53,8 @@ void print_token(token tk) {
         case DOLLAR:
             putch('$');
             break;
-        case LABEL:
-            mos_puts("L(", 0, 0);
+        case NAME:
+            mos_puts("N(", 0, 0);
             mos_puts(tk.txt_, tk.sz_, 0);
             putch(')');
             break;

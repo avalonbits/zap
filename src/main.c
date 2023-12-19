@@ -1,7 +1,9 @@
 #include <stdio.h>
+#include <string.h>
 #include <mos_api.h>
 
 #include "lexer.h"
+#include "parser.h"
 
 int main(int argc, char** argv) {
     if (argc != 2) {
@@ -9,19 +11,16 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    lexer* lex = lex_init(argv[1]);
-    if (lex == NULL) {
+    parser p;
+    if (parser_init(&p, argv[1]) == NULL) {
         return -1;
     }
-    for (token tk = lex_next(lex); tk.tk_ != NONE; tk = lex_next(lex)) {
-        print_token(tk);
-        if (tk.tk_ == NEW_LINE) {
-            mos_puts("NL\r\n", 0, 0);
-        } else {
-            putch(' ');
-        }
+    const char* errmsg = parser_parse(&p, NULL, 0);
+    if (errmsg != NULL && strlen(errmsg) > 0) {
+        mos_puts(errmsg, 0, 0);
     }
-    lex_destroy(lex);
+
+    parser_destroy(&p);
 
     return 0;
 }

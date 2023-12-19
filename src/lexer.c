@@ -152,22 +152,16 @@ static void init_ht() {
     ht_set(ht, "XOR", INSTRUCTION);
 }
 
-lexer* lex_init(const char* fname) {
-    lexer* lx = (lexer*) malloc(sizeof(lexer));
-    if (lx == NULL) {
+lexer* lex_init(lexer* lex, const char* fname) {
+    if (br_open(&lex->rd_, fname, 4) == NULL) {
         return NULL;
     }
 
-    if (br_open(&lx->rd_, fname, 4) == NULL) {
-        free(lx);
-        return NULL;
-    }
-
-    lx->lcount_ = 1;
+    lex->lcount_ = 1;
 
     init_ht();
 
-    return lx;
+    return lex;
 }
 
 void lex_destroy(lexer* lex) {

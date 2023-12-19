@@ -13,7 +13,7 @@ typedef struct _lexer  {
 } lexer;
 
 
-lexer* lex_init(const char* fname);
+lexer* lex_init(lexer* lex, const char* fname);
 void lex_destroy(lexer* lex);
 
 token lex_next(lexer* lex);

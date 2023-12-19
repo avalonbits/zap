@@ -163,8 +163,6 @@ lexer* lex_init(const char* fname) {
         return NULL;
     }
 
-    lx->pos_ = 0;
-    lx->sz_ = 0;
     lx->lcount_ = 1;
 
     init_ht();
@@ -193,22 +191,15 @@ static bool is_ascdig(char ch) {
 
 token lex_next(lexer* lex) {
     token tk = {NULL, 0, NONE};
-    if (lex->sz_ == EOF) {
+    char ch = br_char(&lex->rd_);
+    if (ch == EOF) {
         return tk;
     }
 
-    tk.txt_ = &lex->line_[lex->pos_];
-    if (lex->pos_ == lex->sz_) {
-        lex->pos_ = 0;
-        tk.txt_ = lex->line_;
-        lex->sz_ = br_read(&lex->rd_, lex->line_, sizeof(lex->line_));
-        if (lex->sz_ == EOF) {
-            return tk;
-        }
-    }
+    tk.txt_ = &lex->line_;
+    tk.txt_[0] = ch;
     tk.sz_ = 1;
 
-    char ch = lex->line_[lex->pos_++];
     bool done = true;
     switch (ch) {
         case '=':
@@ -257,17 +248,18 @@ token lex_next(lexer* lex) {
         default:
             done = false;
     }
-    if (done || lex->pos_ == lex->sz_) {
+    if (done) {
         return tk;
     }
 
     if (is_space(ch)) {
         tk.tk_ = WHITE_SPACE;
         while (is_space(ch)) {
-            ch = lex->line_[lex->pos_++];
-            if (lex->pos_ == lex->sz_) {
+            ch = br_char(&lex->rd_);
+            if (ch == EOF) {
                 break;
             }
+            tk.txt_[tk.sz_++] = ch;
         }
     } else if (is_digit(ch)) {
         tk.sz_ = 0;

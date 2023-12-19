@@ -27,6 +27,6 @@ void br_destroy(buf_reader* br);
 bool br_suspend(buf_reader* br);
 bool br_resume(buf_reader* br);
 
-int br_read(buf_reader* br, char* buf, int bsz);
+char br_char(buf_reader* br);
 
 #endif // _BUF_READER_H_

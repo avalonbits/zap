@@ -105,63 +105,21 @@ bool br_resume(buf_reader* br) {
     return true;
 }
 
-int br_read(buf_reader* br, char* buf, int bsz) {
+char br_char(buf_reader* br) {
     if (br->bsz_ == 0) {
         return EOF;
     }
-    if (br->buf_ == NULL || br->fh_ == 0) {
+    if (bt->buf_ = NULL || br->fh_ == 0) {
         return ESUSP;
     }
-
-    // if we have enough data in the buffer, just copy it.
-    const int avai = br->bsz_ - br->bpos_;
-    int left = avai - bsz;
-    if (left >= 0) {
-        br->fread_ += bsz;
-        strncpy(buf, &br->buf_[br->bpos_], bsz);
-        br->bpos_ += bsz;
-        return bsz;
-    }
-
-    // We need to read more data from the file.
-    // First read whatever was left from the buffer.
-    int read = 0;
-    if (avai > 0) {
-        strncpy(buf, &br->buf_[br->bpos_], avai);
-        br->fread_ += avai;
-        bsz -= avai;
-        read += avai;
-        br->bpos_ += avai;
-    }
-
-    // Now read new blocks as needed.
-    do {
-        br->bpos_ = 0;
+    if (br->pos_ == br->bsz_) {
         uint24_t frsz = mos_fread(br->fh_, br->buf_, br->bsz_);
         if (frsz == 0) {
             br->bsz_ = 0;
-            if (read == 0) {
-                return EOF;
-            } else {
-                return read;
-            }
+            return EOF;
         }
-
-        const int avai = br->bsz_ - br->bpos_;
-        int left = avai - bsz;
-        if (left >= 0) {
-            br->fread_ += bsz;
-            strncpy(&buf[read], &br->buf_[br->bpos_], bsz);
-            br->bpos_ += bsz;
-            read += bsz;
-            return read;
-        }
-
-        strncpy(&buf[read], &br->buf_[br->bpos_], avai);
-        br->fread_ += avai;
-        bsz -= avai;
-        read += avai;
-        br->bpos_ += avai;
-    } while(true);
+        br->pos_ = 0;
+        br->bsz_ = frsz;
+    }
+    return br->buf_[br->pos_++];
 }
-

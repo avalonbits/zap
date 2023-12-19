@@ -240,6 +240,7 @@ token lex_next(lexer* lex) {
             break;
         case '$':
             tk.tk_ = DOLLAR;
+            done = false;
             break;
         default:
             done = false;
@@ -248,7 +249,19 @@ token lex_next(lexer* lex) {
         return tk;
     }
 
-    if (is_space(ch)) {
+
+    if (tk.tk_ == DOLLAR) {
+        ch = br_peek(&lex->rd_);
+        if (is_digit) {
+            tk.tk_ = HEX_NUMBER;
+            tk.sz_ = 0;
+            while (is_digit(ch)) {
+                tk.txt_[tk.sz_++] = ch;
+                br_next(&lex->rd_);
+                ch = br_peek(&lex->rd_);
+            }
+        }
+    } else if (is_space(ch)) {
         tk.tk_ = WHITE_SPACE;
         ch = br_peek(&lex->rd_);
         while (is_space(ch)) {
@@ -263,6 +276,10 @@ token lex_next(lexer* lex) {
             tk.txt_[tk.sz_++] = ch;
             br_next(&lex->rd_);
             ch = br_peek(&lex->rd_);
+        }
+        if (ch == 'h' || ch == 'H') {
+            tk.tk_ = HEX_NUMBER;
+            br_next(&lex->rd_);
         }
     } else if (is_ascdig(ch)) {
         tk.tk_ = NAME;

@@ -15,7 +15,8 @@ int main(int argc, char** argv) {
     if (parser_init(&p, argv[1]) == NULL) {
         return -1;
     }
-    const char* errmsg = parser_parse(&p, NULL, 0);
+
+    const char* errmsg = parser_parse(&p);
     if (errmsg != NULL && strlen(errmsg) > 0) {
         mos_puts(errmsg, 0, 0);
     }

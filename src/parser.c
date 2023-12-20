@@ -4,15 +4,30 @@
 #include <string.h>
 
 #include "conv.h"
+#include "instruction_parser.h"
 #include "lexer.h"
 
 #define PUTS(msg) mos_puts(msg, 0, 0)
-#define STR_EQ(msg1, msg2, n) (strncmp(msg1, msg2, n) == 0)
+#define TK_EQ(msg1, tk) (strncmp(msg1, upper(tk.txt_, tk.sz_), tk.sz_) == 0)
+
+static char* upper(char* str, int sz) {
+    for (int i = 0; i < sz; i++) {
+        const char ch = str[i];
+        if (ch >= 0x61 && ch <= 0x7A) {
+            str[i] = ch - 0x20;
+        }
+    }
+    return str;
+}
 
 static char errmsg[256] = "";
 
 parser* parser_init(parser* p, const char* fname) {
     if (lex_init(&p->lex_, fname) == NULL) {
+        return NULL;
+    }
+    if (ht_init(&p->labels_, 255) == 0) {
+        lex_destroy(&p->lex_);
         return NULL;
     }
 
@@ -27,7 +42,7 @@ void parser_destroy(parser* p) {
     lex_destroy(&p->lex_);
 }
 
-static token next(parser* p) {
+token next(parser* p) {
     while (true) {
         token tk = lex_next(&p->lex_);
         switch (tk.tk_) {
@@ -55,7 +70,7 @@ static token next(parser* p) {
     }
 }
 
-static const char* parse_msg(parser* p, const char* msg) {
+const char* parser_msg(parser* p, const char* msg) {
     strcpy(errmsg, "\r\nLine ");
     i2s(p->lex_.lcount_, &errmsg[7], sizeof(errmsg) - 5);
     strcat(errmsg, ": ");
@@ -65,17 +80,17 @@ static const char* parse_msg(parser* p, const char* msg) {
 
 static const char* parse_adl(parser* p) {
     token tk = next(p);
-    if (tk.tk_ != DIRECTIVE || !STR_EQ("ADL", tk.txt_, tk.sz_)) {
-        return parse_msg(p, "expected ADL");
+    if (tk.tk_ != DIRECTIVE || !TK_EQ("ADL", tk)) {
+        return parser_msg(p, "expected ADL");
     }
 
     if (next(p).tk_ != EQUALS) {
-        return parse_msg(p, "expected =");
+        return parser_msg(p, "expected =");
     }
 
     tk = next(p);
-    if (tk.tk_ != NUMBER || (!STR_EQ("1", tk.txt_, tk.sz_) && !STR_EQ("0", tk.txt_, tk.sz_))) {
-        return parse_msg(p, "ADL is 0 or 1");
+    if (tk.tk_ != NUMBER || (!TK_EQ("1", tk) && !TK_EQ("0", tk))) {
+        return parser_msg(p, "ADL is 0 or 1");
     }
     p->adl_ = tk.txt_[0] == '1';
 
@@ -121,20 +136,34 @@ int tk2i(token tk) {
     return -1;
 }
 
-
 static const char* parse_org(parser* p) {
     token tk = next(p);
     if (tk.tk_ != NUMBER && tk.tk_ != HEX_NUMBER) {
-        return parse_msg(p, "expected number.");
+        return parser_msg(p, "expected number.");
     }
     p->org_ = tk2i(tk);
     return NULL;
 }
+
+static const char* parse_align(parser* p) {
+    token tk = next(p);
+    if (tk.tk_ != NUMBER && tk.tk_ != HEX_NUMBER) {
+        return parser_msg(p, "expected number.");
+    }
+
+    int align = tk2i(tk);
+    while (p->pos_ < align) {
+        p->buf_[p->pos_++] = 0;
+    }
+    return NULL;
+}
 static const char* parse_directive(parser* p) {
-    if (STR_EQ("ASSUME", p->tk_.txt_, p->tk_.sz_)) {
+    if (TK_EQ("ASSUME", p->tk_)) {
         return parse_adl(p);
-    } else if (STR_EQ("ORG", p->tk_.txt_, p->tk_.sz_)) {
+    } else if (TK_EQ("ORG", p->tk_)) {
         return parse_org(p);
+    } else if (TK_EQ("ALIGN", p->tk_)) {
+        return parse_align(p);
     }
 
     return NULL;
@@ -143,13 +172,16 @@ static const char* parse_directive(parser* p) {
 static const char* parse_start_dot(parser* p) {
     p->tk_ = next(p);
     if (p->tk_.tk_ != DIRECTIVE) {
-        return parse_msg(p, "expected a directive after the dot");
+        return parser_msg(p, "expected a directive after the dot");
     }
     return parse_directive(p);
 }
 
 static const char* parse_instruction(parser* p) {
-    return parse_msg(p, "found instruction");
+    if (TK_EQ("JP", p->tk_)) {
+        return parse_jp(p);
+    }
+    return parser_msg(p, "found nothing");
 }
 
 const char* parser_parse(parser* p) {

@@ -3,7 +3,9 @@
 
 #include <stdint.h>
 
+#include "hash_table.h"
 #include "lexer.h"
+
 
 typedef struct _parser {
     lexer lex_;
@@ -17,6 +19,8 @@ typedef struct _parser {
     bool comment_;
 
     token tk_;
+
+    hash_table labels_;
 } parser;
 
 parser* parser_init(parser* p, const char* fname);

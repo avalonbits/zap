@@ -252,7 +252,7 @@ token lex_next(lexer* lex) {
 
     if (tk.tk_ == DOLLAR) {
         ch = br_peek(&lex->rd_);
-        if (is_digit) {
+        if (is_digit(ch)) {
             tk.tk_ = HEX_NUMBER;
             tk.sz_ = 0;
             while (is_digit(ch)) {

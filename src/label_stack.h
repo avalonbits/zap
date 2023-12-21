@@ -18,6 +18,6 @@ typedef struct _label_stack {
 label_stack* ls_init(label_stack* ls, int sz);
 label_stack* ls_destroy(label_stack* ls);
 bool ls_push(label_stack* ls, const char* label, int sz, int bpos, int line);
-char* ls_pop(label_stack* ls);
+const label_node* ls_pop(label_stack* ls);
 
 #endif  // _LABEL_STACK_H_

@@ -39,6 +39,11 @@ parser* pr_init(parser* p, const char* fname) {
         return NULL;
     }
 
+    if (ls_init(&p->ls_, 1024) == NULL) {
+        free(p->buf_);
+        lex_destroy(&p->lex_);
+    }
+
     p->org_ = 0x400000;
     p->adl_ = true;
     p->skip_ws_ = true;
@@ -207,6 +212,30 @@ static const char* parse_instruction(parser* p) {
     return pr_msg(p, "found nothing");
 }
 
+union _value {
+    int i;
+    uint8_t b[4];
+} v;
+
+
+static const char* post_process(parser* p) {
+    bool ok;
+    for (const label_node* ln = ls_pop(&p->ls_); ln != NULL; ln = ls_pop(&p->ls_)) {
+        ok = false;
+        v.i = ht_get(&p->labels_, ln->label_, &ok);
+        if (!ok) {
+            p->lex_.lcount_ = ln->line_;
+            return pr_msg(p, "label does not exist.");
+        }
+
+        p->pos_ = ln->bpos_;
+        for (uint8_t i = 0; i < 3; i++) {
+            pr_wbyte(p, v.b[i]);
+        }
+    }
+    return NULL;
+}
+
 const char* pr_parse(parser* p) {
     // top level parser. On every iteration we are at the beginning of a new line.
     p->pos_ = 0;
@@ -229,6 +258,7 @@ const char* pr_parse(parser* p) {
             break;
         }
     }
-    return err;
+
+    return post_process(p);
 }
 

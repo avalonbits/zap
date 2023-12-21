@@ -24,6 +24,7 @@ bool ls_push(label_stack* ls, const char* label, int sz, int bpos, int line) {
 
     label_node* n = &ls->nodes_[ls->pos_];
     strncpy(n->label_, label, sz);
+    n->label_[sz] = 0;
     n->bpos_ = bpos;
     n->line_ = line;
     ls->pos_++;
@@ -31,10 +32,12 @@ bool ls_push(label_stack* ls, const char* label, int sz, int bpos, int line) {
     return true;
 }
 
-char* ls_pop(label_stack* ls) {
-    if (ls->pos_ == 0) {
+const label_node* ls_pop(label_stack* ls) {
+    if (ls->pos_ <= 0) {
         return NULL;
     }
-    return ls->nodes_[--ls->pos_].label_;
+    ls->pos_--;
+    const label_node* n = &ls->nodes_[ls->pos_];
+    return n;
 }
 

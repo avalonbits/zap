@@ -27,7 +27,7 @@ const char* parse_jp(parser* p) {
                     pr_wbyte(p, value.b[i]);
                 }
             } else {
-                pr_stack_label(&p, tk.txt_, tk.sz_);
+                pr_stack_label(p, tk.txt_, tk.sz_);
                 return NULL;
             }
         }

@@ -153,6 +153,12 @@ bool pr_wbyte(parser* p, uint8_t b) {
     return true;
 }
 
+void pr_stack_label(parser* p, char* label, int sz) {
+    ls_push(&p->ls_, label, sz, p->pos_, p->lex_.lcount_);
+    p->pos_ += 3;
+}
+
+
 static const char* parse_org(parser* p) {
     token tk = next(p);
     if (tk.tk_ != NUMBER && tk.tk_ != HEX_NUMBER) {

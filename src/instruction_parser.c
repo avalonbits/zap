@@ -7,6 +7,7 @@ extern int tk2i(token tk);
 extern const char* pr_msg(parser* p, const char* msg);
 extern token next(parser* p);
 extern bool pr_wbyte(parser* p, uint8_t b);
+extern void pr_stack_label(parser* p, char* label, int sz);
 
 union _value {
     int i;
@@ -26,7 +27,8 @@ const char* parse_jp(parser* p) {
                     pr_wbyte(p, value.b[i]);
                 }
             } else {
-                return pr_msg(p, "Found name.");
+                pr_stack_label(&p, tk.txt_, tk.sz_);
+                return NULL;
             }
         }
         case HEX_NUMBER:

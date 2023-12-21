@@ -21,6 +21,14 @@ int main(int argc, char** argv) {
         mos_puts(errmsg, 0, 0);
     }
 
+
+    for (int i = 0; i < p.pos_; i++) {
+        if (i % 16 == 0) {
+            printf("\r\n");
+        }
+        printf("%02X ", p.buf_[i]);
+    }
+    printf("\r\n");
     parser_destroy(&p);
 
     return 0;

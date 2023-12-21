@@ -298,6 +298,5 @@ token lex_next(lexer* lex) {
             tk.tk_ = val;
         }
     }
-
     return tk;
 }

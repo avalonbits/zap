@@ -10,6 +10,7 @@ void print_token(token tk) {
             mos_puts("WS", 0, 0);
             break;
         case NUMBER:
+        case HEX_NUMBER:
             mos_puts("NUMBER(", 0, 0);
             mos_puts(tk.txt_, tk.sz_, 0);
             putch(')');

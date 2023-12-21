@@ -1,6 +1,7 @@
 #include "parser.h"
 
 #include <mos_api.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "conv.h"
@@ -31,6 +32,12 @@ parser* parser_init(parser* p, const char* fname) {
         return NULL;
     }
 
+    p->buf_ = (uint8_t*) malloc((128 << 10) * sizeof(uint8_t));
+    if (p->buf_ == NULL) {
+        lex_destroy(&p->lex_);
+        return NULL;
+    }
+
     p->org_ = 0x400000;
     p->adl_ = true;
     p->skip_ws_ = true;
@@ -39,6 +46,7 @@ parser* parser_init(parser* p, const char* fname) {
 }
 
 void parser_destroy(parser* p) {
+    free(p->buf_);
     lex_destroy(&p->lex_);
 }
 
@@ -97,7 +105,7 @@ static const char* parse_adl(parser* p) {
     return NULL;
 }
 
-static int atoi(uint8_t* str, uint8_t sz) {
+static int natoi(uint8_t* str, uint8_t sz) {
     int v = 0;
     int mul = 1;
     for (uint8_t i = 1; i <= sz; i++) {
@@ -107,7 +115,7 @@ static int atoi(uint8_t* str, uint8_t sz) {
     return v;
 }
 
-static int atoh(uint8_t* str, uint8_t sz) {
+static int natoh(uint8_t* str, uint8_t sz) {
     int v = 0;
     int mul = 1;
     for (uint8_t i = 1; i <= sz; i++) {
@@ -128,9 +136,9 @@ static int atoh(uint8_t* str, uint8_t sz) {
 
 int tk2i(token tk) {
     if (tk.tk_ == NUMBER) {
-        return atoi(tk.txt_, tk.sz_);
+        return natoi(tk.txt_, tk.sz_);
     } else if (tk.tk_ == HEX_NUMBER) {
-        return atoh(tk.txt_, tk.sz_);
+        return natoh(tk.txt_, tk.sz_);
     }
 
     return -1;

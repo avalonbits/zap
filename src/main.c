@@ -12,11 +12,11 @@ int main(int argc, char** argv) {
     }
 
     parser p;
-    if (parser_init(&p, argv[1]) == NULL) {
+    if (pr_init(&p, argv[1]) == NULL) {
         return -1;
     }
 
-    const char* errmsg = parser_parse(&p);
+    const char* errmsg = pr_parse(&p);
     if (errmsg != NULL && strlen(errmsg) > 0) {
         mos_puts(errmsg, 0, 0);
     }
@@ -29,7 +29,7 @@ int main(int argc, char** argv) {
         printf("%02X ", p.buf_[i]);
     }
     printf("\r\n");
-    parser_destroy(&p);
+    pr_destroy(&p);
 
     return 0;
 }

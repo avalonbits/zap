@@ -3,8 +3,9 @@
 #include "parser.h"
 
 extern int tk2i(token tk);
-extern const char* parser_msg(parser* p, const char* msg);
+extern const char* pr_msg(parser* p, const char* msg);
 extern token next(parser* p);
+extern bool pr_wbyte(parser* p, uint8_t b);
 
 union _value {
     int i;
@@ -12,19 +13,25 @@ union _value {
 } value;
 
 const char* parse_jp(parser* p) {
-    char isa = 0xC3;
     token tk = next(p);
     switch (tk.tk_) {
+        case NAME:
+            return pr_msg(p, "Found name.");
         case HEX_NUMBER:
         case NUMBER:
-            p->buf_[p->pos_++] = isa;
-            value.i = tk2i(tk) + p->org_;
-            for (uint8_t i = 0; i < 3; i++) {
-                p->buf_[p->pos_++] = value.b[i];
+            value.i = tk2i(tk);
+            if (value.i >= -128 && value.i <= 127) {
+                pr_wbyte(p, 0x18);
+                pr_wbyte(p, value.b[0]);
+            } else {
+                pr_wbyte(p,  0xC3);
+                for (uint8_t i = 0; i < 3; i++) {
+                    pr_wbyte(p, value.b[i]);
+                }
             }
             break;
         default:
-            return parser_msg(p, "expeted an address or a label.");
+            return pr_msg(p, "expeted an address or a label.");
     }
     return NULL;
 }

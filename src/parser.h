@@ -23,9 +23,9 @@ typedef struct _parser {
     hash_table labels_;
 } parser;
 
-parser* parser_init(parser* p, const char* fname);
-void parser_destroy(parser* p);
+parser* pr_init(parser* p, const char* fname);
+void pr_destroy(parser* p);
 
-const char* parser_parse(parser* p);
+const char* pr_parse(parser* p);
 
 #endif  // _PARSER_H_

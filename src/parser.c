@@ -23,7 +23,7 @@ static char* upper(char* str, int sz) {
 
 static char errmsg[256] = "";
 
-parser* parser_init(parser* p, const char* fname) {
+parser* pr_init(parser* p, const char* fname) {
     if (lex_init(&p->lex_, fname) == NULL) {
         return NULL;
     }
@@ -32,7 +32,8 @@ parser* parser_init(parser* p, const char* fname) {
         return NULL;
     }
 
-    p->buf_ = (uint8_t*) malloc((128 << 10) * sizeof(uint8_t));
+    p->sz_ = 128 << 10;
+    p->buf_ = (uint8_t*) malloc(p->sz_ * sizeof(uint8_t));
     if (p->buf_ == NULL) {
         lex_destroy(&p->lex_);
         return NULL;
@@ -45,7 +46,7 @@ parser* parser_init(parser* p, const char* fname) {
     return p;
 }
 
-void parser_destroy(parser* p) {
+void pr_destroy(parser* p) {
     free(p->buf_);
     lex_destroy(&p->lex_);
 }
@@ -78,7 +79,7 @@ token next(parser* p) {
     }
 }
 
-const char* parser_msg(parser* p, const char* msg) {
+const char* pr_msg(parser* p, const char* msg) {
     strcpy(errmsg, "\r\nLine ");
     i2s(p->lex_.lcount_, &errmsg[7], sizeof(errmsg) - 5);
     strcat(errmsg, ": ");
@@ -89,16 +90,16 @@ const char* parser_msg(parser* p, const char* msg) {
 static const char* parse_adl(parser* p) {
     token tk = next(p);
     if (tk.tk_ != DIRECTIVE || !TK_EQ("ADL", tk)) {
-        return parser_msg(p, "expected ADL");
+        return pr_msg(p, "expected ADL");
     }
 
     if (next(p).tk_ != EQUALS) {
-        return parser_msg(p, "expected =");
+        return pr_msg(p, "expected =");
     }
 
     tk = next(p);
     if (tk.tk_ != NUMBER || (!TK_EQ("1", tk) && !TK_EQ("0", tk))) {
-        return parser_msg(p, "ADL is 0 or 1");
+        return pr_msg(p, "ADL is 0 or 1");
     }
     p->adl_ = tk.txt_[0] == '1';
 
@@ -144,10 +145,18 @@ int tk2i(token tk) {
     return -1;
 }
 
+bool pr_wbyte(parser* p, uint8_t b) {
+    if (p->pos_ == p->sz_) {
+        return false;
+    }
+    p->buf_[p->pos_++] = b;
+    return true;
+}
+
 static const char* parse_org(parser* p) {
     token tk = next(p);
     if (tk.tk_ != NUMBER && tk.tk_ != HEX_NUMBER) {
-        return parser_msg(p, "expected number.");
+        return pr_msg(p, "expected number.");
     }
     p->org_ = tk2i(tk);
     return NULL;
@@ -156,12 +165,12 @@ static const char* parse_org(parser* p) {
 static const char* parse_align(parser* p) {
     token tk = next(p);
     if (tk.tk_ != NUMBER && tk.tk_ != HEX_NUMBER) {
-        return parser_msg(p, "expected number.");
+        return pr_msg(p, "expected number.");
     }
 
     int align = tk2i(tk);
     while (p->pos_ < align) {
-        p->buf_[p->pos_++] = 0;
+        pr_wbyte(p, 0);
     }
     return NULL;
 }
@@ -180,7 +189,7 @@ static const char* parse_directive(parser* p) {
 static const char* parse_start_dot(parser* p) {
     p->tk_ = next(p);
     if (p->tk_.tk_ != DIRECTIVE) {
-        return parser_msg(p, "expected a directive after the dot");
+        return pr_msg(p, "expected a directive after the dot");
     }
     return parse_directive(p);
 }
@@ -189,10 +198,10 @@ static const char* parse_instruction(parser* p) {
     if (TK_EQ("JP", p->tk_)) {
         return parse_jp(p);
     }
-    return parser_msg(p, "found nothing");
+    return pr_msg(p, "found nothing");
 }
 
-const char* parser_parse(parser* p) {
+const char* pr_parse(parser* p) {
     // top level parser. On every iteration we are at the beginning of a new line.
     p->pos_ = 0;
     const char* err = NULL;

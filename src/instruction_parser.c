@@ -1,5 +1,6 @@
 #include "instruction_parser.h"
 
+#include "hash_table.h"
 #include "parser.h"
 
 extern int tk2i(token tk);
@@ -15,8 +16,19 @@ union _value {
 const char* parse_jp(parser* p) {
     token tk = next(p);
     switch (tk.tk_) {
-        case NAME:
-            return pr_msg(p, "Found name.");
+        case NAME: {
+            pr_wbyte(p, 0xC3);
+            bool ok = false;
+            int addr = ht_nget(&p->labels_, tk.txt_, tk.sz_, &ok);
+            if (ok) {
+                value.i = addr;
+                for (uint8_t i = 0; i < 3; i++) {
+                    pr_wbyte(p, value.b[i]);
+                }
+            } else {
+                return pr_msg(p, "Found name.");
+            }
+        }
         case HEX_NUMBER:
         case NUMBER:
             value.i = tk2i(tk);

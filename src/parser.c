@@ -251,11 +251,19 @@ const char* pr_parse(parser* p) {
                 break;
             case INSTRUCTION:
                 err = parse_instruction(p);
+            case NEW_LINE:
+                continue;
             default:
                 break;
         }
         if (err != NULL) {
-            break;
+            return err;
+        }
+
+        // If we processed correctly, we are at the end of the line.
+        p->tk_ = next(p);
+        if (p->tk_.tk_ != NEW_LINE) {
+            return pr_msg(p, "expected a new line.");
         }
     }
 

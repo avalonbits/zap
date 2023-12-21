@@ -2,6 +2,7 @@
 #include <string.h>
 #include <mos_api.h>
 
+#include "conv.h"
 #include "lexer.h"
 #include "parser.h"
 
@@ -21,10 +22,9 @@ int main(int argc, char** argv) {
         mos_puts(errmsg, 0, 0);
     }
 
-
     for (int i = 0; i < p.pos_; i++) {
         if (i % 16 == 0) {
-            printf("\r\n");
+            mos_puts("\r\n", 0 ,0);
         }
         printf("%02X ", p.buf_[i]);
     }

@@ -1,6 +1,5 @@
 #include "hash_table.h"
 
-#include <agon/vdp_vdu.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,21 +62,6 @@ hash_table* ht_init(hash_table* ht, int entries) {
     }
 
     return ht;
-}
-
-void ht_print(hash_table* ht) {
-    for(uint24_t i = 0; i < ht->sz_; i++) {
-        bool has = false;
-        for (hash_node* n = &ht->node_[i]; n != NULL; n = n->next_) {
-            if (strlen(n->key_) == 0) {
-                continue;
-            }
-            has = true;
-            putch('|');
-            mos_puts(n->key_, 0, 0);
-        }
-        if (has)   mos_puts("\r\n", 0, 0);
-    }
 }
 
 void ht_clear(hash_table* ht) {

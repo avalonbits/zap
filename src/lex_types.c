@@ -5,6 +5,7 @@
 void print_token(token tk) {
     switch (tk.tk_) {
         case NEW_LINE:
+            mos_puts("NL", 0, 0);
             break;
         case WHITE_SPACE:
             mos_puts("WS", 0, 0);

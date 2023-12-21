@@ -22,6 +22,7 @@
 #include <stdint.h>
 
 uint8_t* i2s(int num, uint8_t* buf, int sz);
+uint8_t* h2s(int num, uint8_t* buf, int sz);
 
 
 #endif  // _CONV_H_

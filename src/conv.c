@@ -32,7 +32,13 @@ static void reverse(uint8_t* buf, int sz) {
     }
 }
 
-uint8_t* i2s(int num, uint8_t* buf, int sz) {
+const char table[16] = {
+    '0', '1', '2', '3', '4', '5', '6', '7',
+    '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'
+};
+
+
+static uint8_t* n2s(int num, uint8_t* buf, int sz, const int base) {
     const bool is_neg = num < 0;
     if (is_neg) {
         num = -num;
@@ -46,9 +52,9 @@ uint8_t* i2s(int num, uint8_t* buf, int sz) {
 
     int i = 0;
     while (num != 0 && i < sz) {
-        int rem = num % 10;
-        buf[i++] = rem + '0';
-        num = num / 10;
+        int rem = num % base;
+        buf[i++] = table[rem];
+        num = num / base;
     }
 
     if (num != 0) {
@@ -66,4 +72,13 @@ uint8_t* i2s(int num, uint8_t* buf, int sz) {
     reverse(buf, i);
     buf[i] = 0;
     return buf;
+
+}
+
+uint8_t* i2s(int num, uint8_t* buf, int sz) {
+    return n2s(num, buf, sz, 10);
+}
+
+uint8_t* h2s(int num, uint8_t* buf, int sz) {
+    return n2s(num, buf, sz, 16);
 }

@@ -206,6 +206,7 @@ token lex_next(lexer* lex) {
             break;
         case '-':
             tk.tk_ = MINUS;
+            done = false;
             break;
         case '\n':
             lex->lcount_++;
@@ -250,7 +251,17 @@ token lex_next(lexer* lex) {
     }
 
 
-    if (tk.tk_ == DOLLAR) {
+    if (tk.tk_ == MINUS) {
+        ch = br_peek(&lex->rd_);
+        if (is_digit(ch)) {
+            tk.tk_ = NUMBER;
+            while (is_digit(ch)) {
+                tk.txt_[tk.sz_++] = ch;
+                br_next(&lex->rd_);
+                ch = br_peek(&lex->rd_);
+            }
+        }
+    } else if (tk.tk_ == DOLLAR) {
         ch = br_peek(&lex->rd_);
         if (is_digit(ch)) {
             tk.tk_ = HEX_NUMBER;

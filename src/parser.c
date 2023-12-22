@@ -58,7 +58,8 @@ void pr_destroy(parser* p) {
 
 token next(parser* p) {
     while (true) {
-        token tk = lex_next(&p->lex_);
+        p->tk_ = lex_next(&p->lex_);
+        token tk = p->tk_;
         switch (tk.tk_) {
             case NONE:
                 return tk;
@@ -185,6 +186,52 @@ static const char* parse_align(parser* p) {
     }
     return NULL;
 }
+
+static const char* parse_db(parser* p) {
+    int mul = 1;
+    for (token tk = next(p); tk.tk_ != NONE; tk = next(p)) {
+        switch (tk.tk_) {
+            case NUMBER:
+            case HEX_NUMBER: {
+                int v = tk2i(tk);
+                if (v < -128 || v > 255)  {
+                    return pr_msg(p, "expected a byte value.");
+                }
+                pr_wbyte(p, ((uint8_t) v) & 0xFF);
+                break;
+            }
+            case D_QUOTE:
+                p->skip_ws_ = false;
+                while (true) {
+                    tk = next(p);
+                    if (tk.tk_ == D_QUOTE) {
+                        break;
+                    }
+                    if (tk.tk_ == NEW_LINE) {
+                        return pr_msg(p, "missing ending quote.");
+                    }
+                    for (int i = 0; i < tk.sz_; i++) {
+                        pr_wbyte(p, tk.txt_[i]);
+                    }
+                }
+                p->skip_ws_ = true;
+                break;
+            default:
+                return pr_msg(p, "expected string or numbers");
+        }
+
+        // We either now have a comma because there is more info to process or a new line.
+        tk = next(p);
+        if (tk.tk_ == NEW_LINE) {
+           return NULL;
+        }
+        if (tk.tk_ != COMMA) {
+            return pr_msg(p, "expected a comma");
+        }
+    }
+    return NULL;
+}
+
 static const char* parse_directive(parser* p) {
     if (TK_EQ("ASSUME", p->tk_)) {
         return parse_adl(p);
@@ -192,6 +239,8 @@ static const char* parse_directive(parser* p) {
         return parse_org(p);
     } else if (TK_EQ("ALIGN", p->tk_)) {
         return parse_align(p);
+    } else if (TK_EQ("DB", p->tk_)) {
+        return parse_db(p);
     }
 
     return NULL;
@@ -212,7 +261,7 @@ static const char* parse_instruction(parser* p) {
     return pr_msg(p, "found nothing");
 }
 
-union _value {
+union _v {
     int i;
     uint8_t b[4];
 } v;
@@ -261,6 +310,10 @@ const char* pr_parse(parser* p) {
         }
 
         // If we processed correctly, we are at the end of the line.
+        if (p->tk_.tk_ == NEW_LINE) {
+            continue;
+        }
+
         p->tk_ = next(p);
         if (p->tk_.tk_ != NEW_LINE) {
             return pr_msg(p, "expected a new line.");

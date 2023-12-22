@@ -164,7 +164,6 @@ void pr_stack_label(parser* p, char* label, int sz) {
     p->pos_ += 3;
 }
 
-
 static const char* parse_org(parser* p) {
     token tk = next(p);
     if (tk.tk_ != NUMBER && tk.tk_ != HEX_NUMBER) {
@@ -242,6 +241,10 @@ static const char* parse_directive(parser* p) {
     } else if (TK_EQ("DB", p->tk_)) {
         return parse_db(p);
     }
+    while (p->tk_.tk_ != NEW_LINE) {
+        next(p);
+    }
+
 
     return NULL;
 }
@@ -257,8 +260,22 @@ static const char* parse_start_dot(parser* p) {
 static const char* parse_instruction(parser* p) {
     if (TK_EQ("JP", p->tk_)) {
         return parse_jp(p);
+    } else if (TK_EQ("LD", p->tk_)) {
+        return parse_ld(p);
     }
-    return pr_msg(p, "found nothing");
+    while (p->tk_.tk_ != NEW_LINE) {
+        next(p);
+    }
+    return NULL;
+}
+
+static const char* parse_label(parser* p) {
+    ht_nset(&p->labels_, p->tk_.txt_, p->tk_.sz_, p->pos_+p->org_);
+    token tk = next(p);
+    if (tk.tk_ != COLON) {
+        return pr_msg(p, "expected a colon");
+    }
+    return NULL;
 }
 
 union _v {
@@ -268,6 +285,7 @@ union _v {
 
 
 static const char* post_process(parser* p) {
+    const int pos = p->pos_;
     bool ok;
     for (const label_node* ln = ls_pop(&p->ls_); ln != NULL; ln = ls_pop(&p->ls_)) {
         ok = false;
@@ -282,6 +300,7 @@ static const char* post_process(parser* p) {
             pr_wbyte(p, v.b[i]);
         }
     }
+    p->pos_ = pos;
     return NULL;
 }
 
@@ -300,6 +319,10 @@ const char* pr_parse(parser* p) {
                 break;
             case INSTRUCTION:
                 err = parse_instruction(p);
+                break;
+            case NAME:
+                err = parse_label(p);
+                break;
             case NEW_LINE:
                 continue;
             default:
@@ -309,8 +332,8 @@ const char* pr_parse(parser* p) {
             return err;
         }
 
-        // If we processed correctly, we are at the end of the line.
-        if (p->tk_.tk_ == NEW_LINE) {
+        // If we processed correctly, we are either at the end of the line or at a label colon
+        if (p->tk_.tk_ == NEW_LINE || p->tk_.tk_ == COLON) {
             continue;
         }
 

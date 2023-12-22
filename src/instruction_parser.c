@@ -49,3 +49,9 @@ const char* parse_jp(parser* p) {
     }
     return NULL;
 }
+
+const char* parse_ld(struct _parser* p) {
+    token tk = next(p);
+    return NULL;
+}
+

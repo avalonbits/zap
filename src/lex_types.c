@@ -2,6 +2,19 @@
 
 #include <agon/vdp_vdu.h>
 
+int pack_tktt(TOKEN tk, TK_TYPE tt) {
+    // TK_TYPE is already shifted 12 bits, so this works as expected.
+    return ((int)tt) | ((int)tk);
+}
+
+TOKEN unpack_tk(int v) {
+    return (TOKEN) (v & 0xFFF);
+}
+
+TK_TYPE unpack_tt(int v) {
+    return (TK_TYPE) ((v >> 12) & 0xFFF);
+}
+
 void print_token(token tk) {
     switch (tk.tk_) {
         case NEW_LINE:
@@ -70,18 +83,7 @@ void print_token(token tk) {
             mos_puts(tk.txt_, tk.sz_, 0);
             putch(')');
             break;
-        case REG_A:
-        case REG_B:
-        case REG_C:
-        case REG_D:
-        case REG_E:
-        case REG_F:
-        case REG_H:
-        case REG_L:
-        case REG_AF:
-        case REG_BC:
-        case REG_DE:
-        case REG_HL:
+        case REGISTER:
             mos_puts("REGISTER(", 0, 0);
             mos_puts(tk.txt_, tk.sz_, 0);
             putch(')');

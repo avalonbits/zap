@@ -164,9 +164,7 @@ const char* parse_ret(parser* p) {
     return NULL;
 }
 
-const char* parse_ascii(struct _parser* p) {
-    CONSUME(p, D_QUOTE, "expected quote");
-
+const char* parse_quoted(parser* p) {
     p->skip_ws_ = false;
     next(p);
     while (p->tk_.tk_ != D_QUOTE && p->tk_.tk_ != NEW_LINE) {
@@ -215,6 +213,11 @@ const char* parse_ascii(struct _parser* p) {
         return pr_msg(p, "expected quote");
     }
     return NULL;
+
+}
+const char* parse_ascii(parser* p) {
+    CONSUME(p, D_QUOTE, "expected quote");
+    return parse_quoted(p);
 }
 
 const char* parse_asciz(struct _parser* p) {

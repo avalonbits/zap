@@ -188,6 +188,7 @@ static const char* parse_align(parser* p) {
 
 static const char* parse_db(parser* p) {
     int mul = 1;
+    const char* err = NULL;
     for (token tk = next(p); tk.tk_ != NONE; tk = next(p)) {
         switch (tk.tk_) {
             case NUMBER:
@@ -200,20 +201,10 @@ static const char* parse_db(parser* p) {
                 break;
             }
             case D_QUOTE:
-                p->skip_ws_ = false;
-                while (true) {
-                    tk = next(p);
-                    if (tk.tk_ == D_QUOTE) {
-                        break;
-                    }
-                    if (tk.tk_ == NEW_LINE) {
-                        return pr_msg(p, "missing ending quote.");
-                    }
-                    for (int i = 0; i < tk.sz_; i++) {
-                        pr_wbyte(p, tk.txt_[i]);
-                    }
+                err = parse_quoted(p);
+                if (err != NULL) {
+                    return err;
                 }
-                p->skip_ws_ = true;
                 break;
             default:
                 return pr_msg(p, "expected string or numbers");

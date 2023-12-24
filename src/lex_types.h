@@ -18,6 +18,8 @@ typedef enum _TOKEN {
     SEMI_COLON,
     HASH,
     DOLLAR,
+    B_SLASH,
+    F_SLASH,
     NAME,
     NUMBER,
     HEX_NUMBER,

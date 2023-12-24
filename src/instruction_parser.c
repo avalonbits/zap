@@ -1,5 +1,7 @@
 #include "instruction_parser.h"
 
+#include <mos_api.h>
+
 #include "hash_table.h"
 #include "parser.h"
 
@@ -122,23 +124,94 @@ const char* parse_ld(parser* p) {
 }
 
 const char* parse_ret(parser* p) {
-    pr_wbyte(p, 0xC9);
+    next(p);
+    if (p->tk_.tk_ == NEW_LINE) {
+        pr_wbyte(p, 0xC9);
+        return NULL;
+    }
+
+    if (p->tk_.tk_ != FLAG) {
+        return pr_msg(p, "expected flag");
+    }
+
+    uint8_t isa = 0xC0;  // assum F_NZ
+    switch (p->tk_.tt_) {
+        case F_Z:
+            isa = 0xC8;
+            break;
+        case F_NC:
+            isa = 0xD0;
+            break;
+        case F_C:
+            isa = 0xD8;
+            break;
+        case F_PO:
+            isa = 0xE0;
+            break;
+        case F_PE:
+            isa = 0xE8;
+            break;
+        case F_P:
+            isa = 0xF0;
+            break;
+        case F_M:
+            isa = 0xF8;
+            break;
+        default:
+            break;
+    }
+    pr_wbyte(p, isa);
     return NULL;
 }
 
 const char* parse_ascii(struct _parser* p) {
     CONSUME(p, D_QUOTE, "expected quote");
-    p->skip_ws_ = false;
 
+    p->skip_ws_ = false;
     next(p);
     while (p->tk_.tk_ != D_QUOTE && p->tk_.tk_ != NEW_LINE) {
-        for (int i = 0; i < p->tk_.sz_; i++) {
-            pr_wbyte(p, p->tk_.txt_[i]);
+        if (p->tk_.tk_ != B_SLASH) {
+            for (int i = 0; i < p->tk_.sz_; i++) {
+                pr_wbyte(p, p->tk_.txt_[i]);
+            }
+            next(p);
+            continue;
         }
+
+        next(p);
+        if (p->tk_.tk_ != NAME) {
+            return pr_msg(p, "missing escape");
+        }
+
+        char ch = p->tk_.txt_[0];
+        switch (ch) {
+            case 't':
+                ch = 0x09;
+                break;
+            case 'n':
+                ch = 0x0A;
+                break;
+            case 'r':
+                ch = 0x0D;
+                break;
+            case '"':
+                ch = 0x22;
+                break;
+            case '\'':
+                ch = 0x27;
+                break;
+            case '\\':
+                ch = 0x5C;
+                break;
+            default:
+                return pr_msg(p, "wrong escape");
+        }
+        pr_wbyte(p, ch);
         next(p);
     }
+    p->skip_ws_ = true;
 
-    if (p->tk_.tk_ != D_QUOTE) {
+    if (p->tk_.tk_ == NEW_LINE) {
         return pr_msg(p, "expected quote");
     }
     return NULL;

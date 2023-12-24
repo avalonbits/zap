@@ -231,6 +231,12 @@ token lex_next(lexer* lex) {
         case '\"':
             tk.tk_ = D_QUOTE;
             break;
+        case '\\':
+            tk.tk_ = B_SLASH;
+            break;
+        case '/':
+            tk.tk_ = F_SLASH;
+            break;
         case '(':
             tk.tk_ = L_PAREN;
             break;

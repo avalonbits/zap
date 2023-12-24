@@ -67,6 +67,12 @@ void print_token(token tk) {
         case DOLLAR:
             putch('$');
             break;
+        case B_SLASH:
+            putch('\\');
+            break;
+        case F_SLASH:
+            putch('/');
+            break;
         case NAME:
             mos_puts("N(", 0, 0);
             mos_puts(tk.txt_, tk.sz_, 0);

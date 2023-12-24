@@ -1,6 +1,7 @@
 #include "parser.h"
 
 #include <mos_api.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -9,7 +10,6 @@
 #include "lexer.h"
 
 #define PUTS(msg) mos_puts(msg, 0, 0)
-#define TK_EQ(msg1, tk) (strncmp(msg1, upper(tk.txt_, tk.sz_), tk.sz_) == 0)
 
 static char* upper(char* str, int sz) {
     for (int i = 0; i < sz; i++) {
@@ -94,8 +94,8 @@ const char* pr_msg(parser* p, const char* msg) {
 }
 
 static const char* parse_adl(parser* p) {
-    token tk = next(p);
-    if (tk.tk_ != DIRECTIVE || !TK_EQ("ADL", tk)) {
+    next(p);
+    if (p->tk_.tt_ != D_ADL) {
         return pr_msg(p, "expected ADL");
     }
 
@@ -103,11 +103,11 @@ static const char* parse_adl(parser* p) {
         return pr_msg(p, "expected =");
     }
 
-    tk = next(p);
-    if (tk.tk_ != NUMBER || (!TK_EQ("1", tk) && !TK_EQ("0", tk))) {
+    next(p);
+    if (p->tk_.tk_ != NUMBER || (p->tk_.txt_[0] != '1' && p->tk_.txt_[0] != '0')) {
         return pr_msg(p, "ADL is 0 or 1");
     }
-    p->adl_ = tk.txt_[0] == '1';
+    p->adl_ = p->tk_.txt_[0] == '1';
 
     return NULL;
 }
@@ -232,25 +232,32 @@ static const char* parse_db(parser* p) {
 }
 
 static const char* parse_directive(parser* p) {
-    if (TK_EQ("ASSUME", p->tk_)) {
-        return parse_adl(p);
-    } else if (TK_EQ("ORG", p->tk_)) {
-        return parse_org(p);
-    } else if (TK_EQ("ALIGN", p->tk_)) {
-        return parse_align(p);
-    } else if (TK_EQ("DB", p->tk_)) {
-        return parse_db(p);
+    switch (p->tk_.tt_) {
+        case D_ASSUME:
+            return parse_adl(p);
+        case D_ORG:
+            return parse_org(p);
+        case D_ALIGN:
+            return parse_align(p);
+        case D_DB:
+        case D_DEFB:
+        case D_BYTE:
+            return parse_db(p);
+        case D_ASCII:
+            return parse_ascii(p);
+        case D_ASCIZ:
+            return parse_asciz(p);
+        default:
+            while (p->tk_.tk_ != NEW_LINE) {
+                next(p);
+            }
     }
-    while (p->tk_.tk_ != NEW_LINE) {
-        next(p);
-    }
-
 
     return NULL;
 }
 
 static const char* parse_start_dot(parser* p) {
-    p->tk_ = next(p);
+    next(p);
     if (p->tk_.tk_ != DIRECTIVE) {
         return pr_msg(p, "expected a directive after the dot");
     }
@@ -258,13 +265,17 @@ static const char* parse_start_dot(parser* p) {
 }
 
 static const char* parse_instruction(parser* p) {
-    if (TK_EQ("JP", p->tk_)) {
-        return parse_jp(p);
-    } else if (TK_EQ("LD", p->tk_)) {
-        return parse_ld(p);
-    }
-    while (p->tk_.tk_ != NEW_LINE) {
-        next(p);
+    switch (p->tk_.tt_) {
+        case ISA_JP:
+            return parse_jp(p);
+        case ISA_LD:
+            return parse_ld(p);
+        case ISA_RET:
+            return parse_ret(p);
+        default:
+            while (p->tk_.tk_ != NEW_LINE) {
+                next(p);
+            }
     }
     return NULL;
 }

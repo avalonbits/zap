@@ -24,10 +24,11 @@ typedef enum _TOKEN {
     DIRECTIVE,
     INSTRUCTION,
     REGISTER,
+    FLAG,
 } TOKEN;
 
 typedef enum _TK_TYPE {
-    D_ADL = 0x1000,
+    D_ADL = 0,
     D_ALIGN,
     D_ASSUME,
     D_BLKB,
@@ -68,6 +69,16 @@ typedef enum _TK_TYPE {
     REG_HL,
     REG_IX,
     REG_IY,
+    REG_SP,
+
+    F_NZ,
+    F_Z,
+    F_NC,
+    F_C,
+    F_PO,
+    F_PE,
+    F_P,
+    F_M,
 
     ISA_ADC,
     ISA_ADD,
@@ -177,6 +188,7 @@ typedef struct _token {
     char* txt_;
     int sz_;
     TOKEN tk_;
+    TK_TYPE tt_;
 } token;
 
 int pack_tktt(TOKEN tk, TK_TYPE tt);

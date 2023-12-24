@@ -3,12 +3,11 @@
 #include <agon/vdp_vdu.h>
 
 int pack_tktt(TOKEN tk, TK_TYPE tt) {
-    // TK_TYPE is already shifted 12 bits, so this works as expected.
-    return ((int)tt) | ((int)tk);
+    return (((int)tt) << 12) | ((int)tk);
 }
 
 TOKEN unpack_tk(int v) {
-    return (TOKEN) (v & 0xFFF);
+    return (TOKEN) (v  & 0xFFF);
 }
 
 TK_TYPE unpack_tt(int v) {
@@ -16,7 +15,7 @@ TK_TYPE unpack_tt(int v) {
 }
 
 void print_token(token tk) {
-    switch (tk.tk_) {
+    switch (unpack_tk(tk.tk_)) {
         case NEW_LINE:
             mos_puts("NL", 0, 0);
             break;
@@ -89,7 +88,9 @@ void print_token(token tk) {
             putch(')');
             break;
         default:
-            mos_puts("SOMETHING", 0, 0);
+            mos_puts("UN(", 0, 0);
+            mos_puts(tk.txt_, tk.sz_, 0);
+            putch(')');
             break;
     }
 }

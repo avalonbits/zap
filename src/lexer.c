@@ -50,6 +50,15 @@ static void init_ht() {
     ht_set(ht, "HL", pack_tktt(REGISTER, REG_HL));
     ht_set(ht, "IX", pack_tktt(REGISTER, REG_IX));
     ht_set(ht, "IY", pack_tktt(REGISTER, REG_IY));
+    ht_set(ht, "SP", pack_tktt(REGISTER, REG_SP));
+    ht_set(ht, "NZ", pack_tktt(FLAG, F_NZ));
+    ht_set(ht, "Z", pack_tktt(FLAG, F_Z));
+    ht_set(ht, "NC", pack_tktt(FLAG, F_NC));
+    ht_set(ht, "C", pack_tktt(FLAG, F_C));
+    ht_set(ht, "PO", pack_tktt(FLAG, F_PO));
+    ht_set(ht, "PE", pack_tktt(FLAG, F_PE));
+    ht_set(ht, "P", pack_tktt(FLAG, F_P));
+    ht_set(ht, "M", pack_tktt(FLAG, F_M));
 
     ht = &instructions;
     ht_init(ht, 255);
@@ -306,11 +315,13 @@ token lex_next(lexer* lex) {
         }
 
         int val = ht_nget(&reserved, tk.txt_, tk.sz_, NULL);
-        if (val == NONE) {
+        if (unpack_tk(val) == NONE) {
             val = ht_nget(&instructions, tk.txt_, tk.sz_, NULL);
         }
-        if (val != NONE) {
-            tk.tk_ = val;
+
+        if (unpack_tk(val) != NONE) {
+            tk.tk_ = unpack_tk(val);
+            tk.tt_ = unpack_tt(val);
         }
     }
     return tk;

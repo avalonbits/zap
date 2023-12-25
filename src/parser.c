@@ -172,6 +172,11 @@ void pr_stack_label(parser* p, char* label, int sz) {
     p->pos_ += 3;
 }
 
+void pr_stack_relative_label(parser* p, char* label, int sz) {
+    ls_push(&p->ls_, label, sz, p->pos_, p->lex_.lcount_);
+    p->pos_ += 1;
+}
+
 static const char* parse_org(parser* p) {
     token tk = next(p);
     if (tk.tk_ != NUMBER && tk.tk_ != HEX_NUMBER) {
@@ -263,7 +268,6 @@ static const char* parse_asciz(struct _parser* p) {
 
 
 static const char* parse_db(parser* p) {
-    int mul = 1;
     const char* err = NULL;
     for (token tk = next(p); tk.tk_ != NONE; tk = next(p)) {
         switch (tk.tk_) {
@@ -339,6 +343,8 @@ static const char* parse_instruction(parser* p) {
             return parse_inc(p);
         case ISA_JP:
             return parse_jp(p);
+        case ISA_JR:
+            return parse_jr(p);
         case ISA_LD:
             return parse_ld(p);
         case ISA_OR:
@@ -381,9 +387,13 @@ static const char* post_process(parser* p) {
             return pr_msg(p, "label does not exist.");
         }
 
-        p->pos_ = ln->bpos_;
-        for (uint8_t i = 0; i < 3; i++) {
-            pr_wbyte(p, v.b[i]);
+        if (p->pos_-1 == 0x18) {
+            pr_wbyte(p, (uint8_t) v.i);
+        } else {
+            p->pos_ = ln->bpos_;
+            for (uint8_t i = 0; i < 3; i++) {
+                pr_wbyte(p, v.b[i]);
+            }
         }
     }
     p->pos_ = pos;

@@ -18,6 +18,7 @@ extern const char* pr_msg(parser* p, const char* msg);
 extern token next(parser* p);
 extern bool pr_wbyte(parser* p, uint8_t b);
 extern void pr_stack_label(parser* p, char* label, int sz);
+extern void pr_stack_relative_label(parser* p, char* label, int sz);
 
 union _value {
     int i;
@@ -94,6 +95,23 @@ static const char* parse_label_op(parser* p)  {
     return NULL;
 }
 
+static const char* parse_relative_label_op(parser* p)  {
+    const token tk = p->tk_;
+    bool ok = false;
+    int addr = ht_nget(&p->labels_, tk.txt_, tk.sz_, &ok);
+    if (ok) {
+        int d = p->pos_ - addr;
+        if (d < -128 || d > 127) {
+            return pr_msg(p, "too far");
+        }
+        pr_wbyte(p, (uint8_t) (p->pos_ - addr));
+    } else {
+        pr_stack_relative_label(p, tk.txt_, tk.sz_);
+    }
+    return NULL;
+}
+
+
 static void parse_number(parser* p) {
     value.i = tk2i(p->tk_);
     for (uint8_t i = 0; i < 3; i++) {
@@ -148,6 +166,27 @@ const char* parse_jp(parser* p) {
         default:
             return pr_msg(p, "expeted an address or a label.");
     }
+    return NULL;
+}
+
+const char* parse_jr(parser* p) {
+    pr_wbyte(p, 0x18);
+    const token tk = next(p);
+    switch (tk.tk_) {
+        case NAME:
+            return parse_relative_label_op(p);
+        case HEX_NUMBER:
+        case NUMBER:
+            value.i = tk2i(tk);
+            if (value.i < -128 || value.i > 127) {
+                return pr_msg(p, "invalid operand");
+            }
+            pr_wbyte(p, (uint8_t) value.i);
+            break;
+        default:
+            return pr_msg(p, "invalid operand");
+    }
+
     return NULL;
 }
 

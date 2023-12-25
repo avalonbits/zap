@@ -335,6 +335,8 @@ static const char* parse_instruction(parser* p) {
     switch (p->tk_.tt_) {
         case ISA_CALL:
             return parse_call(p);
+        case ISA_INC:
+            return parse_inc(p);
         case ISA_JP:
             return parse_jp(p);
         case ISA_LD:

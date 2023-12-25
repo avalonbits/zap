@@ -25,12 +25,12 @@ union _value {
 } value;
 
 typedef enum _isa_suffix {
-    SUF_NONE = 0x00,  // 0b000
-    SUF_ERR  = 0x01,  // 0b001
-    SUF_SIS  = 0x02,  // 0b010
-    SUF_SIL  = 0x03,  // 0b011
-    SUF_LIS  = 0x06,  // 0b110
-    SUF_LIL  = 0x07   // 0b111
+    SUF_NONE = 0x00,
+    SUF_ERR  = 0x01,
+    SUF_SIS  = 0x40,
+    SUF_SIL  = 0x52,
+    SUF_LIS  = 0x49,
+    SUF_LIL  = 0x5B
 } isa_suffix;
 
 // Assume we are parsing the suffix because we already found a dot.
@@ -47,29 +47,33 @@ static isa_suffix parse_suffix(parser* p) {
         return SUF_ERR;
     }
 
-    isa_suffix suf = SUF_SIS;
+    isa_suffix suf;
     switch (tk.txt_[0]) {
         case 's':
         case 'S':
+            suf = SUF_SIL;
             break;
         case 'l':
         case 'L':
-            suf = suf | 0x04;
+            suf = SUF_LIS;
             break;
         default:
             return SUF_ERR;
     }
 
-    switch (tk.txt_[2]) {
-        case 's':
-        case 'S':
-            break;
-        case 'l':
-        case 'L':
-            suf = suf | 0x01;
-            break;
-        default:
-            return SUF_ERR;
+    if (tk.sz_ == 3) {
+        switch (tk.txt_[2]) {
+            case 's':
+            case 'S':
+                if (suf == SUF_SIL) suf = SUF_SIS;
+                break;
+            case 'l':
+            case 'L':
+                if (suf == SUF_LIS) suf = SUF_LIL;
+                break;
+            default:
+                return SUF_ERR;
+        }
     }
 
     return suf;
@@ -106,6 +110,27 @@ const char* parse_call(parser* p) {
         default:
             return pr_msg(p, "invalid address");
     }
+    return NULL;
+}
+
+const char* parse_inc(parser* p) {
+    CONSUME(p, REGISTER, "invalid operand");
+
+    uint8_t isa;
+    switch (p->tk_.tt_) {
+        case REG_BC:
+            isa = 0x03;
+            break;
+        case REG_DE:
+            isa = 0x13;
+            break;
+        case REG_HL:
+            isa = 0x23;
+            break;
+        default:
+            return pr_msg(p, "invalid operand");
+    }
+    pr_wbyte(p, isa);
     return NULL;
 }
 
@@ -291,16 +316,8 @@ const char* parse_rst(parser* p) {
     if (p->tk_.tk_ != NUMBER && p->tk_.tk_ != HEX_NUMBER) {
         return pr_msg(p, "expected number");
     }
-
-    switch (suf) {
-        case SUF_SIL:
-        case SUF_SIS:
-            pr_wbyte(p, 0x52);
-            break;
-        case SUF_LIL:
-        case SUF_LIS:
-            pr_wbyte(p, 0x49);
-            break;
+    if (suf != SUF_NONE) {
+        pr_wbyte(p, (uint8_t) suf);
     }
 
     int v = tk2i(p->tk_);

@@ -10,6 +10,14 @@
 #include "lexer.h"
 
 #define PUTS(msg) mos_puts(msg, 0, 0)
+#ifndef CONSUME
+#define CONSUME(p, tk, msg) do { \
+    if (next(p).tk_ != tk) { \
+        return pr_msg(p, msg); \
+    } \
+} while (false)
+#endif
+
 
 static char* upper(char* str, int sz) {
     for (int i = 0; i < sz; i++) {
@@ -186,6 +194,74 @@ static const char* parse_align(parser* p) {
     return NULL;
 }
 
+static const char* parse_quoted(parser* p) {
+    p->skip_ws_ = false;
+    next(p);
+    while (p->tk_.tk_ != D_QUOTE && p->tk_.tk_ != NEW_LINE) {
+        if (p->tk_.tk_ != B_SLASH) {
+            for (int i = 0; i < p->tk_.sz_; i++) {
+                pr_wbyte(p, p->tk_.txt_[i]);
+            }
+            next(p);
+            continue;
+        }
+
+        next(p);
+        if (p->tk_.tk_ != NAME) {
+            return pr_msg(p, "missing escape");
+        }
+
+        char ch = p->tk_.txt_[0];
+        switch (ch) {
+            case 't':
+                ch = 0x09;
+                break;
+            case 'n':
+                ch = 0x0A;
+                break;
+            case 'r':
+                ch = 0x0D;
+                break;
+            case '"':
+                ch = 0x22;
+                break;
+            case '\'':
+                ch = 0x27;
+                break;
+            case '\\':
+                ch = 0x5C;
+                break;
+            default:
+                return pr_msg(p, "wrong escape");
+        }
+        pr_wbyte(p, ch);
+        next(p);
+    }
+    p->skip_ws_ = true;
+
+    if (p->tk_.tk_ == NEW_LINE) {
+        return pr_msg(p, "expected quote");
+    }
+    return NULL;
+
+}
+
+static const char* parse_ascii(parser* p) {
+    CONSUME(p, D_QUOTE, "expected quote");
+    return parse_quoted(p);
+}
+
+static const char* parse_asciz(struct _parser* p) {
+    const char* msg = parse_ascii(p);
+    if (msg != NULL) {
+        return msg;
+    }
+
+    pr_wbyte(p, 0);
+    return NULL;
+}
+
+
 static const char* parse_db(parser* p) {
     int mul = 1;
     const char* err = NULL;
@@ -257,12 +333,18 @@ static const char* parse_start_dot(parser* p) {
 
 static const char* parse_instruction(parser* p) {
     switch (p->tk_.tt_) {
+        case ISA_CALL:
+            return parse_call(p);
         case ISA_JP:
             return parse_jp(p);
         case ISA_LD:
             return parse_ld(p);
+        case ISA_OR:
+            return parse_or(p);
         case ISA_RET:
             return parse_ret(p);
+        case ISA_RST:
+            return parse_rst(p);
         default:
             while (p->tk_.tk_ != NEW_LINE) {
                 next(p);

@@ -54,7 +54,6 @@ static void init_ht() {
     ht_set(ht, "NZ", pack_tktt(FLAG, F_NZ));
     ht_set(ht, "Z", pack_tktt(FLAG, F_Z));
     ht_set(ht, "NC", pack_tktt(FLAG, F_NC));
-    ht_set(ht, "C", pack_tktt(FLAG, F_C));
     ht_set(ht, "PO", pack_tktt(FLAG, F_PO));
     ht_set(ht, "PE", pack_tktt(FLAG, F_PE));
     ht_set(ht, "P", pack_tktt(FLAG, F_P));
@@ -208,6 +207,7 @@ token lex_next(lexer* lex) {
     tk.txt_ = lex->line_;
     tk.txt_[0] = ch;
     tk.sz_ = 1;
+    tk.tk_ = NONE;
 
     bool done = true;
     switch (ch) {
@@ -268,7 +268,6 @@ token lex_next(lexer* lex) {
     if (done) {
         return tk;
     }
-
 
     if (tk.tk_ == MINUS) {
         ch = br_peek(&lex->rd_);

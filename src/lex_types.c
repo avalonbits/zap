@@ -15,7 +15,7 @@ TK_TYPE unpack_tt(int v) {
 }
 
 void print_token(token tk) {
-    switch (unpack_tk(tk.tk_)) {
+    switch (tk.tk_) {
         case NEW_LINE:
             mos_puts("NL", 0, 0);
             break;
@@ -89,7 +89,12 @@ void print_token(token tk) {
             putch(')');
             break;
         case REGISTER:
-            mos_puts("REGISTER(", 0, 0);
+            mos_puts("R(", 0, 0);
+            mos_puts(tk.txt_, tk.sz_, 0);
+            putch(')');
+            break;
+        case FLAG:
+            mos_puts("F(", 0, 0);
             mos_puts(tk.txt_, tk.sz_, 0);
             putch(')');
             break;

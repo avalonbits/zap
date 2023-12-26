@@ -100,10 +100,11 @@ token next(parser* p) {
 }
 
 const char* pr_msg(parser* p, const char* msg) {
-    strcpy(errmsg, "\r\nLine ");
-    i2s(p->lex_.lcount_, &errmsg[7], sizeof(errmsg) - 5);
+    strcpy(errmsg, "Line ");
+    i2s(p->lex_.lcount_, &errmsg[5], sizeof(errmsg) - 5);
     strcat(errmsg, ": ");
     strcat(errmsg, msg);
+    strcat(errmsg, "\r\n");
     return errmsg;
 }
 

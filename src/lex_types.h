@@ -79,7 +79,7 @@ typedef enum _TK_TYPE {
     F_NZ,
     F_Z,
     F_NC,
-    F_C,
+    // F_C,  This would colide with REG_C
     F_PO,
     F_PE,
     F_P,

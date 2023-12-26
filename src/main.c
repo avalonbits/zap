@@ -15,16 +15,17 @@ int main(int argc, char** argv) {
     }
     mos_puts("Assembling ", 0, 0);
     mos_puts(argv[1], 0, 0);
-    mos_puts("\r\n", 0, 0);
+    mos_puts("\r\n\r\n", 0, 0);
 
     parser p;
     if (pr_init(&p, argv[1]) == NULL) {
-        return -1;
+        return 1;
     }
 
     const char* errmsg = pr_parse(&p);
     if (errmsg != NULL && strlen(errmsg) > 0) {
         mos_puts(errmsg, 0, 0);
+        return 1;
     }
 
     char fname[255];

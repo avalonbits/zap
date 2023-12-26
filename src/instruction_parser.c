@@ -196,21 +196,16 @@ static const char* parse_ld_r(parser* p) {
     token tk = next(p);
 
     uint8_t isa;
-    if (tk.tk_ == NUMBER || tk.tk_ == HEX_NUMBER) {
-        pr_wbyte(p, 0x06 + ((reg.tt_-REG_B) << 3));
-        value.i = tk2i(tk);
-        for (uint8_t i = 0; i < 3; i++) {
-            pr_wbyte(p, value.b[i]);
-        }
-        return NULL;
-    }
-
-    if (tk.tk_ != REGISTER) {
-        return pr_msg(p, "invalid operand");
-    }
-
-    tk = next(p);
     switch (tk.tk_) {
+        case NUMBER:
+        case HEX_NUMBER:
+            pr_wbyte(p, 0x06 | ((reg.tt_-REG_B) << 3));
+            value.i = tk2i(tk);
+            if (value.i < -128 | value.i > 255) {
+                return pr_msg(p, "invalid operand");
+            }
+            pr_wbyte(p, value.b[0]);
+            return NULL;
         case REGISTER:
             switch (tk.tt_) {
                 case REG_A:
@@ -220,16 +215,19 @@ static const char* parse_ld_r(parser* p) {
                 case REG_E:
                 case REG_H:
                 case REG_L:
-                    isa = 0x40 +((reg.tt_-REG_B) <<3) + (tk.tk_-REG_B);
-                    break;
+                    if (reg.tt_ == tk.tt_ && reg.tt_ != REG_A) {
+                        return pr_msg(p, "invalid operand");
+                    }
+                    pr_wbyte(p,  0x40 | (((reg.tt_-REG_B) &0x07)<<3) | ((tk.tt_-REG_B) &0x07));
+                    return NULL;
                 default:
                     return pr_msg(p, "invalid operand");
             }
             break;
         case L_PAREN:
-            CONSUME(p, REGISTER, "expected register");
+            CONSUME(p, REGISTER, "invalid operand");
             if (p->tk_.tt_ != REG_HL) {
-                return pr_msg(p, "expected HL");
+                return pr_msg(p, "invalid operand");
             }
             CONSUME(p, R_PAREN, "expected R-paren");
             isa = 0x7E;
@@ -349,7 +347,7 @@ const char* parse_ret(parser* p) {
         return NULL;
     }
 
-    if (p->tk_.tk_ != FLAG) {
+    if (p->tk_.tk_ != FLAG && p->tk_.tk_ != REGISTER) {
         return pr_msg(p, "expected flag");
     }
 
@@ -361,7 +359,7 @@ const char* parse_ret(parser* p) {
         case F_NC:
             isa = 0xD0;
             break;
-        case F_C:
+        case REG_C:
             isa = 0xD8;
             break;
         case F_PO:

@@ -100,7 +100,7 @@ static const char* parse_relative_label_op(parser* p)  {
     bool ok = false;
     int addr = ht_nget(&p->labels_, tk.txt_, tk.sz_, &ok);
     if (ok) {
-        int d = (p->pos_+p->org_) - addr + 1;
+        int d = addr - (p->pos_+p->org_) - 1;
         if (d < -128 || d > 127) {
             return pr_msg(p, "too far");
         }

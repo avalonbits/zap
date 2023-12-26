@@ -1,4 +1,3 @@
-#include <stdio.h>
 #include <string.h>
 #include <mos_api.h>
 
@@ -11,6 +10,9 @@ int main(int argc, char** argv) {
         mos_puts("\r\nUsage: zap <filename>\r\n", 0, 0);
         return 0;
     }
+    mos_puts("Assembling ", 0, 0);
+    mos_puts(argv[1], 0, 0);
+    mos_puts("\r\n", 0, 0);
 
     parser p;
     if (pr_init(&p, argv[1]) == NULL) {
@@ -22,13 +24,6 @@ int main(int argc, char** argv) {
         mos_puts(errmsg, 0, 0);
     }
 
-    for (int i = 0; i < p.pos_; i++) {
-        if (i % 16 == 0) {
-            mos_puts("\r\n", 0 ,0);
-        }
-        printf("%02X ", p.buf_[i]);
-    }
-    printf("\r\n");
     pr_destroy(&p);
 
     return 0;

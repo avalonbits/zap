@@ -28,5 +28,6 @@ parser* pr_init(parser* p, const char* fname);
 void pr_destroy(parser* p);
 
 const char* pr_parse(parser* p);
+uint8_t* pr_buf(parser* p, int* sz);
 
 #endif  // _PARSER_H_

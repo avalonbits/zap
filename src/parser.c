@@ -59,6 +59,12 @@ parser* pr_init(parser* p, const char* fname) {
     return p;
 }
 
+uint8_t* pr_buf(parser* p, int* sz) {
+    *sz = p->pos_;
+    return p->buf_;
+}
+
+
 void pr_destroy(parser* p) {
     free(p->buf_);
     lex_destroy(&p->lex_);
@@ -377,7 +383,6 @@ union _v {
 
 
 static const char* post_process(parser* p) {
-    mos_puts("Pass 2...\r\n", 0, 0);
     const int pos = p->pos_;
     bool ok;
     for (const label_node* ln = ls_pop(&p->ls_); ln != NULL; ln = ls_pop(&p->ls_)) {
@@ -402,7 +407,6 @@ static const char* post_process(parser* p) {
 }
 
 const char* pr_parse(parser* p) {
-    mos_puts("Pass 1...\r\n", 0, 0);
     // top level parser. On every iteration we are at the beginning of a new line.
     p->pos_ = 0;
     const char* err = NULL;

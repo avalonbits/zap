@@ -193,7 +193,7 @@ static bool is_digit(char ch) {
 static bool is_ascdig(char ch) {
     return (ch >= 0x41 && ch <= 0x5A)
         || (ch >= 0x61 && ch <= 0x7A)
-        || ch == '_' || is_digit(ch);
+        || ch == '_' || ch == '@' || is_digit(ch);
 }
 
 #define OK_CHAR(ch) (ch != EOF && ch != ESUSP)

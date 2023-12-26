@@ -57,14 +57,17 @@ typedef enum _TK_TYPE {
     D_ENDMACRO,
     D_ORG,
 
-    REG_A,
+    // We group the single letter registers like this in order to make it
+    // easier to generate the instructions involving them.
     REG_B,
     REG_C,
     REG_D,
     REG_E,
-    REG_F,
     REG_H,
     REG_L,
+    REG_F,
+    REG_A,
+
     REG_AF,
     REG_BC,
     REG_DE,

@@ -189,6 +189,10 @@ static bool is_digit(char ch) {
     return ch >= 48 && ch <= 57;
 }
 
+static bool is_hex_digit(char ch) {
+    return (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F') || is_digit(ch);
+}
+
 static bool is_ascdig(char ch) {
     return (ch >= 0x41 && ch <= 0x5A)
         || (ch >= 0x61 && ch <= 0x7A)
@@ -207,7 +211,7 @@ token lex_next(lexer* lex) {
     tk.txt_ = lex->line_;
     tk.txt_[0] = ch;
     tk.sz_ = 1;
-    tk.tk_ = NONE;
+    tk.tk_ = UNKNOWN;
 
     bool done = true;
     switch (ch) {
@@ -281,10 +285,10 @@ token lex_next(lexer* lex) {
         }
     } else if (tk.tk_ == DOLLAR) {
         ch = br_peek(&lex->rd_);
-        if (is_digit(ch)) {
+        if (is_hex_digit(ch)) {
             tk.tk_ = HEX_NUMBER;
             tk.sz_ = 0;
-            while (is_digit(ch)) {
+            while (is_hex_digit(ch)) {
                 tk.txt_[tk.sz_++] = ch;
                 br_next(&lex->rd_);
                 ch = br_peek(&lex->rd_);

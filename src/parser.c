@@ -383,7 +383,6 @@ static const char* post_process(parser* p) {
             p->lex_.lcount_ = ln->line_;
             return pr_msg(p, "label does not exist.");
         }
-
         if (p->pos_-1 == 0x18) {
             pr_wbyte(p, (uint8_t) v.i);
         } else {

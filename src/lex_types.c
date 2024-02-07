@@ -17,10 +17,10 @@ TK_TYPE unpack_tt(int v) {
 void print_token(token tk) {
     switch (tk.tk_) {
         case NEW_LINE:
-            mos_puts("NL", 0, 0);
+            mos_puts("NL\r\n", 0, 0);
             break;
         case WHITE_SPACE:
-            mos_puts("WS", 0, 0);
+            mos_puts(" WS ", 0, 0);
             break;
         case NUMBER:
         case HEX_NUMBER:

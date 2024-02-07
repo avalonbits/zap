@@ -195,6 +195,7 @@ static const char* parse_ld_r(parser* p) {
     CONSUME(p, COMMA, "expected comma");
     token tk = next(p);
 
+    print_token(reg);
     uint8_t isa;
     switch (tk.tk_) {
         case NUMBER:

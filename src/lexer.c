@@ -198,7 +198,7 @@ static bool is_ascdig(char ch) {
 #define OK_CHAR(ch) (ch != EOF && ch != ESUSP)
 
 token lex_next(lexer* lex) {
-    token tk = {NULL, 0, NONE};
+    token tk = {NULL, 0, NONE, TY_NONE};
     char ch = br_char(&lex->rd_);
     if (!OK_CHAR(ch)) {
         return tk;

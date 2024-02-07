@@ -19,12 +19,13 @@
 #include "conv.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 
-static void reverse(uint8_t* buf, int sz) {
+static void reverse(char* buf, int sz) {
     int start = 0;
     int end = sz -1;
     while (start < end) {
-        uint8_t ch = buf[start];
+        char ch = buf[start];
         buf[start] = buf[end];
         buf[end] = ch;
         ++start;
@@ -38,7 +39,7 @@ const char table[16] = {
 };
 
 
-static uint8_t* n2s(int num, uint8_t* buf, int sz, const int base) {
+static char* n2s(int num, char* buf, int sz, const int base) {
     const bool is_neg = num < 0;
     if (is_neg) {
         num = -num;
@@ -75,10 +76,10 @@ static uint8_t* n2s(int num, uint8_t* buf, int sz, const int base) {
 
 }
 
-uint8_t* i2s(int num, uint8_t* buf, int sz) {
+char* i2s(int num, char* buf, int sz) {
     return n2s(num, buf, sz, 10);
 }
 
-uint8_t* h2s(int num, uint8_t* buf, int sz) {
+char* h2s(int num, char* buf, int sz) {
     return n2s(num, buf, sz, 16);
 }

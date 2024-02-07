@@ -13,7 +13,7 @@ label_stack* ls_init(label_stack* ls, int sz) {
     return ls;
 }
 
-label_stack* ls_destroy(label_stack* ls) {
+void ls_destroy(label_stack* ls) {
     free(ls->nodes_);
 }
 

@@ -19,16 +19,6 @@
 #endif
 
 
-static char* upper(char* str, int sz) {
-    for (int i = 0; i < sz; i++) {
-        const char ch = str[i];
-        if (ch >= 0x61 && ch <= 0x7A) {
-            str[i] = ch - 0x20;
-        }
-    }
-    return str;
-}
-
 static char errmsg[256] = "";
 
 parser* pr_init(parser* p, const char* fname) {
@@ -127,20 +117,20 @@ static const char* parse_adl(parser* p) {
     return NULL;
 }
 
-static int natoi(uint8_t* str, uint8_t sz) {
+static int natoi(char* str, uint8_t sz) {
     int v = 0;
     int mul = 1;
-    for (uint8_t i = 1; i <= sz; i++) {
+    for (char i = 1; i <= sz; i++) {
         v += (str[sz-i] - '0') * mul;
         mul *= 10;
     }
     return v;
 }
 
-static int natoh(uint8_t* str, uint8_t sz) {
+static int natoh(char* str, uint8_t sz) {
     int v = 0;
     int mul = 1;
-    for (uint8_t i = 1; i <= sz; i++) {
+    for (char i = 1; i <= sz; i++) {
         const char ch = str[sz-i];
         if (ch >= '0' && ch <= '9') {
             v += (ch - '0') * mul;

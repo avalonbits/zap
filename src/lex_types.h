@@ -30,6 +30,7 @@ typedef enum _TOKEN {
 } TOKEN;
 
 typedef enum _TK_TYPE {
+    TY_NONE = -1,
     D_ADL = 0,
     D_ALIGN,
     D_ASSUME,

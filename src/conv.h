@@ -19,10 +19,7 @@
 #ifndef _CONV_H_
 #define _CONV_H_
 
-#include <stdint.h>
-
-uint8_t* i2s(int num, uint8_t* buf, int sz);
-uint8_t* h2s(int num, uint8_t* buf, int sz);
-
+char* i2s(int num, char* buf, int sz);
+char* h2s(int num, char* buf, int sz);
 
 #endif  // _CONV_H_

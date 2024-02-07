@@ -5,9 +5,6 @@
 #include "lexer.h"
 #include "parser.h"
 
-uint8_t open_outfile(const char* fname) {
-}
-
 int main(int argc, char** argv) {
     if (argc < 2 || argc > 3) {
         mos_puts("\r\nUsage: zap <filename> [outfile] \r\n", 0, 0);
@@ -24,7 +21,7 @@ int main(int argc, char** argv) {
 
     const char* errmsg = pr_parse(&p);
     if (errmsg != NULL && strlen(errmsg) > 0) {
-        mos_puts(errmsg, 0, 0);
+        mos_puts((char*)errmsg, 0, 0);
         return 1;
     }
 

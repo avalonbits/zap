@@ -351,9 +351,7 @@ static const char* parse_instruction(parser* p) {
         case ISA_RST:
             return parse_rst(p);
         default:
-            while (p->tk_.tk_ != NEW_LINE) {
-                next(p);
-            }
+            return pr_msg(p, "invalid instruction");
     }
     return NULL;
 }
@@ -367,28 +365,22 @@ static const char* parse_label(parser* p) {
     return NULL;
 }
 
-union _v {
-    int i;
-    uint8_t b[4];
-} v;
-
-
 static const char* post_process(parser* p) {
     const int pos = p->pos_;
     bool ok;
     for (const label_node* ln = ls_pop(&p->ls_); ln != NULL; ln = ls_pop(&p->ls_)) {
         ok = false;
-        v.i = ht_get(&p->labels_, ln->label_, &ok);
+        int v = ht_get(&p->labels_, ln->label_, &ok);
         if (!ok) {
             p->lex_.lcount_ = ln->line_;
             return pr_msg(p, "label does not exist.");
         }
         if (p->pos_-1 == 0x18) {
-            pr_wbyte(p, (uint8_t) v.i);
+            pr_wbyte(p, (uint8_t) (v & 0xFF)) ;
         } else {
             p->pos_ = ln->bpos_;
             for (uint8_t i = 0; i < 3; i++) {
-                pr_wbyte(p, v.b[i]);
+                pr_wbyte(p, (v >> (i*8)) & 0xFF);
             }
         }
     }

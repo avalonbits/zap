@@ -190,12 +190,59 @@ const char* parse_jr(parser* p) {
     return NULL;
 }
 
+static const char* parse_ld_a_indirect(parser* p) {
+    token tk = next(p);
+    switch (tk.tk_) {
+        case REGISTER:
+            switch (tk.tt_) {
+                case REG_BC:
+                    pr_wbyte(p, 0x0A);
+                    break;
+                case REG_DE:
+                    pr_wbyte(p, 0x1A);
+                    break;
+                case REG_HL:
+                    pr_wbyte(p, 0x7E);
+                    break;
+                case REG_IX:
+                case REG_IY:
+                    if (tk.tt_ == REG_IX) {
+                        pr_wbyte(p, 0xDD);
+                    } else {
+                        pr_wbyte(p, 0xFD);
+                    }
+
+                    pr_wbyte(p, 0x7E);
+                    CONSUME(p, PLUS, "missing operator");
+
+                    tk = next(p);
+                    if (tk.tk_ != NUMBER && tk.tk_ != HEX_NUMBER) {
+                        return pr_msg(p, "invalid operand");
+                    }
+
+                    {
+                        int d = tk2i(tk);
+                        if (d > 127  || d < -128) {
+                            return pr_msg(p, "invalid operand");
+                        }
+                        pr_wbyte(p, (uint8_t) (d & 0xFF));
+                    }
+                    break;
+                default:
+                    return pr_msg(p, "invalid operand");
+            }
+            break;
+        default:
+            return pr_msg(p, "invalid operand");
+    }
+    CONSUME(p, R_PAREN, "expected paren");
+    return NULL;
+}
+
 static const char* parse_ld_r(parser* p) {
     token reg = p->tk_;
     CONSUME(p, COMMA, "expected comma");
     token tk = next(p);
-
-    print_token(reg);
     uint8_t isa;
     switch (tk.tk_) {
         case NUMBER:
@@ -226,13 +273,12 @@ static const char* parse_ld_r(parser* p) {
             }
             break;
         case L_PAREN:
-            CONSUME(p, REGISTER, "invalid operand");
-            if (p->tk_.tt_ != REG_HL) {
+            // Load indirect required REG_A
+            if (reg.tt_ != REG_A) {
                 return pr_msg(p, "invalid operand");
             }
-            CONSUME(p, R_PAREN, "expected R-paren");
-            isa = 0x7E;
-            break;
+            return parse_ld_a_indirect(p);
+           break;
         default:
             return pr_msg(p, "invalid operand");
     }

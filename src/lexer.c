@@ -376,7 +376,22 @@ token lex_next(lexer* lex) {
         case ',':  tk.tk_ = COMMA;       return tk;
         case '.':  tk.tk_ = DOT;         return tk;
         case ':':  tk.tk_ = COLON;       return tk;
-        case ';':  tk.tk_ = SEMI_COLON;  return tk;
+        case ';':
+            /* A comment runs to the end of the line, and none of it means
+             * anything. Consuming it here rather than handing the parser a
+             * token per word is what makes it cheap: every word in a comment
+             * used to be scanned, hashed and looked up in the reserved table
+             * before being thrown away, so a heavily commented source paid
+             * full lexing price for text that was never used. The newline is
+             * left in place -- it still ends the statement. */
+            for (char c = br_peek_inline(&lex->rd_);
+                 OK_CHAR(c) && c != '\n';
+                 c = br_peek_inline(&lex->rd_)) {
+                br_next_inline(&lex->rd_);
+            }
+            tk.tk_ = SEMI_COLON;
+
+            return tk;
 
         case '\n':
             lex->lcount_++;

@@ -169,12 +169,42 @@ int main(void) {
             lex_all(".org $400000\n"),
             "DOT(.) DIR(org) NUM($400000=4194304) NL(\n)");
 
-    /* Comments are the parser's job: the lexer just emits the semicolon and
-     * whatever follows it. This is what makes the parser's comment state
-     * machine load-bearing. */
-    check_s("comment is not stripped by the lexer",
+    /* A comment body never becomes tokens. The semicolon is still emitted --
+     * the parser needs it to know the statement ended -- but everything after
+     * it is consumed here. It used to be handed over word by word, and each
+     * word paid for a scan, a hash and a reserved-table lookup before being
+     * discarded: on a source that is a quarter comments, that is a quarter of
+     * the lexer's work spent on text with no meaning. */
+    check_s("comment body is consumed by the lexer",
             lex_all("ret ; done\n"),
-            "INSN(ret) SEMI(;) NAME(done) NL(\n)");
+            "INSN(ret) SEMI(;) NL(\n)");
+
+    /* The newline survives, so the statement still ends where it should and
+     * the line count stays right. */
+    check_s("comment does not swallow the newline",
+            lex_all("nop ; a\nret\n"),
+            "INSN(nop) SEMI(;) NL(\n) INSN(ret) NL(\n)");
+
+    /* Text that would otherwise lex as something meaningful -- a directive
+     * name, a number, an unterminated string or character literal -- is inert
+     * inside a comment. The directive case is not hypothetical: "; starting
+     * at byte 64." was once enough to break a file, because "byte" reached
+     * the parser as a real directive. */
+    check_s("directive name inside a comment",
+            lex_all("nop ; starting at byte 64.\n"),
+            "INSN(nop) SEMI(;) NL(\n)");
+    check_s("unbalanced quote inside a comment",
+            lex_all("nop ; it's \"fine\n"),
+            "INSN(nop) SEMI(;) NL(\n)");
+
+    /* A comment on its own line, and one closing a file with no trailing
+     * newline, both have to terminate rather than run off the end. */
+    check_s("whole-line comment",
+            lex_all("; just a comment\nnop\n"),
+            "SEMI(;) NL(\n) INSN(nop) NL(\n)");
+    check_s("comment at end of file with no newline",
+            lex_all("nop ; trailing"),
+            "INSN(nop) SEMI(;)");
 
     /* Strings arrive as delimiters plus their contents. */
     check_s("quoted string delimiters",

@@ -78,6 +78,11 @@ buf_reader* br_open_mem(buf_reader* br, const char* text, int len) {
 void br_close(buf_reader* br) {
     br_suspend(br);
     free(br->buf_);
+    /* The inline fast path relies on buf_ never being NULL while bsz_ is
+     * non-zero. */
+    br->buf_ = NULL;
+    br->bsz_ = 0;
+    br->bpos_ = 0;
 }
 
 void br_destroy(buf_reader* br) {
@@ -130,7 +135,9 @@ bool br_resume(buf_reader* br) {
     return true;
 }
 
-char br_peek(buf_reader* br) {
+/* Everything br_peek needs when the buffer is exhausted. The inline fast path
+ * in the header handles the case where it is not. */
+char br_fill_peek(buf_reader* br) {
     if (br->bsz_ == 0) {
         return EOF;
     }
@@ -139,7 +146,7 @@ char br_peek(buf_reader* br) {
     }
     if (br->mem_) {
         /* No refill: the buffer is the whole content. */
-        return br->bpos_ == br->bsz_ ? EOF : br->buf_[br->bpos_];
+        return EOF;
     }
     if (br->fh_ == 0) {
         return ESUSP;
@@ -154,18 +161,6 @@ char br_peek(buf_reader* br) {
         br->bsz_ = frsz;
     }
     return br->buf_[br->bpos_];
-}
-
-void br_next(buf_reader* br) {
-    if (br->bsz_ == 0) {
-        return;
-    }
-    if (br->buf_ == NULL || (!br->mem_ && br->fh_ == 0)) {
-        return;
-    }
-    if (br->bpos_ <= br->bsz_) {
-        br->bpos_++;
-    }
 }
 
 int br_byte(buf_reader* br) {
@@ -196,10 +191,15 @@ int br_byte(buf_reader* br) {
     return (int) (unsigned char) br->buf_[br->bpos_++];
 }
 
+/* The out-of-line forms, kept for callers outside the lexer. */
+char br_peek(buf_reader* br) {
+    return br_peek_inline(br);
+}
+
+void br_next(buf_reader* br) {
+    br_next_inline(br);
+}
+
 char br_char(buf_reader* br) {
-    char ch = br_peek(br);
-    if (ch != EOF && ch != ESUSP) {
-        br->bpos_++;
-    }
-    return ch;
+    return br_char_inline(br);
 }

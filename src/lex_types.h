@@ -6,7 +6,6 @@
 typedef enum _TOKEN {
     NONE = 0,
     UNKNOWN,
-    WHITE_SPACE,
     NEW_LINE,
     EQUALS,
     PLUS,

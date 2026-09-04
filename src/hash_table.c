@@ -31,27 +31,54 @@ static char upper(const char ch) {
 }
 
 
-uint8_t pearson_hash(const char* key, uint8_t sz, bool icase) {
-    uint8_t h = 0;
-    for (uint8_t i = 0; i < sz; i++) {
-        const uint8_t ch = (uint8_t) (icase ? upper(key[i]) : key[i]);
-        h = pearson_random[h ^ ch];
+uint16_t pearson_hash(const char* key, uint8_t sz, bool icase) {
+    return pearson_hash_n(key, sz, icase, true);
+}
+
+/* One Pearson pass gives eight bits, which is all a table of 256 buckets or
+ * fewer can use. A second pass, seeded differently, gives sixteen -- enough to
+ * size the table to the symbol count, at the cost of one more table lookup per
+ * character.
+ *
+ * Only the label table is ever big enough to need it. Paying for it on the
+ * reserved-word table, which holds 175 names and never grows, was making
+ * every identifier in the source more expensive to reject. */
+uint16_t pearson_hash_n(const char* key, uint8_t sz, bool icase, bool wide) {
+    uint8_t h1 = 0;
+
+    if (!wide) {
+        for (uint8_t i = 0; i < sz; i++) {
+            h1 = pearson_random[h1 ^ (uint8_t) (icase ? upper(key[i]) : key[i])];
+        }
+
+        return h1;
     }
 
-    return h;
+    uint8_t h2 = 0x5A;
+    for (uint8_t i = 0; i < sz; i++) {
+        const uint8_t ch = (uint8_t) (icase ? upper(key[i]) : key[i]);
+        h1 = pearson_random[h1 ^ ch];
+        h2 = pearson_random[h2 ^ ch];
+    }
+
+    return (uint16_t) (((uint16_t) h1 << 8) | h2);
+}
+
+/* Buckets are a power of two so the index is a mask rather than a modulo --
+ * the eZ80 has no divide. */
+static uint24_t round_pow2(int n) {
+    uint24_t sz = 16;
+    while (sz < (uint24_t) n && sz < 8192) {
+        sz *= 2;
+    }
+
+    return sz;
 }
 
 hash_table* ht_init(hash_table* ht, int entries, bool icase) {
     ht->icase_ = icase;
-    if (entries >= 128) {
-        ht->sz_ = 256;
-    } else if (entries >= 64) {
-        ht->sz_ = 64;
-    } else if (entries >= 32) {
-        ht->sz_ = 32;
-    } else {
-        ht->sz_ = 16;
-    }
+    ht->count_ = 0;
+    ht->sz_ = round_pow2(entries);
     ht->node_ = (hash_node*) malloc(ht->sz_ * sizeof(hash_node));
     if (ht->node_ == NULL) {
         return NULL;
@@ -69,6 +96,7 @@ hash_table* ht_init(hash_table* ht, int entries, bool icase) {
 /* Frees the bucket array and every node chained off it. Buckets themselves
  * live in the array; only the overflow nodes were malloc'd separately. */
 void ht_destroy(hash_table* ht) {
+    ht->count_ = 0;
     if (ht->node_ == NULL) {
         return;
     }
@@ -108,12 +136,60 @@ static bool key_equal(const char* s1, const char* s2, uint8_t ksz, bool icase) {
     return i == ksz;
 }
 
+/* Doubles the bucket array and redistributes what is in it. Overflow nodes are
+ * reused rather than reallocated: only the array is replaced. */
+static bool ht_grow(hash_table* ht);
+
+static bool ht_grow_impl(hash_table* ht) {
+    const uint24_t old_sz = ht->sz_;
+    hash_node* old = ht->node_;
+    if (old_sz >= 8192) {
+        return true;  /* large enough; chains stay short at this size */
+    }
+
+    hash_node* fresh = (hash_node*) malloc((size_t) (old_sz * 2) * sizeof(hash_node));
+    if (fresh == NULL) {
+        return true;  /* carry on with what we have rather than fail a build */
+    }
+    for (uint24_t i = 0; i < old_sz * 2; i++) {
+        fresh[i].next_ = NULL;
+        fresh[i].key_[0] = 0;
+        fresh[i].value_ = 0;
+    }
+
+    ht->node_ = fresh;
+    ht->sz_ = old_sz * 2;
+    ht->count_ = 0;
+
+    /* Re-insert every key, then release the old array and its chain nodes. */
+    for (uint24_t i = 0; i < old_sz; i++) {
+        for (hash_node* n = &old[i]; n != NULL; ) {
+            hash_node* next = n->next_;
+            if (n->key_[0] != 0) {
+                ht_nset(ht, n->key_, (uint8_t) strlen(n->key_), n->value_);
+            }
+            if (n != &old[i]) {
+                free(n);
+            }
+            n = next;
+        }
+    }
+    free(old);
+
+    return true;
+}
+
+static bool ht_grow(hash_table* ht) {
+    return ht_grow_impl(ht);
+}
+
 bool ht_nset(hash_table* ht, const char* key, uint8_t ksz, int value) {
     if (ksz > MAX_NAME || ksz <= 0) {
         return false;
     }
 
-    const int pos = pearson_hash(key, ksz, ht->icase_) % ht->sz_;
+    const int pos = (int) (pearson_hash_n(key, ksz, ht->icase_, ht->sz_ > 256)
+                           & (ht->sz_ - 1));
     hash_node* node = &ht->node_[pos];
 
     // Iteratore through all nodes in the chain until we find the key to update
@@ -123,6 +199,8 @@ bool ht_nset(hash_table* ht, const char* key, uint8_t ksz, int value) {
             strncpy(node->key_, key, ksz);
             node->key_[ksz] = 0;
             node->value_ = value;
+            ht->count_++;
+
             return true;
         }
 
@@ -148,6 +226,11 @@ bool ht_nset(hash_table* ht, const char* key, uint8_t ksz, int value) {
     n->value_ = value;
     n->next_ = NULL;
     node->next_ = n;
+    ht->count_++;
+
+    if (ht->count_ > ht->sz_ * 2) {
+        ht_grow(ht);
+    }
 
     return true;
 }
@@ -163,7 +246,8 @@ int ht_nget(hash_table* ht, const char* key, uint8_t ksz, bool* ok) {
         return 0;
     }
 
-    const int pos = pearson_hash(key, ksz, ht->icase_) % ht->sz_;
+    const int pos = (int) (pearson_hash_n(key, ksz, ht->icase_, ht->sz_ > 256)
+                           & (ht->sz_ - 1));
     hash_node* n = &ht->node_[pos];
 
     for (; n != NULL; n = n->next_) {

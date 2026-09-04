@@ -36,7 +36,6 @@ static const char* tk_name(TOKEN t) {
     switch (t) {
         case NONE:        return "NONE";
         case UNKNOWN:     return "UNK";
-        case WHITE_SPACE: return "WS";
         case NEW_LINE:    return "NL";
         case EQUALS:      return "EQ";
         case PLUS:        return "PLUS";
@@ -100,9 +99,6 @@ static const char* lex_all(const char* src) {
     int n = 0;
     out[0] = 0;
     for (token tk = lex_next(&lex); tk.tk_ != NONE; tk = lex_next(&lex)) {
-        if (tk.tk_ == WHITE_SPACE) {
-            continue;
-        }
         if (n > 0 && n < (int) sizeof(out) - 1) {
             out[n++] = ' ';
         }

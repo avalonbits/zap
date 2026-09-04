@@ -134,7 +134,6 @@ typedef struct _parser {
      * enables the undocumented Z80 opcodes the reference gates behind it, and
      * it carries an ADL default with it. */
     uint8_t cpu_;
-    bool skip_ws_;
     bool comment_;
 
     token tk_;

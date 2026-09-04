@@ -10,6 +10,7 @@
 
 #define ESUSP -2
 
+
 typedef struct _buf_reader  {
     uint8_t fh_;
     const char* fname_;
@@ -35,6 +36,43 @@ void br_close(buf_reader* br);
 void br_destroy(buf_reader* br);
 bool br_suspend(buf_reader* br);
 bool br_resume(buf_reader* br);
+
+/* Slow paths: end of buffer, refill, suspended. */
+char br_fill_peek(buf_reader* br);
+
+/* Peeks at the next byte without consuming it.
+ *
+ * The common case -- a byte already in the buffer -- is inline and a single
+ * comparison. It is called once or twice per source character, which on the
+ * eZ80 made the call itself a measurable share of lexing, and the five checks
+ * behind it were paid on every one. buf_ is only ever NULL when bsz_ is zero,
+ * so the fast path cannot dereference it. */
+static inline char br_peek_inline(buf_reader* br) {
+    if (br->bpos_ < br->bsz_) {
+        return br->buf_[br->bpos_];
+    }
+
+    return br_fill_peek(br);
+}
+
+static inline void br_next_inline(buf_reader* br) {
+    if (br->bpos_ < br->bsz_) {
+        br->bpos_++;
+    }
+}
+
+static inline char br_char_inline(buf_reader* br) {
+    if (br->bpos_ < br->bsz_) {
+        return br->buf_[br->bpos_++];
+    }
+
+    const char ch = br_fill_peek(br);
+    if (ch != EOF && ch != ESUSP) {
+        br->bpos_++;
+    }
+
+    return ch;
+}
 
 char br_char(buf_reader* br);
 

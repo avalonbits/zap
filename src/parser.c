@@ -122,7 +122,6 @@ static parser* pr_setup(parser* p, const char* fname) {
     p->pc_used_ = false;
     p->adl_ = true;
     p->cpu_ = CPU_EZ80;
-    p->skip_ws_ = true;
     p->comment_ = false;
     return p;
 }
@@ -223,11 +222,6 @@ token next(parser* p) {
                     return p->tk_;
                 }
 
-                return tk;
-            case WHITE_SPACE:
-                if (p->skip_ws_) {
-                    continue;
-                }
                 return tk;
             case NEW_LINE:
                 p->comment_ = false;
@@ -1371,7 +1365,6 @@ static void pr_prescan(parser* p) {
     const uint16_t saved_scope = p->scope_;
     const int saved_pos = p->pos_;
     const bool saved_comment = p->comment_;
-    const bool saved_ws = p->skip_ws_;
     const int saved_depth = p->inc_depth_;
 
     if (p->fname_ != NULL) {
@@ -1483,7 +1476,6 @@ static void pr_prescan(parser* p) {
      * pass then treated the whole file as commented out -- assembling to
      * nothing, with no error at all. */
     p->comment_ = saved_comment;
-    p->skip_ws_ = saved_ws;
 }
 
 const char* pr_parse(parser* p) {
@@ -1495,7 +1487,6 @@ const char* pr_parse(parser* p) {
     p->scope_ = 0;
     p->anon_count_ = 0;
     p->comment_ = false;
-    p->skip_ws_ = true;
     const char* err = NULL;
 
     for (p->tk_ = next(p); p->tk_.tk_ != NONE; p->tk_ = next(p)) {

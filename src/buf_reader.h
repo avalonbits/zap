@@ -19,9 +19,18 @@ typedef struct _buf_reader  {
     char* buf_;
     uint24_t bsz_;
     uint24_t bpos_;
+
+    /* Reading from memory rather than a file: there is no handle and no
+     * refill, the buffer is the whole content. Macro expansion needs it, and
+     * so does assembling an editor's buffer without writing it out first. */
+    bool mem_;
+    bool owned_;   /* whether the buffer has to be freed */
 } buf_reader;
 
 buf_reader* br_open(buf_reader* br, const char* fname, int bsz);
+
+/* Reads from a copy of the given text. The copy is freed by br_destroy. */
+buf_reader* br_open_mem(buf_reader* br, const char* text, int len);
 void br_close(buf_reader* br);
 void br_destroy(buf_reader* br);
 bool br_suspend(buf_reader* br);

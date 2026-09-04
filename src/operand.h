@@ -92,11 +92,14 @@ typedef struct _operand {
     bool has_imm;
     value imm;
 
-    /* An immediate that is a forward reference: the value is not known yet, so
-     * the emitter leaves a hole and records the name. */
+    /* An immediate that could not be evaluated yet because a name in it is
+     * not defined. The emitter leaves a hole and records the expression's
+     * text; it is re-evaluated once every symbol is known. The whole
+     * expression is kept, not just a name, because "end - start" with both
+     * labels further down is how a length is written. */
     bool imm_known;
-    char name[MAX_NAME + 1];
-    int name_sz;
+    char expr[128];
+    int expr_sz;
     int anon;
 } operand;
 

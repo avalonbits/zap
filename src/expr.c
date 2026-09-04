@@ -27,7 +27,39 @@
  * machine with 32KB of it. Real sources nest one or two deep. */
 #define MAX_DEPTH 16
 
-static const char* eval_at(parser* p, value* out, int depth);
+/* Where the text of the consumed tokens is being gathered, if it is. */
+typedef struct _capture {
+    char* buf;
+    int max;
+    int n;
+    bool overflow;
+} capture;
+
+static const char* eval_at(parser* p, value* out, int depth, capture* cap);
+
+/* Records the token about to be consumed. Tokens are separated by a space so
+ * the text re-lexes into the same sequence. */
+static void cap_token(capture* cap, const token* tk) {
+    if (cap == NULL || cap->overflow) {
+        return;
+    }
+    if (cap->n > 0) {
+        if (cap->n >= cap->max) {
+            cap->overflow = true;
+
+            return;
+        }
+        cap->buf[cap->n++] = ' ';
+    }
+    for (int i = 0; i < tk->sz_; i++) {
+        if (cap->n >= cap->max) {
+            cap->overflow = true;
+
+            return;
+        }
+        cap->buf[cap->n++] = tk->txt_[i];
+    }
+}
 
 static bool is_binary_op(TOKEN tk) {
     switch (tk) {
@@ -90,13 +122,14 @@ static value apply(TOKEN op, value a, value b, bool* div_zero) {
 }
 
 /* One operand, with any run of unary operators in front of it. */
-static const char* operand_at(parser* p, value* out, int depth) {
+static const char* operand_at(parser* p, value* out, int depth, capture* cap) {
     /* At most one unary operator. A run of them -- --1, -~1, ~~1 -- is
      * rejected, which is what the reference does ("Illegal unary operator").
      * 1--1 is still fine: that is a binary minus followed by a unary one. */
     TOKEN unary = NONE;
     if (p->tk_.tk_ == PLUS || p->tk_.tk_ == MINUS || p->tk_.tk_ == TILDE) {
         unary = p->tk_.tk_;
+        cap_token(cap, &p->tk_);
         next(p);
 
         if (p->tk_.tk_ == PLUS || p->tk_.tk_ == MINUS || p->tk_.tk_ == TILDE) {
@@ -108,6 +141,7 @@ static const char* operand_at(parser* p, value* out, int depth) {
     switch (p->tk_.tk_) {
         case NUMBER:
             v = p->tk_.val_;
+            cap_token(cap, &p->tk_);
             next(p);
             break;
 
@@ -116,18 +150,22 @@ static const char* operand_at(parser* p, value* out, int depth) {
              * being read sits: "jp $" jumps to the jp itself, and by now its
              * opcode has already been emitted. */
             v = (value) p->stmt_addr_;
+            p->pc_used_ = true;
+            cap_token(cap, &p->tk_);
             next(p);
             break;
 
         case L_BRACKET: {
+            cap_token(cap, &p->tk_);
             next(p);
-            const char* err = eval_at(p, &v, depth + 1);
+            const char* err = eval_at(p, &v, depth + 1, cap);
             if (err != NULL) {
                 return err;
             }
             if (p->tk_.tk_ != R_BRACKET) {
                 return pr_msg(p, "expected ]");
             }
+            cap_token(cap, &p->tk_);
             next(p);
             break;
         }
@@ -143,12 +181,14 @@ static const char* operand_at(parser* p, value* out, int depth) {
                 return err;
             }
             if (!known) {
-                /* An expression has to produce a value here and now; there is
-                 * nowhere to leave a hole. Instruction operands take the
-                 * fixup path instead, which is what makes a forward jump
-                 * work. */
-                return pr_msg(p, "undefined symbol");
+                /* Not an error by itself: an operand defers the whole
+                 * expression and re-evaluates it once every symbol is known.
+                 * Somewhere that cannot defer -- a directive that has to size
+                 * something now -- turns this into the error. */
+                p->undefined_ = true;
+                v = 0;
             }
+            cap_token(cap, &p->tk_);
             next(p);
             break;
         }
@@ -170,13 +210,13 @@ static const char* operand_at(parser* p, value* out, int depth) {
     return NULL;
 }
 
-static const char* eval_at(parser* p, value* out, int depth) {
+static const char* eval_at(parser* p, value* out, int depth, capture* cap) {
     if (depth >= MAX_DEPTH) {
         return pr_msg(p, "expression too deep");
     }
 
     value acc = 0;
-    const char* err = operand_at(p, &acc, depth);
+    const char* err = operand_at(p, &acc, depth, cap);
     if (err != NULL) {
         return err;
     }
@@ -186,10 +226,11 @@ static const char* eval_at(parser* p, value* out, int depth) {
      * 1+2*3 nine. */
     while (is_binary_op(p->tk_.tk_)) {
         const TOKEN op = p->tk_.tk_;
+        cap_token(cap, &p->tk_);
         next(p);
 
         value rhs = 0;
-        err = operand_at(p, &rhs, depth);
+        err = operand_at(p, &rhs, depth, cap);
         if (err != NULL) {
             return err;
         }
@@ -206,5 +247,41 @@ static const char* eval_at(parser* p, value* out, int depth) {
 }
 
 const char* expr_eval(parser* p, value* out) {
-    return eval_at(p, out, 0);
+    /* Cleared on entry: the flag is set by whichever name was undefined in
+     * *this* expression. Leaving it sticky made a deferred operand poison the
+     * next directive that evaluated anything. */
+    p->undefined_ = false;
+    p->pc_used_ = false;
+
+    const char* err = eval_at(p, out, 0, NULL);
+    if (err == NULL && p->undefined_) {
+        /* Nowhere to defer to here. */
+        return pr_msg(p, "undefined symbol");
+    }
+
+    return err;
+}
+
+const char* expr_capture(parser* p, value* out, char* text, int max,
+                         int* text_sz) {
+    p->undefined_ = false;
+    p->pc_used_ = false;
+
+    capture cap;
+    cap.buf = text;
+    cap.max = max - 1;
+    cap.n = 0;
+    cap.overflow = false;
+
+    const char* err = eval_at(p, out, 0, &cap);
+    if (err != NULL) {
+        return err;
+    }
+    if (cap.overflow) {
+        return pr_msg(p, "expression too long");
+    }
+    text[cap.n] = 0;
+    *text_sz = cap.n;
+
+    return NULL;
 }

@@ -35,21 +35,29 @@ typedef enum _fixup_kind {
     FIX_ABS8 = 0,   /* one byte, an 8-bit immediate */
     FIX_ABS16,      /* two-byte address, Z80 mode or a short suffix */
     FIX_ABS24,      /* three-byte address, ADL mode */
+    FIX_ABS32,      /* four bytes, for dw32 */
     FIX_REL8        /* one signed byte, relative to the next instruction */
 } fixup_kind;
 
 typedef struct _label_node {
-    char label_[MAX_NAME + 1];
+    /* Where the deferred expression's text lives in the stack's arena. The
+     * whole expression is kept, not just a name: "ld bc, end - start" with
+     * both labels defined further down is how a length is written, and it is
+     * in nearly every real program. Storing it as text and re-evaluating it
+     * once the symbols are known keeps that working in one pass. */
+    int text_off_;
+    int text_len_;
 
     int bpos_;   /* offset in the output buffer to patch */
     int next_;   /* address of the instruction after this one, for FIX_REL8 */
+    int here_;   /* the statement's address, so '$' still means something */
     int line_;   /* source line, so the error points at the reference */
 
     uint8_t kind_;
-    uint16_t scope_;  /* which local scope the name was written in */
+    uint16_t scope_;  /* which local scope the names were written in */
 
     /* For a forward reference to an anonymous label (@f / @n), which one in
-     * source order it means. -1 for an ordinary name. */
+     * source order it means. -1 for an ordinary expression. */
     int anon_;
 } label_node;
 
@@ -57,13 +65,23 @@ typedef struct _label_stack {
     label_node* nodes_;
     int sz_;
     int pos_;
+
+    /* Expression texts, packed end to end. Most are a few characters, so an
+     * arena costs far less than a fixed field on every node. */
+    char* text_;
+    int text_len_;
+    int text_cap_;
 } label_stack;
 
 label_stack* ls_init(label_stack* ls, int sz);
 void ls_destroy(label_stack* ls);
 
-bool ls_push(label_stack* ls, const char* label, int sz, int bpos,
-             int next, int line, fixup_kind kind, uint16_t scope, int anon);
+bool ls_push(label_stack* ls, const char* text, int sz, int bpos,
+             int next, int here, int line, fixup_kind kind, uint16_t scope,
+             int anon);
+
+/* The stored expression text for a node. */
+const char* ls_text(const label_stack* ls, const label_node* n);
 const label_node* ls_pop(label_stack* ls);
 
 #endif  // _LABEL_STACK_H_

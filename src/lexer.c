@@ -23,7 +23,7 @@ static void init_ht() {
     ht_ready = true;
 
     hash_table* ht = &reserved;
-    ht_init(ht, 128);
+    ht_init(ht, 128, true);
     ht_set(ht, "ADL", pack_tktt(DIRECTIVE, D_ADL));
     ht_set(ht, "ALIGN", pack_tktt(DIRECTIVE, D_ALIGN));
     ht_set(ht, "ASSUME", pack_tktt(DIRECTIVE, D_ASSUME));
@@ -53,6 +53,9 @@ static void init_ht() {
     ht_set(ht, "CPU", pack_tktt(DIRECTIVE, D_CPU));
     ht_set(ht, "RELOCATE", pack_tktt(DIRECTIVE, D_RELOCATE));
     ht_set(ht, "ENDRELOCATE", pack_tktt(DIRECTIVE, D_ENDRELOCATE));
+    ht_set(ht, "IF", pack_tktt(DIRECTIVE, D_IF));
+    ht_set(ht, "ELSE", pack_tktt(DIRECTIVE, D_ELSE));
+    ht_set(ht, "ENDIF", pack_tktt(DIRECTIVE, D_ENDIF));
     ht_set(ht, "A", pack_tktt(REGISTER, REG_A));
     ht_set(ht, "B", pack_tktt(REGISTER, REG_B));
     ht_set(ht, "C", pack_tktt(REGISTER, REG_C));
@@ -84,7 +87,7 @@ static void init_ht() {
     ht_set(ht, "M", pack_tktt(FLAG, F_M));
 
     ht = &instructions;
-    ht_init(ht, 255);
+    ht_init(ht, 255, true);
 
     /* Built from the generated instruction table rather than a list kept by
      * hand, so a mnemonic can never be known to the lexer and missing from the
@@ -100,6 +103,13 @@ lexer* lex_init(lexer* lex, const char* fname) {
     }
 
     lex->lcount_ = 1;
+
+    int n = 0;
+    while (fname[n] != 0 && n < (int) sizeof(lex->fname_) - 1) {
+        lex->fname_[n] = fname[n];
+        n++;
+    }
+    lex->fname_[n] = 0;
 
     init_ht();
 
@@ -251,6 +261,78 @@ int lex_string(lexer* lex, char* out, int max) {
     }
 }
 
+int lex_capture(lexer* lex, const char* stop, char* out, int max) {
+    int n = 0;
+
+    while (true) {
+        /* Read one raw line. */
+        int start = n;
+        bool got_line = false;
+        while (true) {
+            const char ch = br_peek(&lex->rd_);
+            if (!OK_CHAR(ch)) {
+                break;
+            }
+            br_next(&lex->rd_);
+            if (ch == '\n') {
+                lex->lcount_++;
+                got_line = true;
+            }
+            if (n >= max) {
+                return -2;
+            }
+            out[n++] = ch;
+            if (got_line) {
+                break;
+            }
+        }
+
+        if (n == start) {
+            return -1;  /* end of file without the terminator */
+        }
+
+        /* Does this line begin with the terminator? */
+        int i = start;
+        while (i < n && (out[i] == ' ' || out[i] == '\t' || out[i] == '\r')) {
+            i++;
+        }
+        /* The dot on a directive is optional, so the terminator may be
+         * written either "endmacro" or ".endmacro". */
+        if (i < n && out[i] == '.') {
+            i++;
+        }
+        int w = 0;
+        while (i + w < n && is_ascdig(out[i + w])) {
+            w++;
+        }
+
+        int sn = 0;
+        while (stop[sn] != 0) {
+            sn++;
+        }
+        if (w == sn) {
+            bool match = true;
+            for (int k = 0; k < w; k++) {
+                char a = out[i + k];
+                char b = stop[k];
+                if (a >= 'A' && a <= 'Z') a = (char) (a + 0x20);
+                if (b >= 'A' && b <= 'Z') b = (char) (b + 0x20);
+                if (a != b) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                return start;  /* drop the terminating line */
+            }
+        }
+
+        if (!got_line) {
+            return -1;
+        }
+    }
+}
+
 token lex_next(lexer* lex) {
     token tk = {NULL, 0, NONE, TY_NONE, 0, false};
     char ch = br_char(&lex->rd_);
@@ -351,6 +433,21 @@ token lex_next(lexer* lex) {
         push_ch(lex, &tk, ch);
         br_next(&lex->rd_);
         ch = br_peek(&lex->rd_);
+    }
+
+    /* A dot continues a name unless what has been read so far is a mnemonic,
+     * in which case it introduces a suffix instead. That is the only thing
+     * separating "rst.lil" from a label called "FFOBJID.fs", and real sources
+     * have both. */
+    while (ch == '.' && ht_nget(&instructions, tk.txt_, tk.sz_, NULL) == 0) {
+        push_ch(lex, &tk, ch);
+        br_next(&lex->rd_);
+        ch = br_peek(&lex->rd_);
+        while (OK_CHAR(ch) && is_ascdig(ch)) {
+            push_ch(lex, &tk, ch);
+            br_next(&lex->rd_);
+            ch = br_peek(&lex->rd_);
+        }
     }
 
     // A literal is claimed before a name, so Ah and 0b1h are numbers rather

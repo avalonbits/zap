@@ -48,6 +48,30 @@ buf_reader* br_open(buf_reader* br, const char* fname, int bsz_kb) {
     br->buf_ = buf;
     br->bsz_ = read;
     br->bpos_ = 0;
+    br->mem_ = false;
+    br->owned_ = true;
+
+    return br;
+}
+
+buf_reader* br_open_mem(buf_reader* br, const char* text, int len) {
+    char* buf = (char*) malloc((len > 0 ? len : 1) * sizeof(char));
+    if (buf == NULL) {
+        return NULL;
+    }
+    for (int i = 0; i < len; i++) {
+        buf[i] = text[i];
+    }
+
+    br->fh_ = 0;
+    br->fname_ = NULL;
+    br->fsz_ = len;
+    br->fread_ = 0;
+    br->buf_ = buf;
+    br->bsz_ = (uint24_t) len;
+    br->bpos_ = 0;
+    br->mem_ = true;
+    br->owned_ = true;
 
     return br;
 }
@@ -59,7 +83,9 @@ void br_close(buf_reader* br) {
 
 void br_destroy(buf_reader* br) {
     br->fname_ = 0;
-    mos_fclose(br->fh_);
+    if (br->fh_ != 0) {
+        mos_fclose(br->fh_);
+    }
     br->fh_ = 0;
     if (br->buf_ != NULL) {
         free(br->buf_);
@@ -109,7 +135,14 @@ char br_peek(buf_reader* br) {
     if (br->bsz_ == 0) {
         return EOF;
     }
-    if (br->buf_ == NULL || br->fh_ == 0) {
+    if (br->buf_ == NULL) {
+        return ESUSP;
+    }
+    if (br->mem_) {
+        /* No refill: the buffer is the whole content. */
+        return br->bpos_ == br->bsz_ ? EOF : br->buf_[br->bpos_];
+    }
+    if (br->fh_ == 0) {
         return ESUSP;
     }
     if (br->bpos_ == br->bsz_) {
@@ -128,7 +161,7 @@ void br_next(buf_reader* br) {
     if (br->bsz_ == 0) {
         return;
     }
-    if (br->buf_ == NULL || br->fh_ == 0) {
+    if (br->buf_ == NULL || (!br->mem_ && br->fh_ == 0)) {
         return;
     }
     if (br->bpos_ <= br->bsz_) {
@@ -140,7 +173,14 @@ int br_byte(buf_reader* br) {
     if (br->bsz_ == 0) {
         return -1;
     }
-    if (br->buf_ == NULL || br->fh_ == 0) {
+    if (br->buf_ == NULL) {
+        return -1;
+    }
+    if (br->mem_) {
+        return br->bpos_ == br->bsz_ ? -1
+             : (int) (unsigned char) br->buf_[br->bpos_++];
+    }
+    if (br->fh_ == 0) {
         return -1;
     }
     if (br->bpos_ == br->bsz_) {

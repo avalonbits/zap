@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static uint8_t pearson_random[256] = {
+const uint8_t pearson_random[256] = {
       1,  87,  49,  12, 176, 178, 102, 166, 121, 193,   6,  84, 249, 230,  44, 163,
      14, 197, 213, 181, 161,  85, 218,  80,  64, 239,  24, 226, 236, 142,  38, 200,
     110, 177, 104, 103, 141, 253, 255,  50,  77, 101,  81,  18,  45,  96,  31, 222,
@@ -23,7 +23,7 @@ static uint8_t pearson_random[256] = {
      51,  65,  28, 144, 254, 221,  93, 189, 194, 139, 112,  43,  71, 109, 184, 209
 };
 
-static char upper(const char ch) {
+char ht_upper(const char ch) {
     if (ch >= 0x61 && ch <= 0x7A) {
         return ch - 0x20;
     }
@@ -43,26 +43,6 @@ uint16_t pearson_hash(const char* key, uint8_t sz, bool icase) {
  * Only the label table is ever big enough to need it. Paying for it on the
  * reserved-word table, which holds 175 names and never grows, was making
  * every identifier in the source more expensive to reject. */
-uint16_t pearson_hash_n(const char* key, uint8_t sz, bool icase, bool wide) {
-    uint8_t h1 = 0;
-
-    if (!wide) {
-        for (uint8_t i = 0; i < sz; i++) {
-            h1 = pearson_random[h1 ^ (uint8_t) (icase ? upper(key[i]) : key[i])];
-        }
-
-        return h1;
-    }
-
-    uint8_t h2 = 0x5A;
-    for (uint8_t i = 0; i < sz; i++) {
-        const uint8_t ch = (uint8_t) (icase ? upper(key[i]) : key[i]);
-        h1 = pearson_random[h1 ^ ch];
-        h2 = pearson_random[h2 ^ ch];
-    }
-
-    return (uint16_t) (((uint16_t) h1 << 8) | h2);
-}
 
 /* Buckets are a power of two so the index is a mask rather than a modulo --
  * the eZ80 has no divide. */
@@ -128,8 +108,8 @@ void ht_clear(hash_table* ht) {
  * well, because the stored key no longer has one. */
 static bool key_equal(const char* s1, const char* s2, uint8_t ksz, bool icase) {
     for (uint8_t i = 0; i < ksz; i++) {
-        const char ch1 = icase ? upper(s1[i]) : s1[i];
-        const char ch2 = icase ? upper(s2[i]) : s2[i];
+        const char ch1 = icase ? ht_upper(s1[i]) : s1[i];
+        const char ch2 = icase ? ht_upper(s2[i]) : s2[i];
         if (ch1 != ch2) {
             return false;
         }

@@ -207,6 +207,65 @@ int main(void) {
         ht_destroy(&kt);
     }
 
+    /* The hash is defined in the header now, so every translation unit builds
+     * its own copy: a lookup is three calls around roughly three table lookups
+     * of work, and at an average key of 3.3 characters the call cost more than
+     * the hash did.
+     *
+     * These pin the values it produces, from a different translation unit than
+     * the table it indexes. They are not arbitrary: the case-insensitive
+     * hash has to agree with the case-insensitive comparison or a lookup lands
+     * in the wrong bucket and a mnemonic stops resolving, and the wide hash
+     * has to keep the narrow one as its high byte. */
+    {
+        static const struct {
+            const char* key;
+            uint8_t len;
+            uint16_t narrow_cs;
+            uint16_t narrow_ci;
+            uint16_t wide_ci;
+        } vectors[] = {
+            {"a",           1,  0x0038, 0x00EA, 0xEAE2},
+            {"ld",          2,  0x006D, 0x0012, 0x1217},
+            {"LD",          2,  0x0012, 0x0012, 0x1217},
+            {"hl",          2,  0x0092, 0x005A, 0x5A3B},
+            {"start",       5,  0x00FD, 0x0051, 0x51EA},
+            {"ENDRELOCATE", 11, 0x00F1, 0x00F1, 0xF1FC},
+            {"z",           1,  0x005C, 0x0011, 0x1101},
+        };
+        bool all = true;
+        for (unsigned i = 0; i < sizeof(vectors) / sizeof(vectors[0]); i++) {
+            const uint16_t cs = pearson_hash_n(vectors[i].key, vectors[i].len,
+                                               false, false);
+            const uint16_t ci = pearson_hash_n(vectors[i].key, vectors[i].len,
+                                               true, false);
+            const uint16_t wd = pearson_hash_n(vectors[i].key, vectors[i].len,
+                                               true, true);
+            if (cs != vectors[i].narrow_cs || ci != vectors[i].narrow_ci
+                || wd != vectors[i].wide_ci) {
+                fprintf(stderr, "      %s: got %04X/%04X/%04X want %04X/%04X/%04X\n",
+                        vectors[i].key, cs, ci, wd, vectors[i].narrow_cs,
+                        vectors[i].narrow_ci, vectors[i].wide_ci);
+                all = false;
+            }
+        }
+        check("hash values are unchanged", all);
+
+        /* "ld" and "LD" differ case-sensitively and agree case-insensitively,
+         * which is the property the two tables depend on. */
+        check("case folding is in the hash, not just the comparison",
+              pearson_hash_n("ld", 2, false, false)
+                  != pearson_hash_n("LD", 2, false, false)
+              && pearson_hash_n("ld", 2, true, false)
+                  == pearson_hash_n("LD", 2, true, false));
+
+        /* The wide hash carries the narrow one in its high byte, so widening a
+         * table cannot change which keys were colliding for the wrong reason. */
+        check("the wide hash keeps the narrow one as its high byte",
+              (pearson_hash_n("start", 5, true, true) >> 8)
+                  == pearson_hash_n("start", 5, true, false));
+    }
+
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);
     }

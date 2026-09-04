@@ -112,8 +112,10 @@ static const char* operand_at(parser* p, value* out, int depth) {
             break;
 
         case DOLLAR:
-            /* A bare '$' is where this instruction starts. */
-            v = (value) (p->pos_ + p->org_);
+            /* A bare '$' is where this statement starts, not where the operand
+             * being read sits: "jp $" jumps to the jp itself, and by now its
+             * opcode has already been emitted. */
+            v = (value) p->stmt_addr_;
             next(p);
             break;
 
@@ -131,12 +133,20 @@ static const char* operand_at(parser* p, value* out, int depth) {
         }
 
         case NAME: {
-            bool ok = false;
-            const int addr = ht_nget(&p->labels_, p->tk_.txt_, p->tk_.sz_, &ok);
-            if (!ok) {
+            bool known = false;
+            int anon = -1;
+            const char* err = pr_resolve(p, p->tk_.txt_, p->tk_.sz_, &v,
+                                         &known, &anon);
+            if (err != NULL) {
+                return err;
+            }
+            if (!known) {
+                /* An expression has to produce a value here and now; there is
+                 * nowhere to leave a hole. Instruction operands take the
+                 * fixup path instead, which is what makes a forward jump
+                 * work. */
                 return pr_msg(p, "undefined symbol");
             }
-            v = (value) addr;
             next(p);
             break;
         }

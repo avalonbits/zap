@@ -34,13 +34,20 @@ parser* pr_init(parser* p, const char* fname) {
     p->sz_ = 128 << 10;
     p->buf_ = (uint8_t*) malloc(p->sz_ * sizeof(uint8_t));
     if (p->buf_ == NULL) {
+        ht_destroy(&p->labels_);
         lex_destroy(&p->lex_);
+
         return NULL;
     }
 
     if (ls_init(&p->ls_, 1024) == NULL) {
+        /* This used to fall through and hand back a parser whose label stack
+         * had never been allocated. */
         free(p->buf_);
+        ht_destroy(&p->labels_);
         lex_destroy(&p->lex_);
+
+        return NULL;
     }
 
     /* The Agon load address for an ordinary program, and the reference's
@@ -61,6 +68,9 @@ uint8_t* pr_buf(parser* p, int* sz) {
 
 void pr_destroy(parser* p) {
     free(p->buf_);
+    p->buf_ = NULL;
+    ls_destroy(&p->ls_);
+    ht_destroy(&p->labels_);
     lex_destroy(&p->lex_);
 }
 

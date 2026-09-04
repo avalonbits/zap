@@ -64,6 +64,26 @@ hash_table* ht_init(hash_table* ht, int entries) {
     return ht;
 }
 
+/* Frees the bucket array and every node chained off it. Buckets themselves
+ * live in the array; only the overflow nodes were malloc'd separately. */
+void ht_destroy(hash_table* ht) {
+    if (ht->node_ == NULL) {
+        return;
+    }
+
+    for (uint24_t i = 0; i < ht->sz_; i++) {
+        hash_node* n = ht->node_[i].next_;
+        while (n != NULL) {
+            hash_node* next = n->next_;
+            free(n);
+            n = next;
+        }
+    }
+    free(ht->node_);
+    ht->node_ = NULL;
+    ht->sz_ = 0;
+}
+
 void ht_clear(hash_table* ht) {
     for (uint24_t i = 0; i < ht->sz_; i++) {
         ht->node_[i].key_[0] = 0;

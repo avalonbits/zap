@@ -126,6 +126,35 @@ int main(void) {
     if (esc_char('+', &c)) { fprintf(stderr, "FAIL  escape '\\+' accepted\n"); failures++; }
     fprintf(stderr, "PASS  %-16s ok\n", "escapes");
 
+    /* The cheap guard that lets num_parse reject a name without scanning it
+     * looks only at the first and last character. Rejecting too eagerly would
+     * be silent and wrong -- the text would come back as a name and resolve
+     * against a symbol that does not exist -- so the boundary is pinned from
+     * both sides here.
+     *
+     * These must survive it: the letter-initial forms are literals only
+     * because of their final character, which is the whole reason the guard
+     * cannot just test the first one. */
+    ok("Ah", 0x0A);       /* letter first, 'h' last  */
+    ok("ffh", 0xFF);      /* all letters             */
+    ok("1010b", 0x0A);    /* digit first, 'b' last: binary suffix */
+    ok("$FF", 0xFF);      /* prefix form             */
+    ok("%1010", 0x0A);    /* prefix form             */
+    ok("9", 9);           /* lone digit              */
+    ok("0b1h", 0xB1);     /* the suffix/prefix overlap */
+
+    /* And these must still be rejected, as they were before the guard: the
+     * guard only ever declines to scan, it never accepts. */
+    rejected("hello");          /* neither digit-initial nor h/b-final */
+    rejected("loop");
+    rejected("_start");
+    rejected("push");           /* ends in 'h' -- the guard lets it through, and
+                           * scan_base still has to reject it */
+    rejected("sub");            /* ends in 'b', same */
+    rejected("label_b");
+    rejected("g");              /* lone non-digit */
+    rejected("fb");             /* 'b' suffix, but 'f' is not a binary digit */
+
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);
     }

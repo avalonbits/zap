@@ -69,8 +69,13 @@ typedef struct _parser {
     int anon_[256];
     int anon_count_;
 
-    /* Kept so the constant prescan can re-open the source. */
+    /* How the constant prescan re-reads the source: by name for a file, or by
+     * pointer for one held in memory. The caller's text has to stay valid for
+     * the duration of the parse, which it does -- the parser does not outlive
+     * the call. */
     const char* fname_;
+    const char* mem_;
+    int mem_len_;
 
     /* Sources suspended by an .include, innermost last. next() pops one when
      * the current file runs out, so an include reads as if its text had been

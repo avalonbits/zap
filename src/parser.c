@@ -109,6 +109,8 @@ static parser* pr_setup(parser* p, const char* fname) {
     p->last_label_sz_ = 0;
     p->anon_count_ = 0;
     p->fname_ = fname;
+    p->mem_ = NULL;
+    p->mem_len_ = 0;
     p->inc_depth_ = 0;
     p->has_diag_ = false;
     mt_init(&p->macros_);
@@ -152,11 +154,16 @@ parser* pr_init_mem(parser* p, const char* text, int len, const char* name) {
      * never calls. */
     lex_prime();
 
-    /* fname_ stays NULL: the constant prescan re-opens the source by name,
-     * and there is no name to re-open. Assembling from memory therefore does
-     * one pass over the text, and a constant used before its definition is
-     * deferred rather than folded early. */
-    return pr_setup(p, NULL);
+    if (pr_setup(p, NULL) == NULL) {
+        return NULL;
+    }
+
+    /* The prescan re-reads from the same text, so assembling from memory
+     * behaves exactly as assembling the same source from a file does. */
+    p->mem_ = text;
+    p->mem_len_ = len;
+
+    return p;
 }
 
 uint8_t* pr_buf(parser* p, int* sz) {
@@ -1344,8 +1351,8 @@ static const char* post_process(parser* p) {
  * the real pass, with the right line number and without this one having to
  * guess whether a name it has not reached yet is a mistake. */
 static void pr_prescan(parser* p) {
-    if (p->fname_ == NULL) {
-        return;  /* assembling from memory: nothing to re-open */
+    if (p->fname_ == NULL && p->mem_ == NULL) {
+        return;
     }
 
     lexer saved_lex = p->lex_;
@@ -1355,10 +1362,19 @@ static void pr_prescan(parser* p) {
     const bool saved_ws = p->skip_ws_;
     const int saved_depth = p->inc_depth_;
 
-    if (lex_init(&p->lex_, p->fname_) == NULL) {
-        p->lex_ = saved_lex;
+    if (p->fname_ != NULL) {
+        if (lex_init(&p->lex_, p->fname_) == NULL) {
+            p->lex_ = saved_lex;
 
-        return;
+            return;
+        }
+    } else {
+        if (br_open_mem(&p->lex_.rd_, p->mem_, p->mem_len_) == NULL) {
+            p->lex_ = saved_lex;
+
+            return;
+        }
+        p->lex_.lcount_ = 1;
     }
     p->scope_ = 0;
     p->pos_ = 0;

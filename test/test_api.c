@@ -122,6 +122,18 @@ int main(void) {
         zap_free(&r);
     }
 
+    /* The prescan runs for a memory source too, so a constant used before its
+     * definition folds the same way it would from a file -- including in a
+     * size-determining position, which cannot be deferred. */
+    {
+        zap_result r;
+        const char* fwd = "  ds SIZE\n  db 9\nSIZE: equ 4\n";
+        const bool ok = zap_assemble_mem(fwd, (int) strlen(fwd), "m", &r);
+        check("constant used before definition, from memory",
+              ok && r.size == 5 && r.bytes[4] == 0x09);
+        zap_free(&r);
+    }
+
     /* Empty and comment-only sources assemble to nothing rather than failing. */
     {
         zap_result r;

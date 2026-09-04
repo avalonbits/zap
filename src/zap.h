@@ -67,7 +67,9 @@ typedef struct _zap_result {
 bool zap_assemble_file(const char* path, zap_result* out);
 
 /* Assembles source held in memory. `name` is what diagnostics call it, and
- * may be NULL. The text is not modified and need not outlive the call.
+ * may be NULL. The text is not modified, and has to stay valid for the
+ * duration of the call -- it is read twice, once by the constant prescan and
+ * once by the assembly proper -- but need not outlive it.
  *
  * An .include inside it still reads from the filesystem, relative to the
  * working directory. */

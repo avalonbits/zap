@@ -484,6 +484,18 @@ static const char* parse_org(parser* p) {
     } else if (v < p->addr_) {
         return pr_msg(p, "new address lower than current address");
     }
+    /* .org writes the gap out immediately, unlike ds and align, which only
+     * leave one and let a later byte materialise it. "org 0 / db 1 / org 10h"
+     * gives 16 bytes in the reference even with nothing after it, where the
+     * same shape written with align gives 1. */
+    if (p->high_ > 0) {
+        while (p->addr_ < v) {
+            if (!pr_wbyte(p, p->fill_)) {
+                return pr_msg(p, "output too large");
+            }
+        }
+    }
+
     p->org_ = v;
     p->addr_ = v;
     p->pos_ = p->addr_ - p->start_;

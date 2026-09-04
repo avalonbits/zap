@@ -1,6 +1,6 @@
 #include "lex_types.h"
 
-#include <agon/vdp_vdu.h>
+#include <agon/mos.h>
 
 int pack_tktt(TOKEN tk, TK_TYPE tt) {
     return (((int)tt) << 12) | ((int)tk);

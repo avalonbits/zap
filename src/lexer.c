@@ -1,13 +1,25 @@
 #include "lexer.h"
 
-#include <agon/vdp_vdu.h>
+#include <agon/mos.h>
+#include <stdbool.h>
 #include <stdlib.h>
 
 #include "hash_table.h"
 
 static hash_table reserved;
 static hash_table instructions;
+
+/* The reserved-word and mnemonic tables are immutable and shared by every
+ * lexer, so they are built once. Rebuilding them per lex_init -- which is what
+ * used to happen -- leaked both tables on every open. */
+static bool ht_ready = false;
+
 static void init_ht() {
+    if (ht_ready) {
+        return;
+    }
+    ht_ready = true;
+
     hash_table* ht = &reserved;
     ht_init(ht, 64);
     ht_set(ht, "ADL", pack_tktt(DIRECTIVE, D_ADL));

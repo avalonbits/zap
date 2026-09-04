@@ -1,6 +1,6 @@
 #include "instruction_parser.h"
 
-#include <mos_api.h>
+#include <agon/mos.h>
 
 #include "hash_table.h"
 #include "parser.h"

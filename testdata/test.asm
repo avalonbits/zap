@@ -1,4 +1,4 @@
-    .ASSUMED ADL = 1
+    .ASSUME ADL = 1
     .ORG $400000
 
     jp _start

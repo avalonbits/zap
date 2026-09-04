@@ -1,5 +1,5 @@
 #include <string.h>
-#include <mos_api.h>
+#include <agon/mos.h>
 
 #include "conv.h"
 #include "lexer.h"

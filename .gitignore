@@ -1,0 +1,3 @@
+obj/
+bin/*.map
+bin/*.noname.bin

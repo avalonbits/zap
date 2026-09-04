@@ -19,6 +19,7 @@
 #include <unistd.h>
 
 #include "lexer.h"
+#include "parser.h"
 
 static int failures = 0;
 
@@ -121,6 +122,24 @@ static const char* lex_all(const char* src) {
 }
 
 int main(void) {
+    /* The lexer's buffer is not free to grow. Every source suspended by an
+     * .include keeps its buffer while it waits, so a full include stack holds
+     * MAX_INCLUDE_DEPTH + 1 of them at the same time. At 64 KiB -- which this
+     * briefly was -- that is 576 KiB, more than an Agon Light's 512 KiB of
+     * SRAM, so a deeply nested source could not be assembled at all.
+     *
+     * The speed argument does not justify it either: across 8, 16, 32 and 64
+     * KiB the whole range is within 0.04% on the host, and past 16 it is a
+     * slight loss on sources made of many small files. 16 is what the Agon
+     * sweep settled on and what the change was benchmarked at. */
+    {
+        const int worst_kb = LEX_BUF_KB * (MAX_INCLUDE_DEPTH + 1);
+        fprintf(stderr, "      %d KiB buffer x %d sources = %d KiB\n",
+                LEX_BUF_KB, MAX_INCLUDE_DEPTH + 1, worst_kb);
+        check_s("lexer buffers fit an Agon with room to spare",
+                worst_kb <= 192 ? "ok" : "too big", "ok");
+    }
+
     /* Mnemonics, registers and flags resolve through the reserved tables, and
      * the lookup is case-insensitive. */
     check_s("instruction and register",

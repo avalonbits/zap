@@ -101,7 +101,7 @@ void lex_prime(void) {
 }
 
 lexer* lex_init(lexer* lex, const char* fname) {
-    if (br_open(&lex->rd_, fname, 64) == NULL) {
+    if (br_open(&lex->rd_, fname, LEX_BUF_KB) == NULL) {
         return NULL;
     }
 

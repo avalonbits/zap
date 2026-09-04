@@ -9,6 +9,11 @@
 #include "label_stack.h"
 #include "lexer.h"
 
+/* How many sources may be suspended by nested .includes at once. Each one
+ * keeps its lexer buffer while suspended, so this bounds memory as well as
+ * nesting -- see LEX_BUF_KB. */
+#define MAX_INCLUDE_DEPTH 8
+
 typedef struct _parser {
     lexer lex_;
     uint8_t* buf_;
@@ -80,7 +85,7 @@ typedef struct _parser {
     /* Sources suspended by an .include, innermost last. next() pops one when
      * the current file runs out, so an include reads as if its text had been
      * written in place. */
-    lexer inc_[8];
+    lexer inc_[MAX_INCLUDE_DEPTH];
     int inc_depth_;
 
     /* The scope to restore when each suspended source resumes. A macro
@@ -89,12 +94,12 @@ typedef struct _parser {
      * defined before a macro call and the one referenced after it are two
      * different symbols, inside the same routine. An include does not get a
      * new scope, so it restores the one it had. */
-    uint16_t inc_scope_[8];
+    uint16_t inc_scope_[MAX_INCLUDE_DEPTH];
 
     /* Which suspended sources are macro expansions rather than includes. A
      * macro body may only define local labels: a global or anonymous one
      * would be redefined on every invocation. */
-    bool inc_macro_[8];
+    bool inc_macro_[MAX_INCLUDE_DEPTH];
     int macro_depth_;
 
     /* Macros, kept as body text. Expansion substitutes into the text and the

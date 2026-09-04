@@ -18,6 +18,18 @@ typedef struct _buf_reader  {
     uint24_t fread_;
 
     char* buf_;
+
+    /* cap_ is how much the buffer holds, raw_ how much was read into it, and
+     * bsz_ how much of that the reader hands out. bsz_ used to be all three,
+     * so a short read shrank the buffer permanently.
+     *
+     * For a source file they differ on purpose: a read is trimmed back to the
+     * last newline in it, so bsz_ always ends a line, and the bytes between
+     * bsz_ and raw_ are the start of the next one, carried to the front of the
+     * buffer on the next refill. A token can then point straight into buf_ --
+     * it cannot span a refill, because a refill only happens at a line end. */
+    uint24_t cap_;
+    uint24_t raw_;
     uint24_t bsz_;
     uint24_t bpos_;
 
@@ -87,6 +99,14 @@ int br_byte(buf_reader* br);
  * or 0 at end of file; *out points into the reader's buffer and is valid
  * until the next read. Used by .incbin, which copies whole files. */
 int br_block(buf_reader* br, const char** out);
+
+/* Refills so the buffer holds whole lines: reads, then trims back to the last
+ * newline, carrying the partial line after it to the front next time. Returns
+ * false at end of file; *too_long is set if one line does not fit the buffer.
+ *
+ * This is the lexer's refill. Binary data has no newlines, so .incbin keeps
+ * using br_block, which refills without trimming. */
+bool br_fill_lines(buf_reader* br, bool* too_long);
 char br_peek(buf_reader* br);
 void br_next(buf_reader* br);
 

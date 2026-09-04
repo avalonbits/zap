@@ -48,6 +48,10 @@ typedef enum _TOKEN {
     // A character literal that is empty, unterminated, holds more than one
     // character, or uses an escape that does not exist.
     BAD_LITERAL,
+
+    /* A line longer than the reader's whole buffer, which is the only way
+     * the buffer can fail to end on a newline. */
+    LINE_TOO_LONG,
     DIRECTIVE,
     INSTRUCTION,
     REGISTER,

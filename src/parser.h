@@ -168,7 +168,7 @@ static inline void next(parser* p) {
          * often has no trailing newline, and without this it ran on into the
          * line after the .include. */
         p->tk_.tk_ = NEW_LINE;
-        p->tk_.txt_ = p->lex_.line_;
+        p->tk_.txt_ = NULL;   /* synthesised: there is no source text for it */
         p->tk_.sz_ = 0;
         p->tk_.val_ = 0;
         p->tk_.label_ = false;

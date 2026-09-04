@@ -1483,6 +1483,13 @@ const char* pr_parse(parser* p) {
         p->stmt_addr_ = pr_addr(p);
         p->stmt_line_ = p->lex_.lcount_;
 
+        /* Checked before the conditional skip below: the line is read before
+         * any conditional is, so one too long to read is an error even inside
+         * a branch that would have skipped it. */
+        if (p->tk_.tk_ == LINE_TOO_LONG) {
+            return pr_msg(p, "line too long");
+        }
+
         /* Inside a false branch only the conditional directives themselves
          * are read; everything else is passed over. A nested .if still has to
          * be counted, or its .endif would close the outer one. */

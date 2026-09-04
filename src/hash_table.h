@@ -15,11 +15,17 @@ typedef struct _hash_node {
 typedef struct _hash_table {
     hash_node* node_;
     uint24_t sz_;
+
+    /* Whether lookups ignore case. The reserved words do -- "LD" and "ld" are
+     * the same mnemonic -- but labels do not: the reference treats Foo and foo
+     * as two symbols, and real code relies on it, with a constant ENEMY_UP
+     * sitting alongside a routine called enemy_up. */
+    bool icase_;
 } hash_table;
 
-uint8_t pearson_hash(const char* key, uint8_t sz);
+uint8_t pearson_hash(const char* key, uint8_t sz, bool icase);
 
-hash_table* ht_init(hash_table* ht, int entries);
+hash_table* ht_init(hash_table* ht, int entries, bool icase);
 void ht_clear(hash_table* ht);
 void ht_destroy(hash_table* ht);
 

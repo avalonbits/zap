@@ -7,6 +7,7 @@
 
 #include "conv.h"
 #include "expr.h"
+#include "macro.h"
 #include "value.h"
 #include "encode.h"
 #include "isa.h"
@@ -70,7 +71,8 @@ parser* pr_init(parser* p, const char* fname) {
     if (lex_init(&p->lex_, fname) == NULL) {
         return NULL;
     }
-    if (ht_init(&p->labels_, 255) == 0) {
+    /* Labels are case-sensitive; only the reserved words are not. */
+    if (ht_init(&p->labels_, 255, false) == 0) {
         lex_destroy(&p->lex_);
         return NULL;
     }
@@ -109,6 +111,13 @@ parser* pr_init(parser* p, const char* fname) {
     p->anon_count_ = 0;
     p->fname_ = fname;
     p->inc_depth_ = 0;
+    mt_init(&p->macros_);
+    p->expand_id_ = 0;
+    p->macro_depth_ = 0;
+    p->cond_depth_ = 0;
+    p->skip_depth_ = 0;
+    p->undefined_ = false;
+    p->pc_used_ = false;
     p->adl_ = true;
     p->cpu_ = CPU_EZ80;
     p->skip_ws_ = true;
@@ -126,6 +135,15 @@ uint8_t* pr_buf(parser* p, int* sz) {
 
 
 void pr_destroy(parser* p) {
+    /* Unwind anything an include or a macro expansion left suspended. A parse
+     * that fails part way through one never pops back out, so without this
+     * every source still on the stack leaks its read buffer. */
+    while (p->inc_depth_ > 0) {
+        br_destroy(&p->lex_.rd_);
+        p->lex_ = p->inc_[--p->inc_depth_];
+    }
+
+    mt_destroy(&p->macros_);
     free(p->buf_);
     p->buf_ = NULL;
     ls_destroy(&p->ls_);
@@ -144,7 +162,12 @@ token next(parser* p) {
                  * had been written in place. */
                 if (p->inc_depth_ > 0) {
                     br_destroy(&p->lex_.rd_);
-                    p->lex_ = p->inc_[--p->inc_depth_];
+                    --p->inc_depth_;
+                    p->lex_ = p->inc_[p->inc_depth_];
+                    p->scope_ = p->inc_scope_[p->inc_depth_];
+                    if (p->inc_macro_[p->inc_depth_]) {
+                        p->macro_depth_--;
+                    }
                     p->comment_ = false;
 
                     /* The end of an included file ends the line as well. Its
@@ -185,11 +208,20 @@ token next(parser* p) {
 }
 
 const char* pr_msg(parser* p, const char* msg) {
-    strcpy(errmsg, "Line ");
-    i2s(p->lex_.lcount_, &errmsg[5], sizeof(errmsg) - 5);
+    errmsg[0] = 0;
+    if (p->lex_.fname_[0] != 0) {
+        strcat(errmsg, p->lex_.fname_);
+        strcat(errmsg, " ");
+    }
+    strcat(errmsg, "line ");
+
+    char num[16];
+    i2s(p->lex_.lcount_, num, sizeof(num));
+    strcat(errmsg, num);
     strcat(errmsg, ": ");
     strcat(errmsg, msg);
     strcat(errmsg, "\r\n");
+
     return errmsg;
 }
 
@@ -253,7 +285,7 @@ const char* pr_resolve(parser* p, const char* name, int sz, value* out,
 
 static const char* parse_adl(parser* p) {
     next(p);
-    if (p->tk_.tt_ != D_ADL) {
+    if (p->tk_.tk_ != DIRECTIVE || p->tk_.tt_ != D_ADL) {
         return pr_msg(p, "expected ADL");
     }
 
@@ -345,10 +377,11 @@ static void pr_skip(parser* p, int n) {
 }
 
 /* Leaves a hole of the right width and remembers how to fill it. */
-const char* pr_stack_fixup(parser* p, const char* label, int sz,
+const char* pr_stack_fixup(parser* p, const char* text, int sz,
                            fixup_kind kind, int anon) {
     const int width = (kind == FIX_REL8 || kind == FIX_ABS8) ? 1
-                    : (kind == FIX_ABS16 ? 2 : 3);
+                    : (kind == FIX_ABS16) ? 2
+                    : (kind == FIX_ABS24) ? 3 : 4;
     const int bpos = p->pos_;
 
     for (int i = 0; i < width; i++) {
@@ -359,9 +392,9 @@ const char* pr_stack_fixup(parser* p, const char* label, int sz,
 
     /* addr_ is now the address of the next instruction, which is exactly what
      * a relative displacement is measured from. */
-    if (!ls_push(&p->ls_, label, sz, bpos, pr_addr(p), p->lex_.lcount_,
-                 kind, p->scope_, anon)) {
-        return pr_msg(p, "label too long");
+    if (!ls_push(&p->ls_, text, sz, bpos, pr_addr(p), p->stmt_addr_,
+                 p->lex_.lcount_, kind, p->scope_, anon)) {
+        return pr_msg(p, "too many forward references");
     }
 
     return NULL;
@@ -444,6 +477,8 @@ static const char* parse_quoted(parser* p) {
 }
 
 
+static const char* emit_expr(parser* p, int width);
+
 static const char* parse_db(parser* p) {
     next(p);
     if (p->tk_.tk_ == NEW_LINE || p->tk_.tk_ == NONE) {
@@ -458,19 +493,15 @@ static const char* parse_db(parser* p) {
             }
             next(p);
         } else {
-            /* Every element is a full expression now, so db 'a'+1 and
-             * db 128+127-255 work the same way the reference reads them. */
-            value v = 0;
-            const char* err = expr_eval(p, &v);
+            /* Every element is a full expression, so db 'a'+1 and
+             * db 128+127-255 work the way the reference reads them. Out of
+             * range truncates rather than failing: the reference warns
+             * ("Value truncated to 8 bit") and emits the low byte, so
+             * refusing would diverge on a source it accepts. */
+            const char* err = emit_expr(p, 1);
             if (err != NULL) {
                 return err;
             }
-            /* Out of range truncates rather than failing. The reference
-             * warns ("Value truncated to 8 bit") and carries on emitting the
-             * low byte, so refusing here would diverge on any source it
-             * accepts. zap has nowhere to put a warning until diagnostics
-             * exist; the byte is what has to match. */
-            pr_wbyte(p, (uint8_t) (v & 0xFF));
         }
 
         // Either a comma, because there is more to process, or the end of the line.
@@ -564,6 +595,172 @@ static const char* read_string(parser* p, char* buf, int max, int* out_sz) {
     return NULL;
 }
 
+/* Reads a macro definition: the name, the argument names, then the body text
+ * up to endmacro. The body is kept verbatim -- expansion substitutes into it
+ * before it is lexed. */
+/* Whether a token came from an identifier run, whatever the reserved-word
+ * tables made of it. A macro may be named anything spelled that way -- "m" is
+ * a real macro name in the reference's corpus, and the lexer hands it back as
+ * the M condition code. */
+static bool ident_like(TOKEN tk) {
+    return tk == NAME || tk == INSTRUCTION || tk == DIRECTIVE
+        || tk == REGISTER || tk == FLAG;
+}
+
+static const char* parse_macro(parser* p) {
+    next(p);
+    if (!ident_like(p->tk_.tk_)) {
+        return pr_msg(p, "expected a macro name");
+    }
+
+    char name[MAX_NAME + 1];
+    int name_sz = p->tk_.sz_;
+    if (name_sz > MAX_NAME) {
+        return pr_msg(p, "name too long");
+    }
+    for (int i = 0; i < name_sz; i++) {
+        name[i] = p->tk_.txt_[i];
+    }
+
+    char args[MACRO_MAX_ARGS][MAX_NAME + 1];
+    int arg_sz[MACRO_MAX_ARGS];
+    int argc = 0;
+
+    next(p);
+    while (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
+        if (p->tk_.tk_ == COMMA) {
+            next(p);
+            continue;
+        }
+        /* The name has to be an identifier: a number or a reserved word
+         * cannot be substituted for, so "macro test 1" and "macro test and"
+         * are both rejected -- as they are by the reference. */
+        if (p->tk_.tk_ != NAME || p->tk_.sz_ <= 0 || p->tk_.sz_ > MAX_NAME) {
+            return pr_msg(p, "bad macro argument name");
+        }
+        if (argc == MACRO_MAX_ARGS) {
+            return pr_msg(p, "too many macro arguments");
+        }
+        for (int i = 0; i < p->tk_.sz_; i++) {
+            args[argc][i] = p->tk_.txt_[i];
+        }
+        arg_sz[argc] = p->tk_.sz_;
+        argc++;
+        next(p);
+    }
+
+    char* body = (char*) malloc(4096);
+    if (body == NULL) {
+        return pr_msg(p, "out of memory");
+    }
+    const int n = lex_capture(&p->lex_, "endmacro", body, 4096);
+    if (n < 0) {
+        free(body);
+
+        return pr_msg(p, n == -1 ? "macro without endmacro" : "macro body too long");
+    }
+
+    macro* m = mt_add(&p->macros_, name, name_sz, body, n);
+    if (m == NULL) {
+        free(body);
+
+        return pr_msg(p, "duplicate or too many macros");
+    }
+    for (int i = 0; i < argc; i++) {
+        for (int k = 0; k < arg_sz[i]; k++) {
+            m->args[i][k] = args[i][k];
+        }
+        m->arg_sz[i] = arg_sz[i];
+    }
+    m->argc = argc;
+
+    return NULL;
+}
+
+/* Expands a macro in place, as if its text had been written at the call. */
+static const char* expand_macro(parser* p, const macro* m) {
+    char argv[MACRO_MAX_ARGS][MACRO_ARG_MAX];
+    int argl[MACRO_MAX_ARGS];
+    int argc = 0;
+
+    /* Arguments are taken as raw text, so a register or an expression can be
+     * passed as readily as a number. */
+    next(p);
+    while (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
+        if (p->tk_.tk_ == COMMA) {
+            next(p);
+            continue;
+        }
+        if (argc == MACRO_MAX_ARGS) {
+            return pr_msg(p, "too many macro arguments");
+        }
+
+        int n = 0;
+        /* An argument runs to the next comma; a negative number and a
+         * bracketed expression both arrive as several tokens. */
+        while (p->tk_.tk_ != COMMA && p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
+            for (int i = 0; i < p->tk_.sz_; i++) {
+                /* Too long is reported rather than trimmed: a truncated
+                 * argument expands into something that still looks like
+                 * source, so it emits wrong bytes or fails somewhere else
+                 * with an error that does not name the real problem. */
+                /* The buffer holds MACRO_ARG_MAX characters; the length is
+                 * carried separately, so no terminator is needed and all of
+                 * them are usable. A quoted 64-character filename is exactly
+                 * this long, and the reference allows it. */
+                if (n >= MACRO_ARG_MAX) {
+                    return pr_msg(p, "macro argument too long");
+                }
+                argv[argc][n++] = p->tk_.txt_[i];
+            }
+            next(p);
+        }
+        argl[argc] = n;
+        argc++;
+    }
+
+    if (argc != m->argc) {
+        return pr_msg(p, "wrong number of macro arguments");
+    }
+
+    static char expanded[8192];
+    const int n = mt_expand(m, argv, argl, argc, expanded, sizeof(expanded));
+    if (n < 0) {
+        return pr_msg(p, "macro expansion too long");
+    }
+
+    if (p->inc_depth_ == (int) (sizeof(p->inc_) / sizeof(p->inc_[0]))) {
+        return pr_msg(p, "macros nested too deeply");
+    }
+
+    lexer nested;
+    if (br_open_mem(&nested.rd_, expanded, n) == NULL) {
+        return pr_msg(p, "out of memory");
+    }
+    nested.lcount_ = p->lex_.lcount_;
+    for (int i = 0; i < (int) sizeof(nested.fname_); i++) {
+        nested.fname_[i] = p->lex_.fname_[i];
+    }
+
+    p->inc_[p->inc_depth_] = p->lex_;
+    p->inc_scope_[p->inc_depth_] = p->scope_;
+    p->inc_macro_[p->inc_depth_] = true;
+    p->inc_depth_++;
+    p->macro_depth_++;
+    p->lex_ = nested;
+
+    /* A fresh scope for the expansion, so a local label in the body does not
+     * collide with the one from the previous invocation. It is restored when
+     * the expansion ends -- a macro call in the middle of a routine must not
+     * split that routine's locals in two. */
+    if (p->scope_ < MAX_SCOPE) {
+        p->scope_++;
+    }
+    p->expand_id_++;
+
+    return NULL;
+}
+
 /* Suspends the current source and reads another in its place. */
 static const char* parse_include(parser* p) {
     static char names[8][256];
@@ -579,6 +776,10 @@ static const char* parse_include(parser* p) {
     }
 
     p->inc_[p->inc_depth_] = p->lex_;
+    /* An include shares the enclosing scope; a macro expansion does not. */
+    p->inc_scope_[p->inc_depth_] = p->scope_;
+    p->inc_macro_[p->inc_depth_] = false;
+
     lexer nested;
     if (lex_init(&nested, names[p->inc_depth_]) == NULL) {
         return pr_msg(p, "cannot open include file");
@@ -615,6 +816,36 @@ static const char* parse_incbin(parser* p) {
     return NULL;
 }
 
+/* Emits one data value of the given width, deferring it if a name in it is
+ * not defined yet. A table of addresses -- "dl level1" with the levels
+ * further down -- is the ordinary reason for that. */
+static const char* emit_expr(parser* p, int width) {
+    char text[128];
+    int text_sz = 0;
+    value v = 0;
+
+    const char* err = expr_capture(p, &v, text, (int) sizeof(text), &text_sz);
+    if (err != NULL) {
+        return err;
+    }
+
+    if (p->undefined_) {
+        const fixup_kind kind = (width == 1) ? FIX_ABS8
+                              : (width == 2) ? FIX_ABS16
+                              : (width == 3) ? FIX_ABS24 : FIX_ABS32;
+
+        return pr_stack_fixup(p, text, text_sz, kind, -1);
+    }
+
+    for (int i = 0; i < width; i++) {
+        if (!pr_wbyte(p, (uint8_t) ((v >> (i * 8)) & 0xFF))) {
+            return pr_msg(p, "output too large");
+        }
+    }
+
+    return NULL;
+}
+
 /* dw, dl, dw24 and dw32: a list of values, each written little-endian at the
  * given width. Strings are allowed alongside them, as they are for db. */
 static const char* parse_data(parser* p, int width) {
@@ -624,23 +855,15 @@ static const char* parse_data(parser* p, int width) {
     }
 
     while (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
+        /* Only db takes a string; dw and the wider forms do not, and the
+         * reference refuses them. */
         if (p->tk_.tk_ == D_QUOTE) {
-            const char* err = parse_quoted(p);
-            if (err != NULL) {
-                return err;
-            }
-            next(p);
-        } else {
-            value v = 0;
-            const char* err = expr_eval(p, &v);
-            if (err != NULL) {
-                return err;
-            }
-            for (int i = 0; i < width; i++) {
-                if (!pr_wbyte(p, (uint8_t) ((v >> (i * 8)) & 0xFF))) {
-                    return pr_msg(p, "output too large");
-                }
-            }
+            return pr_msg(p, "string not allowed here");
+        }
+
+        const char* err = emit_expr(p, width);
+        if (err != NULL) {
+            return err;
         }
 
         if (p->tk_.tk_ == NEW_LINE || p->tk_.tk_ == NONE) {
@@ -795,6 +1018,52 @@ static const char* parse_directive(parser* p) {
             next(p);
 
             return NULL;
+        case D_MACRO:
+            return parse_macro(p);
+        case D_IF: {
+            if (p->cond_depth_ == (int) (sizeof(p->taken_) / sizeof(p->taken_[0]))) {
+                return pr_msg(p, "conditionals nested too deeply");
+            }
+            next(p);
+            value v = 0;
+            const char* err = expr_eval(p, &v);
+            if (err != NULL) {
+                return err;
+            }
+            p->taken_[p->cond_depth_] = v != 0;
+            p->cond_depth_++;
+            if (v == 0 && p->skip_depth_ == 0) {
+                p->skip_depth_ = p->cond_depth_;
+            }
+
+            return NULL;
+        }
+        case D_ELSE:
+            if (p->cond_depth_ == 0) {
+                return pr_msg(p, "else without if");
+            }
+            /* Only this conditional's own else may change the skip state. If
+             * an enclosing branch is already being skipped -- skip_depth_ is
+             * shallower than this one -- the else must leave it alone, or
+             * "if 0 / if 0 / .. / else / .. / endif / endif" would assemble
+             * the inner else branch from inside a false outer branch. */
+            if (p->skip_depth_ == 0 || p->skip_depth_ == p->cond_depth_) {
+                p->skip_depth_ = p->taken_[p->cond_depth_ - 1] ? p->cond_depth_ : 0;
+            }
+            next(p);
+
+            return NULL;
+        case D_ENDIF:
+            if (p->cond_depth_ == 0) {
+                return pr_msg(p, "endif without if");
+            }
+            p->cond_depth_--;
+            if (p->skip_depth_ > p->cond_depth_) {
+                p->skip_depth_ = 0;
+            }
+            next(p);
+
+            return NULL;
         case D_INCLUDE:
             return parse_include(p);
         case D_INCBIN:
@@ -851,6 +1120,17 @@ static const char* parse_label(parser* p) {
         return pr_msg(p, "expected a colon");
     }
 
+    /* Inside a macro body only local labels are allowed. A global or
+     * anonymous one would be defined again on every invocation, so the
+     * reference refuses them and so does this. */
+    if (p->macro_depth_ > 0) {
+        const bool local = p->tk_.sz_ > 1 && p->tk_.txt_[0] == '@'
+                        && p->tk_.txt_[1] != '@';
+        if (!local) {
+            return pr_msg(p, "a macro may only define local labels");
+        }
+    }
+
     /* An anonymous label has no name to look up -- it is found by position. */
     if (p->tk_.sz_ == 2 && p->tk_.txt_[0] == '@' && p->tk_.txt_[1] == '@') {
         if (p->anon_count_ == (int) (sizeof(p->anon_) / sizeof(p->anon_[0]))) {
@@ -903,25 +1183,52 @@ static const char* parse_label(parser* p) {
  * the JR opcode -- to decide relative from absolute, and then appended through
  * pr_wbyte instead of writing at the hole, so a forward JR overwrote whatever
  * followed it. Both are recorded on the fixup now. */
+/* Evaluates a deferred expression with every symbol now known, by lexing its
+ * stored text as a memory source. */
+static const char* resolve_fixup(parser* p, const label_node* ln, value* out) {
+    lexer saved = p->lex_;
+    const uint16_t saved_scope = p->scope_;
+    const int saved_stmt = p->stmt_addr_;
+    const bool saved_comment = p->comment_;
+    const bool saved_undef = p->undefined_;
+
+    lexer tmp;
+    if (br_open_mem(&tmp.rd_, ls_text(&p->ls_, ln), ln->text_len_) == NULL) {
+        return pr_msg(p, "out of memory");
+    }
+    tmp.lcount_ = ln->line_;
+
+    p->lex_ = tmp;
+    /* The names were written in that scope, and '$' meant that address. */
+    p->scope_ = ln->scope_;
+    p->stmt_addr_ = ln->here_;
+    p->comment_ = false;
+    p->undefined_ = false;
+
+    next(p);
+    const char* err = expr_eval(p, out);
+    if (err == NULL && p->undefined_) {
+        err = pr_msg(p, "label does not exist.");
+    }
+
+    br_destroy(&p->lex_.rd_);
+    p->lex_ = saved;
+    p->scope_ = saved_scope;
+    p->stmt_addr_ = saved_stmt;
+    p->comment_ = saved_comment;
+    p->undefined_ = saved_undef;
+
+    return err;
+}
+
+/* Fills in every reference that was still unresolved when its line was read.
+ *
+ * The old version compared p->pos_-1 against 0x18 -- a buffer offset against
+ * the JR opcode -- to decide relative from absolute, and then appended through
+ * pr_wbyte instead of writing at the hole, so a forward JR overwrote whatever
+ * followed it. Both are recorded on the fixup now. */
 static const char* post_process(parser* p) {
     for (const label_node* ln = ls_pop(&p->ls_); ln != NULL; ln = ls_pop(&p->ls_)) {
-        char key[MAX_NAME + 1];
-        int ksz = 0;
-        for (const char* c = ln->label_; *c != 0; c++) {
-            ksz++;
-        }
-
-        /* A local name resolves in the scope it was written in, not the one
-         * the file happened to end in. */
-        int n = 0;
-        if (ln->label_[0] == '@') {
-            n = scope_prefix(ln->scope_, key);
-        }
-        for (int i = 0; i < ksz; i++) {
-            key[n + i] = ln->label_[i];
-        }
-        ksz += n;
-
         int v;
         if (ln->anon_ >= 0) {
             if (ln->anon_ >= p->anon_count_) {
@@ -931,13 +1238,14 @@ static const char* post_process(parser* p) {
             }
             v = p->anon_[ln->anon_];
         } else {
-            bool ok = false;
-            v = ht_nget(&p->labels_, key, (uint8_t) ksz, &ok);
-            if (!ok) {
+            value ev = 0;
+            const char* err = resolve_fixup(p, ln, &ev);
+            if (err != NULL) {
                 p->lex_.lcount_ = ln->line_;
 
-                return pr_msg(p, "label does not exist.");
+                return err;
             }
+            v = (int) ev;
         }
 
         if (ln->kind_ == FIX_REL8) {
@@ -952,7 +1260,8 @@ static const char* post_process(parser* p) {
         }
 
         const int width = (ln->kind_ == FIX_ABS8) ? 1
-                        : (ln->kind_ == FIX_ABS16 ? 2 : 3);
+                        : (ln->kind_ == FIX_ABS16) ? 2
+                        : (ln->kind_ == FIX_ABS24) ? 3 : 4;
         for (int i = 0; i < width; i++) {
             p->buf_[ln->bpos_ + i] = (uint8_t) ((v >> (i * 8)) & 0xFF);
         }
@@ -969,10 +1278,9 @@ static const char* post_process(parser* p) {
  * a second assembly pass.
  *
  * What it buys is the ordering freedom the reference has: a constant can be
- * used before the line that defines it, so "db before, after1" works with
- * after1 defined further down. A definition it cannot fold yet -- one that
- * depends on a label's address -- is skipped and left to the main pass, where
- * a label reference goes through the fixup path anyway.
+ * used before the line that defines it. A definition it cannot fold yet -- one
+ * that depends on a label's address -- is skipped and left to the main pass,
+ * where a label reference is deferred anyway.
  *
  * Failures are deliberately silent. Anything genuinely wrong is reported by
  * the real pass, with the right line number and without this one having to
@@ -997,15 +1305,12 @@ static void pr_prescan(parser* p) {
     token tk = next(p);
     while (tk.tk_ != NONE) {
         /* Follow includes. A constant defined in an included file has to be
-         * visible to the same forward uses as one defined here -- without
-         * this, "rst target" worked when target's equ was in this file and
-         * failed when it was one line further into an include. */
+         * visible to the same forward uses as one defined here. */
         if (tk.tk_ == DOT) {
             tk = next(p);
         }
         if (tk.tk_ == DIRECTIVE && tk.tt_ == D_INCLUDE) {
             if (parse_include(p) != NULL) {
-                /* Unreadable include: the real pass reports it properly. */
                 while (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
                     next(p);
                 }
@@ -1039,10 +1344,22 @@ static void pr_prescan(parser* p) {
                 p->scope_++;
             }
 
-            if (next(p).tt_ == D_EQU) {
+            /* Both halves matter: tt_ on an INSTRUCTION token is an index
+             * into the ISA table, and index 19 has the same numeric value as
+             * D_EQU. Without the tk_ check, a label followed by that mnemonic
+             * was harvested as a constant and given a garbage value, which
+             * then resolved jumps to nonsense. */
+            const token after = next(p);
+            if (after.tk_ == DIRECTIVE && after.tt_ == D_EQU) {
                 next(p);
                 value v = 0;
-                if (expr_eval(p, &v) == NULL) {
+                p->undefined_ = false;
+                /* An equ whose value is '$' cannot be folded here: the
+                 * prescan has no program counter, so it would store the
+                 * wrong number and any use before the definition would pick
+                 * it up. "FNCHK: EQU $" in BBC BASIC is exactly that. Left
+                 * undefined, it defers and resolves correctly instead. */
+                if (expr_eval(p, &v) == NULL && !p->undefined_ && !p->pc_used_) {
                     char key[MAX_NAME + 1];
                     const int ksz = scoped_key(p, name, nsz, key);
                     if (ksz > 0) {
@@ -1069,6 +1386,7 @@ static void pr_prescan(parser* p) {
     p->scope_ = saved_scope;
     p->pos_ = saved_pos;
     p->inc_depth_ = saved_depth;
+    p->undefined_ = false;
 
     /* The comment flag has to come back too. A source whose last line ends
      * inside a comment with no trailing newline left it set, and the real
@@ -1092,6 +1410,43 @@ const char* pr_parse(parser* p) {
 
     for (p->tk_ = next(p); p->tk_.tk_ != NONE; p->tk_ = next(p)) {
         p->stmt_addr_ = pr_addr(p);
+
+        /* Inside a false branch only the conditional directives themselves
+         * are read; everything else is passed over. A nested .if still has to
+         * be counted, or its .endif would close the outer one. */
+        if (p->skip_depth_ > 0) {
+            TK_TYPE tt = p->tk_.tt_;
+            if (p->tk_.tk_ == DOT) {
+                next(p);
+                tt = p->tk_.tt_;
+            }
+            if (p->tk_.tk_ == DIRECTIVE
+                && (tt == D_IF || tt == D_ELSE || tt == D_ENDIF)) {
+                err = parse_directive(p);
+                if (err != NULL) {
+                    return err;
+                }
+            }
+            while (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
+                next(p);
+            }
+            continue;
+        }
+
+        /* A macro invocation is any identifier-shaped token that names one,
+         * checked before the reserved-word meaning: a macro may be called
+         * "m", which the lexer reads as a condition code. A name with a colon
+         * after it is a label being defined, not an invocation. */
+        if (!p->tk_.label_ && ident_like(p->tk_.tk_)) {
+            const macro* m = mt_find(&p->macros_, p->tk_.txt_, p->tk_.sz_);
+            if (m != NULL) {
+                err = expand_macro(p, m);
+                if (err != NULL) {
+                    return err;
+                }
+                continue;
+            }
+        }
 
         switch (p->tk_.tk_) {
             case DOT:
@@ -1146,6 +1501,10 @@ const char* pr_parse(parser* p) {
          * of a later equ. Without this, "foo: ld a,b" followed by a bare
          * "equ 5" silently redefined foo. */
         p->last_label_sz_ = 0;
+    }
+
+    if (p->cond_depth_ != 0) {
+        return pr_msg(p, "if without endif");
     }
 
     return post_process(p);

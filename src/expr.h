@@ -44,4 +44,15 @@ struct _parser;
  * caller. */
 const char* expr_eval(struct _parser* p, value* out);
 
+/* Evaluates an expression and copies the text of exactly the tokens it
+ * consumed into `text`, separated by single spaces so it re-lexes the same
+ * way. An operand uses this so that an expression naming a symbol that is not
+ * defined yet can be stored and evaluated again once it is.
+ *
+ * A name that is not defined is not an error here: p->undefined_ is set and
+ * evaluation carries on with zero, leaving the caller to decide whether it
+ * can defer. */
+const char* expr_capture(struct _parser* p, value* out, char* text,
+                         int max, int* text_sz);
+
 #endif  /* _EXPR_H_ */

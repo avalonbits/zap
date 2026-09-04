@@ -8,6 +8,15 @@ label_stack* ls_init(label_stack* ls, int sz) {
     if (ls->nodes_ == NULL) {
         return NULL;
     }
+    ls->text_cap_ = 4096;
+    ls->text_ = (char*) malloc((size_t) ls->text_cap_);
+    if (ls->text_ == NULL) {
+        free(ls->nodes_);
+        ls->nodes_ = NULL;
+
+        return NULL;
+    }
+    ls->text_len_ = 0;
     ls->sz_ = sz;
     ls->pos_ = 0;
     return ls;
@@ -15,26 +24,60 @@ label_stack* ls_init(label_stack* ls, int sz) {
 
 void ls_destroy(label_stack* ls) {
     free(ls->nodes_);
+    ls->nodes_ = NULL;
+    free(ls->text_);
+    ls->text_ = NULL;
+    ls->text_cap_ = 0;
+    ls->text_len_ = 0;
 }
 
-bool ls_push(label_stack* ls, const char* label, int sz, int bpos,
-             int next, int line, fixup_kind kind, uint16_t scope, int anon) {
-    if (ls->pos_ == ls->sz_) {
+const char* ls_text(const label_stack* ls, const label_node* n) {
+    return &ls->text_[n->text_off_];
+}
+
+bool ls_push(label_stack* ls, const char* text, int sz, int bpos,
+             int next, int here, int line, fixup_kind kind, uint16_t scope,
+             int anon) {
+    if (sz <= 0) {
         return false;
     }
-    /* Without this, a name longer than the field was copied straight into it.
-     * The overrun stayed inside the nodes_ allocation, so it corrupted the
-     * next entry rather than tripping a sanitizer -- silent, and reachable
-     * from any source with a long label. */
-    if (sz > MAX_NAME || sz <= 0) {
-        return false;
+
+    /* Grows rather than failing at a fixed size. A large program has more
+     * forward references than any figure picked in advance: BBC BASIC has
+     * over a thousand. */
+    if (ls->pos_ == ls->sz_) {
+        const int want = ls->sz_ * 2;
+        label_node* grown = (label_node*) realloc(ls->nodes_,
+                                                  (size_t) want * sizeof(label_node));
+        if (grown == NULL) {
+            return false;
+        }
+        ls->nodes_ = grown;
+        ls->sz_ = want;
+    }
+
+    while (ls->text_len_ + sz + 1 > ls->text_cap_) {
+        const int want = ls->text_cap_ * 2;
+        char* grown = (char*) realloc(ls->text_, (size_t) want);
+        if (grown == NULL) {
+            return false;
+        }
+        ls->text_ = grown;
+        ls->text_cap_ = want;
     }
 
     label_node* n = &ls->nodes_[ls->pos_];
-    strncpy(n->label_, label, sz);
-    n->label_[sz] = 0;
+    n->text_off_ = ls->text_len_;
+    n->text_len_ = sz;
+    for (int i = 0; i < sz; i++) {
+        ls->text_[ls->text_len_ + i] = text[i];
+    }
+    ls->text_[ls->text_len_ + sz] = 0;
+    ls->text_len_ += sz + 1;
+
     n->bpos_ = bpos;
     n->next_ = next;
+    n->here_ = here;
     n->line_ = line;
     n->kind_ = (uint8_t) kind;
     n->scope_ = scope;

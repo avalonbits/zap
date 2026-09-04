@@ -201,7 +201,7 @@ static const char* emit_imm(parser* p, operand* op, uint8_t width) {
         const fixup_kind kind = (width == 1) ? FIX_ABS8
                               : (width == 2) ? FIX_ABS16 : FIX_ABS24;
 
-        return pr_stack_fixup(p, op->name, op->name_sz, kind, op->anon);
+        return pr_stack_fixup(p, op->expr, op->expr_sz, kind, op->anon);
     }
 
     for (uint8_t i = 0; i < width; i++) {
@@ -313,7 +313,7 @@ static const char* emit_row(parser* p, const isa_row* row, operand* a,
     if (rel_a || rel_b) {
         operand* rel = rel_a ? a : b;
         if (!rel->imm_known) {
-            return pr_stack_fixup(p, rel->name, rel->name_sz, FIX_REL8, rel->anon);
+            return pr_stack_fixup(p, rel->expr, rel->expr_sz, FIX_REL8, rel->anon);
         }
         const int d = (int) rel->imm - (pr_addr(p) + 1);
         if (d < -128 || d > 127) {

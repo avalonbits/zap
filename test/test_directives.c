@@ -153,6 +153,11 @@ int main(void) {
     dir_is("endrelocate needs relocate", "  endrelocate\n", "ERR");
     dir_is("relocate address range", "  relocate -1\n  endrelocate\n", "ERR");
 
+    /* An empty source assembles to nothing rather than failing to open, which
+     * is what the reference does with one. */
+    dir_is("empty source", "", "");
+    dir_is("comment-only source", "; nothing here\n", "");
+
     /* A constant defined in an included file has to be visible to the same
      * forward uses as one defined here. The prescan skipped includes, so
      * "rst target" worked when target's equ was in this file and failed when

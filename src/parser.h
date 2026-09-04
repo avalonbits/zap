@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "hash_table.h"
+#include "macro.h"
 #include "label_stack.h"
 #include "lexer.h"
 
@@ -70,6 +71,45 @@ typedef struct _parser {
     lexer inc_[8];
     int inc_depth_;
 
+    /* The scope to restore when each suspended source resumes. A macro
+     * expansion gets its own scope so a local label in the body is fresh each
+     * time, but that has to end with the expansion: otherwise the @loop
+     * defined before a macro call and the one referenced after it are two
+     * different symbols, inside the same routine. An include does not get a
+     * new scope, so it restores the one it had. */
+    uint16_t inc_scope_[8];
+
+    /* Which suspended sources are macro expansions rather than includes. A
+     * macro body may only define local labels: a global or anonymous one
+     * would be redefined on every invocation. */
+    bool inc_macro_[8];
+    int macro_depth_;
+
+    /* Macros, kept as body text. Expansion substitutes into the text and the
+     * result is read as a memory source, so an expansion nests exactly like
+     * an include does. */
+    macro_table macros_;
+
+    /* Bumped per expansion so a local label inside a macro is a fresh symbol
+     * each time it is invoked, rather than colliding with the last one. */
+    uint16_t expand_id_;
+
+    /* Conditional assembly. skip_ ends up non-zero while a false branch is
+     * being passed over; the depth is tracked so a nested .if inside a
+     * skipped branch does not close the outer one early. */
+    int cond_depth_;
+    int skip_depth_;
+    bool taken_[16];
+
+    /* Set when expression evaluation met a name that is not defined yet. The
+     * operand then defers the whole expression instead of failing. */
+    bool undefined_;
+
+    /* Set when an expression read '$'. Its value depends on where the
+     * statement sits, so the constant prescan -- which has no meaningful
+     * program counter -- must not fold it. */
+    bool pc_used_;
+
     bool adl_;
 
     /* Which instruction rows are usable, set by the .cpu directive. zap only
@@ -91,7 +131,7 @@ token next(parser* p);
 const char* pr_msg(parser* p, const char* msg);
 bool pr_wbyte(parser* p, uint8_t b);
 value tk2i(token tk);
-const char* pr_stack_fixup(parser* p, const char* label, int sz,
+const char* pr_stack_fixup(parser* p, const char* text, int sz,
                            fixup_kind kind, int anon);
 const char* pr_stack_label(parser* p, char* label, int sz, int anon);
 const char* pr_stack_relative_label(parser* p, char* label, int sz, int anon);

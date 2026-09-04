@@ -94,8 +94,8 @@ void op_none(operand* op) {
     op->has_imm = false;
     op->imm = 0;
     op->imm_known = true;
-    op->name_sz = 0;
-    op->name[0] = 0;
+    op->expr_sz = 0;
+    op->expr[0] = 0;
     op->anon = -1;
 }
 
@@ -103,8 +103,16 @@ void op_none(operand* op) {
  * forward name is kept as a name for the emitter to leave a hole for; anything
  * more involved has to be resolvable now, because there is nowhere to put the
  * rest of the expression. */
+/* Reads an immediate.
+ *
+ * The expression's text is captured as it is read, so that if a name in it
+ * turns out not to be defined yet the whole thing can be deferred and
+ * re-evaluated later. Only a bare forward name used to be allowed, which meant
+ * "ld bc, end - start" -- the ordinary way to write a length -- did not
+ * assemble. */
 static const char* read_imm(parser* p, operand* op) {
-    if (p->tk_.tk_ == NAME || p->tk_.tk_ == INSTRUCTION || p->tk_.tk_ == DIRECTIVE) {
+    /* An anonymous forward reference is positional, not textual. */
+    if (p->tk_.tk_ == NAME && p->tk_.sz_ == 2 && p->tk_.txt_[0] == '@') {
         value v = 0;
         bool known = false;
         int anon = -1;
@@ -112,42 +120,45 @@ static const char* read_imm(parser* p, operand* op) {
         if (err != NULL) {
             return err;
         }
-
-        if (!known) {
-            /* Keep the name; only a bare reference can be deferred. */
-            int sz = p->tk_.sz_;
-            if (sz > MAX_NAME) {
-                return pr_msg(p, "label too long");
-            }
-            for (int i = 0; i < sz; i++) {
-                op->name[i] = p->tk_.txt_[i];
-            }
-            op->name[sz] = 0;
-            op->name_sz = sz;
+        if (anon >= 0) {
             op->anon = anon;
             op->imm_known = false;
             op->has_imm = true;
             op->mode |= IMM_MODE;
-
+            /* Resolved by position rather than by text, but the fixup still
+             * wants something to hold. */
+            op->expr[0] = p->tk_.txt_[0];
+            op->expr[1] = p->tk_.txt_[1];
+            op->expr[2] = 0;
+            op->expr_sz = 2;
             next(p);
-            if (p->tk_.tk_ != COMMA && p->tk_.tk_ != NEW_LINE
-                && p->tk_.tk_ != NONE && p->tk_.tk_ != R_PAREN) {
-                return pr_msg(p, "forward reference must stand alone");
-            }
 
             return NULL;
         }
     }
 
+    p->undefined_ = false;
+    op->expr_sz = 0;
+
+    /* The text is gathered as the expression is evaluated, so this costs a
+     * copy rather than a second parse. */
     value v = 0;
-    const char* err = expr_eval(p, &v);
+    const char* err = expr_capture(p, &v, op->expr, (int) sizeof(op->expr),
+                                   &op->expr_sz);
     if (err != NULL) {
         return err;
     }
     op->imm = v;
     op->has_imm = true;
-    op->imm_known = true;
     op->mode |= IMM_MODE;
+
+    if (p->undefined_) {
+        op->imm_known = false;
+        op->imm = 0;
+
+        return NULL;
+    }
+    op->imm_known = true;
 
     return NULL;
 }
@@ -234,10 +245,24 @@ const char* op_parse(parser* p, operand* op) {
          * taken as the shadow marker after AF, the one register that has the
          * spelling. */
         if (op->reg == R_AF && p->tk_.tk_ == BAD_LITERAL
-            && p->tk_.sz_ == 1 && p->tk_.txt_[0] == '\'') {
-            next(p);
+            && p->tk_.sz_ >= 1 && p->tk_.txt_[0] == '\'') {
+            /* The bad literal may have swallowed the whitespace after the
+             * quote while looking for a closing one -- "ex af,af'" with a
+             * trailing tab is written that way in real sources -- so only
+             * whitespace is allowed to follow it here. */
+            bool only_space = true;
+            for (int i = 1; i < p->tk_.sz_; i++) {
+                const char c = p->tk_.txt_[i];
+                if (c != ' ' && c != '\t' && c != '\r') {
+                    only_space = false;
+                    break;
+                }
+            }
+            if (only_space) {
+                next(p);
 
-            return NULL;
+                return NULL;
+            }
         }
 
         /* LEA and PEA write their displacement without parentheses --

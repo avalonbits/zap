@@ -31,16 +31,18 @@ static char upper(const char ch) {
 }
 
 
-uint8_t pearson_hash(const char* key, uint8_t sz) {
+uint8_t pearson_hash(const char* key, uint8_t sz, bool icase) {
     uint8_t h = 0;
     for (uint8_t i = 0; i < sz; i++) {
-        const uint8_t ch = (uint8_t) upper(key[i]);
+        const uint8_t ch = (uint8_t) (icase ? upper(key[i]) : key[i]);
         h = pearson_random[h ^ ch];
     }
+
     return h;
 }
 
-hash_table* ht_init(hash_table* ht, int entries) {
+hash_table* ht_init(hash_table* ht, int entries, bool icase) {
+    ht->icase_ = icase;
     if (entries >= 128) {
         ht->sz_ = 256;
     } else if (entries >= 64) {
@@ -93,15 +95,16 @@ void ht_clear(hash_table* ht) {
     }
 }
 
-bool icase_equal(const char* s1, const char* s2, uint8_t ksz) {
+static bool key_equal(const char* s1, const char* s2, uint8_t ksz, bool icase) {
     uint8_t i = 0;
     for (; i < ksz && s1[i] != 0 && s2[i] != 0; i++) {
-        char ch1 = upper(s1[i]);
-        char ch2 = upper(s2[i]);
+        const char ch1 = icase ? upper(s1[i]) : s1[i];
+        const char ch2 = icase ? upper(s2[i]) : s2[i];
         if (ch1 != ch2) {
             return false;
         }
     }
+
     return i == ksz;
 }
 
@@ -110,7 +113,7 @@ bool ht_nset(hash_table* ht, const char* key, uint8_t ksz, int value) {
         return false;
     }
 
-    const int pos = pearson_hash(key, ksz) % ht->sz_;
+    const int pos = pearson_hash(key, ksz, ht->icase_) % ht->sz_;
     hash_node* node = &ht->node_[pos];
 
     // Iteratore through all nodes in the chain until we find the key to update
@@ -124,7 +127,7 @@ bool ht_nset(hash_table* ht, const char* key, uint8_t ksz, int value) {
         }
 
         const uint8_t sz = strlen(node->key_);
-        if (sz == ksz && icase_equal(node->key_, key, ksz)) {
+        if (sz == ksz && key_equal(node->key_, key, ksz, ht->icase_)) {
             node->value_ = value;
             return true;
         }
@@ -160,7 +163,7 @@ int ht_nget(hash_table* ht, const char* key, uint8_t ksz, bool* ok) {
         return 0;
     }
 
-    const int pos = pearson_hash(key, ksz) % ht->sz_;
+    const int pos = pearson_hash(key, ksz, ht->icase_) % ht->sz_;
     hash_node* n = &ht->node_[pos];
 
     for (; n != NULL; n = n->next_) {
@@ -169,7 +172,7 @@ int ht_nget(hash_table* ht, const char* key, uint8_t ksz, bool* ok) {
         }
 
         const uint8_t sz = strlen(n->key_);
-        if (sz != ksz || !icase_equal(n->key_, key, ksz)) {
+        if (sz != ksz || !key_equal(n->key_, key, ksz, ht->icase_)) {
             continue;
         }
 

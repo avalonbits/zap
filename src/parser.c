@@ -696,7 +696,11 @@ static const char* expand_macro(parser* p, const macro* m) {
                  * argument expands into something that still looks like
                  * source, so it emits wrong bytes or fails somewhere else
                  * with an error that does not name the real problem. */
-                if (n >= MACRO_ARG_MAX - 1) {
+                /* The buffer holds MACRO_ARG_MAX characters; the length is
+                 * carried separately, so no terminator is needed and all of
+                 * them are usable. A quoted 64-character filename is exactly
+                 * this long, and the reference allows it. */
+                if (n >= MACRO_ARG_MAX) {
                     return pr_msg(p, "macro argument too long");
                 }
                 argv[argc][n++] = p->tk_.txt_[i];

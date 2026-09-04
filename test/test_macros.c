@@ -142,6 +142,24 @@ int main(void) {
     is("nested if inside a taken branch",
        "  if 1\n  if 0\n  ld a,b\n  endif\n  ld a,c\n  endif\n", "79");
 
+    /* An else inside a branch that is already being skipped must not turn
+     * assembly back on. Only the nested conditional's own state may change,
+     * or the inner else branch gets assembled from inside a false outer one.
+     * The earlier nested tests had no else, which is why they passed. */
+    is("else nested in a false branch",
+       "  if 0\n  if 0\n  ld a,b\n  else\n  ld a,c\n  endif\n  endif\n  nop\n",
+       "00");
+    is("else nested in a taken branch",
+       "  if 1\n  if 0\n  ld a,b\n  else\n  ld a,c\n  endif\n  endif\n  nop\n",
+       "79 00");
+
+    /* An over-long argument is reported, not trimmed: a truncated one expands
+     * into something that still looks like source. */
+    is("macro argument too long",
+       "  macro m a\n  db a\n  endmacro\n"
+       "  m XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n",
+       "ERR");
+
     /* Unbalanced conditionals. */
     is("if without endif",   "  if 1\n  ld a,b\n",  "ERR");
     is("endif without if",   "  endif\n",           "ERR");

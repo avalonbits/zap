@@ -691,7 +691,14 @@ static const char* expand_macro(parser* p, const macro* m) {
         /* An argument runs to the next comma; a negative number and a
          * bracketed expression both arrive as several tokens. */
         while (p->tk_.tk_ != COMMA && p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
-            for (int i = 0; i < p->tk_.sz_ && n < MACRO_ARG_MAX; i++) {
+            for (int i = 0; i < p->tk_.sz_; i++) {
+                /* Too long is reported rather than trimmed: a truncated
+                 * argument expands into something that still looks like
+                 * source, so it emits wrong bytes or fails somewhere else
+                 * with an error that does not name the real problem. */
+                if (n >= MACRO_ARG_MAX - 1) {
+                    return pr_msg(p, "macro argument too long");
+                }
                 argv[argc][n++] = p->tk_.txt_[i];
             }
             next(p);
@@ -1023,10 +1030,13 @@ static const char* parse_directive(parser* p) {
             if (p->cond_depth_ == 0) {
                 return pr_msg(p, "else without if");
             }
-            if (p->taken_[p->cond_depth_ - 1]) {
-                p->skip_depth_ = p->cond_depth_;
-            } else {
-                p->skip_depth_ = 0;
+            /* Only this conditional's own else may change the skip state. If
+             * an enclosing branch is already being skipped -- skip_depth_ is
+             * shallower than this one -- the else must leave it alone, or
+             * "if 0 / if 0 / .. / else / .. / endif / endif" would assemble
+             * the inner else branch from inside a false outer branch. */
+            if (p->skip_depth_ == 0 || p->skip_depth_ == p->cond_depth_) {
+                p->skip_depth_ = p->taken_[p->cond_depth_ - 1] ? p->cond_depth_ : 0;
             }
             next(p);
 

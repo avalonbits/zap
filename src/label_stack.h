@@ -45,7 +45,7 @@ typedef struct _label_node {
     int line_;   /* source line, so the error points at the reference */
 
     uint8_t kind_;
-    uint8_t scope_;  /* which local scope the name was written in */
+    uint16_t scope_;  /* which local scope the name was written in */
 
     /* For a forward reference to an anonymous label (@f / @n), which one in
      * source order it means. -1 for an ordinary name. */
@@ -62,7 +62,7 @@ label_stack* ls_init(label_stack* ls, int sz);
 void ls_destroy(label_stack* ls);
 
 bool ls_push(label_stack* ls, const char* label, int sz, int bpos,
-             int next, int line, fixup_kind kind, uint8_t scope, int anon);
+             int next, int line, fixup_kind kind, uint16_t scope, int anon);
 const label_node* ls_pop(label_stack* ls);
 
 #endif  // _LABEL_STACK_H_

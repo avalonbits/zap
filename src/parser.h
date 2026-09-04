@@ -25,7 +25,7 @@ typedef struct _parser {
     /* Which local scope names are being read in. Bumped at every global
      * label, so the @loop in one routine is a different symbol from the @loop
      * in the next without either having to be renamed. */
-    uint8_t scope_;
+    uint16_t scope_;
 
     /* Address of the statement being assembled, which is what '$' means.
      * Not addr_: by the time an operand is read the opcode has already been

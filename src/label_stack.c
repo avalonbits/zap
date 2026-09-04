@@ -18,7 +18,7 @@ void ls_destroy(label_stack* ls) {
 }
 
 bool ls_push(label_stack* ls, const char* label, int sz, int bpos,
-             int next, int line, fixup_kind kind, uint8_t scope, int anon) {
+             int next, int line, fixup_kind kind, uint16_t scope, int anon) {
     if (ls->pos_ == ls->sz_) {
         return false;
     }

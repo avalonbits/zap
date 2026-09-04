@@ -140,9 +140,13 @@ static const char* parse_relative_label_op(parser* p)  {
 }
 
 
+/* Writes an address operand at the width the current mode calls for. It used
+ * to always write three bytes, so in Z80 mode "ld hl,$1234" emitted a stray
+ * fourth byte and everything after it was shifted by one. */
 static void parse_number(parser* p) {
     opnd.i = tk2i(p->tk_);
-    for (uint8_t i = 0; i < 3; i++) {
+    const uint8_t width = p->adl_ ? 3 : 2;
+    for (uint8_t i = 0; i < width; i++) {
         pr_wbyte(p, opnd.b[i]);
     }
 }

@@ -168,6 +168,51 @@ int main(void) {
            "back:\n  ld a,b\n  jp back",
            "78 C3 00 00 04");
 
+    /* A label only stands as the target of an equ on its own line. Without
+     * that, "foo: ld a,b" followed by a bare "equ 5" silently redefined foo,
+     * and every later reference to it used 5. */
+    asm_is("equ does not capture an earlier label",
+           "foo: ld a,b\n  equ 5\n  ld a,foo\n",
+           "ERR");
+    asm_is("equ still takes the label on its own line",
+           "foo: equ 5\n  ld a,foo\n",
+           "3E 05");
+
+    /* An address operand is as wide as the mode says. In Z80 mode this used
+     * to emit a stray third byte and shift everything after it. */
+    asm_is("z80 mode address is two bytes",
+           "  .assume adl=0\n  ld hl,$1234\n  ret\n",
+           "21 34 12 C9");
+    asm_is("adl mode address is three bytes",
+           "  .assume adl=1\n  ld hl,$1234\n  ret\n",
+           "21 34 12 00 C9");
+
+    /* Local scopes are counted in 14 bits, not 7. With a one-byte scope
+     * masked to 0x7F, two routines exactly 128 global labels apart shared a
+     * key and the second @l overwrote the first. */
+    {
+        /* The reference is forward, so it is patched at the end -- after the
+         * far scope has had its chance to overwrite the key. A backward
+         * reference would resolve before the collision could bite. */
+        char src[8192];
+        int n = snprintf(src, sizeof(src), "g0:\n  jp @l\n@l:\n  ld a,b\n");
+        for (int i = 1; i <= 128; i++) {
+            n += snprintf(&src[n], sizeof(src) - n, "g%d:\n", i);
+        }
+        snprintf(&src[n], sizeof(src) - n, "@l:\n  ld a,c\n");
+        const char* got = emit(src);
+        /* The @l in scope 1 is at 0x40004. A collision with scope 129 would
+         * patch this to that routine's @l at 0x40005 instead. */
+        const char* want = "C3 04 00 04 78 79";
+        if (strcmp(got, want) == 0) {
+            fprintf(stderr, "PASS  %-40s %s\n", "scopes 128 apart do not collide", got);
+        } else {
+            fprintf(stderr, "FAIL  %-40s got %s, want %s\n",
+                    "scopes 128 apart do not collide", got, want);
+            failures++;
+        }
+    }
+
     /* A relative jump out of range is reported at the reference, not silently
      * truncated. */
     {

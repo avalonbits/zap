@@ -27,11 +27,24 @@ static char errmsg[256] = "";
  * @loop in one routine and @loop in the next do not collide. The prefix is two
  * bytes rather than the enclosing label's text, which keeps the key inside
  * MAX_NAME however long that label is. */
+static int scope_prefix(uint16_t scope, char* out) {
+    /* Two bytes, each biased so neither can be zero -- the table stores keys
+     * as C strings. That gives 14 bits of scope. One byte masked to 0x7F was
+     * not enough: a file with 128 global labels wrapped, and two routines'
+     * @loop became the same symbol. */
+    out[0] = (char) (1 + (scope & 0x7F));
+    out[1] = (char) (1 + ((scope >> 7) & 0x7F));
+    out[2] = '@';
+
+    return 3;
+}
+
+#define MAX_SCOPE 0x3FFF
+
 static int scoped_key(parser* p, const char* name, int sz, char* out) {
     int n = 0;
     if (sz > 0 && name[0] == '@') {
-        out[n++] = (char) (1 + (p->scope_ & 0x7F));
-        out[n++] = '@';
+        n = scope_prefix(p->scope_, out);
     }
     if (sz > MAX_NAME - n) {
         return -1;
@@ -522,6 +535,9 @@ static const char* parse_label(parser* p) {
     /* A global label opens a new local scope, so the names inside the routine
      * that follows are distinct from the ones before it. */
     if (p->tk_.txt_[0] != '@') {
+        if (p->scope_ == MAX_SCOPE) {
+            return pr_msg(p, "too many labels");
+        }
         p->scope_++;
     }
 
@@ -562,8 +578,7 @@ static const char* post_process(parser* p) {
          * the file happened to end in. */
         int n = 0;
         if (ln->label_[0] == '@') {
-            key[n++] = (char) (1 + (ln->scope_ & 0x7F));
-            key[n++] = '@';
+            n = scope_prefix(ln->scope_, key);
         }
         for (int i = 0; i < ksz; i++) {
             key[n + i] = ln->label_[i];
@@ -660,7 +675,7 @@ static void pr_prescan(parser* p) {
 
         const bool global = name[0] != '@';
         if (next(p).tk_ == COLON) {
-            if (global) {
+            if (global && p->scope_ < MAX_SCOPE) {
                 p->scope_++;
             }
 
@@ -716,6 +731,7 @@ const char* pr_parse(parser* p) {
                 err = parse_label(p);
                 break;
             case NEW_LINE:
+                p->last_label_sz_ = 0;
                 continue;
             default:
                 break;
@@ -724,19 +740,27 @@ const char* pr_parse(parser* p) {
             return err;
         }
 
-        // If we processed correctly, we are either at the end of the line or at a label colon
-        if (p->tk_.tk_ == NEW_LINE || p->tk_.tk_ == COLON) {
+        // A colon means a label was just defined and the line continues, so
+        // last_label_ stays live for an equ that follows it.
+        if (p->tk_.tk_ == COLON) {
             continue;
         }
 
-        p->tk_ = next(p);
-        /* End of file ends the last line just as well as a newline does. A
-         * source whose final line had no trailing newline used to be rejected
-         * outright -- and files in the reference corpus are written that
-         * way. */
-        if (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
-            return pr_msg(p, "expected a new line.");
+        if (p->tk_.tk_ != NEW_LINE) {
+            p->tk_ = next(p);
+            /* End of file ends the last line just as well as a newline does.
+             * A source whose final line had no trailing newline used to be
+             * rejected outright -- and files in the reference corpus are
+             * written that way. */
+            if (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
+                return pr_msg(p, "expected a new line.");
+            }
         }
+
+        /* The line is over, so a label on it no longer stands as the target
+         * of a later equ. Without this, "foo: ld a,b" followed by a bare
+         * "equ 5" silently redefined foo. */
+        p->last_label_sz_ = 0;
     }
 
     return post_process(p);

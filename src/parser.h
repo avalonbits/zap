@@ -27,6 +27,11 @@ typedef struct _parser {
      * in the next without either having to be renamed. */
     uint8_t scope_;
 
+    /* Address of the statement being assembled, which is what '$' means.
+     * Not addr_: by the time an operand is read the opcode has already been
+     * emitted, and "jp $" has to jump to the jp, not to its own operand. */
+    int stmt_addr_;
+
     /* The label most recently defined on this line, already scoped. EQU needs
      * it: "five: equ 5" defines the name to the left of the directive, and by
      * the time the directive is read the token that held it is gone. */

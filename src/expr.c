@@ -112,8 +112,10 @@ static const char* operand_at(parser* p, value* out, int depth) {
             break;
 
         case DOLLAR:
-            /* A bare '$' is where this instruction starts. */
-            v = (value) (p->pos_ + p->org_);
+            /* A bare '$' is where this statement starts, not where the operand
+             * being read sits: "jp $" jumps to the jp itself, and by now its
+             * opcode has already been emitted. */
+            v = (value) p->stmt_addr_;
             next(p);
             break;
 

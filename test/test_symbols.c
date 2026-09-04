@@ -152,6 +152,16 @@ int main(void) {
            "  equ 5\n",
            "ERR");
 
+    /* '$' is the address of the statement being assembled, not of the operand
+     * being read -- by the time the operand is reached the opcode has already
+     * been emitted, so the two differ by one. Checked against ez80asm. */
+    asm_is("dollar is the statement address",
+           "  .org $B0000\n  jp $\n  ld a,b\n  jp $\n  db $\n",
+           "C3 00 00 0B 78 C3 05 00 0B 09");
+    asm_is("dollar in an expression",
+           "  .org $B0000\n  jp $+3\n",
+           "C3 03 00 0B");
+
     /* A source whose last line has no trailing newline. Files in the
      * reference corpus are written this way. */
     asm_is("no trailing newline",

@@ -76,6 +76,7 @@ parser* pr_init(parser* p, const char* fname) {
      * too many, so every address in a source without an .ORG was wrong. */
     p->org_ = 0x40000;
     p->addr_ = p->org_;
+    p->stmt_addr_ = p->addr_;
     p->scope_ = 0;
     p->last_label_sz_ = 0;
     p->anon_count_ = 0;
@@ -699,6 +700,8 @@ const char* pr_parse(parser* p) {
     const char* err = NULL;
 
     for (p->tk_ = next(p); p->tk_.tk_ != NONE; p->tk_ = next(p)) {
+        p->stmt_addr_ = p->addr_;
+
         switch (p->tk_.tk_) {
             case DOT:
                 err = parse_start_dot(p);

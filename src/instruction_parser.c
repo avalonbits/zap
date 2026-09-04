@@ -188,12 +188,30 @@ const char* parse_jp(parser* p) {
     }
     switch (tk.tk_) {
         case NUMBER:
-            pr_wbyte(p,  0xC3);
-            parse_number(p);
-            break;
+        case DOLLAR:
+        case L_BRACKET:
+        case MINUS:
+        case PLUS:
+        case TILDE: {
+            pr_wbyte(p, 0xC3);
+
+            value v = 0;
+            const char* err = expr_eval(p, &v);
+            if (err != NULL) {
+                return err;
+            }
+            opnd.i = v;
+            const uint8_t width = p->adl_ ? 3 : 2;
+            for (uint8_t i = 0; i < width; i++) {
+                pr_wbyte(p, opnd.b[i]);
+            }
+
+            return NULL;
+        }
         default:
-            return pr_msg(p, "expeted an address or a label.");
+            return pr_msg(p, "expected an address or a label.");
     }
+
     return NULL;
 }
 

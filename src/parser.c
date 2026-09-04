@@ -135,6 +135,14 @@ uint8_t* pr_buf(parser* p, int* sz) {
 
 
 void pr_destroy(parser* p) {
+    /* Unwind anything an include or a macro expansion left suspended. A parse
+     * that fails part way through one never pops back out, so without this
+     * every source still on the stack leaks its read buffer. */
+    while (p->inc_depth_ > 0) {
+        br_destroy(&p->lex_.rd_);
+        p->lex_ = p->inc_[--p->inc_depth_];
+    }
+
     mt_destroy(&p->macros_);
     free(p->buf_);
     p->buf_ = NULL;

@@ -213,6 +213,22 @@ static const char* emit_imm(parser* p, operand* op, uint8_t width) {
     return NULL;
 }
 
+/* Whether an operand carries a value that a transform folds into the opcode,
+ * and if so whether that value is available. */
+static bool folds_known(uint8_t tr, const operand* op) {
+    switch (tr) {
+        case TR_N:
+        case TR_BIT:
+        case TR_SELECT:
+            return op->imm_known;
+        case TR_Y:
+            /* TR_Y takes a register index unless an immediate is present. */
+            return !op->has_imm || op->imm_known;
+        default:
+            return true;
+    }
+}
+
 static const char* emit_row(parser* p, const isa_row* row, operand* a,
                             operand* b, uint8_t suffix) {
     emitted out;
@@ -225,14 +241,24 @@ static const char* emit_row(parser* p, const isa_row* row, operand* a,
         return pr_msg(p, "illegal suffix for this instruction");
     }
 
+    /* A value that folds into the opcode byte has to be known now: there is
+     * no hole to leave, and the range checks below cannot run on a value that
+     * is not there yet. Without this, "rst later" with later undefined
+     * emitted C7 -- rst 0 -- and reported success, and bit and im did the
+     * same. A constant defined further down still works, because the prescan
+     * has already folded it. */
+    if (!folds_known(row->transformA, a) || !folds_known(row->transformB, b)) {
+        return pr_msg(p, "value must be known here");
+    }
+
     /* Range checks the reference makes before emitting anything. */
-    if ((row->condA & IMM_BIT) && a->imm_known && (a->imm < 0 || a->imm > 7)) {
+    if ((row->condA & IMM_BIT) && (a->imm < 0 || a->imm > 7)) {
         return pr_msg(p, "bit number must be 0..7");
     }
-    if ((row->condA & IMM_NSELECT) && a->imm_known && (a->imm < 0 || a->imm > 2)) {
+    if ((row->condA & IMM_NSELECT) && (a->imm < 0 || a->imm > 2)) {
         return pr_msg(p, "interrupt mode must be 0, 1 or 2");
     }
-    if (row->transformA == TR_N && a->imm_known && (a->imm & 0x47)) {
+    if (row->transformA == TR_N && (a->imm & 0x47)) {
         return pr_msg(p, "illegal restart address");
     }
     if ((row->flags & F_DISPA) && (a->disp < -128 || a->disp > 127)) {

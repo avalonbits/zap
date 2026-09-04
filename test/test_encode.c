@@ -162,6 +162,24 @@ int main(void) {
     insn_is("ld a,a'", "ERR");
     insn_is("ld a,b c", "ERR");
 
+    /* A value that folds into the opcode byte has to be known where it is
+     * written -- there is no hole to leave. These used to emit bit 0, rst 0
+     * and im 0 and report success. */
+    insn_is("bit later,a", "ERR");
+    insn_is("rst later", "ERR");
+    insn_is("im later", "ERR");
+    /* A constant defined further down is fine: the prescan has folded it. */
+    {
+        const char* got = emit("    rst target\ntarget: equ 8\n");
+        if (strcmp(got, "CF") == 0) {
+            fprintf(stderr, "PASS  %-32s %s\n", "rst with a later constant", got);
+        } else {
+            fprintf(stderr, "FAIL  %-32s got %s, want CF\n",
+                    "rst with a later constant", got);
+            failures++;
+        }
+    }
+
     /* A relative jump computes its displacement from the next instruction. */
     insn_is("jr $", "18 FE");
     insn_is("djnz $", "10 FE");

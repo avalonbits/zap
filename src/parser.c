@@ -269,9 +269,11 @@ static const char* parse_db(parser* p) {
             if (err != NULL) {
                 return err;
             }
-            if (v < -128 || v > 255) {
-                return pr_msg(p, "expected a byte value.");
-            }
+            /* Out of range truncates rather than failing. The reference
+             * warns ("Value truncated to 8 bit") and carries on emitting the
+             * low byte, so refusing here would diverge on any source it
+             * accepts. zap has nowhere to put a warning until diagnostics
+             * exist; the byte is what has to match. */
             pr_wbyte(p, (uint8_t) (v & 0xFF));
         }
 

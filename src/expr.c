@@ -46,9 +46,14 @@ static bool is_binary_op(TOKEN tk) {
     }
 }
 
-/* Shifts are done on the unsigned bit pattern: a shift of a negative value, or
- * one that pushes bits off the top, is implementation-defined for signed types
- * and the reference simply shifts the bits. */
+/* The right shift is arithmetic -- it keeps the sign -- because the reference
+ * shifts a signed int32 and its results depend on that: -87>>10 is -1 there,
+ * not 4194302. The left shift goes through unsigned so that pushing bits off
+ * the top stays defined; the low bits, which are all that survives into an
+ * operand, come out the same either way.
+ *
+ * The count is masked to 31 to match what the reference gets from the
+ * hardware for an over-wide shift, rather than leaving it undefined. */
 static value apply(TOKEN op, value a, value b, bool* div_zero) {
     switch (op) {
         case PLUS:      return a + b;
@@ -66,23 +71,24 @@ static value apply(TOKEN op, value a, value b, bool* div_zero) {
         case PIPE:      return a | b;
         case CARET:     return a ^ b;
         case SHIFT_L:   return (value) ((uint32_t) a << (b & 31));
-        case SHIFT_R:   return (value) ((uint32_t) a >> (b & 31));
+        case SHIFT_R:   return a >> (b & 31);
         default:        return a;
     }
 }
 
 /* One operand, with any run of unary operators in front of it. */
 static const char* operand_at(parser* p, value* out, int depth) {
-    /* Unary operators are collected first and applied on the way out, so
-     * 1+~1 negates only the 1 and -~0 works. */
-    TOKEN unary[MAX_DEPTH];
-    int nunary = 0;
-    while (p->tk_.tk_ == PLUS || p->tk_.tk_ == MINUS || p->tk_.tk_ == TILDE) {
-        if (nunary == MAX_DEPTH) {
-            return pr_msg(p, "expression too deep");
-        }
-        unary[nunary++] = p->tk_.tk_;
+    /* At most one unary operator. A run of them -- --1, -~1, ~~1 -- is
+     * rejected, which is what the reference does ("Illegal unary operator").
+     * 1--1 is still fine: that is a binary minus followed by a unary one. */
+    TOKEN unary = NONE;
+    if (p->tk_.tk_ == PLUS || p->tk_.tk_ == MINUS || p->tk_.tk_ == TILDE) {
+        unary = p->tk_.tk_;
         next(p);
+
+        if (p->tk_.tk_ == PLUS || p->tk_.tk_ == MINUS || p->tk_.tk_ == TILDE) {
+            return pr_msg(p, "illegal unary operator");
+        }
     }
 
     value v = 0;
@@ -129,13 +135,10 @@ static const char* operand_at(parser* p, value* out, int depth) {
             return pr_msg(p, "expected a value");
     }
 
-    while (nunary > 0) {
-        const TOKEN op = unary[--nunary];
-        if (op == MINUS) {
-            v = -v;
-        } else if (op == TILDE) {
-            v = ~v;
-        }
+    if (unary == MINUS) {
+        v = -v;
+    } else if (unary == TILDE) {
+        v = ~v;
     }
     *out = v;
 

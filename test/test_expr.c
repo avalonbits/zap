@@ -146,6 +146,17 @@ int main(void) {
     db_is("11000000b", "C0");
     db_is("192", "C0");
 
+    /* The right shift keeps the sign. Differential fuzzing against ez80asm
+     * caught this: with a logical shift, -87>>10 is 4194302 and the whole
+     * expression comes out 0x66 instead of 0x00. */
+    db_is("+10-'a'>>10/10", "00");
+    db_is("-C0h*C0h>>$1F&255", "FF");
+    db_is("1-0x0A>>$1F|'0'/7", "00");
+    /* An over-wide shift count is masked to 31, which is what the reference
+     * gets from the hardware. */
+    db_is("-1010b>>0xFF*99", "9D");
+    db_is("-42<<#7E+255+0Ah>>'Z'", "E0");
+
     /* Spacing must not change the parse. */
     db_is("1 + 1", "02");
     db_is("1+ 1", "02");
@@ -180,7 +191,17 @@ int main(void) {
     db_is("[1+2", "ERR");
     db_is("1+", "ERR");
     db_is("undefined_thing", "ERR");
-    db_is("300", "ERR");
+    /* Only one unary operator is allowed, matching the reference's
+     * "Illegal unary operator". 1--1 above is a binary minus then a unary one,
+     * which is fine. */
+    db_is("--1", "ERR");
+    db_is("-~1", "ERR");
+    db_is("~~1", "ERR");
+    db_is("+-1", "ERR");
+    /* Out of range truncates rather than failing -- ez80asm warns and emits
+     * the low byte, and zap has to emit the same one. */
+    db_is("300", "2C");
+    db_is("2+7<<0Ah", "00");
 
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);

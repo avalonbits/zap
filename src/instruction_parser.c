@@ -17,8 +17,6 @@ extern value tk2i(token tk);
 extern const char* pr_msg(parser* p, const char* msg);
 extern token next(parser* p);
 extern bool pr_wbyte(parser* p, uint8_t b);
-extern void pr_stack_label(parser* p, char* label, int sz);
-extern void pr_stack_relative_label(parser* p, char* label, int sz);
 
 /* Scratch used to split a value into little-endian bytes. Still file scope,
  * still shared by every handler -- that goes away with the rest of the globals
@@ -94,8 +92,9 @@ static const char* parse_label_op(parser* p)  {
             pr_wbyte(p, opnd.b[i]);
         }
     } else {
-        pr_stack_label(p, tk.txt_, tk.sz_);
+        return pr_stack_label(p, tk.txt_, tk.sz_);
     }
+
     return NULL;
 }
 
@@ -110,8 +109,9 @@ static const char* parse_relative_label_op(parser* p)  {
         }
         pr_wbyte(p, (uint8_t) d);
     } else {
-        pr_stack_relative_label(p, tk.txt_, tk.sz_);
+        return pr_stack_relative_label(p, tk.txt_, tk.sz_);
     }
+
     return NULL;
 }
 

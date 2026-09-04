@@ -3,8 +3,10 @@
 
 #include <stdbool.h>
 
+#include "value.h"
+
 typedef struct _label_node {
-    char label_[26];
+    char label_[MAX_NAME + 1];
     int bpos_;
     int line_;
 } label_node;

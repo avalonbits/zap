@@ -27,6 +27,11 @@
  * expression have room before they are narrowed to the operand width. */
 typedef int32_t value;
 
+/* Longest label, EQU or macro name. 64 is what the reference allows
+ * (MAXNAMELENGTH in its config.h), and zap has to accept the same sources.
+ * Every buffer that holds a name is sized from this. */
+#define MAX_NAME 64
+
 /* Converts a numeric literal to its value.
  *
  * Recognised forms, in the order they are tried -- the order is load-bearing,

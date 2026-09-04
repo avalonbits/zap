@@ -203,6 +203,46 @@ int main(void) {
     db_is("300", "2C");
     db_is("2+7<<0Ah", "00");
 
+    /* Arithmetic wraps instead of overflowing. Both of these tripped UBSan
+     * before add/sub/mul went through unsigned; the reference wraps too and
+     * emits 00 for the first. */
+    db_is("0x7fffffff+1", "00");
+    db_is("0xffffff+1", "00");
+    db_is("0x80000000/-1", "00");
+
+    /* Names are bounded at 64 characters, which is what the reference allows.
+     * A longer one used to be copied straight into a 26-byte field; the
+     * overrun stayed inside the enclosing allocation, so it corrupted the
+     * next entry rather than tripping a sanitizer. */
+    {
+        char src[256];
+        char name[80];
+        for (int n = 0; n < 64; n++) {
+            name[n] = 'L';
+        }
+        name[64] = 0;
+        snprintf(src, sizeof(src), "    call %s\n%s:\n    ret\n", name, name);
+        const char* got = emit(src);
+        const char* want = "CD 04 00 04 C9";
+        if (strcmp(got, want) == 0) {
+            fprintf(stderr, "PASS  %-37s %s\n", "64-character label", got);
+        } else {
+            fprintf(stderr, "FAIL  %-37s got %s, want %s\n", "64-character label", got, want);
+            failures++;
+        }
+
+        name[64] = 'L';
+        name[65] = 0;
+        snprintf(src, sizeof(src), "    call %s\n%s:\n    ret\n", name, name);
+        got = emit(src);
+        if (strcmp(got, "ERR") == 0) {
+            fprintf(stderr, "PASS  %-37s %s\n", "65-character label rejected", got);
+        } else {
+            fprintf(stderr, "FAIL  %-37s got %s, want ERR\n", "65-character label", got);
+            failures++;
+        }
+    }
+
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);
     }

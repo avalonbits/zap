@@ -43,7 +43,10 @@ parser* pr_init(parser* p, const char* fname) {
         lex_destroy(&p->lex_);
     }
 
-    p->org_ = 0x400000;
+    /* The Agon load address for an ordinary program, and the reference's
+     * default (START_ADDRESS in its config.h). It was 0x400000 here, one zero
+     * too many, so every address in a source without an .ORG was wrong. */
+    p->org_ = 0x40000;
     p->adl_ = true;
     p->skip_ws_ = true;
     p->comment_ = false;
@@ -140,14 +143,22 @@ bool pr_wbyte(parser* p, uint8_t b) {
     return true;
 }
 
-void pr_stack_label(parser* p, char* label, int sz) {
-    ls_push(&p->ls_, label, sz, p->pos_, p->lex_.lcount_);
+const char* pr_stack_label(parser* p, char* label, int sz) {
+    if (!ls_push(&p->ls_, label, sz, p->pos_, p->lex_.lcount_)) {
+        return pr_msg(p, "label too long");
+    }
     p->pos_ += 3;
+
+    return NULL;
 }
 
-void pr_stack_relative_label(parser* p, char* label, int sz) {
-    ls_push(&p->ls_, label, sz, p->pos_, p->lex_.lcount_);
+const char* pr_stack_relative_label(parser* p, char* label, int sz) {
+    if (!ls_push(&p->ls_, label, sz, p->pos_, p->lex_.lcount_)) {
+        return pr_msg(p, "label too long");
+    }
     p->pos_ += 1;
+
+    return NULL;
 }
 
 static const char* parse_org(parser* p) {
@@ -348,7 +359,12 @@ static const char* parse_instruction(parser* p) {
 }
 
 static const char* parse_label(parser* p) {
-    ht_nset(&p->labels_, p->tk_.txt_, p->tk_.sz_, p->pos_+p->org_);
+    /* A name too long for the table used to be dropped silently, so the label
+     * simply did not exist and every reference to it failed later with no
+     * hint why. */
+    if (!ht_nset(&p->labels_, p->tk_.txt_, p->tk_.sz_, p->pos_ + p->org_)) {
+        return pr_msg(p, "label too long");
+    }
     token tk = next(p);
     if (tk.tk_ != COLON) {
         return pr_msg(p, "expected a colon");

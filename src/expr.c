@@ -55,15 +55,28 @@ static bool is_binary_op(TOKEN tk) {
  * The count is masked to 31 to match what the reference gets from the
  * hardware for an over-wide shift, rather than leaving it undefined. */
 static value apply(TOKEN op, value a, value b, bool* div_zero) {
+    /* Add, subtract and multiply go through unsigned so that an intermediate
+     * result too wide for the operand wraps instead of being undefined.
+     * db 0x7fffffff+1 used to trip UBSan; the bits that reach the operand are
+     * the same either way. */
+    const uint32_t ua = (uint32_t) a;
+    const uint32_t ub = (uint32_t) b;
+
     switch (op) {
-        case PLUS:      return a + b;
-        case MINUS:     return a - b;
-        case STAR:      return a * b;
+        case PLUS:      return (value) (ua + ub);
+        case MINUS:     return (value) (ua - ub);
+        case STAR:      return (value) (ua * ub);
         case F_SLASH:
             if (b == 0) {
                 *div_zero = true;
 
                 return 0;
+            }
+            /* The one signed division that overflows. On x86 it traps, so the
+             * reference dies here the same way it dies on a division by zero;
+             * zap wraps to the value the operation would have produced. */
+            if (a == INT32_MIN && b == -1) {
+                return a;
             }
 
             return a / b;

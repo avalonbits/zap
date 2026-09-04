@@ -21,6 +21,13 @@ bool ls_push(label_stack* ls, const char* label, int sz, int bpos, int line) {
     if (ls->pos_ == ls->sz_) {
         return false;
     }
+    /* Without this, a name longer than the field was copied straight into it.
+     * The overrun stayed inside the nodes_ allocation, so it corrupted the
+     * next entry rather than tripping a sanitizer -- silent, and reachable
+     * from any source with a long label. */
+    if (sz > MAX_NAME || sz <= 0) {
+        return false;
+    }
 
     label_node* n = &ls->nodes_[ls->pos_];
     strncpy(n->label_, label, sz);

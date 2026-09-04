@@ -86,8 +86,7 @@ bool icase_equal(const char* s1, const char* s2, uint8_t ksz) {
 }
 
 bool ht_nset(hash_table* ht, const char* key, uint8_t ksz, int value) {
-    // Hash table keys MUST have at most 25 characters.
-    if (ksz > 25 || ksz <= 0) {
+    if (ksz > MAX_NAME || ksz <= 0) {
         return false;
     }
 
@@ -137,7 +136,7 @@ bool ht_set(hash_table* ht, const char* key, int value) {
 int ht_nget(hash_table* ht, const char* key, uint8_t ksz, bool* ok) {
     if (ok) *ok = false;
 
-    if (ksz > 25) {
+    if (ksz > MAX_NAME) {
         return 0;
     }
 

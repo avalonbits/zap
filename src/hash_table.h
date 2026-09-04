@@ -4,8 +4,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "value.h"
+
 typedef struct _hash_node {
-    char key_[26];
+    char key_[MAX_NAME + 1];
     int value_;
     struct _hash_node* next_;
 } hash_node;

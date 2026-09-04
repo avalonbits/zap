@@ -155,6 +155,20 @@ int main(void) {
     rejected("g");              /* lone non-digit */
     rejected("fb");             /* 'b' suffix, but 'f' is not a binary digit */
 
+    /* Ending in 'h' is not enough to be hex: everything before the suffix has
+     * to be a hex digit too. Only an identifier spelled entirely from 0-9a-f
+     * is at risk of being read as a number, which is the reference's rule as
+     * well -- ez80asm rejects Beefh, ABCh, Fh, dh and Ah as label names, and
+     * accepts Ansh, cache, loop_h, hash, push and xh, exactly as zap does. */
+    rejected("Ansh");           /* 'n' and 's' are not hex digits */
+    rejected("cache");
+    rejected("loop_h");
+    rejected("xh");
+    rejected("tab");
+    ok("Beefh", 0xBEEF);        /* all hex digits: this one really is a number */
+    ok("ABCh", 0xABC);
+    ok("dh", 0x0D);
+
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);
     }

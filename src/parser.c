@@ -24,6 +24,14 @@
 
 static char errmsg[256] = "";
 
+int pr_addr(const parser* p) {
+    if (p->reloc_) {
+        return p->reloc_base_ + (p->addr_ - p->reloc_out_);
+    }
+
+    return p->addr_;
+}
+
 /* Builds the table key for a name. A global name is itself; a local one -- any
  * name starting with '@' -- is prefixed with the scope it was written in, so
  * @loop in one routine and @loop in the next do not collide. The prefix is two
@@ -91,11 +99,16 @@ parser* pr_init(parser* p, const char* fname) {
      * too many, so every address in a source without an .ORG was wrong. */
     p->org_ = 0x40000;
     p->addr_ = p->org_;
+    p->start_ = p->org_;
+    p->high_ = 0;
+    p->fill_ = 0xFF;
+    p->reloc_ = false;
     p->stmt_addr_ = p->addr_;
     p->scope_ = 0;
     p->last_label_sz_ = 0;
     p->anon_count_ = 0;
     p->fname_ = fname;
+    p->inc_depth_ = 0;
     p->adl_ = true;
     p->cpu_ = CPU_EZ80;
     p->skip_ws_ = true;
@@ -104,7 +117,10 @@ parser* pr_init(parser* p, const char* fname) {
 }
 
 uint8_t* pr_buf(parser* p, int* sz) {
-    *sz = p->pos_;
+    /* Only as far as something was actually written. Trailing padding from a
+     * ds or align at the end of the file is not part of the output. */
+    *sz = p->high_;
+
     return p->buf_;
 }
 
@@ -123,6 +139,26 @@ token next(parser* p) {
         token tk = p->tk_;
         switch (tk.tk_) {
             case NONE:
+                /* End of an included file: go back to the one that included
+                 * it and keep reading, so the include reads as if its text
+                 * had been written in place. */
+                if (p->inc_depth_ > 0) {
+                    br_destroy(&p->lex_.rd_);
+                    p->lex_ = p->inc_[--p->inc_depth_];
+                    p->comment_ = false;
+
+                    /* The end of an included file ends the line as well. Its
+                     * last line often has no trailing newline, and without
+                     * this it ran on into the line after the .include. */
+                    p->tk_.tk_ = NEW_LINE;
+                    p->tk_.txt_ = p->lex_.line_;
+                    p->tk_.sz_ = 0;
+                    p->tk_.val_ = 0;
+                    p->tk_.label_ = false;
+
+                    return p->tk_;
+                }
+
                 return tk;
             case WHITE_SPACE:
                 if (p->skip_ws_) {
@@ -251,14 +287,61 @@ value tk2i(token tk) {
     return tk.val_;
 }
 
-bool pr_wbyte(parser* p, uint8_t b) {
-    if (p->pos_ == p->sz_) {
+/* Grows the output buffer to hold at least `need` bytes. The buffer cannot be
+ * streamed out as it is produced -- a forward reference is patched in place
+ * after the fact, so the bytes have to stay addressable -- which means it has
+ * to grow instead. It started at a fixed 128KB, which is smaller than some
+ * real sources need. */
+static bool pr_reserve(parser* p, int need) {
+    if (need <= p->sz_) {
+        return true;
+    }
+
+    int want = p->sz_;
+    while (want < need) {
+        if (want > (1 << 22)) {
+            return false;  /* 4MB is past anything an Agon can load */
+        }
+        want *= 2;
+    }
+
+    uint8_t* grown = (uint8_t*) realloc(p->buf_, (size_t) want * sizeof(uint8_t));
+    if (grown == NULL) {
         return false;
     }
-    p->buf_[p->pos_++] = b;
-    p->addr_++;
+    p->buf_ = grown;
+    p->sz_ = want;
 
     return true;
+}
+
+/* Writes one byte at the current address, filling any gap left behind by an
+ * .org, ds or align that moved the address without writing. */
+bool pr_wbyte(parser* p, uint8_t b) {
+    const int at = p->addr_ - p->start_;
+    if (at < 0 || !pr_reserve(p, at + 1)) {
+        return false;
+    }
+
+    for (int i = p->high_; i < at; i++) {
+        p->buf_[i] = p->fill_;
+    }
+
+    p->buf_[at] = b;
+    p->addr_++;
+    p->pos_ = at + 1;
+    if (p->pos_ > p->high_) {
+        p->high_ = p->pos_;
+    }
+
+    return true;
+}
+
+/* Moves the address without writing anything, which is what ds and align do.
+ * The bytes appear only if something later lands past them. */
+static void pr_skip(parser* p, int n) {
+    p->addr_ += n;
+    p->pos_ = p->addr_ - p->start_;
 }
 
 /* Leaves a hole of the right width and remembers how to fill it. */
@@ -276,7 +359,7 @@ const char* pr_stack_fixup(parser* p, const char* label, int sz,
 
     /* addr_ is now the address of the next instruction, which is exactly what
      * a relative displacement is measured from. */
-    if (!ls_push(&p->ls_, label, sz, bpos, p->addr_, p->lex_.lcount_,
+    if (!ls_push(&p->ls_, label, sz, bpos, pr_addr(p), p->lex_.lcount_,
                  kind, p->scope_, anon)) {
         return pr_msg(p, "label too long");
     }
@@ -300,8 +383,15 @@ static const char* parse_org(parser* p) {
     if (err != NULL) {
         return err;
     }
+    if (p->high_ == 0) {
+        /* Nothing written yet, so this is where the output begins. */
+        p->start_ = v;
+    } else if (v < p->addr_) {
+        return pr_msg(p, "new address lower than current address");
+    }
     p->org_ = v;
     p->addr_ = v;
+    p->pos_ = p->addr_ - p->start_;
 
     return NULL;
 }
@@ -314,84 +404,51 @@ static const char* parse_align(parser* p) {
     if (err != NULL) {
         return err;
     }
+    if (align <= 0 || (align & (align - 1)) != 0) {
+        return pr_msg(p, "alignment is not a power of 2");
+    }
 
-    /* Still aligning to an absolute offset rather than to a boundary. That is
-     * wrong, and it is fixed with the rest of the directives; changing it here
-     * would put a byte-level change in a commit that is meant to be about
-     * where values come from. */
-    while (p->pos_ < align) {
-        pr_wbyte(p, 0);
+    /* To the next multiple of align, as an address. This used to pad up to
+     * the absolute buffer offset named by the operand, so ".align 64" after
+     * more than 64 bytes did nothing at all. */
+    const int rem = p->addr_ % (int) align;
+    if (rem != 0) {
+        pr_skip(p, (int) align - rem);
     }
 
     return NULL;
 }
 
+/* Emits the contents of a double-quoted string, the opening quote already
+ * consumed. */
 static const char* parse_quoted(parser* p) {
-    p->skip_ws_ = false;
-    next(p);
-    while (p->tk_.tk_ != D_QUOTE && p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
-        if (p->tk_.tk_ != B_SLASH) {
-            for (int i = 0; i < p->tk_.sz_; i++) {
-                pr_wbyte(p, (uint8_t) p->tk_.txt_[i]);
-            }
-            next(p);
-            continue;
-        }
-
-        next(p);
-        if (p->tk_.sz_ < 1) {
-            p->skip_ws_ = true;
-
-            return pr_msg(p, "missing escape");
-        }
-
-        /* Whatever token follows the backslash, only its first character
-         * matters. It used to have to be a NAME, which broke the moment the R
-         * register was added to the reserved words and "\r" started coming
-         * back as a register -- every .asciz with a carriage return in it.
-         * The escape set is shared with character literals. */
-        char ch;
-        if (!esc_char(p->tk_.txt_[0], &ch)) {
-            p->skip_ws_ = true;
-
-            return pr_msg(p, "wrong escape");
-        }
-        pr_wbyte(p, (uint8_t) ch);
-
-        /* The token may have held more than the escape letter, so the rest of
-         * it is still string content. */
-        for (int i = 1; i < p->tk_.sz_; i++) {
-            pr_wbyte(p, (uint8_t) p->tk_.txt_[i]);
-        }
-        next(p);
-    }
-    p->skip_ws_ = true;
-
-    if (p->tk_.tk_ != D_QUOTE) {
+    char buf[512];
+    const int n = lex_string(&p->lex_, buf, sizeof(buf));
+    if (n == -1) {
         return pr_msg(p, "expected quote");
     }
-
-    return NULL;
-}
-
-static const char* parse_ascii(parser* p) {
-    CONSUME(p, D_QUOTE, "expected quote");
-    return parse_quoted(p);
-}
-
-static const char* parse_asciz(struct _parser* p) {
-    const char* msg = parse_ascii(p);
-    if (msg != NULL) {
-        return msg;
+    if (n == -2) {
+        return pr_msg(p, "wrong escape");
+    }
+    if (n < 0) {
+        return pr_msg(p, "string too long");
     }
 
-    pr_wbyte(p, 0);
+    for (int i = 0; i < n; i++) {
+        if (!pr_wbyte(p, (uint8_t) buf[i])) {
+            return pr_msg(p, "output too large");
+        }
+    }
+
     return NULL;
 }
 
 
 static const char* parse_db(parser* p) {
     next(p);
+    if (p->tk_.tk_ == NEW_LINE || p->tk_.tk_ == NONE) {
+        return pr_msg(p, "missing argument");
+    }
 
     while (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
         if (p->tk_.tk_ == D_QUOTE) {
@@ -424,6 +481,9 @@ static const char* parse_db(parser* p) {
             return pr_msg(p, "expected a comma");
         }
         next(p);
+        if (p->tk_.tk_ == NEW_LINE || p->tk_.tk_ == NONE) {
+            return pr_msg(p, "missing argument");
+        }
     }
 
     return NULL;
@@ -485,10 +545,260 @@ static const char* parse_equ(parser* p) {
     return NULL;
 }
 
+/* Reads a double-quoted string into buf. The lexer breaks a string into
+ * whatever tokens its characters happen to form, so this reassembles the raw
+ * text -- which is what a filename needs. */
+static const char* read_string(parser* p, char* buf, int max, int* out_sz) {
+    if (next(p).tk_ != D_QUOTE) {
+        return pr_msg(p, "expected a quoted string");
+    }
+
+    const int n = lex_string(&p->lex_, buf, max - 1);
+    if (n < 0) {
+        return pr_msg(p, "bad string");
+    }
+    buf[n] = 0;
+    *out_sz = n;
+    next(p);
+
+    return NULL;
+}
+
+/* Suspends the current source and reads another in its place. */
+static const char* parse_include(parser* p) {
+    static char names[8][256];
+
+    if (p->inc_depth_ == (int) (sizeof(p->inc_) / sizeof(p->inc_[0]))) {
+        return pr_msg(p, "includes nested too deeply");
+    }
+
+    int sz = 0;
+    const char* err = read_string(p, names[p->inc_depth_], 256, &sz);
+    if (err != NULL) {
+        return err;
+    }
+
+    p->inc_[p->inc_depth_] = p->lex_;
+    lexer nested;
+    if (lex_init(&nested, names[p->inc_depth_]) == NULL) {
+        return pr_msg(p, "cannot open include file");
+    }
+    p->inc_depth_++;
+    p->lex_ = nested;
+
+    return NULL;
+}
+
+/* Copies a file's bytes straight into the output. */
+static const char* parse_incbin(parser* p) {
+    char name[256];
+    int sz = 0;
+    const char* err = read_string(p, name, sizeof(name), &sz);
+    if (err != NULL) {
+        return err;
+    }
+
+    buf_reader rd;
+    if (br_open(&rd, name, 4) == NULL) {
+        return pr_msg(p, "cannot open binary file");
+    }
+
+    for (int ch = br_byte(&rd); ch >= 0; ch = br_byte(&rd)) {
+        if (!pr_wbyte(p, (uint8_t) ch)) {
+            br_destroy(&rd);
+
+            return pr_msg(p, "output too large");
+        }
+    }
+    br_destroy(&rd);
+
+    return NULL;
+}
+
+/* dw, dl, dw24 and dw32: a list of values, each written little-endian at the
+ * given width. Strings are allowed alongside them, as they are for db. */
+static const char* parse_data(parser* p, int width) {
+    next(p);
+    if (p->tk_.tk_ == NEW_LINE || p->tk_.tk_ == NONE) {
+        return pr_msg(p, "missing argument");
+    }
+
+    while (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
+        if (p->tk_.tk_ == D_QUOTE) {
+            const char* err = parse_quoted(p);
+            if (err != NULL) {
+                return err;
+            }
+            next(p);
+        } else {
+            value v = 0;
+            const char* err = expr_eval(p, &v);
+            if (err != NULL) {
+                return err;
+            }
+            for (int i = 0; i < width; i++) {
+                if (!pr_wbyte(p, (uint8_t) ((v >> (i * 8)) & 0xFF))) {
+                    return pr_msg(p, "output too large");
+                }
+            }
+        }
+
+        if (p->tk_.tk_ == NEW_LINE || p->tk_.tk_ == NONE) {
+            return NULL;
+        }
+        if (p->tk_.tk_ != COMMA) {
+            return pr_msg(p, "expected a comma");
+        }
+        next(p);
+        if (p->tk_.tk_ == NEW_LINE || p->tk_.tk_ == NONE) {
+            return pr_msg(p, "missing argument");
+        }
+    }
+
+    return NULL;
+}
+
+/* ds and defs reserve space without writing it. The reference rejects an
+ * initialiser here -- "Ignoring unsupported initializer value" -- and fills
+ * the gap with the global fill byte only if something lands past it. */
+static const char* parse_ds(parser* p) {
+    next(p);
+
+    value n = 0;
+    const char* err = expr_eval(p, &n);
+    if (err != NULL) {
+        return err;
+    }
+    if (n < 0) {
+        return pr_msg(p, "negative size");
+    }
+    /* An initialiser here is read and thrown away. That is not an oversight:
+     * the reference warns ("Ignoring unsupported initializer value") and
+     * carries on reserving the space uninitialised, so refusing it would
+     * reject a source ez80asm accepts. ".ds 10, 0" therefore does not zero
+     * anything, in either assembler. */
+    if (p->tk_.tk_ == COMMA) {
+        next(p);
+        value ignored = 0;
+        err = expr_eval(p, &ignored);
+        if (err != NULL) {
+            return err;
+        }
+    }
+    pr_skip(p, (int) n);
+
+    return NULL;
+}
+
+/* blkb, blkw, blkp and blkl write their space out, unlike ds. The value is
+ * optional and defaults to the global fill byte. */
+static const char* parse_blk(parser* p, int width) {
+    next(p);
+
+    value n = 0;
+    const char* err = expr_eval(p, &n);
+    if (err != NULL) {
+        return err;
+    }
+    if (n < 0) {
+        return pr_msg(p, "negative size");
+    }
+
+    value v = 0;
+    bool given = false;
+    if (p->tk_.tk_ == COMMA) {
+        next(p);
+        err = expr_eval(p, &v);
+        if (err != NULL) {
+            return err;
+        }
+        given = true;
+    }
+
+    for (value i = 0; i < n; i++) {
+        for (int b = 0; b < width; b++) {
+            const uint8_t byte = given ? (uint8_t) ((v >> (b * 8)) & 0xFF)
+                                       : p->fill_;
+            if (!pr_wbyte(p, byte)) {
+                return pr_msg(p, "output too large");
+            }
+        }
+    }
+
+    return NULL;
+}
+
+/* Sets the byte that fills gaps and unvalued blk space. */
+static const char* parse_fillbyte(parser* p) {
+    next(p);
+
+    value v = 0;
+    const char* err = expr_eval(p, &v);
+    if (err != NULL) {
+        return err;
+    }
+    p->fill_ = (uint8_t) (v & 0xFF);
+
+    return NULL;
+}
+
 static const char* parse_directive(parser* p) {
     switch (p->tk_.tt_) {
         case D_ASSUME:
             return parse_adl(p);
+        case D_DW:
+        case D_DEFW:
+            return parse_data(p, 2);
+        case D_DL:
+        case D_DW24:
+            return parse_data(p, 3);
+        case D_DW32:
+            return parse_data(p, 4);
+        case D_DS:
+        case D_DEFS:
+            return parse_ds(p);
+        case D_BLKB:
+            return parse_blk(p, 1);
+        case D_BLKW:
+            return parse_blk(p, 2);
+        case D_BLKP:
+            return parse_blk(p, 3);
+        case D_BLKL:
+            return parse_blk(p, 4);
+        case D_FILLBYTE:
+            return parse_fillbyte(p);
+        case D_RELOCATE: {
+            if (p->reloc_) {
+                return pr_msg(p, "relocate is already open");
+            }
+
+            next(p);
+            value v = 0;
+            const char* err = expr_eval(p, &v);
+            if (err != NULL) {
+                return err;
+            }
+            if (v < 0 || v > 0xFFFFFF) {
+                return pr_msg(p, "relocate address out of range");
+            }
+            p->reloc_ = true;
+            p->reloc_base_ = (int) v;
+            p->reloc_out_ = p->addr_;
+
+            return NULL;
+        }
+        case D_ENDRELOCATE:
+            if (!p->reloc_) {
+                return pr_msg(p, "endrelocate without relocate");
+            }
+            p->reloc_ = false;
+            next(p);
+
+            return NULL;
+        case D_INCLUDE:
+            return parse_include(p);
+        case D_INCBIN:
+            return parse_incbin(p);
         case D_CPU:
             return parse_cpu(p);
         case D_EQU:
@@ -502,9 +812,23 @@ static const char* parse_directive(parser* p) {
         case D_BYTE:
             return parse_db(p);
         case D_ASCII:
-            return parse_ascii(p);
+            /* ascii and byte are spellings of db in the reference -- they
+             * take the same comma-separated list of values and strings, not
+             * just one string. */
+            return parse_db(p);
         case D_ASCIZ:
-            return parse_asciz(p);
+            /* db, then a terminating zero. */
+            {
+                const char* err = parse_db(p);
+                if (err != NULL) {
+                    return err;
+                }
+                if (!pr_wbyte(p, 0)) {
+                    return pr_msg(p, "output too large");
+                }
+            }
+
+            return NULL;
         default:
             while (p->tk_.tk_ != NEW_LINE) {
                 next(p);
@@ -532,7 +856,7 @@ static const char* parse_label(parser* p) {
         if (p->anon_count_ == (int) (sizeof(p->anon_) / sizeof(p->anon_[0]))) {
             return pr_msg(p, "too many anonymous labels");
         }
-        p->anon_[p->anon_count_++] = p->addr_;
+        p->anon_[p->anon_count_++] = pr_addr(p);
 
         next(p);
 
@@ -557,7 +881,7 @@ static const char* parse_label(parser* p) {
     /* A name too long for the table used to be dropped silently, so the label
      * simply did not exist and every reference to it failed later with no
      * hint why. */
-    if (!ht_nset(&p->labels_, key, ksz, p->addr_)) {
+    if (!ht_nset(&p->labels_, key, ksz, pr_addr(p))) {
         return pr_msg(p, "label too long");
     }
 
@@ -659,6 +983,7 @@ static void pr_prescan(parser* p) {
     const int saved_pos = p->pos_;
     const bool saved_comment = p->comment_;
     const bool saved_ws = p->skip_ws_;
+    const int saved_depth = p->inc_depth_;
 
     if (lex_init(&p->lex_, p->fname_) == NULL) {
         p->lex_ = saved_lex;
@@ -667,9 +992,28 @@ static void pr_prescan(parser* p) {
     }
     p->scope_ = 0;
     p->pos_ = 0;
+    p->inc_depth_ = 0;
 
     token tk = next(p);
     while (tk.tk_ != NONE) {
+        /* Follow includes. A constant defined in an included file has to be
+         * visible to the same forward uses as one defined here -- without
+         * this, "rst target" worked when target's equ was in this file and
+         * failed when it was one line further into an include. */
+        if (tk.tk_ == DOT) {
+            tk = next(p);
+        }
+        if (tk.tk_ == DIRECTIVE && tk.tt_ == D_INCLUDE) {
+            if (parse_include(p) != NULL) {
+                /* Unreadable include: the real pass reports it properly. */
+                while (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
+                    next(p);
+                }
+            }
+            tk = next(p);
+            continue;
+        }
+
         if (tk.tk_ != NAME) {
             while (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
                 next(p);
@@ -714,10 +1058,17 @@ static void pr_prescan(parser* p) {
         tk = next(p);
     }
 
+    /* Close anything an include left open, then put the real source back. */
+    while (p->inc_depth_ > 0) {
+        br_destroy(&p->lex_.rd_);
+        p->lex_ = p->inc_[--p->inc_depth_];
+    }
     br_destroy(&p->lex_.rd_);
+
     p->lex_ = saved_lex;
     p->scope_ = saved_scope;
     p->pos_ = saved_pos;
+    p->inc_depth_ = saved_depth;
 
     /* The comment flag has to come back too. A source whose last line ends
      * inside a comment with no trailing newline left it set, and the real
@@ -740,7 +1091,7 @@ const char* pr_parse(parser* p) {
     const char* err = NULL;
 
     for (p->tk_ = next(p); p->tk_.tk_ != NONE; p->tk_ = next(p)) {
-        p->stmt_addr_ = p->addr_;
+        p->stmt_addr_ = pr_addr(p);
 
         switch (p->tk_.tk_) {
             case DOT:

@@ -22,6 +22,23 @@ typedef struct _parser {
      * silently moved every label defined before it. */
     int addr_;
 
+    /* The address the output buffer starts at, and how far into it anything
+     * has actually been written. Between them these give the sparse model the
+     * reference uses: .org, ds and align move the address without writing, and
+     * the gap they leave is filled only when a later byte lands past it. A
+     * gap at the end of the file is not written at all. */
+    int start_;
+    int high_;
+
+    /* What fills a gap. 0xFF matches the reference's default (FILLBYTE). */
+    uint8_t fill_;
+
+    /* .relocate makes labels and '$' report the addresses the code will run
+     * at, while the bytes keep landing where they are being written. */
+    bool reloc_;
+    int reloc_base_;
+    int reloc_out_;
+
     /* Which local scope names are being read in. Bumped at every global
      * label, so the @loop in one routine is a different symbol from the @loop
      * in the next without either having to be renamed. */
@@ -46,6 +63,12 @@ typedef struct _parser {
 
     /* Kept so the constant prescan can re-open the source. */
     const char* fname_;
+
+    /* Sources suspended by an .include, innermost last. next() pops one when
+     * the current file runs out, so an include reads as if its text had been
+     * written in place. */
+    lexer inc_[8];
+    int inc_depth_;
 
     bool adl_;
 
@@ -72,6 +95,10 @@ const char* pr_stack_fixup(parser* p, const char* label, int sz,
                            fixup_kind kind, int anon);
 const char* pr_stack_label(parser* p, char* label, int sz, int anon);
 const char* pr_stack_relative_label(parser* p, char* label, int sz, int anon);
+/* The address to report for the byte at addr_: the same thing, unless
+ * .relocate is in force. */
+int pr_addr(const parser* p);
+
 const char* pr_resolve(parser* p, const char* name, int sz, value* out,
                        bool* known, int* anon);
 

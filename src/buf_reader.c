@@ -136,6 +136,27 @@ void br_next(buf_reader* br) {
     }
 }
 
+int br_byte(buf_reader* br) {
+    if (br->bsz_ == 0) {
+        return -1;
+    }
+    if (br->buf_ == NULL || br->fh_ == 0) {
+        return -1;
+    }
+    if (br->bpos_ == br->bsz_) {
+        uint24_t frsz = mos_fread(br->fh_, br->buf_, br->bsz_);
+        if (frsz == 0) {
+            br->bsz_ = 0;
+
+            return -1;
+        }
+        br->bpos_ = 0;
+        br->bsz_ = frsz;
+    }
+
+    return (int) (unsigned char) br->buf_[br->bpos_++];
+}
+
 char br_char(buf_reader* br) {
     char ch = br_peek(br);
     if (ch != EOF && ch != ESUSP) {

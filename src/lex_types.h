@@ -85,6 +85,8 @@ typedef enum _TK_TYPE {
     D_ENDMACRO,
     D_ORG,
     D_CPU,
+    D_RELOCATE,
+    D_ENDRELOCATE,
 
     // We group the single letter registers like this in order to make it
     // easier to generate the instructions involving them.

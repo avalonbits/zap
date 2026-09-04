@@ -51,6 +51,8 @@ static void init_ht() {
     ht_set(ht, "ENDMACRO", pack_tktt(DIRECTIVE, D_ENDMACRO));
     ht_set(ht, "ORG", pack_tktt(DIRECTIVE, D_ORG));
     ht_set(ht, "CPU", pack_tktt(DIRECTIVE, D_CPU));
+    ht_set(ht, "RELOCATE", pack_tktt(DIRECTIVE, D_RELOCATE));
+    ht_set(ht, "ENDRELOCATE", pack_tktt(DIRECTIVE, D_ENDRELOCATE));
     ht_set(ht, "A", pack_tktt(REGISTER, REG_A));
     ht_set(ht, "B", pack_tktt(REGISTER, REG_B));
     ht_set(ht, "C", pack_tktt(REGISTER, REG_C));
@@ -214,6 +216,39 @@ static void lex_prefixed_number(lexer* lex, token* tk, TOKEN bare) {
         return;
     }
     tk->tk_ = bare;
+}
+
+int lex_string(lexer* lex, char* out, int max) {
+    int n = 0;
+
+    while (true) {
+        const char ch = br_peek(&lex->rd_);
+        if (!OK_CHAR(ch) || ch == '\n') {
+            return -1;
+        }
+        br_next(&lex->rd_);
+
+        if (ch == '"') {
+            return n;
+        }
+
+        char put = ch;
+        if (ch == '\\') {
+            const char esc = br_peek(&lex->rd_);
+            if (!OK_CHAR(esc) || esc == '\n') {
+                return -1;
+            }
+            br_next(&lex->rd_);
+            if (!esc_char(esc, &put)) {
+                return -2;
+            }
+        }
+
+        if (n >= max) {
+            return -3;
+        }
+        out[n++] = put;
+    }
 }
 
 token lex_next(lexer* lex) {

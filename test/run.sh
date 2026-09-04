@@ -64,22 +64,11 @@ cli_check "wrote line" \
 cli_check "timing line matches the reference's format" \
     "$(printf '%s' "$out" | grep -cE '^Done in [0-9]+\.[0-9][0-9] seconds$')" 1
 
-# A well-formed line is not enough: dividing by CLOCKS_PER_SEC instead of
-# CLOCKS_PER_SEC/100 still prints "0.00 seconds", just always. So assemble
-# something that demonstrably takes longer than a centisecond and check the
-# figure is not zero.
-{
-    echo '  .assume adl=1'
-    echo '  .org $40000'
-    i=0
-    while [ $i -lt 20000 ]; do
-        echo '  nop'
-        i=$((i + 1))
-    done
-} > "$OUT/slow.s"
-slow=$("$OUT/zap" "$OUT/slow.s" "$OUT/slow.bin" 2>&1 | tr -d '\r')
-cli_check "a slow assembly reports a non-zero time" \
-    "$(printf '%s' "$slow" | grep -c '^Done in 0\.00 seconds$')" 0
+# The conversion itself is tested in test_timing.c, against known clock values.
+# It cannot be tested here by assembling something and asserting it took more
+# than a hundredth of a second: the workload that takes two centiseconds under
+# the sanitisers takes none at -O2, so on a faster host correct behaviour would
+# start failing.
 
 # And, like the reference, no timing is reported for an assembly that failed.
 bad=$("$OUT/zap" "$OUT/bad.s" "$OUT/bad.bin" 2>&1 | tr -d '\r' || true)

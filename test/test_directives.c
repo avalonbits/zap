@@ -97,6 +97,15 @@ int main(void) {
      * An apostrophe in one used to start a character literal, so db "\'"
      * could not be written. */
     dir_is("apostrophe in a string", "  db \"a'b\"\n", "61 27 62");
+
+    /* Same reason a semicolon in one is not a comment. The lexer consumes a
+     * comment body the moment it sees a semicolon, but a string never takes
+     * that path, so the character survives into the output. */
+    dir_is("semicolon in a string",  "  db \"a;b\"\n",  "61 3B 62");
+    dir_is("string with a semicolon then more operands",
+           "  db \"a;b\",9\n", "61 3B 62 09");
+    dir_is("comment after a string",
+           "  db \"Hi\" ; greeting\n", "48 69");
     dir_is("escapes in a string",
            "  db \"\\a\\b\\e\\f\\n\\r\\t\\v\\\\\\'\\\"\\?\"\n",
            "07 08 1B 0C 0A 0D 09 0B 5C 27 22 3F");

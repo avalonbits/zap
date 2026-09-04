@@ -6,7 +6,6 @@
 typedef enum _TOKEN {
     NONE = 0,
     UNKNOWN,
-    WHITE_SPACE,
     NEW_LINE,
     EQUALS,
     PLUS,
@@ -18,7 +17,6 @@ typedef enum _TOKEN {
     COMMA,
     DOT,
     COLON,
-    SEMI_COLON,
     HASH,
     DOLLAR,
     B_SLASH,

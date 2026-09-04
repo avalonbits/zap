@@ -8,8 +8,9 @@
 #include "isa.h"
 #include "value.h"
 
-static hash_table reserved;
-static hash_table instructions;
+/* Reserved words and mnemonics live in one table: the two sets share no name,
+ * and keeping them apart cost every identifier two lookups instead of one. */
+static hash_table words;
 
 /* The reserved-word and mnemonic tables are immutable and shared by every
  * lexer, so they are built once. Rebuilding them per lex_init -- which is what
@@ -22,8 +23,8 @@ static void init_ht() {
     }
     ht_ready = true;
 
-    hash_table* ht = &reserved;
-    ht_init(ht, 128, true);
+    hash_table* ht = &words;
+    ht_init(ht, 256, true);
     ht_set(ht, "ADL", pack_tktt(DIRECTIVE, D_ADL));
     ht_set(ht, "ALIGN", pack_tktt(DIRECTIVE, D_ALIGN));
     ht_set(ht, "ASSUME", pack_tktt(DIRECTIVE, D_ASSUME));
@@ -86,8 +87,6 @@ static void init_ht() {
     ht_set(ht, "P", pack_tktt(FLAG, F_P));
     ht_set(ht, "M", pack_tktt(FLAG, F_M));
 
-    ht = &instructions;
-    ht_init(ht, 255, true);
 
     /* Built from the generated instruction table rather than a list kept by
      * hand, so a mnemonic can never be known to the lexer and missing from the
@@ -102,7 +101,7 @@ void lex_prime(void) {
 }
 
 lexer* lex_init(lexer* lex, const char* fname) {
-    if (br_open(&lex->rd_, fname, 4) == NULL) {
+    if (br_open(&lex->rd_, fname, LEX_BUF_KB) == NULL) {
         return NULL;
     }
 
@@ -153,6 +152,10 @@ static bool is_ascdig(char ch) {
  * the lexer struct. An over-long token is truncated here and will fail to
  * resolve as a name or a literal, which is the right outcome for input that
  * cannot be legal anyway. */
+static bool is_mnemonic(const char* txt, int sz) {
+    return unpack_tk(ht_nget(&words, txt, (uint8_t) sz, NULL)) == INSTRUCTION;
+}
+
 static void push_ch(lexer* lex, token* tk, char ch) {
     if (tk->sz_ < (int) sizeof(lex->line_) - 1) {
         tk->txt_[tk->sz_++] = ch;
@@ -168,12 +171,12 @@ static void push_ch(lexer* lex, token* tk, char ch) {
 static void lex_char_literal(lexer* lex, token* tk) {
     tk->tk_ = BAD_LITERAL;
 
-    char ch = br_peek(&lex->rd_);
+    char ch = br_peek_inline(&lex->rd_);
     if (!OK_CHAR(ch) || ch == '\n') {
         return;  /* nothing after the opening quote */
     }
     push_ch(lex, tk, ch);
-    br_next(&lex->rd_);
+    br_next_inline(&lex->rd_);
 
     if (ch == '\'') {
         return;  /* the empty literal '' -- both quotes consumed */
@@ -181,14 +184,14 @@ static void lex_char_literal(lexer* lex, token* tk) {
 
     char val;
     if (ch == '\\') {
-        const char esc = br_peek(&lex->rd_);
+        const char esc = br_peek_inline(&lex->rd_);
         if (!OK_CHAR(esc) || esc == '\n') {
             return;
         }
         push_ch(lex, tk, esc);
-        br_next(&lex->rd_);
+        br_next_inline(&lex->rd_);
 
-        if (esc == '\'' && br_peek(&lex->rd_) != '\'') {
+        if (esc == '\'' && br_peek_inline(&lex->rd_) != '\'') {
             /* '\' -- the quote just consumed was the closing one, so the
              * backslash stands for itself. */
             tk->tk_ = NUMBER;
@@ -203,11 +206,11 @@ static void lex_char_literal(lexer* lex, token* tk) {
         val = ch;
     }
 
-    if (br_peek(&lex->rd_) != '\'') {
+    if (br_peek_inline(&lex->rd_) != '\'') {
         return;  /* more than one character, or never closed */
     }
     push_ch(lex, tk, '\'');
-    br_next(&lex->rd_);
+    br_next_inline(&lex->rd_);
 
     tk->tk_ = NUMBER;
     tk->val_ = (value) (unsigned char) val;
@@ -217,11 +220,11 @@ static void lex_char_literal(lexer* lex, token* tk) {
  * A bare $ is the program counter rather than a literal, so it stays a
  * DOLLAR for the expression evaluator to resolve. */
 static void lex_prefixed_number(lexer* lex, token* tk, TOKEN bare) {
-    char ch = br_peek(&lex->rd_);
+    char ch = br_peek_inline(&lex->rd_);
     while (OK_CHAR(ch) && is_hex_digit(ch)) {
         push_ch(lex, tk, ch);
-        br_next(&lex->rd_);
-        ch = br_peek(&lex->rd_);
+        br_next_inline(&lex->rd_);
+        ch = br_peek_inline(&lex->rd_);
     }
 
     if (tk->sz_ > 1 && num_parse(tk->txt_, tk->sz_, &tk->val_)) {
@@ -236,11 +239,11 @@ int lex_string(lexer* lex, char* out, int max) {
     int n = 0;
 
     while (true) {
-        const char ch = br_peek(&lex->rd_);
+        const char ch = br_peek_inline(&lex->rd_);
         if (!OK_CHAR(ch) || ch == '\n') {
             return -1;
         }
-        br_next(&lex->rd_);
+        br_next_inline(&lex->rd_);
 
         if (ch == '"') {
             return n;
@@ -248,11 +251,11 @@ int lex_string(lexer* lex, char* out, int max) {
 
         char put = ch;
         if (ch == '\\') {
-            const char esc = br_peek(&lex->rd_);
+            const char esc = br_peek_inline(&lex->rd_);
             if (!OK_CHAR(esc) || esc == '\n') {
                 return -1;
             }
-            br_next(&lex->rd_);
+            br_next_inline(&lex->rd_);
             if (!esc_char(esc, &put)) {
                 return -2;
             }
@@ -273,11 +276,11 @@ int lex_capture(lexer* lex, const char* stop, char* out, int max) {
         int start = n;
         bool got_line = false;
         while (true) {
-            const char ch = br_peek(&lex->rd_);
+            const char ch = br_peek_inline(&lex->rd_);
             if (!OK_CHAR(ch)) {
                 break;
             }
-            br_next(&lex->rd_);
+            br_next_inline(&lex->rd_);
             if (ch == '\n') {
                 lex->lcount_++;
                 got_line = true;
@@ -339,7 +342,14 @@ int lex_capture(lexer* lex, const char* stop, char* out, int max) {
 
 token lex_next(lexer* lex) {
     token tk = {NULL, 0, NONE, TY_NONE, 0, false};
-    char ch = br_char(&lex->rd_);
+
+    /* Whitespace between tokens is skipped here rather than turned into a
+     * token for the caller to throw away. Nothing has wanted one since strings
+     * started being read character by character. */
+    char ch = br_char_inline(&lex->rd_);
+    while (OK_CHAR(ch) && is_space(ch)) {
+        ch = br_char_inline(&lex->rd_);
+    }
     if (!OK_CHAR(ch)) {
         return tk;
     }
@@ -366,7 +376,36 @@ token lex_next(lexer* lex) {
         case ',':  tk.tk_ = COMMA;       return tk;
         case '.':  tk.tk_ = DOT;         return tk;
         case ':':  tk.tk_ = COLON;       return tk;
-        case ';':  tk.tk_ = SEMI_COLON;  return tk;
+        case ';': {
+            /* A comment runs to the end of the line and none of it means
+             * anything, so it is consumed here rather than handed to the
+             * parser a token at a time. Every word in a comment used to pay
+             * for a scan, a Pearson hash and a reserved-table lookup before
+             * being discarded.
+             *
+             * What comes back is the newline, not the semicolon. A comment
+             * ends the statement and nothing else, which is all the parser
+             * ever did with the semicolon: it set a flag, dropped every token
+             * until the newline, and returned that. Emitting the newline
+             * directly is the same token stream with one less round trip and
+             * no flag to keep. */
+            char c = br_peek_inline(&lex->rd_);
+            while (OK_CHAR(c) && c != '\n') {
+                br_next_inline(&lex->rd_);
+                c = br_peek_inline(&lex->rd_);
+            }
+            if (c == '\n') {
+                br_next_inline(&lex->rd_);
+            }
+            lex->lcount_++;
+
+            /* Retype the token: the semicolon was pushed before the switch. */
+            tk.sz_ = 0;
+            push_ch(lex, &tk, '\n');
+            tk.tk_ = NEW_LINE;
+
+            return tk;
+        }
 
         case '\n':
             lex->lcount_++;
@@ -404,9 +443,9 @@ token lex_next(lexer* lex) {
 
         case '<':
         case '>':
-            if (br_peek(&lex->rd_) == ch) {
+            if (br_peek_inline(&lex->rd_) == ch) {
                 push_ch(lex, &tk, ch);
-                br_next(&lex->rd_);
+                br_next_inline(&lex->rd_);
                 tk.tk_ = (ch == '<') ? SHIFT_L : SHIFT_R;
             }
 
@@ -416,41 +455,29 @@ token lex_next(lexer* lex) {
             break;
     }
 
-    if (is_space(ch)) {
-        tk.tk_ = WHITE_SPACE;
-        ch = br_peek(&lex->rd_);
-        while (OK_CHAR(ch) && is_space(ch)) {
-            push_ch(lex, &tk, ch);
-            br_next(&lex->rd_);
-            ch = br_peek(&lex->rd_);
-        }
-
-        return tk;
-    }
-
     if (!is_ascdig(ch)) {
         return tk;
     }
 
-    ch = br_peek(&lex->rd_);
+    ch = br_peek_inline(&lex->rd_);
     while (OK_CHAR(ch) && is_ascdig(ch)) {
         push_ch(lex, &tk, ch);
-        br_next(&lex->rd_);
-        ch = br_peek(&lex->rd_);
+        br_next_inline(&lex->rd_);
+        ch = br_peek_inline(&lex->rd_);
     }
 
     /* A dot continues a name unless what has been read so far is a mnemonic,
      * in which case it introduces a suffix instead. That is the only thing
      * separating "rst.lil" from a label called "FFOBJID.fs", and real sources
      * have both. */
-    while (ch == '.' && ht_nget(&instructions, tk.txt_, tk.sz_, NULL) == 0) {
+    while (ch == '.' && !is_mnemonic(tk.txt_, tk.sz_)) {
         push_ch(lex, &tk, ch);
-        br_next(&lex->rd_);
-        ch = br_peek(&lex->rd_);
+        br_next_inline(&lex->rd_);
+        ch = br_peek_inline(&lex->rd_);
         while (OK_CHAR(ch) && is_ascdig(ch)) {
             push_ch(lex, &tk, ch);
-            br_next(&lex->rd_);
-            ch = br_peek(&lex->rd_);
+            br_next_inline(&lex->rd_);
+            ch = br_peek_inline(&lex->rd_);
         }
     }
 
@@ -461,7 +488,7 @@ token lex_next(lexer* lex) {
         tk.tk_ = NUMBER;
         /* Flagged so the parser can tell "5:" -- someone naming a label after
          * a number -- from a bare literal, and say which it is. */
-        tk.label_ = br_peek(&lex->rd_) == ':';
+        tk.label_ = br_peek_inline(&lex->rd_) == ':';
 
         return tk;
     }
@@ -473,16 +500,13 @@ token lex_next(lexer* lex) {
      * reserved words. That is what lets a routine be called pea: or nz:,
      * which the reference allows and which its Labels corpus depends on. The
      * colon has to be immediate -- "lbl :" is not a label there either. */
-    if (br_peek(&lex->rd_) == ':') {
+    if (br_peek_inline(&lex->rd_) == ':') {
         tk.label_ = true;
 
         return tk;
     }
 
-    int val = ht_nget(&reserved, tk.txt_, tk.sz_, NULL);
-    if (unpack_tk(val) == NONE) {
-        val = ht_nget(&instructions, tk.txt_, tk.sz_, NULL);
-    }
+    const int val = ht_nget(&words, tk.txt_, tk.sz_, NULL);
     if (unpack_tk(val) != NONE) {
         tk.tk_ = unpack_tk(val);
         tk.tt_ = unpack_tt(val);

@@ -19,6 +19,7 @@
 #include <unistd.h>
 
 #include "lexer.h"
+#include "parser.h"
 
 static int failures = 0;
 
@@ -36,7 +37,6 @@ static const char* tk_name(TOKEN t) {
     switch (t) {
         case NONE:        return "NONE";
         case UNKNOWN:     return "UNK";
-        case WHITE_SPACE: return "WS";
         case NEW_LINE:    return "NL";
         case EQUALS:      return "EQ";
         case PLUS:        return "PLUS";
@@ -48,7 +48,6 @@ static const char* tk_name(TOKEN t) {
         case COMMA:       return "COMMA";
         case DOT:         return "DOT";
         case COLON:       return "COLON";
-        case SEMI_COLON:  return "SEMI";
         case HASH:        return "HASH";
         case DOLLAR:      return "DOLLAR";
         case B_SLASH:     return "BS";
@@ -100,9 +99,6 @@ static const char* lex_all(const char* src) {
     int n = 0;
     out[0] = 0;
     for (token tk = lex_next(&lex); tk.tk_ != NONE; tk = lex_next(&lex)) {
-        if (tk.tk_ == WHITE_SPACE) {
-            continue;
-        }
         if (n > 0 && n < (int) sizeof(out) - 1) {
             out[n++] = ' ';
         }
@@ -126,6 +122,24 @@ static const char* lex_all(const char* src) {
 }
 
 int main(void) {
+    /* The lexer's buffer is not free to grow. Every source suspended by an
+     * .include keeps its buffer while it waits, so a full include stack holds
+     * MAX_INCLUDE_DEPTH + 1 of them at the same time. At 64 KiB -- which this
+     * briefly was -- that is 576 KiB, more than an Agon Light's 512 KiB of
+     * SRAM, so a deeply nested source could not be assembled at all.
+     *
+     * The speed argument does not justify it either: across 8, 16, 32 and 64
+     * KiB the whole range is within 0.04% on the host, and past 16 it is a
+     * slight loss on sources made of many small files. 16 is what the Agon
+     * sweep settled on and what the change was benchmarked at. */
+    {
+        const int worst_kb = LEX_BUF_KB * (MAX_INCLUDE_DEPTH + 1);
+        fprintf(stderr, "      %d KiB buffer x %d sources = %d KiB\n",
+                LEX_BUF_KB, MAX_INCLUDE_DEPTH + 1, worst_kb);
+        check_s("lexer buffers fit an Agon with room to spare",
+                worst_kb <= 192 ? "ok" : "too big", "ok");
+    }
+
     /* Mnemonics, registers and flags resolve through the reserved tables, and
      * the lookup is case-insensitive. */
     check_s("instruction and register",
@@ -173,12 +187,43 @@ int main(void) {
             lex_all(".org $400000\n"),
             "DOT(.) DIR(org) NUM($400000=4194304) NL(\n)");
 
-    /* Comments are the parser's job: the lexer just emits the semicolon and
-     * whatever follows it. This is what makes the parser's comment state
-     * machine load-bearing. */
-    check_s("comment is not stripped by the lexer",
+    /* A comment never becomes tokens, and does not even become a semicolon:
+     * it ends the statement, which is all the parser ever did with it. The
+     * body used to arrive word by word, each word paying for a scan, a hash
+     * and a reserved-table lookup before being discarded -- on a source that
+     * is a quarter comments, a quarter of the lexer's work meant nothing. */
+    check_s("comment lexes as the end of the line",
             lex_all("ret ; done\n"),
-            "INSN(ret) SEMI(;) NAME(done) NL(\n)");
+            "INSN(ret) NL(\n)");
+
+    /* The line still ends exactly once, so the statement after it is intact
+     * and the line count stays right. */
+    check_s("comment ends the line exactly once",
+            lex_all("nop ; a\nret\n"),
+            "INSN(nop) NL(\n) INSN(ret) NL(\n)");
+
+    /* Text that would otherwise lex as something meaningful -- a directive
+     * name, an unterminated string or character literal -- is inert inside a
+     * comment. The directive case is not hypothetical: "; starting at byte
+     * 64." was once enough to break a file, because "byte" reached the parser
+     * as a real directive. */
+    check_s("directive name inside a comment",
+            lex_all("nop ; starting at byte 64.\n"),
+            "INSN(nop) NL(\n)");
+    check_s("unbalanced quote inside a comment",
+            lex_all("nop ; it's \"fine\n"),
+            "INSN(nop) NL(\n)");
+
+    /* A comment on its own line is an empty line. */
+    check_s("whole-line comment",
+            lex_all("; just a comment\nnop\n"),
+            "NL(\n) INSN(nop) NL(\n)");
+
+    /* One closing the file with no trailing newline still terminates the
+     * statement rather than running off the end. */
+    check_s("comment at end of file with no newline",
+            lex_all("nop ; trailing"),
+            "INSN(nop) NL(\n)");
 
     /* Strings arrive as delimiters plus their contents. */
     check_s("quoted string delimiters",

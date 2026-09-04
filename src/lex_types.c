@@ -19,9 +19,6 @@ void print_token(token tk) {
         case NEW_LINE:
             mos_puts("NL\r\n", 0, 0);
             break;
-        case WHITE_SPACE:
-            mos_puts(" WS ", 0, 0);
-            break;
         case NUMBER:
             mos_puts("NUMBER(", 0, 0);
             mos_puts(tk.txt_, tk.sz_, 0);
@@ -56,9 +53,6 @@ void print_token(token tk) {
             break;
         case COLON:
             putch(':');
-            break;
-        case SEMI_COLON:
-            putch(';');
             break;
         case HASH:
             putch('#');

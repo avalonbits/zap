@@ -6,6 +6,19 @@
 #include "buf_reader.h"
 #include "lex_types.h"
 
+/* Size of a lexer's source buffer, in KiB.
+ *
+ * A sweep on the Agon found the gain flat to 8 KiB and real at 16, where the
+ * cost is MOS read calls rather than instructions -- on the host the whole
+ * range is within 0.04%, and past 16 it is a slight loss on sources made of
+ * small files.
+ *
+ * It cannot simply be raised: every source suspended by an .include keeps its
+ * buffer, so the parser's include stack holds MAX_INCLUDE_DEPTH + 1 of these
+ * at once. At 64 KiB that is 576 KiB, more than an Agon Light has in total.
+ * test_lexer.c pins the budget. */
+#define LEX_BUF_KB 16
+
 typedef struct _lexer  {
     buf_reader rd_;
     char line_[256];

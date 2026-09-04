@@ -67,8 +67,38 @@ static bool scan_base(const char* txt, int sz, int base, value* out) {
     return true;
 }
 
+/* Whether the text could possibly be a literal, decided from its first and
+ * last character alone.
+ *
+ * Every identifier is offered to num_parse before it is looked up as a name,
+ * and on real sources around 90% of those are names that fail only after
+ * scan_base has walked the whole string. The forms below mirror num_parse's
+ * own branches exactly: a prefix, a lone character, an 'h' or 'b' suffix, or
+ * a bare decimal -- and a bare decimal has to start with a digit or scan_base
+ * rejects it. Anything else cannot parse, so it is not worth scanning.
+ *
+ * Letter-initial hex is why this tests the last character rather than just
+ * the first: C0h and Ah are literals the reference accepts and its corpus
+ * pins. */
+static bool could_be_number(const char* txt, int sz) {
+    const char first = txt[0];
+    if (first == '$' || first == '#' || first == '%') {
+        return true;
+    }
+    if (sz == 1 || (first >= '0' && first <= '9')) {
+        return true;
+    }
+
+    const char last = lower(txt[sz - 1]);
+
+    return last == 'h' || last == 'b';
+}
+
 bool num_parse(const char* txt, int sz, value* out) {
     if (sz <= 0) {
+        return false;
+    }
+    if (!could_be_number(txt, sz)) {
         return false;
     }
 

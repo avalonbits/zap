@@ -9,6 +9,11 @@
 #include "label_stack.h"
 #include "lexer.h"
 
+/* How many sources may be suspended by nested .includes at once. Each one
+ * keeps its lexer buffer while suspended, so this bounds memory as well as
+ * nesting -- see LEX_BUF_KB. */
+#define MAX_INCLUDE_DEPTH 8
+
 typedef struct _parser {
     lexer lex_;
     uint8_t* buf_;
@@ -80,7 +85,7 @@ typedef struct _parser {
     /* Sources suspended by an .include, innermost last. next() pops one when
      * the current file runs out, so an include reads as if its text had been
      * written in place. */
-    lexer inc_[8];
+    lexer inc_[MAX_INCLUDE_DEPTH];
     int inc_depth_;
 
     /* The scope to restore when each suspended source resumes. A macro
@@ -89,12 +94,12 @@ typedef struct _parser {
      * defined before a macro call and the one referenced after it are two
      * different symbols, inside the same routine. An include does not get a
      * new scope, so it restores the one it had. */
-    uint16_t inc_scope_[8];
+    uint16_t inc_scope_[MAX_INCLUDE_DEPTH];
 
     /* Which suspended sources are macro expansions rather than includes. A
      * macro body may only define local labels: a global or anonymous one
      * would be redefined on every invocation. */
-    bool inc_macro_[8];
+    bool inc_macro_[MAX_INCLUDE_DEPTH];
     int macro_depth_;
 
     /* Macros, kept as body text. Expansion substitutes into the text and the
@@ -134,8 +139,6 @@ typedef struct _parser {
      * enables the undocumented Z80 opcodes the reference gates behind it, and
      * it carries an ADL default with it. */
     uint8_t cpu_;
-    bool skip_ws_;
-    bool comment_;
 
     token tk_;
 
@@ -147,6 +150,10 @@ typedef struct _parser {
 token next(parser* p);
 const char* pr_msg(parser* p, const char* msg);
 bool pr_wbyte(parser* p, uint8_t b);
+
+/* Writes a run of bytes at the current address, as pr_wbyte would one at a
+ * time. Used by .incbin. */
+bool pr_wblock(parser* p, const uint8_t* src, int n);
 value tk2i(token tk);
 const char* pr_stack_fixup(parser* p, const char* text, int sz,
                            fixup_kind kind, int anon);

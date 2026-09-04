@@ -78,6 +78,11 @@ buf_reader* br_open_mem(buf_reader* br, const char* text, int len) {
 void br_close(buf_reader* br) {
     br_suspend(br);
     free(br->buf_);
+    /* The inline fast path relies on buf_ never being NULL while bsz_ is
+     * non-zero. */
+    br->buf_ = NULL;
+    br->bsz_ = 0;
+    br->bpos_ = 0;
 }
 
 void br_destroy(buf_reader* br) {
@@ -130,7 +135,9 @@ bool br_resume(buf_reader* br) {
     return true;
 }
 
-char br_peek(buf_reader* br) {
+/* Everything br_peek needs when the buffer is exhausted. The inline fast path
+ * in the header handles the case where it is not. */
+char br_fill_peek(buf_reader* br) {
     if (br->bsz_ == 0) {
         return EOF;
     }
@@ -139,7 +146,7 @@ char br_peek(buf_reader* br) {
     }
     if (br->mem_) {
         /* No refill: the buffer is the whole content. */
-        return br->bpos_ == br->bsz_ ? EOF : br->buf_[br->bpos_];
+        return EOF;
     }
     if (br->fh_ == 0) {
         return ESUSP;
@@ -156,16 +163,44 @@ char br_peek(buf_reader* br) {
     return br->buf_[br->bpos_];
 }
 
-void br_next(buf_reader* br) {
-    if (br->bsz_ == 0) {
-        return;
+/* Hands back a run of bytes the reader already holds, and consumes them.
+ * Returns how many are available at *out, or 0 at end of file. The pointer is
+ * valid only until the next read from this reader.
+ *
+ * .incbin copies whole files into the output, and doing that a byte at a time
+ * cost a call in here and a call into the output writer for every one of
+ * them. Every condition that makes br_byte return -1 makes this return 0, so
+ * the two agree on where a file ends -- including a suspended reader, which
+ * both treat as end of file. */
+int br_block(buf_reader* br, const char** out) {
+    if (br->bsz_ == 0 || br->buf_ == NULL) {
+        return 0;
     }
-    if (br->buf_ == NULL || (!br->mem_ && br->fh_ == 0)) {
-        return;
+    if (br->mem_) {
+        if (br->bpos_ == br->bsz_) {
+            return 0;
+        }
+    } else {
+        if (br->fh_ == 0) {
+            return 0;
+        }
+        if (br->bpos_ == br->bsz_) {
+            uint24_t frsz = mos_fread(br->fh_, br->buf_, br->bsz_);
+            if (frsz == 0) {
+                br->bsz_ = 0;
+
+                return 0;
+            }
+            br->bpos_ = 0;
+            br->bsz_ = frsz;
+        }
     }
-    if (br->bpos_ <= br->bsz_) {
-        br->bpos_++;
-    }
+
+    *out = &br->buf_[br->bpos_];
+    const int n = (int) (br->bsz_ - br->bpos_);
+    br->bpos_ = br->bsz_;
+
+    return n;
 }
 
 int br_byte(buf_reader* br) {
@@ -196,10 +231,15 @@ int br_byte(buf_reader* br) {
     return (int) (unsigned char) br->buf_[br->bpos_++];
 }
 
+/* The out-of-line forms, kept for callers outside the lexer. */
+char br_peek(buf_reader* br) {
+    return br_peek_inline(br);
+}
+
+void br_next(buf_reader* br) {
+    br_next_inline(br);
+}
+
 char br_char(buf_reader* br) {
-    char ch = br_peek(br);
-    if (ch != EOF && ch != ESUSP) {
-        br->bpos_++;
-    }
-    return ch;
+    return br_char_inline(br);
 }

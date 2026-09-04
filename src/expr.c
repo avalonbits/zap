@@ -24,8 +24,10 @@
 #include "parser.h"
 
 /* Nesting is bounded so a pathological line cannot run the stack out on a
- * machine with 32KB of it. Real sources nest one or two deep. */
-#define MAX_DEPTH 16
+ * machine with 32KB of it. Real sources nest one or two deep; the limit is
+ * well past anything the reference's own corpus reaches, and past what it
+ * accepts before its own recursion gives out. */
+#define MAX_DEPTH 32
 
 /* Where the text of the consumed tokens is being gathered, if it is. */
 typedef struct _capture {

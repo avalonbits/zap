@@ -28,18 +28,17 @@ buf_reader* br_open(buf_reader* br, const char* fname, int bsz_kb) {
     }
 
     const int fsz = (int) fil->obj.objsize;
-    if (fsz <= 0) {
+    if (fsz < 0) {
         free(buf);
         mos_fclose(fh);
+
         return NULL;
     }
 
+    /* An empty file is a valid source that assembles to nothing, which is what
+     * the reference does with one. It used to be refused as if it could not be
+     * opened. */
     uint24_t read = mos_fread(fh, buf, bsz);
-    if (read == 0) {
-        free(buf);
-        mos_fclose(fh);
-        return NULL;
-    }
 
     br->fh_ = fh;
     br->fname_ = fname;

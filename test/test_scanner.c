@@ -171,6 +171,53 @@ int main(void) {
         zap_free(&r);
     }
 
+    /* A macro body crossing a buffer boundary. lex_capture reads whole lines
+     * rather than tokens, and it used to refill raw -- which does not trim
+     * back to a newline, so it left the buffer ending mid-line. The scanner
+     * does not test for a refill on every character, so the next token was
+     * truncated there. Seven placements in a sweep of forty-one either failed
+     * or, worse, assembled to different bytes.
+     *
+     * The macro is placed at every offset across the boundary, since only a
+     * few alignments trip it. */
+    {
+        char* buf = malloc(BLOCK * 2);
+        int bad = 0;
+        for (int pad = BLOCK - 96; pad < BLOCK + 48; pad++) {
+            int n = snprintf(buf, 64, "  .assume adl=1\n  .org 0\n");
+            while (n + 6 <= pad) {
+                memcpy(&buf[n], "  nop\n", 6);
+                n += 6;
+            }
+            while (n < pad) {
+                buf[n++] = ' ';
+            }
+            buf[n++] = '\n';
+            n += snprintf(&buf[n], 80,
+                          "  macro m\n  ld a,b\n  ld a,c\n  endmacro\n"
+                          "  m\n  ld b,c\n  ret\n");
+
+            zap_result r;
+            const bool ok = asm_file(buf, n, &r) && r.ok;
+            /* The expansion and the statements after it must all be there:
+             * ld a,b / ld a,c / ld b,c / ret at the end of the output. */
+            const bool tail = ok && r.size >= 4
+                           && r.bytes[r.size - 4] == 0x78
+                           && r.bytes[r.size - 3] == 0x79
+                           && r.bytes[r.size - 2] == 0x41
+                           && r.bytes[r.size - 1] == 0xC9;
+            if (!tail) {
+                if (bad == 0) {
+                    fprintf(stderr, "      first bad placement at pad %d\n", pad);
+                }
+                bad++;
+            }
+            zap_free(&r);
+        }
+        check("macro body across a buffer boundary, every placement", bad == 0);
+        free(buf);
+    }
+
     /* Token text points into the buffer, so a statement whose operands are
      * still needed after later tokens have been read has to survive. A
      * deferred forward reference is the case that reads text back late. */

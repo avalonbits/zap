@@ -4,7 +4,10 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
+#include <string.h>
+
 #include "hash_table.h"
+
 #include "isa.h"
 #include "value.h"
 
@@ -291,27 +294,41 @@ int lex_capture(lexer* lex, const char* stop, char* out, int max) {
     int n = 0;
 
     while (true) {
-        /* Read one raw line. */
-        int start = n;
-        bool got_line = false;
-        while (true) {
-            const char ch = br_peek_inline(&lex->rd_);
-            if (!OK_CHAR(ch)) {
-                break;
-            }
-            br_next_inline(&lex->rd_);
-            if (ch == '\n') {
-                lex->lcount_++;
-                got_line = true;
-            }
-            if (n >= max) {
-                return -2;
-            }
-            out[n++] = ch;
-            if (got_line) {
-                break;
+        const int start = n;
+
+        /* Refill through the same path the scanner uses. Reading raw here --
+         * which is what this did -- refills without trimming to a newline, so
+         * a macro body crossing a buffer boundary left the buffer ending in
+         * the middle of a line. The scanner does not check for a refill on
+         * every character, so the next token was silently truncated at that
+         * point: seven placements in a sweep of forty-one either failed or,
+         * worse, assembled to different bytes. */
+        if (lex->rd_.bpos_ >= lex->rd_.bsz_) {
+            bool too_long = false;
+            if (!br_fill_lines(&lex->rd_, &too_long)) {
+                return too_long ? -2 : -1;
             }
         }
+
+        /* One whole line. The buffer never ends mid-line, so the newline that
+         * ends this one is in it, unless this is the last line of the file. */
+        const char* line = &lex->rd_.buf_[lex->rd_.bpos_];
+        const uint24_t avail = lex->rd_.bsz_ - lex->rd_.bpos_;
+        uint24_t len = 0;
+        while (len < avail && line[len] != '\n') {
+            len++;
+        }
+        if (len < avail) {
+            len++;   /* take the newline with it */
+            lex->lcount_++;
+        }
+
+        if (n + (int) len > max) {
+            return -2;
+        }
+        memcpy(&out[n], line, (size_t) len);
+        n += (int) len;
+        lex->rd_.bpos_ += len;
 
         if (n == start) {
             return -1;  /* end of file without the terminator */
@@ -353,9 +370,6 @@ int lex_capture(lexer* lex, const char* stop, char* out, int max) {
             }
         }
 
-        if (!got_line) {
-            return -1;
-        }
     }
 }
 

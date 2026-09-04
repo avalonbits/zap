@@ -264,7 +264,8 @@ bool pr_wbyte(parser* p, uint8_t b) {
 /* Leaves a hole of the right width and remembers how to fill it. */
 const char* pr_stack_fixup(parser* p, const char* label, int sz,
                            fixup_kind kind, int anon) {
-    const int width = (kind == FIX_REL8) ? 1 : (kind == FIX_ABS16 ? 2 : 3);
+    const int width = (kind == FIX_REL8 || kind == FIX_ABS8) ? 1
+                    : (kind == FIX_ABS16 ? 2 : 3);
     const int bpos = p->pos_;
 
     for (int i = 0; i < width; i++) {
@@ -626,7 +627,8 @@ static const char* post_process(parser* p) {
             continue;
         }
 
-        const int width = (ln->kind_ == FIX_ABS16) ? 2 : 3;
+        const int width = (ln->kind_ == FIX_ABS8) ? 1
+                        : (ln->kind_ == FIX_ABS16 ? 2 : 3);
         for (int i = 0; i < width; i++) {
             p->buf_[ln->bpos_ + i] = (uint8_t) ((v >> (i * 8)) & 0xFF);
         }
@@ -653,8 +655,10 @@ static const char* post_process(parser* p) {
  * guess whether a name it has not reached yet is a mistake. */
 static void pr_prescan(parser* p) {
     lexer saved_lex = p->lex_;
-    const uint8_t saved_scope = p->scope_;
+    const uint16_t saved_scope = p->scope_;
     const int saved_pos = p->pos_;
+    const bool saved_comment = p->comment_;
+    const bool saved_ws = p->skip_ws_;
 
     if (lex_init(&p->lex_, p->fname_) == NULL) {
         p->lex_ = saved_lex;
@@ -714,6 +718,13 @@ static void pr_prescan(parser* p) {
     p->lex_ = saved_lex;
     p->scope_ = saved_scope;
     p->pos_ = saved_pos;
+
+    /* The comment flag has to come back too. A source whose last line ends
+     * inside a comment with no trailing newline left it set, and the real
+     * pass then treated the whole file as commented out -- assembling to
+     * nothing, with no error at all. */
+    p->comment_ = saved_comment;
+    p->skip_ws_ = saved_ws;
 }
 
 const char* pr_parse(parser* p) {
@@ -724,6 +735,8 @@ const char* pr_parse(parser* p) {
     p->addr_ = p->org_;
     p->scope_ = 0;
     p->anon_count_ = 0;
+    p->comment_ = false;
+    p->skip_ws_ = true;
     const char* err = NULL;
 
     for (p->tk_ = next(p); p->tk_.tk_ != NONE; p->tk_ = next(p)) {
@@ -741,6 +754,15 @@ const char* pr_parse(parser* p) {
                 break;
             case NAME:
                 err = parse_label(p);
+                break;
+            case NUMBER:
+                /* A number with a colon after it is someone naming a label 5
+                 * or ffh. The reference calls that an invalid label, and
+                 * saying so is more use than the "expected a new line" this
+                 * would otherwise fall through to. */
+                if (p->tk_.label_) {
+                    return pr_msg(p, "invalid label");
+                }
                 break;
             case NEW_LINE:
                 p->last_label_sz_ = 0;

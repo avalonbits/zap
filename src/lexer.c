@@ -323,6 +323,9 @@ token lex_next(lexer* lex) {
     // literal, which is how the reference resolves the same ambiguity.
     if (num_parse(tk.txt_, tk.sz_, &tk.val_)) {
         tk.tk_ = NUMBER;
+        /* Flagged so the parser can tell "5:" -- someone naming a label after
+         * a number -- from a bare literal, and say which it is. */
+        tk.label_ = br_peek(&lex->rd_) == ':';
 
         return tk;
     }

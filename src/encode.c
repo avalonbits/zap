@@ -198,7 +198,8 @@ static const isa_row* match_row(const isa_insn* insn, const operand* a,
 /* Writes an immediate that may still be a forward reference. */
 static const char* emit_imm(parser* p, operand* op, uint8_t width) {
     if (!op->imm_known) {
-        const fixup_kind kind = (width == 2) ? FIX_ABS16 : FIX_ABS24;
+        const fixup_kind kind = (width == 1) ? FIX_ABS8
+                              : (width == 2) ? FIX_ABS16 : FIX_ABS24;
 
         return pr_stack_fixup(p, op->name, op->name_sz, kind, op->anon);
     }
@@ -297,11 +298,20 @@ static const char* emit_row(parser* p, const isa_row* row, operand* a,
         return NULL;
     }
 
+    /* An 8-bit immediate can be a forward reference too. It used to be
+     * emitted as the zero it was initialised to, so "ld a, undefined_thing"
+     * assembled quietly to 3E 00. */
     if (a->has_imm && (row->condA & IMM_N)) {
-        pr_wbyte(p, (uint8_t) (a->imm & 0xFF));
+        const char* err = emit_imm(p, a, 1);
+        if (err != NULL) {
+            return err;
+        }
     }
     if (b->has_imm && (row->condB & IMM_N)) {
-        pr_wbyte(p, (uint8_t) (b->imm & 0xFF));
+        const char* err = emit_imm(p, b, 1);
+        if (err != NULL) {
+            return err;
+        }
     }
 
     if (dd_before_opcode && !pr_wbyte(p, out.opcode)) {
@@ -415,6 +425,12 @@ const char* enc_instruction(parser* p) {
         if (err != NULL) {
             return err;
         }
+    }
+
+    /* Nothing may follow the operands. Without this, "ld a, a'" matched
+     * "ld a,a" and quietly ignored the stray literal after it. */
+    if (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
+        return pr_msg(p, "unexpected text after operands");
     }
 
     const isa_row* row = match_row(insn, &a, &b, p->cpu_);

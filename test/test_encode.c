@@ -152,6 +152,16 @@ int main(void) {
     insn_is("ld a,sp", "ERR");
     insn_is("ld a,b,c", "ERR");
 
+    /* An 8-bit immediate can be a forward reference, so an undefined one has
+     * to be caught at the end rather than emitted as the zero it starts as.
+     * "ld a, ab" used to assemble quietly to 3E 00. */
+    insn_is("ld a,undefined_thing", "ERR");
+
+    /* Nothing may follow the operands. "ld a, a'" used to match "ld a,a" and
+     * ignore the stray literal after it. */
+    insn_is("ld a,a'", "ERR");
+    insn_is("ld a,b c", "ERR");
+
     /* A relative jump computes its displacement from the next instruction. */
     insn_is("jr $", "18 FE");
     insn_is("djnz $", "10 FE");

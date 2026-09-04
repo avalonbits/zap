@@ -32,7 +32,8 @@
  * and fill it at the end instead of needing a second pass to lay out
  * addresses. */
 typedef enum _fixup_kind {
-    FIX_ABS16 = 0,  /* two-byte address, Z80 mode or a short suffix */
+    FIX_ABS8 = 0,   /* one byte, an 8-bit immediate */
+    FIX_ABS16,      /* two-byte address, Z80 mode or a short suffix */
     FIX_ABS24,      /* three-byte address, ADL mode */
     FIX_REL8        /* one signed byte, relative to the next instruction */
 } fixup_kind;

@@ -25,8 +25,12 @@ time_run() {
     for _ in 1 2 3; do
         local t0 t1 e status
         t0=$(date +%s.%N)
+        # The emulator's own status, not the pipeline's. tail -f is there to
+        # hold stdin open, and it is killed by SIGPIPE when the emulator
+        # exits; under pipefail that 141 became the pipeline's status, so
+        # every run looked like a failure and every sample was discarded.
         (cd "$EMU" && tail -f /dev/null | timeout 300 ./agon-cli-emulator \
-            --sdcard "$SD" -z -u >/dev/null 2>&1)
+            --sdcard "$SD" -z -u >/dev/null 2>&1; exit "${PIPESTATUS[1]}")
         status=$?
         t1=$(date +%s.%N)
         # The emulator exits non-zero when its shutdown races the VDP thread,
@@ -40,16 +44,21 @@ time_run() {
     done
     if [ "$got" -eq 0 ]; then
         echo "every emulator run failed" >&2
-        exit 1
+
+        # Not exit: this runs inside $( ), so exit would end the subshell and
+        # leave the caller with an empty time to do arithmetic on. That is how
+        # the failure above stayed invisible -- the script carried on and
+        # printed "boot s" and "assemble s".
+        return 1
     fi
     echo "$best"
 }
 
 printf 'emulator_exit_success\r\n' > "$SD/autoexec.txt"
-boot=$(time_run)
+boot=$(time_run) || exit 1
 
 printf 'zap %s out.bin\r\nemulator_exit_success\r\n' "$SRC" > "$SD/autoexec.txt"
-full=$(time_run)
+full=$(time_run) || exit 1
 
 net=$(echo "scale=3; $full - $boot" | bc)
 lines=$(grep -cvE '^[[:space:]]*(;|$)' "$SD/$SRC")
@@ -58,6 +67,11 @@ if [ "$lines" -eq 0 ]; then
     exit 2
 fi
 
+# The emulator's elapsed time comes out quantised to about a second, so the
+# resolution is a second divided by the run length: usable at 10% on a ten
+# second workload, useless below that. Scale the source until the change being
+# measured is comfortably larger than one second, or a real difference and no
+# difference at all look identical.
 echo "source     $lines statements"
 echo "boot       ${boot}s"
 echo "assemble   ${net}s"

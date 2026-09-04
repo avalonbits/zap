@@ -226,6 +226,11 @@ typedef struct _token {
     // Set for NUMBER. Carried on the token so that no site has to convert the
     // text a second time.
     value val_;
+
+    // Set when a colon followed the name with nothing in between, which is
+    // what makes it a label being defined. "lbl :" is not a label, in zap or
+    // in the reference.
+    bool label_;
 } token;
 
 int pack_tktt(TOKEN tk, TK_TYPE tt);

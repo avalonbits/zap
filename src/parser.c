@@ -22,6 +22,27 @@
 
 static char errmsg[256] = "";
 
+/* Builds the table key for a name. A global name is itself; a local one -- any
+ * name starting with '@' -- is prefixed with the scope it was written in, so
+ * @loop in one routine and @loop in the next do not collide. The prefix is two
+ * bytes rather than the enclosing label's text, which keeps the key inside
+ * MAX_NAME however long that label is. */
+static int scoped_key(parser* p, const char* name, int sz, char* out) {
+    int n = 0;
+    if (sz > 0 && name[0] == '@') {
+        out[n++] = (char) (1 + (p->scope_ & 0x7F));
+        out[n++] = '@';
+    }
+    if (sz > MAX_NAME - n) {
+        return -1;
+    }
+    for (int i = 0; i < sz; i++) {
+        out[n++] = name[i];
+    }
+
+    return n;
+}
+
 parser* pr_init(parser* p, const char* fname) {
     if (lex_init(&p->lex_, fname) == NULL) {
         return NULL;
@@ -54,6 +75,11 @@ parser* pr_init(parser* p, const char* fname) {
      * default (START_ADDRESS in its config.h). It was 0x400000 here, one zero
      * too many, so every address in a source without an .ORG was wrong. */
     p->org_ = 0x40000;
+    p->addr_ = p->org_;
+    p->scope_ = 0;
+    p->last_label_sz_ = 0;
+    p->anon_count_ = 0;
+    p->fname_ = fname;
     p->adl_ = true;
     p->skip_ws_ = true;
     p->comment_ = false;
@@ -114,6 +140,64 @@ const char* pr_msg(parser* p, const char* msg) {
     return errmsg;
 }
 
+/* Which anonymous label a name refers to, or -2 if it is not one of them.
+ * @b and @p look back, @f and @n look forward. */
+static int anon_ref(const char* name, int sz) {
+    if (sz != 2 || name[0] != '@') {
+        return -2;
+    }
+    switch (name[1]) {
+        case 'b': case 'B':
+        case 'p': case 'P':
+            return -1;   /* the one before here */
+        case 'f': case 'F':
+        case 'n': case 'N':
+            return 1;    /* the one after here */
+        default:
+            return -2;
+    }
+}
+
+/* Resolves a name to its value. Sets *known false when it cannot be resolved
+ * yet, which is a forward reference and the caller's cue to leave a hole. */
+const char* pr_resolve(parser* p, const char* name, int sz, value* out,
+                       bool* known, int* anon) {
+    *known = false;
+    *anon = -1;
+
+    const int a = anon_ref(name, sz);
+    if (a == -1) {
+        if (p->anon_count_ == 0) {
+            return pr_msg(p, "no anonymous label before here");
+        }
+        *out = (value) p->anon_[p->anon_count_ - 1];
+        *known = true;
+
+        return NULL;
+    }
+    if (a == 1) {
+        /* The next @@ to be defined; it does not exist yet by definition. */
+        *anon = p->anon_count_;
+
+        return NULL;
+    }
+
+    char key[MAX_NAME + 1];
+    const int ksz = scoped_key(p, name, sz, key);
+    if (ksz < 0) {
+        return pr_msg(p, "label too long");
+    }
+
+    bool ok = false;
+    const int v = ht_nget(&p->labels_, key, (uint8_t) ksz, &ok);
+    if (ok) {
+        *out = (value) v;
+        *known = true;
+    }
+
+    return NULL;
+}
+
 static const char* parse_adl(parser* p) {
     next(p);
     if (p->tk_.tt_ != D_ADL) {
@@ -125,10 +209,15 @@ static const char* parse_adl(parser* p) {
     }
 
     next(p);
-    if (p->tk_.tk_ != NUMBER || (p->tk_.val_ != 0 && p->tk_.val_ != 1)) {
+    value v = 0;
+    const char* err = expr_eval(p, &v);
+    if (err != NULL) {
+        return err;
+    }
+    if (v != 0 && v != 1) {
         return pr_msg(p, "ADL is 0 or 1");
     }
-    p->adl_ = p->tk_.val_ == 1;
+    p->adl_ = v == 1;
 
     return NULL;
 }
@@ -150,25 +239,39 @@ bool pr_wbyte(parser* p, uint8_t b) {
         return false;
     }
     p->buf_[p->pos_++] = b;
+    p->addr_++;
+
     return true;
 }
 
-const char* pr_stack_label(parser* p, char* label, int sz) {
-    if (!ls_push(&p->ls_, label, sz, p->pos_, p->lex_.lcount_)) {
+/* Leaves a hole of the right width and remembers how to fill it. */
+static const char* stack_fixup(parser* p, char* label, int sz, fixup_kind kind,
+                               int anon) {
+    const int width = (kind == FIX_REL8) ? 1 : (kind == FIX_ABS16 ? 2 : 3);
+    const int bpos = p->pos_;
+
+    for (int i = 0; i < width; i++) {
+        if (!pr_wbyte(p, 0)) {
+            return pr_msg(p, "output too large");
+        }
+    }
+
+    /* addr_ is now the address of the next instruction, which is exactly what
+     * a relative displacement is measured from. */
+    if (!ls_push(&p->ls_, label, sz, bpos, p->addr_, p->lex_.lcount_,
+                 kind, p->scope_, anon)) {
         return pr_msg(p, "label too long");
     }
-    p->pos_ += 3;
 
     return NULL;
 }
 
-const char* pr_stack_relative_label(parser* p, char* label, int sz) {
-    if (!ls_push(&p->ls_, label, sz, p->pos_, p->lex_.lcount_)) {
-        return pr_msg(p, "label too long");
-    }
-    p->pos_ += 1;
+const char* pr_stack_label(parser* p, char* label, int sz, int anon) {
+    return stack_fixup(p, label, sz, p->adl_ ? FIX_ABS24 : FIX_ABS16, anon);
+}
 
-    return NULL;
+const char* pr_stack_relative_label(parser* p, char* label, int sz, int anon) {
+    return stack_fixup(p, label, sz, FIX_REL8, anon);
 }
 
 static const char* parse_org(parser* p) {
@@ -180,6 +283,7 @@ static const char* parse_org(parser* p) {
         return err;
     }
     p->org_ = v;
+    p->addr_ = v;
 
     return NULL;
 }
@@ -311,10 +415,33 @@ static const char* parse_db(parser* p) {
     return NULL;
 }
 
+/* "name: equ <expr>" redefines the label on the same line to the expression's
+ * value instead of the address it was given when it was read. */
+static const char* parse_equ(parser* p) {
+    if (p->last_label_sz_ == 0) {
+        return pr_msg(p, "equ needs a label");
+    }
+
+    next(p);
+    value v = 0;
+    const char* err = expr_eval(p, &v);
+    if (err != NULL) {
+        return err;
+    }
+
+    if (!ht_nset(&p->labels_, p->last_label_, (uint8_t) p->last_label_sz_, v)) {
+        return pr_msg(p, "label too long");
+    }
+
+    return NULL;
+}
+
 static const char* parse_directive(parser* p) {
     switch (p->tk_.tt_) {
         case D_ASSUME:
             return parse_adl(p);
+        case D_EQU:
+            return parse_equ(p);
         case D_ORG:
             return parse_org(p);
         case D_ALIGN:
@@ -369,45 +496,206 @@ static const char* parse_instruction(parser* p) {
 }
 
 static const char* parse_label(parser* p) {
+    if (!p->tk_.label_) {
+        return pr_msg(p, "expected a colon");
+    }
+
+    /* An anonymous label has no name to look up -- it is found by position. */
+    if (p->tk_.sz_ == 2 && p->tk_.txt_[0] == '@' && p->tk_.txt_[1] == '@') {
+        if (p->anon_count_ == (int) (sizeof(p->anon_) / sizeof(p->anon_[0]))) {
+            return pr_msg(p, "too many anonymous labels");
+        }
+        p->anon_[p->anon_count_++] = p->addr_;
+
+        next(p);
+
+        return NULL;
+    }
+
+    char key[MAX_NAME + 1];
+    const int ksz = scoped_key(p, p->tk_.txt_, p->tk_.sz_, key);
+    if (ksz < 0) {
+        return pr_msg(p, "label too long");
+    }
+
+    /* A global label opens a new local scope, so the names inside the routine
+     * that follows are distinct from the ones before it. */
+    if (p->tk_.txt_[0] != '@') {
+        p->scope_++;
+    }
+
     /* A name too long for the table used to be dropped silently, so the label
      * simply did not exist and every reference to it failed later with no
      * hint why. */
-    if (!ht_nset(&p->labels_, p->tk_.txt_, p->tk_.sz_, p->pos_ + p->org_)) {
+    if (!ht_nset(&p->labels_, key, ksz, p->addr_)) {
         return pr_msg(p, "label too long");
     }
-    token tk = next(p);
-    if (tk.tk_ != COLON) {
-        return pr_msg(p, "expected a colon");
+
+    for (int i = 0; i < ksz; i++) {
+        p->last_label_[i] = key[i];
     }
+    p->last_label_sz_ = ksz;
+
+    /* The colon is already known to be there -- the lexer only flags a name as
+     * a label when one follows immediately -- so just consume it. */
+    next(p);
+
     return NULL;
 }
 
+/* Fills in every reference that was still unresolved when its line was read.
+ *
+ * The old version compared p->pos_-1 against 0x18 -- a buffer offset against
+ * the JR opcode -- to decide relative from absolute, and then appended through
+ * pr_wbyte instead of writing at the hole, so a forward JR overwrote whatever
+ * followed it. Both are recorded on the fixup now. */
 static const char* post_process(parser* p) {
-    const int pos = p->pos_;
-    bool ok;
     for (const label_node* ln = ls_pop(&p->ls_); ln != NULL; ln = ls_pop(&p->ls_)) {
-        ok = false;
-        int v = ht_get(&p->labels_, ln->label_, &ok);
-        if (!ok) {
-            p->lex_.lcount_ = ln->line_;
-            return pr_msg(p, "label does not exist.");
+        char key[MAX_NAME + 1];
+        int ksz = 0;
+        for (const char* c = ln->label_; *c != 0; c++) {
+            ksz++;
         }
-        if (p->pos_-1 == 0x18) {
-            pr_wbyte(p, (uint8_t) (v & 0xFF)) ;
+
+        /* A local name resolves in the scope it was written in, not the one
+         * the file happened to end in. */
+        int n = 0;
+        if (ln->label_[0] == '@') {
+            key[n++] = (char) (1 + (ln->scope_ & 0x7F));
+            key[n++] = '@';
+        }
+        for (int i = 0; i < ksz; i++) {
+            key[n + i] = ln->label_[i];
+        }
+        ksz += n;
+
+        int v;
+        if (ln->anon_ >= 0) {
+            if (ln->anon_ >= p->anon_count_) {
+                p->lex_.lcount_ = ln->line_;
+
+                return pr_msg(p, "no anonymous label after here");
+            }
+            v = p->anon_[ln->anon_];
         } else {
-            p->pos_ = ln->bpos_;
-            for (uint8_t i = 0; i < 3; i++) {
-                pr_wbyte(p, (v >> (i*8)) & 0xFF);
+            bool ok = false;
+            v = ht_nget(&p->labels_, key, (uint8_t) ksz, &ok);
+            if (!ok) {
+                p->lex_.lcount_ = ln->line_;
+
+                return pr_msg(p, "label does not exist.");
             }
         }
+
+        if (ln->kind_ == FIX_REL8) {
+            const int d = v - ln->next_;
+            if (d < -128 || d > 127) {
+                p->lex_.lcount_ = ln->line_;
+
+                return pr_msg(p, "relative jump too far");
+            }
+            p->buf_[ln->bpos_] = (uint8_t) (d & 0xFF);
+            continue;
+        }
+
+        const int width = (ln->kind_ == FIX_ABS16) ? 2 : 3;
+        for (int i = 0; i < width; i++) {
+            p->buf_[ln->bpos_ + i] = (uint8_t) ((v >> (i * 8)) & 0xFF);
+        }
     }
-    p->pos_ = pos;
+
     return NULL;
+}
+
+/* A cheap sweep for constant definitions, run before the real pass.
+ *
+ * It looks only for "name: equ <expr>" and evaluates the ones whose value is
+ * already computable. It never tracks the program counter and never sizes an
+ * instruction, so it costs a lex of the source and nothing more -- this is not
+ * a second assembly pass.
+ *
+ * What it buys is the ordering freedom the reference has: a constant can be
+ * used before the line that defines it, so "db before, after1" works with
+ * after1 defined further down. A definition it cannot fold yet -- one that
+ * depends on a label's address -- is skipped and left to the main pass, where
+ * a label reference goes through the fixup path anyway.
+ *
+ * Failures are deliberately silent. Anything genuinely wrong is reported by
+ * the real pass, with the right line number and without this one having to
+ * guess whether a name it has not reached yet is a mistake. */
+static void pr_prescan(parser* p) {
+    lexer saved_lex = p->lex_;
+    const uint8_t saved_scope = p->scope_;
+    const int saved_pos = p->pos_;
+
+    if (lex_init(&p->lex_, p->fname_) == NULL) {
+        p->lex_ = saved_lex;
+
+        return;
+    }
+    p->scope_ = 0;
+    p->pos_ = 0;
+
+    token tk = next(p);
+    while (tk.tk_ != NONE) {
+        if (tk.tk_ != NAME) {
+            while (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
+                next(p);
+            }
+            tk = next(p);
+            continue;
+        }
+
+        /* Copy the name before advancing: the token text lives in the lexer's
+         * shared line buffer and the next token overwrites it. */
+        char name[MAX_NAME + 1];
+        int nsz = tk.sz_;
+        if (nsz > MAX_NAME) {
+            nsz = MAX_NAME;
+        }
+        for (int i = 0; i < nsz; i++) {
+            name[i] = tk.txt_[i];
+        }
+
+        const bool global = name[0] != '@';
+        if (next(p).tk_ == COLON) {
+            if (global) {
+                p->scope_++;
+            }
+
+            if (next(p).tt_ == D_EQU) {
+                next(p);
+                value v = 0;
+                if (expr_eval(p, &v) == NULL) {
+                    char key[MAX_NAME + 1];
+                    const int ksz = scoped_key(p, name, nsz, key);
+                    if (ksz > 0) {
+                        ht_nset(&p->labels_, key, (uint8_t) ksz, v);
+                    }
+                }
+            }
+        }
+
+        while (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
+            next(p);
+        }
+        tk = next(p);
+    }
+
+    br_destroy(&p->lex_.rd_);
+    p->lex_ = saved_lex;
+    p->scope_ = saved_scope;
+    p->pos_ = saved_pos;
 }
 
 const char* pr_parse(parser* p) {
     // top level parser. On every iteration we are at the beginning of a new line.
+    pr_prescan(p);
+
     p->pos_ = 0;
+    p->addr_ = p->org_;
+    p->scope_ = 0;
+    p->anon_count_ = 0;
     const char* err = NULL;
 
     for (p->tk_ = next(p); p->tk_.tk_ != NONE; p->tk_ = next(p)) {
@@ -439,7 +727,11 @@ const char* pr_parse(parser* p) {
         }
 
         p->tk_ = next(p);
-        if (p->tk_.tk_ != NEW_LINE) {
+        /* End of file ends the last line just as well as a newline does. A
+         * source whose final line had no trailing newline used to be rejected
+         * outright -- and files in the reference corpus are written that
+         * way. */
+        if (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
             return pr_msg(p, "expected a new line.");
         }
     }

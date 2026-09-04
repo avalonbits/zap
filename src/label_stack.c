@@ -17,7 +17,8 @@ void ls_destroy(label_stack* ls) {
     free(ls->nodes_);
 }
 
-bool ls_push(label_stack* ls, const char* label, int sz, int bpos, int line) {
+bool ls_push(label_stack* ls, const char* label, int sz, int bpos,
+             int next, int line, fixup_kind kind, uint8_t scope, int anon) {
     if (ls->pos_ == ls->sz_) {
         return false;
     }
@@ -33,7 +34,11 @@ bool ls_push(label_stack* ls, const char* label, int sz, int bpos, int line) {
     strncpy(n->label_, label, sz);
     n->label_[sz] = 0;
     n->bpos_ = bpos;
+    n->next_ = next;
     n->line_ = line;
+    n->kind_ = (uint8_t) kind;
+    n->scope_ = scope;
+    n->anon_ = anon;
     ls->pos_++;
 
     return true;

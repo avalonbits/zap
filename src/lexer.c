@@ -302,7 +302,7 @@ static void lex_prefixed_number(lexer* lex, token* tk, TOKEN bare) {
 }
 
 token lex_next(lexer* lex) {
-    token tk = {NULL, 0, NONE, TY_NONE, 0};
+    token tk = {NULL, 0, NONE, TY_NONE, 0, false};
     char ch = br_char(&lex->rd_);
     if (!OK_CHAR(ch)) {
         return tk;
@@ -413,6 +413,18 @@ token lex_next(lexer* lex) {
     }
 
     tk.tk_ = NAME;
+
+    /* An identifier with a colon straight after it is a label being defined,
+     * so it keeps its own name rather than being resolved against the
+     * reserved words. That is what lets a routine be called pea: or nz:,
+     * which the reference allows and which its Labels corpus depends on. The
+     * colon has to be immediate -- "lbl :" is not a label there either. */
+    if (br_peek(&lex->rd_) == ':') {
+        tk.label_ = true;
+
+        return tk;
+    }
+
     int val = ht_nget(&reserved, tk.txt_, tk.sz_, NULL);
     if (unpack_tk(val) == NONE) {
         val = ht_nget(&instructions, tk.txt_, tk.sz_, NULL);

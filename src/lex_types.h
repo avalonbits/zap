@@ -17,7 +17,6 @@ typedef enum _TOKEN {
     COMMA,
     DOT,
     COLON,
-    SEMI_COLON,
     HASH,
     DOLLAR,
     B_SLASH,

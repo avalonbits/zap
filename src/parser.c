@@ -122,7 +122,6 @@ static parser* pr_setup(parser* p, const char* fname) {
     p->pc_used_ = false;
     p->adl_ = true;
     p->cpu_ = CPU_EZ80;
-    p->comment_ = false;
     return p;
 }
 
@@ -192,54 +191,36 @@ void pr_destroy(parser* p) {
 }
 
 token next(parser* p) {
-    while (true) {
-        p->tk_ = lex_next(&p->lex_);
-        token tk = p->tk_;
-        switch (tk.tk_) {
-            case NONE:
-                /* End of an included file: go back to the one that included
-                 * it and keep reading, so the include reads as if its text
-                 * had been written in place. */
-                if (p->inc_depth_ > 0) {
-                    br_destroy(&p->lex_.rd_);
-                    --p->inc_depth_;
-                    p->lex_ = p->inc_[p->inc_depth_];
-                    p->scope_ = p->inc_scope_[p->inc_depth_];
-                    if (p->inc_macro_[p->inc_depth_]) {
-                        p->macro_depth_--;
-                    }
-                    p->comment_ = false;
+    p->tk_ = lex_next(&p->lex_);
 
-                    /* The end of an included file ends the line as well. Its
-                     * last line often has no trailing newline, and without
-                     * this it ran on into the line after the .include. */
-                    p->tk_.tk_ = NEW_LINE;
-                    p->tk_.txt_ = p->lex_.line_;
-                    p->tk_.sz_ = 0;
-                    p->tk_.val_ = 0;
-                    p->tk_.label_ = false;
-
-                    return p->tk_;
-                }
-
-                return tk;
-            case NEW_LINE:
-                p->comment_ = false;
-                return tk;
-            case SEMI_COLON:
-                p->comment_ = true;
-                continue;
-            default:
-                /* The comment check used to sit below a DIRECTIVE case, so a
-                 * directive name inside a comment was handed to the parser as
-                 * a real directive. "; starting at byte 64." was enough to
-                 * break a file, because "byte" is a directive. */
-                if (p->comment_) {
-                    continue;
-                }
-                return tk;
+    /* The only thing left to handle is the end of an included file: go back
+     * to the one that included it and keep reading, so the include reads as
+     * if its text had been written in place.
+     *
+     * This used to be a loop around a switch, because a comment arrived as a
+     * semicolon followed by a token per word, all of which had to be pulled
+     * and dropped here. The lexer consumes comments itself now and hands back
+     * the newline, so every other token returns straight through. */
+    if (p->tk_.tk_ == NONE && p->inc_depth_ > 0) {
+        br_destroy(&p->lex_.rd_);
+        --p->inc_depth_;
+        p->lex_ = p->inc_[p->inc_depth_];
+        p->scope_ = p->inc_scope_[p->inc_depth_];
+        if (p->inc_macro_[p->inc_depth_]) {
+            p->macro_depth_--;
         }
+
+        /* The end of an included file ends the line as well. Its last line
+         * often has no trailing newline, and without this it ran on into the
+         * line after the .include. */
+        p->tk_.tk_ = NEW_LINE;
+        p->tk_.txt_ = p->lex_.line_;
+        p->tk_.sz_ = 0;
+        p->tk_.val_ = 0;
+        p->tk_.label_ = false;
     }
+
+    return p->tk_;
 }
 
 const char* pr_msg(parser* p, const char* msg) {
@@ -1257,7 +1238,6 @@ static const char* resolve_fixup(parser* p, const label_node* ln, value* out) {
     lexer saved = p->lex_;
     const uint16_t saved_scope = p->scope_;
     const int saved_stmt = p->stmt_addr_;
-    const bool saved_comment = p->comment_;
     const bool saved_undef = p->undefined_;
 
     lexer tmp;
@@ -1270,7 +1250,6 @@ static const char* resolve_fixup(parser* p, const label_node* ln, value* out) {
     /* The names were written in that scope, and '$' meant that address. */
     p->scope_ = ln->scope_;
     p->stmt_addr_ = ln->here_;
-    p->comment_ = false;
     p->undefined_ = false;
 
     next(p);
@@ -1283,7 +1262,6 @@ static const char* resolve_fixup(parser* p, const label_node* ln, value* out) {
     p->lex_ = saved;
     p->scope_ = saved_scope;
     p->stmt_addr_ = saved_stmt;
-    p->comment_ = saved_comment;
     p->undefined_ = saved_undef;
 
     return err;
@@ -1364,7 +1342,6 @@ static void pr_prescan(parser* p) {
     lexer saved_lex = p->lex_;
     const uint16_t saved_scope = p->scope_;
     const int saved_pos = p->pos_;
-    const bool saved_comment = p->comment_;
     const int saved_depth = p->inc_depth_;
 
     if (p->fname_ != NULL) {
@@ -1475,7 +1452,6 @@ static void pr_prescan(parser* p) {
      * inside a comment with no trailing newline left it set, and the real
      * pass then treated the whole file as commented out -- assembling to
      * nothing, with no error at all. */
-    p->comment_ = saved_comment;
 }
 
 const char* pr_parse(parser* p) {
@@ -1486,7 +1462,6 @@ const char* pr_parse(parser* p) {
     p->addr_ = p->org_;
     p->scope_ = 0;
     p->anon_count_ = 0;
-    p->comment_ = false;
     const char* err = NULL;
 
     for (p->tk_ = next(p); p->tk_.tk_ != NONE; p->tk_ = next(p)) {

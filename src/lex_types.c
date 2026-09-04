@@ -54,9 +54,6 @@ void print_token(token tk) {
         case COLON:
             putch(':');
             break;
-        case SEMI_COLON:
-            putch(';');
-            break;
         case HASH:
             putch('#');
             break;

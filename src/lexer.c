@@ -376,22 +376,36 @@ token lex_next(lexer* lex) {
         case ',':  tk.tk_ = COMMA;       return tk;
         case '.':  tk.tk_ = DOT;         return tk;
         case ':':  tk.tk_ = COLON;       return tk;
-        case ';':
-            /* A comment runs to the end of the line, and none of it means
-             * anything. Consuming it here rather than handing the parser a
-             * token per word is what makes it cheap: every word in a comment
-             * used to be scanned, hashed and looked up in the reserved table
-             * before being thrown away, so a heavily commented source paid
-             * full lexing price for text that was never used. The newline is
-             * left in place -- it still ends the statement. */
-            for (char c = br_peek_inline(&lex->rd_);
-                 OK_CHAR(c) && c != '\n';
-                 c = br_peek_inline(&lex->rd_)) {
+        case ';': {
+            /* A comment runs to the end of the line and none of it means
+             * anything, so it is consumed here rather than handed to the
+             * parser a token at a time. Every word in a comment used to pay
+             * for a scan, a Pearson hash and a reserved-table lookup before
+             * being discarded.
+             *
+             * What comes back is the newline, not the semicolon. A comment
+             * ends the statement and nothing else, which is all the parser
+             * ever did with the semicolon: it set a flag, dropped every token
+             * until the newline, and returned that. Emitting the newline
+             * directly is the same token stream with one less round trip and
+             * no flag to keep. */
+            char c = br_peek_inline(&lex->rd_);
+            while (OK_CHAR(c) && c != '\n') {
+                br_next_inline(&lex->rd_);
+                c = br_peek_inline(&lex->rd_);
+            }
+            if (c == '\n') {
                 br_next_inline(&lex->rd_);
             }
-            tk.tk_ = SEMI_COLON;
+            lex->lcount_++;
+
+            /* Retype the token: the semicolon was pushed before the switch. */
+            tk.sz_ = 0;
+            push_ch(lex, &tk, '\n');
+            tk.tk_ = NEW_LINE;
 
             return tk;
+        }
 
         case '\n':
             lex->lcount_++;

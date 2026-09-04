@@ -47,7 +47,6 @@ static const char* tk_name(TOKEN t) {
         case COMMA:       return "COMMA";
         case DOT:         return "DOT";
         case COLON:       return "COLON";
-        case SEMI_COLON:  return "SEMI";
         case HASH:        return "HASH";
         case DOLLAR:      return "DOLLAR";
         case B_SLASH:     return "BS";
@@ -169,42 +168,43 @@ int main(void) {
             lex_all(".org $400000\n"),
             "DOT(.) DIR(org) NUM($400000=4194304) NL(\n)");
 
-    /* A comment body never becomes tokens. The semicolon is still emitted --
-     * the parser needs it to know the statement ended -- but everything after
-     * it is consumed here. It used to be handed over word by word, and each
-     * word paid for a scan, a hash and a reserved-table lookup before being
-     * discarded: on a source that is a quarter comments, that is a quarter of
-     * the lexer's work spent on text with no meaning. */
-    check_s("comment body is consumed by the lexer",
+    /* A comment never becomes tokens, and does not even become a semicolon:
+     * it ends the statement, which is all the parser ever did with it. The
+     * body used to arrive word by word, each word paying for a scan, a hash
+     * and a reserved-table lookup before being discarded -- on a source that
+     * is a quarter comments, a quarter of the lexer's work meant nothing. */
+    check_s("comment lexes as the end of the line",
             lex_all("ret ; done\n"),
-            "INSN(ret) SEMI(;) NL(\n)");
+            "INSN(ret) NL(\n)");
 
-    /* The newline survives, so the statement still ends where it should and
-     * the line count stays right. */
-    check_s("comment does not swallow the newline",
+    /* The line still ends exactly once, so the statement after it is intact
+     * and the line count stays right. */
+    check_s("comment ends the line exactly once",
             lex_all("nop ; a\nret\n"),
-            "INSN(nop) SEMI(;) NL(\n) INSN(ret) NL(\n)");
+            "INSN(nop) NL(\n) INSN(ret) NL(\n)");
 
     /* Text that would otherwise lex as something meaningful -- a directive
-     * name, a number, an unterminated string or character literal -- is inert
-     * inside a comment. The directive case is not hypothetical: "; starting
-     * at byte 64." was once enough to break a file, because "byte" reached
-     * the parser as a real directive. */
+     * name, an unterminated string or character literal -- is inert inside a
+     * comment. The directive case is not hypothetical: "; starting at byte
+     * 64." was once enough to break a file, because "byte" reached the parser
+     * as a real directive. */
     check_s("directive name inside a comment",
             lex_all("nop ; starting at byte 64.\n"),
-            "INSN(nop) SEMI(;) NL(\n)");
+            "INSN(nop) NL(\n)");
     check_s("unbalanced quote inside a comment",
             lex_all("nop ; it's \"fine\n"),
-            "INSN(nop) SEMI(;) NL(\n)");
+            "INSN(nop) NL(\n)");
 
-    /* A comment on its own line, and one closing a file with no trailing
-     * newline, both have to terminate rather than run off the end. */
+    /* A comment on its own line is an empty line. */
     check_s("whole-line comment",
             lex_all("; just a comment\nnop\n"),
-            "SEMI(;) NL(\n) INSN(nop) NL(\n)");
+            "NL(\n) INSN(nop) NL(\n)");
+
+    /* One closing the file with no trailing newline still terminates the
+     * statement rather than running off the end. */
     check_s("comment at end of file with no newline",
             lex_all("nop ; trailing"),
-            "INSN(nop) SEMI(;)");
+            "INSN(nop) NL(\n)");
 
     /* Strings arrive as delimiters plus their contents. */
     check_s("quoted string delimiters",

@@ -82,6 +82,11 @@ char br_char(buf_reader* br);
  * 0xFF is indistinguishable from its EOF sentinel, so an .incbin stopped at
  * the first 0xFF in the file. */
 int br_byte(buf_reader* br);
+
+/* Consumes and hands back a run of buffered bytes at once. Returns the count,
+ * or 0 at end of file; *out points into the reader's buffer and is valid
+ * until the next read. Used by .incbin, which copies whole files. */
+int br_block(buf_reader* br, const char** out);
 char br_peek(buf_reader* br);
 void br_next(buf_reader* br);
 

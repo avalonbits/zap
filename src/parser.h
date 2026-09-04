@@ -145,6 +145,10 @@ typedef struct _parser {
 token next(parser* p);
 const char* pr_msg(parser* p, const char* msg);
 bool pr_wbyte(parser* p, uint8_t b);
+
+/* Writes a run of bytes at the current address, as pr_wbyte would one at a
+ * time. Used by .incbin. */
+bool pr_wblock(parser* p, const uint8_t* src, int n);
 value tk2i(token tk);
 const char* pr_stack_fixup(parser* p, const char* text, int sz,
                            fixup_kind kind, int anon);

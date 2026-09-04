@@ -406,6 +406,36 @@ bool pr_wbyte(parser* p, uint8_t b) {
     return true;
 }
 
+/* Writes a run of bytes at the current address.
+ *
+ * The same thing as calling pr_wbyte for each of them, except the bounds
+ * check, the gap fill and the bookkeeping happen once for the run instead of
+ * once per byte. The gap fill is only ever needed at the start: after the
+ * first byte lands, the high-water mark is already at the write position. */
+bool pr_wblock(parser* p, const uint8_t* src, int n) {
+    if (n <= 0) {
+        return true;
+    }
+
+    const int at = p->addr_ - p->start_;
+    if (at < 0 || !pr_reserve(p, at + n)) {
+        return false;
+    }
+
+    for (int i = p->high_; i < at; i++) {
+        p->buf_[i] = p->fill_;
+    }
+
+    memcpy(&p->buf_[at], src, (size_t) n);
+    p->addr_ += n;
+    p->pos_ = at + n;
+    if (p->pos_ > p->high_) {
+        p->high_ = p->pos_;
+    }
+
+    return true;
+}
+
 /* Moves the address without writing anything, which is what ds and align do.
  * The bytes appear only if something later lands past them. */
 static void pr_skip(parser* p, int n) {
@@ -853,8 +883,12 @@ static const char* parse_incbin(parser* p) {
         return pr_msg(p, "cannot open binary file");
     }
 
-    for (int ch = br_byte(&rd); ch >= 0; ch = br_byte(&rd)) {
-        if (!pr_wbyte(p, (uint8_t) ch)) {
+    /* Copied a block at a time rather than a byte at a time: a byte used to
+     * cost a call into the reader and a call into the output writer, which on
+     * a program with graphics or music data was most of the work zap did. */
+    const char* blk = NULL;
+    for (int n = br_block(&rd, &blk); n > 0; n = br_block(&rd, &blk)) {
+        if (!pr_wblock(p, (const uint8_t*) blk, n)) {
             br_destroy(&rd);
 
             return pr_msg(p, "output too large");

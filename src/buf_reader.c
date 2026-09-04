@@ -163,6 +163,46 @@ char br_fill_peek(buf_reader* br) {
     return br->buf_[br->bpos_];
 }
 
+/* Hands back a run of bytes the reader already holds, and consumes them.
+ * Returns how many are available at *out, or 0 at end of file. The pointer is
+ * valid only until the next read from this reader.
+ *
+ * .incbin copies whole files into the output, and doing that a byte at a time
+ * cost a call in here and a call into the output writer for every one of
+ * them. Every condition that makes br_byte return -1 makes this return 0, so
+ * the two agree on where a file ends -- including a suspended reader, which
+ * both treat as end of file. */
+int br_block(buf_reader* br, const char** out) {
+    if (br->bsz_ == 0 || br->buf_ == NULL) {
+        return 0;
+    }
+    if (br->mem_) {
+        if (br->bpos_ == br->bsz_) {
+            return 0;
+        }
+    } else {
+        if (br->fh_ == 0) {
+            return 0;
+        }
+        if (br->bpos_ == br->bsz_) {
+            uint24_t frsz = mos_fread(br->fh_, br->buf_, br->bsz_);
+            if (frsz == 0) {
+                br->bsz_ = 0;
+
+                return 0;
+            }
+            br->bpos_ = 0;
+            br->bsz_ = frsz;
+        }
+    }
+
+    *out = &br->buf_[br->bpos_];
+    const int n = (int) (br->bsz_ - br->bpos_);
+    br->bpos_ = br->bsz_;
+
+    return n;
+}
+
 int br_byte(buf_reader* br) {
     if (br->bsz_ == 0) {
         return -1;

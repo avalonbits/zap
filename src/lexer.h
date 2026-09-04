@@ -18,6 +18,10 @@ typedef struct _lexer  {
 
 
 lexer* lex_init(lexer* lex, const char* fname);
+
+/* Builds the reserved-word tables. lex_init does this itself; a lexer set up
+ * over memory has to ask for it. */
+void lex_prime(void);
 void lex_destroy(lexer* lex);
 
 token lex_next(lexer* lex);

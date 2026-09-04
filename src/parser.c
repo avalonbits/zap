@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "conv.h"
+#include "zap.h"
 #include "expr.h"
 #include "macro.h"
 #include "value.h"
@@ -67,10 +68,7 @@ static int scoped_key(parser* p, const char* name, int sz, char* out) {
     return n;
 }
 
-parser* pr_init(parser* p, const char* fname) {
-    if (lex_init(&p->lex_, fname) == NULL) {
-        return NULL;
-    }
+static parser* pr_setup(parser* p, const char* fname) {
     /* Labels are case-sensitive; only the reserved words are not. */
     if (ht_init(&p->labels_, 255, false) == 0) {
         lex_destroy(&p->lex_);
@@ -106,11 +104,13 @@ parser* pr_init(parser* p, const char* fname) {
     p->fill_ = 0xFF;
     p->reloc_ = false;
     p->stmt_addr_ = p->addr_;
+    p->stmt_line_ = 1;
     p->scope_ = 0;
     p->last_label_sz_ = 0;
     p->anon_count_ = 0;
     p->fname_ = fname;
     p->inc_depth_ = 0;
+    p->has_diag_ = false;
     mt_init(&p->macros_);
     p->expand_id_ = 0;
     p->macro_depth_ = 0;
@@ -123,6 +123,40 @@ parser* pr_init(parser* p, const char* fname) {
     p->skip_ws_ = true;
     p->comment_ = false;
     return p;
+}
+
+parser* pr_init(parser* p, const char* fname) {
+    if (lex_init(&p->lex_, fname) == NULL) {
+        return NULL;
+    }
+
+    return pr_setup(p, fname);
+}
+
+parser* pr_init_mem(parser* p, const char* text, int len, const char* name) {
+    if (br_open_mem(&p->lex_.rd_, text, len) == NULL) {
+        return NULL;
+    }
+    p->lex_.lcount_ = 1;
+
+    int n = 0;
+    if (name != NULL) {
+        while (name[n] != 0 && n < (int) sizeof(p->lex_.fname_) - 1) {
+            p->lex_.fname_[n] = name[n];
+            n++;
+        }
+    }
+    p->lex_.fname_[n] = 0;
+
+    /* The reserved-word tables are built by lex_init, which a memory source
+     * never calls. */
+    lex_prime();
+
+    /* fname_ stays NULL: the constant prescan re-opens the source by name,
+     * and there is no name to re-open. Assembling from memory therefore does
+     * one pass over the text, and a constant used before its definition is
+     * deferred rather than folded early. */
+    return pr_setup(p, NULL);
 }
 
 uint8_t* pr_buf(parser* p, int* sz) {
@@ -208,6 +242,27 @@ token next(parser* p) {
 }
 
 const char* pr_msg(parser* p, const char* msg) {
+    /* The first error is the one worth keeping: assembly stops there, and
+     * anything after it is a guess about a file the parser no longer
+     * understands. */
+    if (!p->has_diag_) {
+        int n = 0;
+        while (p->lex_.fname_[n] != 0 && n < ZAP_MAX_FILE - 1) {
+            p->diag_.file[n] = p->lex_.fname_[n];
+            n++;
+        }
+        p->diag_.file[n] = 0;
+        p->diag_.line = p->stmt_line_ > 0 ? p->stmt_line_ : p->lex_.lcount_;
+
+        n = 0;
+        while (msg[n] != 0 && n < ZAP_MAX_MSG - 1) {
+            p->diag_.msg[n] = msg[n];
+            n++;
+        }
+        p->diag_.msg[n] = 0;
+        p->has_diag_ = true;
+    }
+
     errmsg[0] = 0;
     if (p->lex_.fname_[0] != 0) {
         strcat(errmsg, p->lex_.fname_);
@@ -1233,6 +1288,7 @@ static const char* post_process(parser* p) {
         if (ln->anon_ >= 0) {
             if (ln->anon_ >= p->anon_count_) {
                 p->lex_.lcount_ = ln->line_;
+            p->stmt_line_ = ln->line_;
 
                 return pr_msg(p, "no anonymous label after here");
             }
@@ -1242,6 +1298,7 @@ static const char* post_process(parser* p) {
             const char* err = resolve_fixup(p, ln, &ev);
             if (err != NULL) {
                 p->lex_.lcount_ = ln->line_;
+            p->stmt_line_ = ln->line_;
 
                 return err;
             }
@@ -1252,6 +1309,7 @@ static const char* post_process(parser* p) {
             const int d = v - ln->next_;
             if (d < -128 || d > 127) {
                 p->lex_.lcount_ = ln->line_;
+            p->stmt_line_ = ln->line_;
 
                 return pr_msg(p, "relative jump too far");
             }
@@ -1286,6 +1344,10 @@ static const char* post_process(parser* p) {
  * the real pass, with the right line number and without this one having to
  * guess whether a name it has not reached yet is a mistake. */
 static void pr_prescan(parser* p) {
+    if (p->fname_ == NULL) {
+        return;  /* assembling from memory: nothing to re-open */
+    }
+
     lexer saved_lex = p->lex_;
     const uint16_t saved_scope = p->scope_;
     const int saved_pos = p->pos_;
@@ -1410,6 +1472,7 @@ const char* pr_parse(parser* p) {
 
     for (p->tk_ = next(p); p->tk_.tk_ != NONE; p->tk_ = next(p)) {
         p->stmt_addr_ = pr_addr(p);
+        p->stmt_line_ = p->lex_.lcount_;
 
         /* Inside a false branch only the conditional directives themselves
          * are read; everything else is passed over. A nested .if still has to

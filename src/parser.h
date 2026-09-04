@@ -5,6 +5,7 @@
 
 #include "hash_table.h"
 #include "macro.h"
+#include "zap.h"
 #include "label_stack.h"
 #include "lexer.h"
 
@@ -49,6 +50,12 @@ typedef struct _parser {
      * Not addr_: by the time an operand is read the opcode has already been
      * emitted, and "jp $" has to jump to the jp, not to its own operand. */
     int stmt_addr_;
+
+    /* The line the statement being assembled started on. An error is often
+     * only detected after the newline has been read -- "ld a," fails when the
+     * operand turns out to be missing, by which point the line counter has
+     * moved on -- so this is what a diagnostic reports. */
+    int stmt_line_;
 
     /* The label most recently defined on this line, already scoped. EQU needs
      * it: "five: equ 5" defines the name to the left of the directive, and by
@@ -110,6 +117,11 @@ typedef struct _parser {
      * program counter -- must not fold it. */
     bool pc_used_;
 
+    /* Where the error was, kept as data so a caller can put it against the
+     * right line rather than parse it back out of a string. */
+    zap_diag diag_;
+    bool has_diag_;
+
     bool adl_;
 
     /* Which instruction rows are usable, set by the .cpu directive. zap only
@@ -143,6 +155,10 @@ const char* pr_resolve(parser* p, const char* name, int sz, value* out,
                        bool* known, int* anon);
 
 parser* pr_init(parser* p, const char* fname);
+
+/* Assembles source held in memory rather than read from a file. `name` is
+ * what diagnostics call it. */
+parser* pr_init_mem(parser* p, const char* text, int len, const char* name);
 void pr_destroy(parser* p);
 
 const char* pr_parse(parser* p);

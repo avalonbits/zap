@@ -1,68 +1,94 @@
-#include <string.h>
-#include <agon/mos.h>
+/*
+ * Copyright (C) 2023  Igor Cananea <icc@avalonbits.com>
+ * Author: Igor Cananea <icc@avalonbits.com>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
-#include "conv.h"
-#include "lexer.h"
-#include "parser.h"
+/* The zap command. It is a consumer of the library rather than the other way
+ * round: everything it does goes through zap.h, which is the same interface an
+ * editor uses. */
+
+#include <agon/mos.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "zap.h"
+
+/* Derives an output name from the input by replacing its extension. */
+static void out_name(const char* in, char* out, int max) {
+    int n = 0;
+    while (in[n] != 0 && in[n] != '.' && n < max - 5) {
+        out[n] = in[n];
+        n++;
+    }
+    out[n++] = '.';
+    out[n++] = 'b';
+    out[n++] = 'i';
+    out[n++] = 'n';
+    out[n] = 0;
+}
 
 int main(int argc, char** argv) {
     if (argc < 2 || argc > 3) {
-        mos_puts("\r\nUsage: zap <filename> [outfile] \r\n", 0, 0);
+        printf("Usage: zap <source> [output]\r\n");
+
         return 0;
     }
-    mos_puts("Assembling ", 0, 0);
-    mos_puts(argv[1], 0, 0);
-    mos_puts("\r\n\r\n", 0, 0);
 
-    parser p;
-    if (pr_init(&p, argv[1]) == NULL) {
+    printf("Assembling %s\r\n", argv[1]);
+
+    zap_result r;
+    if (!zap_assemble_file(argv[1], &r)) {
+        if (r.ndiags > 0) {
+            printf("%s line %d: %s\r\n", r.diags[0].file, r.diags[0].line,
+                   r.diags[0].msg);
+        } else {
+            printf("Cannot read %s\r\n", argv[1]);
+        }
+        zap_free(&r);
+
         return 1;
     }
 
-    const char* errmsg = pr_parse(&p);
-    if (errmsg != NULL && strlen(errmsg) > 0) {
-        mos_puts((char*)errmsg, 0, 0);
-        return 1;
-    }
-
-    char fname[255];
+    char name[64];
     if (argc == 3) {
-        uint8_t i = 0;
-        for (; argv[2][i] != 0; i++) {
-            fname[i] = argv[2][i];
+        int n = 0;
+        while (argv[2][n] != 0 && n < (int) sizeof(name) - 1) {
+            name[n] = argv[2][n];
+            n++;
         }
-        fname[i] = 0;
+        name[n] = 0;
     } else {
-        uint8_t i = 0;
-        for (; argv[1][i] != 0 && argv[1][i] != '.'; i++) {
-            fname[i] = argv[1][i];
-        }
-        if (fname[i] != '.') {
-            fname[i] = '.';
-        }
-        fname[++i] = 'b';
-        fname[++i] = 'i';
-        fname[++i] = 'n';
-        fname[++i] = 0;
+        out_name(argv[1], name, (int) sizeof(name));
     }
 
-    uint8_t fh = mos_fopen(fname, FA_READ | FA_WRITE | FA_CREATE_ALWAYS);
+    const uint8_t fh = mos_fopen(name, FA_WRITE | FA_CREATE_ALWAYS);
     if (fh == 0) {
-        mos_puts("unable to write to ", 0, 0);
-        mos_puts(fname, 0, 0);
-        return -1;
+        printf("Cannot write %s\r\n", name);
+        zap_free(&r);
+
+        return 1;
     }
 
-    int sz = 0;
-    char* buf = (char*) pr_buf(&p, &sz);
-    if (sz > 0) {
-        mos_puts("Writting ", 0, 0);
-        mos_puts(fname, 0, 0);
-        mos_fwrite(fh, buf, sz);
+    if (r.size > 0) {
+        mos_fwrite(fh, (char*) r.bytes, (uint24_t) r.size);
     }
-
-    pr_destroy(&p);
     mos_fclose(fh);
+
+    printf("Wrote %s, %d bytes\r\n", name, r.size);
+    zap_free(&r);
 
     return 0;
 }

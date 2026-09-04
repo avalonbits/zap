@@ -132,7 +132,9 @@ static const char* operand_at(parser* p, value* out, int depth) {
             break;
         }
 
-        case NAME: {
+        case NAME:
+        case INSTRUCTION:
+        case DIRECTIVE: {
             bool known = false;
             int anon = -1;
             const char* err = pr_resolve(p, p->tk_.txt_, p->tk_.sz_, &v,

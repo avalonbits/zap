@@ -184,6 +184,30 @@ int main(void) {
         }
     }
 
+    /* Escapes inside a quoted string. These broke when the R register was
+     * added to the reserved words: "\r" came back as a register token, and
+     * the string reader was demanding a name. Every .asciz with a carriage
+     * return in it stopped assembling, and only the emulator noticed. */
+    {
+        struct { const char* src; const char* want; } strs[] = {
+            { "  .asciz \"Hi\\r\\n\"\n",  "48 69 0D 0A 00" },
+            { "  .ascii \"a\\tb\"\n",       "61 09 62" },
+            { "  .ascii \"q\\\\q\"\n",        "71 5C 71" },
+            { "  .ascii \"\\\"\"\n",           "22" },
+            { "  .ascii \"bad\\zescape\"\n", "ERR" },
+        };
+        for (unsigned i = 0; i < sizeof(strs) / sizeof(strs[0]); i++) {
+            const char* got = emit(strs[i].src);
+            if (strcmp(got, strs[i].want) == 0) {
+                fprintf(stderr, "PASS  %-37s %s\n", "string escape", got);
+            } else {
+                fprintf(stderr, "FAIL  %-37s got %s, want %s\n",
+                        "string escape", got, strs[i].want);
+                failures++;
+            }
+        }
+    }
+
     /* Things that must not assemble. */
     db_is("''", "ERR");
     db_is("'\\+'", "ERR");

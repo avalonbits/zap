@@ -213,6 +213,22 @@ int main(void) {
         }
     }
 
+    /* The constant prescan must leave the parser as it found it. A source
+     * whose last line ends inside a comment with no trailing newline left the
+     * comment flag set, and the real pass then treated the whole file as
+     * commented out -- it assembled to nothing, with no error at all. */
+    asm_is("prescan restores the comment flag",
+           "  ld a,b\n  ld a,c ; trailing comment, no newline",
+           "78 79");
+    asm_is("comment-only last line",
+           "  ld a,b\n; just a comment",
+           "78");
+
+    /* A label may not be spelled like a number. */
+    asm_is("label named as a decimal", "5: equ 4\n", "ERR");
+    asm_is("label named as hex with suffix", "ffh: equ 5\n", "ERR");
+    asm_is("label named as c-style hex", "0xff: equ 5\n", "ERR");
+
     /* A relative jump out of range is reported at the reference, not silently
      * truncated. */
     {

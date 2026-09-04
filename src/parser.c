@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "conv.h"
+#include "expr.h"
 #include "instruction_parser.h"
 #include "lexer.h"
 
@@ -111,10 +112,10 @@ static const char* parse_adl(parser* p) {
     }
 
     next(p);
-    if (p->tk_.tk_ != NUMBER || (p->tk_.txt_[0] != '1' && p->tk_.txt_[0] != '0')) {
+    if (p->tk_.tk_ != NUMBER || (p->tk_.val_ != 0 && p->tk_.val_ != 1)) {
         return pr_msg(p, "ADL is 0 or 1");
     }
-    p->adl_ = p->tk_.txt_[0] == '1';
+    p->adl_ = p->tk_.val_ == 1;
 
     return NULL;
 }
@@ -150,24 +151,35 @@ void pr_stack_relative_label(parser* p, char* label, int sz) {
 }
 
 static const char* parse_org(parser* p) {
-    token tk = next(p);
-    if (tk.tk_ != NUMBER) {
-        return pr_msg(p, "expected number.");
+    next(p);
+
+    value v = 0;
+    const char* err = expr_eval(p, &v);
+    if (err != NULL) {
+        return err;
     }
-    p->org_ = tk2i(tk);
+    p->org_ = v;
+
     return NULL;
 }
 
 static const char* parse_align(parser* p) {
-    token tk = next(p);
-    if (tk.tk_ != NUMBER) {
-        return pr_msg(p, "expected number.");
+    next(p);
+
+    value align = 0;
+    const char* err = expr_eval(p, &align);
+    if (err != NULL) {
+        return err;
     }
 
-    int align = tk2i(tk);
+    /* Still aligning to an absolute offset rather than to a boundary. That is
+     * wrong, and it is fixed with the rest of the directives; changing it here
+     * would put a byte-level change in a commit that is meant to be about
+     * where values come from. */
     while (p->pos_ < align) {
         pr_wbyte(p, 0);
     }
+
     return NULL;
 }
 
@@ -240,36 +252,39 @@ static const char* parse_asciz(struct _parser* p) {
 
 
 static const char* parse_db(parser* p) {
-    const char* err = NULL;
-    for (token tk = next(p); tk.tk_ != NONE; tk = next(p)) {
-        switch (tk.tk_) {
-            case NUMBER: {
-                value v = tk2i(tk);
-                if (v < -128 || v > 255)  {
-                    return pr_msg(p, "expected a byte value.");
-                }
-                pr_wbyte(p, ((uint8_t) v) & 0xFF);
-                break;
+    next(p);
+
+    while (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
+        if (p->tk_.tk_ == D_QUOTE) {
+            const char* err = parse_quoted(p);
+            if (err != NULL) {
+                return err;
             }
-            case D_QUOTE:
-                err = parse_quoted(p);
-                if (err != NULL) {
-                    return err;
-                }
-                break;
-            default:
-                return pr_msg(p, "expected string or numbers");
+            next(p);
+        } else {
+            /* Every element is a full expression now, so db 'a'+1 and
+             * db 128+127-255 work the same way the reference reads them. */
+            value v = 0;
+            const char* err = expr_eval(p, &v);
+            if (err != NULL) {
+                return err;
+            }
+            if (v < -128 || v > 255) {
+                return pr_msg(p, "expected a byte value.");
+            }
+            pr_wbyte(p, (uint8_t) (v & 0xFF));
         }
 
-        // We either now have a comma because there is more info to process or a new line.
-        tk = next(p);
-        if (tk.tk_ == NEW_LINE) {
-           return NULL;
+        // Either a comma, because there is more to process, or the end of the line.
+        if (p->tk_.tk_ == NEW_LINE || p->tk_.tk_ == NONE) {
+            return NULL;
         }
-        if (tk.tk_ != COMMA) {
+        if (p->tk_.tk_ != COMMA) {
             return pr_msg(p, "expected a comma");
         }
+        next(p);
     }
+
     return NULL;
 }
 

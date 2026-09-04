@@ -29,7 +29,11 @@ cc -std=gnu11 -Wall -Wextra -fsigned-char -O1 \
    -include test/stubs/host_types.h -Isrc -Itest/stubs \
    -o "$OUT/zap" src/*.c test/stubs/agon_stubs.c || exit 1
 
-total=0; same=0; differ=0
+# Two sources agreeing because neither produced anything is a weaker result
+# than two producing the same bytes, so they are counted apart. A negative test
+# that both reject is a pass, but calling it "assembles identically" would
+# overstate what was compared.
+total=0; same=0; rejected=0; differ=0
 
 for dir in "$REF"/tests/*/; do
     name=$(basename "$dir")
@@ -55,7 +59,11 @@ for dir in "$REF"/tests/*/; do
         e=$([ -f "$OUT/e/$base.bin" ] && md5sum < "$OUT/e/$base.bin" || echo rejected)
 
         if [ "$z" = "$e" ]; then
-            same=$((same + 1))
+            if [ "$z" = "rejected" ]; then
+                rejected=$((rejected + 1))
+            else
+                same=$((same + 1))
+            fi
         else
             differ=$((differ + 1))
             if [ "$z" = "rejected" ]; then
@@ -70,5 +78,8 @@ for dir in "$REF"/tests/*/; do
 done
 
 echo "-----"
-echo "$same/$total sources assemble identically through both assemblers"
+echo "$total sources compared"
+echo "  $same produced identical bytes"
+echo "  $rejected rejected by both"
+echo "  $differ disagreed"
 exit $([ "$differ" -eq 0 ] && echo 0 || echo 1)

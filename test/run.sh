@@ -35,4 +35,57 @@ for t in test/test_*.c; do
     "$OUT/$name" || status=$?
 done
 
+# The CLI, which the unit tests cannot reach: main.c is left out of SRCS
+# because the library is what is under test. What it reports is worth pinning
+# anyway, since the timing line exists to be compared against ez80asm's and a
+# format that drifts stops being comparable.
+echo "=== test_cli ==="
+cli_check() {
+    if [ "$2" = "$3" ]; then
+        echo "PASS  $1"
+    else
+        echo "FAIL  $1: got '$2', want '$3'"
+        status=1
+    fi
+}
+
+cc "${CFLAGS[@]}" -o "$OUT/zap" src/main.c "${SRCS[@]}"
+printf '  .assume adl=1\n  .org $40000\n  nop\n  ret\n' > "$OUT/ok.s"
+printf '  ld a,\n' > "$OUT/bad.s"
+
+out=$("$OUT/zap" "$OUT/ok.s" "$OUT/ok.bin" 2>&1 | tr -d '\r')
+cli_check "assembling line" \
+    "$(printf '%s' "$out" | grep -c '^Assembling ')" 1
+cli_check "wrote line" \
+    "$(printf '%s' "$out" | grep -c '^Wrote .*, 2 bytes')" 1
+
+# The reference prints "Done in 0.00 seconds"; matching it exactly is the
+# point, so this pins the shape rather than the value.
+cli_check "timing line matches the reference's format" \
+    "$(printf '%s' "$out" | grep -cE '^Done in [0-9]+\.[0-9][0-9] seconds$')" 1
+
+# A well-formed line is not enough: dividing by CLOCKS_PER_SEC instead of
+# CLOCKS_PER_SEC/100 still prints "0.00 seconds", just always. So assemble
+# something that demonstrably takes longer than a centisecond and check the
+# figure is not zero.
+{
+    echo '  .assume adl=1'
+    echo '  .org $40000'
+    i=0
+    while [ $i -lt 20000 ]; do
+        echo '  nop'
+        i=$((i + 1))
+    done
+} > "$OUT/slow.s"
+slow=$("$OUT/zap" "$OUT/slow.s" "$OUT/slow.bin" 2>&1 | tr -d '\r')
+cli_check "a slow assembly reports a non-zero time" \
+    "$(printf '%s' "$slow" | grep -c '^Done in 0\.00 seconds$')" 0
+
+# And, like the reference, no timing is reported for an assembly that failed.
+bad=$("$OUT/zap" "$OUT/bad.s" "$OUT/bad.bin" 2>&1 | tr -d '\r' || true)
+cli_check "no timing on failure" \
+    "$(printf '%s' "$bad" | grep -c '^Done in ')" 0
+cli_check "failure is reported" \
+    "$(printf '%s' "$bad" | grep -c 'line 1:')" 1
+
 exit $status

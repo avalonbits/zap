@@ -23,8 +23,22 @@
 #include <agon/mos.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "zap.h"
+
+/* Hundredths of a second between two clock readings.
+ *
+ * CLOCKS_PER_SEC is 100 on the Agon and 1000000 on a host, and both divide by
+ * 100 exactly, so this needs no floating point. That matters on the eZ80,
+ * where a single %f would pull the whole float formatter into a binary that
+ * has no other use for it.
+ *
+ * The reference reports the same figure the same way, so the two can be
+ * compared directly on the same source. */
+static unsigned elapsed_cs(clock_t begin, clock_t end) {
+    return (unsigned) ((end - begin) / (CLOCKS_PER_SEC / 100));
+}
 
 /* Derives an output name from the input by replacing its extension. */
 static void out_name(const char* in, char* out, int max) {
@@ -48,6 +62,11 @@ int main(int argc, char** argv) {
     }
 
     printf("Assembling %s\r\n", argv[1]);
+
+    /* Timed from here to the output being closed, which is the same span the
+     * reference reports: it writes its output as it assembles, so its figure
+     * covers the write too. */
+    const clock_t begin = clock();
 
     zap_result r;
     if (!zap_assemble_file(argv[1], &r)) {
@@ -98,7 +117,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    const unsigned cs = elapsed_cs(begin, clock());
+
     printf("Wrote %s, %d bytes\r\n", name, r.size);
+    printf("Done in %u.%02u seconds\r\n", cs / 100, cs % 100);
     zap_free(&r);
 
     return 0;

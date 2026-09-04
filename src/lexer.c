@@ -97,6 +97,10 @@ static void init_ht() {
     }
 }
 
+void lex_prime(void) {
+    init_ht();
+}
+
 lexer* lex_init(lexer* lex, const char* fname) {
     if (br_open(&lex->rd_, fname, 4) == NULL) {
         return NULL;

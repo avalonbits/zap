@@ -82,10 +82,21 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    /* A short write means the card is full or the device failed. Reporting
+     * success would leave a truncated binary looking like a good one. */
+    uint24_t wrote = 0;
     if (r.size > 0) {
-        mos_fwrite(fh, (char*) r.bytes, (uint24_t) r.size);
+        wrote = mos_fwrite(fh, (char*) r.bytes, (uint24_t) r.size);
     }
     mos_fclose(fh);
+
+    if (wrote != (uint24_t) r.size) {
+        printf("Short write to %s: %u of %d bytes\r\n", name,
+               (unsigned) wrote, r.size);
+        zap_free(&r);
+
+        return 1;
+    }
 
     printf("Wrote %s, %d bytes\r\n", name, r.size);
     zap_free(&r);

@@ -153,6 +153,32 @@ int main(void) {
     dir_is("endrelocate needs relocate", "  endrelocate\n", "ERR");
     dir_is("relocate address range", "  relocate -1\n  endrelocate\n", "ERR");
 
+    /* A constant defined in an included file has to be visible to the same
+     * forward uses as one defined here. The prescan skipped includes, so
+     * "rst target" worked when target's equ was in this file and failed when
+     * it was one line further into an include -- and ez80asm assembles both. */
+    {
+        char inc[] = "/tmp/zap_inc_XXXXXX";
+        int fd = mkstemp(inc);
+        if (fd >= 0) {
+            const char* body = "target: equ 8\n";
+            ssize_t w = write(fd, body, strlen(body));
+            close(fd);
+
+            char src[512];
+            snprintf(src, sizeof(src), "  rst target\n  .include \"%s\"\n", inc);
+            const char* got = (w > 0) ? emit(src) : "<write failed>";
+            if (strcmp(got, "CF") == 0) {
+                fprintf(stderr, "PASS  %-38s %s\n", "constant from an include", got);
+            } else {
+                fprintf(stderr, "FAIL  %-38s got %s, want CF\n",
+                        "constant from an include", got);
+                failures++;
+            }
+            unlink(inc);
+        }
+    }
+
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);
     }

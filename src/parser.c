@@ -983,6 +983,7 @@ static void pr_prescan(parser* p) {
     const int saved_pos = p->pos_;
     const bool saved_comment = p->comment_;
     const bool saved_ws = p->skip_ws_;
+    const int saved_depth = p->inc_depth_;
 
     if (lex_init(&p->lex_, p->fname_) == NULL) {
         p->lex_ = saved_lex;
@@ -991,9 +992,28 @@ static void pr_prescan(parser* p) {
     }
     p->scope_ = 0;
     p->pos_ = 0;
+    p->inc_depth_ = 0;
 
     token tk = next(p);
     while (tk.tk_ != NONE) {
+        /* Follow includes. A constant defined in an included file has to be
+         * visible to the same forward uses as one defined here -- without
+         * this, "rst target" worked when target's equ was in this file and
+         * failed when it was one line further into an include. */
+        if (tk.tk_ == DOT) {
+            tk = next(p);
+        }
+        if (tk.tk_ == DIRECTIVE && tk.tt_ == D_INCLUDE) {
+            if (parse_include(p) != NULL) {
+                /* Unreadable include: the real pass reports it properly. */
+                while (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
+                    next(p);
+                }
+            }
+            tk = next(p);
+            continue;
+        }
+
         if (tk.tk_ != NAME) {
             while (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
                 next(p);
@@ -1038,10 +1058,17 @@ static void pr_prescan(parser* p) {
         tk = next(p);
     }
 
+    /* Close anything an include left open, then put the real source back. */
+    while (p->inc_depth_ > 0) {
+        br_destroy(&p->lex_.rd_);
+        p->lex_ = p->inc_[--p->inc_depth_];
+    }
     br_destroy(&p->lex_.rd_);
+
     p->lex_ = saved_lex;
     p->scope_ = saved_scope;
     p->pos_ = saved_pos;
+    p->inc_depth_ = saved_depth;
 
     /* The comment flag has to come back too. A source whose last line ends
      * inside a comment with no trailing newline left it set, and the real

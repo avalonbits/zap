@@ -7,7 +7,13 @@
 #include "value.h"
 
 typedef struct _hash_node {
-    char key_[MAX_NAME + 1];
+    /* The key and its length. The length is stored rather than the
+     * terminator it replaces, so the node is the same size: every probe used
+     * to call strlen on the stored key just to compare lengths, which on a
+     * real program cost more than the comparison it guarded. A zero length
+     * marks a free slot. */
+    char key_[MAX_NAME];
+    uint8_t ksz_;
     int value_;
     struct _hash_node* next_;
 } hash_node;
@@ -35,7 +41,33 @@ uint16_t pearson_hash(const char* key, uint8_t sz, bool icase);
 
 /* The same, with the second pass made optional: a table of 256 buckets or
  * fewer cannot use more than eight bits, so it should not pay for them. */
-uint16_t pearson_hash_n(const char* key, uint8_t sz, bool icase, bool wide);
+extern const uint8_t pearson_random[256];
+char ht_upper(const char ch);
+
+/* Inline because a lookup is three calls -- hash, probe, compare -- around
+ * about three table lookups of actual work: the average key in a real program
+ * is 3.3 characters, and at that size the call costs more than the hash. */
+static inline uint16_t pearson_hash_n(const char* key, uint8_t sz, bool icase,
+                                      bool wide) {
+    uint8_t h1 = 0;
+
+    if (!wide) {
+        for (uint8_t i = 0; i < sz; i++) {
+            h1 = pearson_random[h1 ^ (uint8_t) (icase ? ht_upper(key[i]) : key[i])];
+        }
+
+        return h1;
+    }
+
+    uint8_t h2 = 0x5A;
+    for (uint8_t i = 0; i < sz; i++) {
+        const uint8_t ch = (uint8_t) (icase ? ht_upper(key[i]) : key[i]);
+        h1 = pearson_random[h1 ^ ch];
+        h2 = pearson_random[h2 ^ ch];
+    }
+
+    return (uint16_t) (((uint16_t) h1 << 8) | h2);
+}
 
 hash_table* ht_init(hash_table* ht, int entries, bool icase);
 void ht_clear(hash_table* ht);

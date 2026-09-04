@@ -7,7 +7,13 @@
 #include "value.h"
 
 typedef struct _hash_node {
-    char key_[MAX_NAME + 1];
+    /* The key and its length. The length is stored rather than the
+     * terminator it replaces, so the node is the same size: every probe used
+     * to call strlen on the stored key just to compare lengths, which on a
+     * real program cost more than the comparison it guarded. A zero length
+     * marks a free slot. */
+    char key_[MAX_NAME];
+    uint8_t ksz_;
     int value_;
     struct _hash_node* next_;
 } hash_node;

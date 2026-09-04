@@ -86,7 +86,7 @@ hash_table* ht_init(hash_table* ht, int entries, bool icase) {
 
     for (uint24_t i = 0; i < ht->sz_; i++) {
         ht->node_[i].next_ = NULL;
-        ht->node_[i].key_[0] = 0;
+        ht->node_[i].ksz_ = 0;
         ht->node_[i].value_ = 0;
     }
 
@@ -116,16 +116,18 @@ void ht_destroy(hash_table* ht) {
 
 void ht_clear(hash_table* ht) {
     for (uint24_t i = 0; i < ht->sz_; i++) {
-        ht->node_[i].key_[0] = 0;
+        ht->node_[i].ksz_ = 0;
         for (hash_node* n = ht->node_[i].next_; n != NULL; n = n->next_) {
-            n->key_[0] = 0;
+            n->ksz_ = 0;
         }
     }
 }
 
+/* Compares two keys of the same length. The caller has already matched the
+ * lengths, so this does not need to look for a terminator -- which is just as
+ * well, because the stored key no longer has one. */
 static bool key_equal(const char* s1, const char* s2, uint8_t ksz, bool icase) {
-    uint8_t i = 0;
-    for (; i < ksz && s1[i] != 0 && s2[i] != 0; i++) {
+    for (uint8_t i = 0; i < ksz; i++) {
         const char ch1 = icase ? upper(s1[i]) : s1[i];
         const char ch2 = icase ? upper(s2[i]) : s2[i];
         if (ch1 != ch2) {
@@ -133,7 +135,7 @@ static bool key_equal(const char* s1, const char* s2, uint8_t ksz, bool icase) {
         }
     }
 
-    return i == ksz;
+    return true;
 }
 
 /* Doubles the bucket array and redistributes what is in it. Overflow nodes are
@@ -153,7 +155,7 @@ static bool ht_grow_impl(hash_table* ht) {
     }
     for (uint24_t i = 0; i < old_sz * 2; i++) {
         fresh[i].next_ = NULL;
-        fresh[i].key_[0] = 0;
+        fresh[i].ksz_ = 0;
         fresh[i].value_ = 0;
     }
 
@@ -165,8 +167,8 @@ static bool ht_grow_impl(hash_table* ht) {
     for (uint24_t i = 0; i < old_sz; i++) {
         for (hash_node* n = &old[i]; n != NULL; ) {
             hash_node* next = n->next_;
-            if (n->key_[0] != 0) {
-                ht_nset(ht, n->key_, (uint8_t) strlen(n->key_), n->value_);
+            if (n->ksz_ != 0) {
+                ht_nset(ht, n->key_, n->ksz_, n->value_);
             }
             if (n != &old[i]) {
                 free(n);
@@ -195,17 +197,16 @@ bool ht_nset(hash_table* ht, const char* key, uint8_t ksz, int value) {
     // Iteratore through all nodes in the chain until we find the key to update
     // or create a new node.
     do {
-        if (node->key_[0] == 0) {
-            strncpy(node->key_, key, ksz);
-            node->key_[ksz] = 0;
+        if (node->ksz_ == 0) {
+            memcpy(node->key_, key, ksz);
+            node->ksz_ = ksz;
             node->value_ = value;
             ht->count_++;
 
             return true;
         }
 
-        const uint8_t sz = strlen(node->key_);
-        if (sz == ksz && key_equal(node->key_, key, ksz, ht->icase_)) {
+        if (node->ksz_ == ksz && key_equal(node->key_, key, ksz, ht->icase_)) {
             node->value_ = value;
             return true;
         }
@@ -221,8 +222,8 @@ bool ht_nset(hash_table* ht, const char* key, uint8_t ksz, int value) {
         // out of memory.
         return false;
     }
-    strncpy(n->key_, key, ksz);
-    n->key_[ksz] = 0;
+    memcpy(n->key_, key, ksz);
+    n->ksz_ = ksz;
     n->value_ = value;
     n->next_ = NULL;
     node->next_ = n;
@@ -242,7 +243,10 @@ bool ht_set(hash_table* ht, const char* key, int value) {
 int ht_nget(hash_table* ht, const char* key, uint8_t ksz, bool* ok) {
     if (ok) *ok = false;
 
-    if (ksz > MAX_NAME) {
+    /* A zero length marks a free slot, so a zero-length key would match one
+     * and be reported as found. Nothing produces one -- a token always has at
+     * least one character -- but the table should not depend on that. */
+    if (ksz == 0 || ksz > MAX_NAME) {
         return 0;
     }
 
@@ -251,12 +255,10 @@ int ht_nget(hash_table* ht, const char* key, uint8_t ksz, bool* ok) {
     hash_node* n = &ht->node_[pos];
 
     for (; n != NULL; n = n->next_) {
-        if (n->key_[0] == 0) {
+        if (n->ksz_ != ksz) {
             continue;
         }
-
-        const uint8_t sz = strlen(n->key_);
-        if (sz != ksz || !key_equal(n->key_, key, ksz, ht->icase_)) {
+        if (!key_equal(n->key_, key, ksz, ht->icase_)) {
             continue;
         }
 

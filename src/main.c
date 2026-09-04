@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "timing.h"
 #include "zap.h"
 
 /* Derives an output name from the input by replacing its extension. */
@@ -48,6 +49,11 @@ int main(int argc, char** argv) {
     }
 
     printf("Assembling %s\r\n", argv[1]);
+
+    /* Timed from here to the output being closed, which is the same span the
+     * reference reports: it writes its output as it assembles, so its figure
+     * covers the write too. */
+    const clock_t begin = clock();
 
     zap_result r;
     if (!zap_assemble_file(argv[1], &r)) {
@@ -98,7 +104,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    const unsigned cs = elapsed_cs(begin, clock());
+
     printf("Wrote %s, %d bytes\r\n", name, r.size);
+    printf("Done in %u.%02u seconds\r\n", cs / 100, cs % 100);
     zap_free(&r);
 
     return 0;

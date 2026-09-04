@@ -35,4 +35,46 @@ for t in test/test_*.c; do
     "$OUT/$name" || status=$?
 done
 
+# The CLI, which the unit tests cannot reach: main.c is left out of SRCS
+# because the library is what is under test. What it reports is worth pinning
+# anyway, since the timing line exists to be compared against ez80asm's and a
+# format that drifts stops being comparable.
+echo "=== test_cli ==="
+cli_check() {
+    if [ "$2" = "$3" ]; then
+        echo "PASS  $1"
+    else
+        echo "FAIL  $1: got '$2', want '$3'"
+        status=1
+    fi
+}
+
+cc "${CFLAGS[@]}" -o "$OUT/zap" src/main.c "${SRCS[@]}"
+printf '  .assume adl=1\n  .org $40000\n  nop\n  ret\n' > "$OUT/ok.s"
+printf '  ld a,\n' > "$OUT/bad.s"
+
+out=$("$OUT/zap" "$OUT/ok.s" "$OUT/ok.bin" 2>&1 | tr -d '\r')
+cli_check "assembling line" \
+    "$(printf '%s' "$out" | grep -c '^Assembling ')" 1
+cli_check "wrote line" \
+    "$(printf '%s' "$out" | grep -c '^Wrote .*, 2 bytes')" 1
+
+# The reference prints "Done in 0.00 seconds"; matching it exactly is the
+# point, so this pins the shape rather than the value.
+cli_check "timing line matches the reference's format" \
+    "$(printf '%s' "$out" | grep -cE '^Done in [0-9]+\.[0-9][0-9] seconds$')" 1
+
+# The conversion itself is tested in test_timing.c, against known clock values.
+# It cannot be tested here by assembling something and asserting it took more
+# than a hundredth of a second: the workload that takes two centiseconds under
+# the sanitisers takes none at -O2, so on a faster host correct behaviour would
+# start failing.
+
+# And, like the reference, no timing is reported for an assembly that failed.
+bad=$("$OUT/zap" "$OUT/bad.s" "$OUT/bad.bin" 2>&1 | tr -d '\r' || true)
+cli_check "no timing on failure" \
+    "$(printf '%s' "$bad" | grep -c '^Done in ')" 0
+cli_check "failure is reported" \
+    "$(printf '%s' "$bad" | grep -c 'line 1:')" 1
+
 exit $status

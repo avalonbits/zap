@@ -48,6 +48,12 @@ typedef struct _parser {
     const char* fname_;
 
     bool adl_;
+
+    /* Which instruction rows are usable, set by the .cpu directive. zap only
+     * targets the eZ80, but the setting still has to be honoured: it is what
+     * enables the undocumented Z80 opcodes the reference gates behind it, and
+     * it carries an ADL default with it. */
+    uint8_t cpu_;
     bool skip_ws_;
     bool comment_;
 
@@ -62,6 +68,8 @@ token next(parser* p);
 const char* pr_msg(parser* p, const char* msg);
 bool pr_wbyte(parser* p, uint8_t b);
 value tk2i(token tk);
+const char* pr_stack_fixup(parser* p, const char* label, int sz,
+                           fixup_kind kind, int anon);
 const char* pr_stack_label(parser* p, char* label, int sz, int anon);
 const char* pr_stack_relative_label(parser* p, char* label, int sz, int anon);
 const char* pr_resolve(parser* p, const char* name, int sz, value* out,

@@ -7,7 +7,9 @@
 
 #include "conv.h"
 #include "expr.h"
-#include "instruction_parser.h"
+#include "value.h"
+#include "encode.h"
+#include "isa.h"
 #include "lexer.h"
 
 #define PUTS(msg) mos_puts(msg, 0, 0)
@@ -95,6 +97,7 @@ parser* pr_init(parser* p, const char* fname) {
     p->anon_count_ = 0;
     p->fname_ = fname;
     p->adl_ = true;
+    p->cpu_ = CPU_EZ80;
     p->skip_ws_ = true;
     p->comment_ = false;
     return p;
@@ -259,8 +262,8 @@ bool pr_wbyte(parser* p, uint8_t b) {
 }
 
 /* Leaves a hole of the right width and remembers how to fill it. */
-static const char* stack_fixup(parser* p, char* label, int sz, fixup_kind kind,
-                               int anon) {
+const char* pr_stack_fixup(parser* p, const char* label, int sz,
+                           fixup_kind kind, int anon) {
     const int width = (kind == FIX_REL8) ? 1 : (kind == FIX_ABS16 ? 2 : 3);
     const int bpos = p->pos_;
 
@@ -281,11 +284,11 @@ static const char* stack_fixup(parser* p, char* label, int sz, fixup_kind kind,
 }
 
 const char* pr_stack_label(parser* p, char* label, int sz, int anon) {
-    return stack_fixup(p, label, sz, p->adl_ ? FIX_ABS24 : FIX_ABS16, anon);
+    return pr_stack_fixup(p, label, sz, p->adl_ ? FIX_ABS24 : FIX_ABS16, anon);
 }
 
 const char* pr_stack_relative_label(parser* p, char* label, int sz, int anon) {
-    return stack_fixup(p, label, sz, FIX_REL8, anon);
+    return pr_stack_fixup(p, label, sz, FIX_REL8, anon);
 }
 
 static const char* parse_org(parser* p) {
@@ -325,53 +328,49 @@ static const char* parse_align(parser* p) {
 static const char* parse_quoted(parser* p) {
     p->skip_ws_ = false;
     next(p);
-    while (p->tk_.tk_ != D_QUOTE && p->tk_.tk_ != NEW_LINE) {
+    while (p->tk_.tk_ != D_QUOTE && p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
         if (p->tk_.tk_ != B_SLASH) {
             for (int i = 0; i < p->tk_.sz_; i++) {
-                pr_wbyte(p, p->tk_.txt_[i]);
+                pr_wbyte(p, (uint8_t) p->tk_.txt_[i]);
             }
             next(p);
             continue;
         }
 
         next(p);
-        if (p->tk_.tk_ != NAME) {
+        if (p->tk_.sz_ < 1) {
+            p->skip_ws_ = true;
+
             return pr_msg(p, "missing escape");
         }
 
-        char ch = p->tk_.txt_[0];
-        switch (ch) {
-            case 't':
-                ch = 0x09;
-                break;
-            case 'n':
-                ch = 0x0A;
-                break;
-            case 'r':
-                ch = 0x0D;
-                break;
-            case '"':
-                ch = 0x22;
-                break;
-            case '\'':
-                ch = 0x27;
-                break;
-            case '\\':
-                ch = 0x5C;
-                break;
-            default:
-                return pr_msg(p, "wrong escape");
+        /* Whatever token follows the backslash, only its first character
+         * matters. It used to have to be a NAME, which broke the moment the R
+         * register was added to the reserved words and "\r" started coming
+         * back as a register -- every .asciz with a carriage return in it.
+         * The escape set is shared with character literals. */
+        char ch;
+        if (!esc_char(p->tk_.txt_[0], &ch)) {
+            p->skip_ws_ = true;
+
+            return pr_msg(p, "wrong escape");
         }
-        pr_wbyte(p, ch);
+        pr_wbyte(p, (uint8_t) ch);
+
+        /* The token may have held more than the escape letter, so the rest of
+         * it is still string content. */
+        for (int i = 1; i < p->tk_.sz_; i++) {
+            pr_wbyte(p, (uint8_t) p->tk_.txt_[i]);
+        }
         next(p);
     }
     p->skip_ws_ = true;
 
-    if (p->tk_.tk_ == NEW_LINE) {
+    if (p->tk_.tk_ != D_QUOTE) {
         return pr_msg(p, "expected quote");
     }
-    return NULL;
 
+    return NULL;
 }
 
 static const char* parse_ascii(parser* p) {
@@ -431,6 +430,41 @@ static const char* parse_db(parser* p) {
 
 /* "name: equ <expr>" redefines the label on the same line to the expression's
  * value instead of the address it was given when it was read. */
+/* .cpu selects the instruction set, and brings an ADL default with it. */
+static const char* parse_cpu(parser* p) {
+    next(p);
+    if (p->tk_.tk_ != NAME && p->tk_.tk_ != NUMBER) {
+        return pr_msg(p, "expected a cpu name");
+    }
+
+    const char* n = p->tk_.txt_;
+    const int sz = p->tk_.sz_;
+    char up[8];
+    if (sz > 6) {
+        return pr_msg(p, "unsupported cpu");
+    }
+    for (int i = 0; i < sz; i++) {
+        up[i] = (n[i] >= 'a' && n[i] <= 'z') ? (char) (n[i] - 32) : n[i];
+    }
+    up[sz] = 0;
+
+    if (sz == 3 && up[0] == 'Z' && up[1] == '8' && up[2] == '0') {
+        p->cpu_ = CPU_Z80;
+        p->adl_ = false;
+    } else if (sz == 4 && up[0] == 'Z' && up[1] == '1' && up[2] == '8' && up[3] == '0') {
+        p->cpu_ = CPU_Z180;
+        p->adl_ = false;
+    } else if (sz == 4 && up[0] == 'E' && up[1] == 'Z' && up[2] == '8' && up[3] == '0') {
+        p->cpu_ = CPU_EZ80;
+        p->adl_ = true;
+    } else {
+        return pr_msg(p, "unsupported cpu");
+    }
+    next(p);
+
+    return NULL;
+}
+
 static const char* parse_equ(parser* p) {
     if (p->last_label_sz_ == 0) {
         return pr_msg(p, "equ needs a label");
@@ -454,6 +488,8 @@ static const char* parse_directive(parser* p) {
     switch (p->tk_.tt_) {
         case D_ASSUME:
             return parse_adl(p);
+        case D_CPU:
+            return parse_cpu(p);
         case D_EQU:
             return parse_equ(p);
         case D_ORG:
@@ -483,30 +519,6 @@ static const char* parse_start_dot(parser* p) {
         return pr_msg(p, "expected a directive after the dot");
     }
     return parse_directive(p);
-}
-
-static const char* parse_instruction(parser* p) {
-    switch (p->tk_.tt_) {
-        case ISA_CALL:
-            return parse_call(p);
-        case ISA_INC:
-            return parse_inc(p);
-        case ISA_JP:
-            return parse_jp(p);
-        case ISA_JR:
-            return parse_jr(p);
-        case ISA_LD:
-            return parse_ld(p);
-        case ISA_OR:
-            return parse_or(p);
-        case ISA_RET:
-            return parse_ret(p);
-        case ISA_RST:
-            return parse_rst(p);
-        default:
-            return pr_msg(p, "invalid instruction");
-    }
-    return NULL;
 }
 
 static const char* parse_label(parser* p) {
@@ -725,7 +737,7 @@ const char* pr_parse(parser* p) {
                 err = parse_directive(p);
                 break;
             case INSTRUCTION:
-                err = parse_instruction(p);
+                err = enc_instruction(p);
                 break;
             case NAME:
                 err = parse_label(p);

@@ -84,6 +84,7 @@ typedef enum _TK_TYPE {
     D_MACRO,
     D_ENDMACRO,
     D_ORG,
+    D_CPU,
 
     // We group the single letter registers like this in order to make it
     // easier to generate the instructions involving them.
@@ -103,6 +104,16 @@ typedef enum _TK_TYPE {
     REG_IX,
     REG_IY,
     REG_SP,
+
+    // The halves of IX and IY, and the three special registers. Undocumented
+    // on the Z80, documented on the eZ80, and the reference accepts them.
+    REG_IXH,
+    REG_IXL,
+    REG_IYH,
+    REG_IYL,
+    REG_I,
+    REG_MB,
+    REG_RR,   // the R register; REG_R would read as a general-purpose one
 
     F_NZ,
     F_Z,

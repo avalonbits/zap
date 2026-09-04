@@ -1,6 +1,8 @@
 #ifndef _LEX_TYPES_H_
 #define _LEX_TYPES_H_
 
+#include "value.h"
+
 typedef enum _TOKEN {
     NONE = 0,
     UNKNOWN,
@@ -21,9 +23,33 @@ typedef enum _TOKEN {
     DOLLAR,
     B_SLASH,
     F_SLASH,
+
+    // Expression operators. F_SLASH doubles as divide, and MINUS and PLUS are
+    // both binary and unary.
+    STAR,
+    AMPERSAND,
+    PIPE,
+    CARET,
+    TILDE,
+    SHIFT_L,
+    SHIFT_R,
+
+    // Brackets group an expression. Parentheses cannot: they already mean
+    // indirect addressing.
+    L_BRACKET,
+    R_BRACKET,
+
     NAME,
+
+    // Every numeric literal -- decimal, hex, binary, character -- arrives as a
+    // NUMBER carrying its converted value in val_. HEX_NUMBER is gone: nothing
+    // downstream cared which base it was written in, and keeping the two apart
+    // meant every use site re-parsed the text.
     NUMBER,
-    HEX_NUMBER,
+
+    // A character literal that is empty, unterminated, holds more than one
+    // character, or uses an escape that does not exist.
+    BAD_LITERAL,
     DIRECTIVE,
     INSTRUCTION,
     REGISTER,
@@ -196,6 +222,10 @@ typedef struct _token {
     int sz_;
     TOKEN tk_;
     TK_TYPE tt_;
+
+    // Set for NUMBER. Carried on the token so that no site has to convert the
+    // text a second time.
+    value val_;
 } token;
 
 int pack_tktt(TOKEN tk, TK_TYPE tt);

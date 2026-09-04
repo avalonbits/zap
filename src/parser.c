@@ -78,9 +78,11 @@ token next(parser* p) {
             case SEMI_COLON:
                 p->comment_ = true;
                 continue;
-            case DIRECTIVE:
-                return tk;
             default:
+                /* The comment check used to sit below a DIRECTIVE case, so a
+                 * directive name inside a comment was handed to the parser as
+                 * a real directive. "; starting at byte 64." was enough to
+                 * break a file, because "byte" is a directive. */
                 if (p->comment_) {
                     continue;
                 }
@@ -117,43 +119,16 @@ static const char* parse_adl(parser* p) {
     return NULL;
 }
 
-static int natoi(char* str, uint8_t sz) {
-    int v = 0;
-    int mul = 1;
-    for (char i = 1; i <= sz; i++) {
-        v += (str[sz-i] - '0') * mul;
-        mul *= 10;
-    }
-    return v;
-}
-
-static int natoh(char* str, uint8_t sz) {
-    int v = 0;
-    int mul = 1;
-    for (char i = 1; i <= sz; i++) {
-        const char ch = str[sz-i];
-        if (ch >= '0' && ch <= '9') {
-            v += (ch - '0') * mul;
-        } else if (ch >= 'A' && ch <= 'F') {
-            v += (ch - 'A' + 10) * mul;
-        } else if (ch >= 'a' && ch <= 'f') {
-            v += (ch - 'a' + 10) * mul;
-        } else {
-            break;
-        }
-        mul *= 16;
-    }
-    return v;
-}
-
-int tk2i(token tk) {
-    if (tk.tk_ == NUMBER) {
-        return natoi(tk.txt_, tk.sz_);
-    } else if (tk.tk_ == HEX_NUMBER) {
-        return natoh(tk.txt_, tk.sz_);
+/* The lexer converts a literal as it reads it, so this is now only a guard
+ * against being handed a token that is not a number at all. It used to
+ * re-parse the token text, with a hand-rolled decimal routine that read the
+ * leading '-' as a digit and returned -25 for "-5". */
+value tk2i(token tk) {
+    if (tk.tk_ != NUMBER) {
+        return 0;
     }
 
-    return -1;
+    return tk.val_;
 }
 
 bool pr_wbyte(parser* p, uint8_t b) {
@@ -176,7 +151,7 @@ void pr_stack_relative_label(parser* p, char* label, int sz) {
 
 static const char* parse_org(parser* p) {
     token tk = next(p);
-    if (tk.tk_ != NUMBER && tk.tk_ != HEX_NUMBER) {
+    if (tk.tk_ != NUMBER) {
         return pr_msg(p, "expected number.");
     }
     p->org_ = tk2i(tk);
@@ -185,7 +160,7 @@ static const char* parse_org(parser* p) {
 
 static const char* parse_align(parser* p) {
     token tk = next(p);
-    if (tk.tk_ != NUMBER && tk.tk_ != HEX_NUMBER) {
+    if (tk.tk_ != NUMBER) {
         return pr_msg(p, "expected number.");
     }
 
@@ -268,9 +243,8 @@ static const char* parse_db(parser* p) {
     const char* err = NULL;
     for (token tk = next(p); tk.tk_ != NONE; tk = next(p)) {
         switch (tk.tk_) {
-            case NUMBER:
-            case HEX_NUMBER: {
-                int v = tk2i(tk);
+            case NUMBER: {
+                value v = tk2i(tk);
                 if (v < -128 || v > 255)  {
                     return pr_msg(p, "expected a byte value.");
                 }

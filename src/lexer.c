@@ -5,6 +5,7 @@
 #include <stdlib.h>
 
 #include "hash_table.h"
+#include "value.h"
 
 static hash_table reserved;
 static hash_table instructions;
@@ -190,7 +191,10 @@ lexer* lex_init(lexer* lex, const char* fname) {
 
 void lex_destroy(lexer* lex) {
     br_destroy(&lex->rd_);
-    free(lex);
+    /* The lexer itself is not freed here. Every caller embeds it -- pr_destroy
+     * passes &p->lex_, where p is usually a stack variable -- so freeing the
+     * argument was handing the allocator an interior pointer, and every
+     * successful assembly ended in heap corruption. */
 }
 
 static bool is_space(char ch) {
@@ -213,137 +217,210 @@ static bool is_ascdig(char ch) {
 
 #define OK_CHAR(ch) (ch != EOF && ch != ESUSP)
 
+/* Appends to the token text, refusing to run off the end. The buffer used to
+ * be written without a bound, so a name longer than the line buffer wrote past
+ * the lexer struct. An over-long token is truncated here and will fail to
+ * resolve as a name or a literal, which is the right outcome for input that
+ * cannot be legal anyway. */
+static void push_ch(lexer* lex, token* tk, char ch) {
+    if (tk->sz_ < (int) sizeof(lex->line_) - 1) {
+        tk->txt_[tk->sz_++] = ch;
+    }
+}
+
+/* Reads the body of a character literal, the opening quote already consumed.
+ *
+ * The awkward case is a backslash followed by a quote. '\'' is an escaped
+ * quote and '\' is a literal backslash, and the two are told apart only by
+ * whether another quote follows -- which is how the reference assembler reads
+ * them, and its corpus pins both. */
+static void lex_char_literal(lexer* lex, token* tk) {
+    tk->tk_ = BAD_LITERAL;
+
+    char ch = br_peek(&lex->rd_);
+    if (!OK_CHAR(ch) || ch == '\n') {
+        return;  /* nothing after the opening quote */
+    }
+    push_ch(lex, tk, ch);
+    br_next(&lex->rd_);
+
+    if (ch == '\'') {
+        return;  /* the empty literal '' -- both quotes consumed */
+    }
+
+    char val;
+    if (ch == '\\') {
+        const char esc = br_peek(&lex->rd_);
+        if (!OK_CHAR(esc) || esc == '\n') {
+            return;
+        }
+        push_ch(lex, tk, esc);
+        br_next(&lex->rd_);
+
+        if (esc == '\'' && br_peek(&lex->rd_) != '\'') {
+            /* '\' -- the quote just consumed was the closing one, so the
+             * backslash stands for itself. */
+            tk->tk_ = NUMBER;
+            tk->val_ = 0x5C;
+
+            return;
+        }
+        if (!esc_char(esc, &val)) {
+            return;
+        }
+    } else {
+        val = ch;
+    }
+
+    if (br_peek(&lex->rd_) != '\'') {
+        return;  /* more than one character, or never closed */
+    }
+    push_ch(lex, tk, '\'');
+    br_next(&lex->rd_);
+
+    tk->tk_ = NUMBER;
+    tk->val_ = (value) (unsigned char) val;
+}
+
+/* Reads a $, # or % prefixed literal, the prefix already consumed and stored.
+ * A bare $ is the program counter rather than a literal, so it stays a
+ * DOLLAR for the expression evaluator to resolve. */
+static void lex_prefixed_number(lexer* lex, token* tk, TOKEN bare) {
+    char ch = br_peek(&lex->rd_);
+    while (OK_CHAR(ch) && is_hex_digit(ch)) {
+        push_ch(lex, tk, ch);
+        br_next(&lex->rd_);
+        ch = br_peek(&lex->rd_);
+    }
+
+    if (tk->sz_ > 1 && num_parse(tk->txt_, tk->sz_, &tk->val_)) {
+        tk->tk_ = NUMBER;
+
+        return;
+    }
+    tk->tk_ = bare;
+}
+
 token lex_next(lexer* lex) {
-    token tk = {NULL, 0, NONE, TY_NONE};
+    token tk = {NULL, 0, NONE, TY_NONE, 0};
     char ch = br_char(&lex->rd_);
     if (!OK_CHAR(ch)) {
         return tk;
     }
 
     tk.txt_ = lex->line_;
-    tk.txt_[0] = ch;
-    tk.sz_ = 1;
     tk.tk_ = UNKNOWN;
+    push_ch(lex, &tk, ch);
 
-    bool done = true;
     switch (ch) {
-        case '=':
-            tk.tk_ = EQUALS;
-            break;
-        case '+':
-            tk.tk_ = PLUS;
-            break;
-        case '-':
-            tk.tk_ = MINUS;
-            done = false;
-            break;
+        case '=':  tk.tk_ = EQUALS;      return tk;
+        case '+':  tk.tk_ = PLUS;        return tk;
+        case '*':  tk.tk_ = STAR;        return tk;
+        case '/':  tk.tk_ = F_SLASH;     return tk;
+        case '&':  tk.tk_ = AMPERSAND;   return tk;
+        case '|':  tk.tk_ = PIPE;        return tk;
+        case '^':  tk.tk_ = CARET;       return tk;
+        case '~':  tk.tk_ = TILDE;       return tk;
+        case '"':  tk.tk_ = D_QUOTE;     return tk;
+        case '\\': tk.tk_ = B_SLASH;     return tk;
+        case '(':  tk.tk_ = L_PAREN;     return tk;
+        case ')':  tk.tk_ = R_PAREN;     return tk;
+        case '[':  tk.tk_ = L_BRACKET;   return tk;
+        case ']':  tk.tk_ = R_BRACKET;   return tk;
+        case ',':  tk.tk_ = COMMA;       return tk;
+        case '.':  tk.tk_ = DOT;         return tk;
+        case ':':  tk.tk_ = COLON;       return tk;
+        case ';':  tk.tk_ = SEMI_COLON;  return tk;
+
         case '\n':
             lex->lcount_++;
             tk.tk_ = NEW_LINE;
-            break;
+
+            return tk;
+
+        // A minus is always an operator now. It used to swallow the digits
+        // after it, which made -5 a literal and left no way to write label-2
+        // or $-2 at all.
+        case '-':
+            tk.tk_ = MINUS;
+
+            return tk;
+
         case '\'':
-            tk.tk_ = QUOTE;
-            break;
-        case '\"':
-            tk.tk_ = D_QUOTE;
-            break;
-        case '\\':
-            tk.tk_ = B_SLASH;
-            break;
-        case '/':
-            tk.tk_ = F_SLASH;
-            break;
-        case '(':
-            tk.tk_ = L_PAREN;
-            break;
-        case ')':
-            tk.tk_ = R_PAREN;
-            break;
-        case ',':
-            tk.tk_ = COMMA;
-            break;
-        case '.':
-            tk.tk_ = DOT;
-            break;
-        case ':':
-            tk.tk_ = COLON;
-            break;
-        case ';':
-            tk.tk_ = SEMI_COLON;
-            break;
-        case '#':
-            tk.tk_= HASH;
-            break;
+            lex_char_literal(lex, &tk);
+
+            return tk;
+
         case '$':
-            tk.tk_ = DOLLAR;
-            done = false;
-            break;
+            lex_prefixed_number(lex, &tk, DOLLAR);
+
+            return tk;
+
+        case '#':
+            lex_prefixed_number(lex, &tk, HASH);
+
+            return tk;
+
+        case '%':
+            lex_prefixed_number(lex, &tk, UNKNOWN);
+
+            return tk;
+
+        case '<':
+        case '>':
+            if (br_peek(&lex->rd_) == ch) {
+                push_ch(lex, &tk, ch);
+                br_next(&lex->rd_);
+                tk.tk_ = (ch == '<') ? SHIFT_L : SHIFT_R;
+            }
+
+            return tk;
+
         default:
-            done = false;
+            break;
     }
-    if (done) {
+
+    if (is_space(ch)) {
+        tk.tk_ = WHITE_SPACE;
+        ch = br_peek(&lex->rd_);
+        while (OK_CHAR(ch) && is_space(ch)) {
+            push_ch(lex, &tk, ch);
+            br_next(&lex->rd_);
+            ch = br_peek(&lex->rd_);
+        }
+
         return tk;
     }
 
-    if (tk.tk_ == MINUS) {
-        ch = br_peek(&lex->rd_);
-        if (is_digit(ch)) {
-            tk.tk_ = NUMBER;
-            while (is_digit(ch)) {
-                tk.txt_[tk.sz_++] = ch;
-                br_next(&lex->rd_);
-                ch = br_peek(&lex->rd_);
-            }
-        }
-    } else if (tk.tk_ == DOLLAR) {
-        ch = br_peek(&lex->rd_);
-        if (is_hex_digit(ch)) {
-            tk.tk_ = HEX_NUMBER;
-            tk.sz_ = 0;
-            while (is_hex_digit(ch)) {
-                tk.txt_[tk.sz_++] = ch;
-                br_next(&lex->rd_);
-                ch = br_peek(&lex->rd_);
-            }
-        }
-    } else if (is_space(ch)) {
-        tk.tk_ = WHITE_SPACE;
-        ch = br_peek(&lex->rd_);
-        while (is_space(ch)) {
-            tk.txt_[tk.sz_++] = ch;
-            br_next(&lex->rd_);
-            ch = br_peek(&lex->rd_);
-        }
-    } else if (is_digit(ch)) {
-        tk.tk_ = NUMBER;
-        ch = br_peek(&lex->rd_);
-        while (is_digit(ch)) {
-            tk.txt_[tk.sz_++] = ch;
-            br_next(&lex->rd_);
-            ch = br_peek(&lex->rd_);
-        }
-        if (ch == 'h' || ch == 'H') {
-            tk.tk_ = HEX_NUMBER;
-            br_next(&lex->rd_);
-        }
-    } else if (is_ascdig(ch)) {
-        tk.tk_ = NAME;
-        ch = br_peek(&lex->rd_);
-        while (is_ascdig(ch)) {
-            tk.txt_[tk.sz_++] = ch;
-            br_next(&lex->rd_);
-            ch = br_peek(&lex->rd_);
-        }
-
-        int val = ht_nget(&reserved, tk.txt_, tk.sz_, NULL);
-        if (unpack_tk(val) == NONE) {
-            val = ht_nget(&instructions, tk.txt_, tk.sz_, NULL);
-        }
-
-        if (unpack_tk(val) != NONE) {
-            tk.tk_ = unpack_tk(val);
-            tk.tt_ = unpack_tt(val);
-        }
+    if (!is_ascdig(ch)) {
+        return tk;
     }
+
+    ch = br_peek(&lex->rd_);
+    while (OK_CHAR(ch) && is_ascdig(ch)) {
+        push_ch(lex, &tk, ch);
+        br_next(&lex->rd_);
+        ch = br_peek(&lex->rd_);
+    }
+
+    // A literal is claimed before a name, so Ah and 0b1h are numbers rather
+    // than identifiers. That also means an identifier can never shadow a
+    // literal, which is how the reference resolves the same ambiguity.
+    if (num_parse(tk.txt_, tk.sz_, &tk.val_)) {
+        tk.tk_ = NUMBER;
+
+        return tk;
+    }
+
+    tk.tk_ = NAME;
+    int val = ht_nget(&reserved, tk.txt_, tk.sz_, NULL);
+    if (unpack_tk(val) == NONE) {
+        val = ht_nget(&instructions, tk.txt_, tk.sz_, NULL);
+    }
+    if (unpack_tk(val) != NONE) {
+        tk.tk_ = unpack_tk(val);
+        tk.tt_ = unpack_tt(val);
+    }
+
     return tk;
 }

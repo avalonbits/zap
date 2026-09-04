@@ -23,7 +23,7 @@ CFLAGS=(-std=gnu11 -Wall -Wextra -fsigned-char -g -fsanitize=address,undefined
 
 # Everything except main.c, which owns the CLI entry point. The library is what
 # is under test; the zap binary is a consumer of it.
-SRCS=(src/lexer.c src/buf_reader.c src/hash_table.c src/lex_types.c
+SRCS=(src/lexer.c src/buf_reader.c src/hash_table.c src/lex_types.c src/value.c src/expr.c
       src/conv.c src/label_stack.c src/parser.c src/instruction_parser.c
       test/stubs/agon_stubs.c)
 

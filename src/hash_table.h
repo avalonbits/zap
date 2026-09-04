@@ -4,8 +4,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "value.h"
+
 typedef struct _hash_node {
-    char key_[26];
+    char key_[MAX_NAME + 1];
     int value_;
     struct _hash_node* next_;
 } hash_node;
@@ -19,6 +21,7 @@ uint8_t pearson_hash(const char* key, uint8_t sz);
 
 hash_table* ht_init(hash_table* ht, int entries);
 void ht_clear(hash_table* ht);
+void ht_destroy(hash_table* ht);
 
 bool ht_set(hash_table* ht, const char* key, int value);
 bool ht_nset(hash_table* ht, const char* key, uint8_t ksz, int value);

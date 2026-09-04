@@ -53,9 +53,18 @@ static const char* tk_name(TOKEN t) {
         case DOLLAR:      return "DOLLAR";
         case B_SLASH:     return "BS";
         case F_SLASH:     return "FS";
+        case STAR:        return "STAR";
+        case AMPERSAND:   return "AMP";
+        case PIPE:        return "PIPE";
+        case CARET:       return "CARET";
+        case TILDE:       return "TILDE";
+        case SHIFT_L:     return "SHL";
+        case SHIFT_R:     return "SHR";
+        case L_BRACKET:   return "LB";
+        case R_BRACKET:   return "RB";
+        case BAD_LITERAL: return "BAD";
         case NAME:        return "NAME";
         case NUMBER:      return "NUM";
-        case HEX_NUMBER:  return "HEX";
         case DIRECTIVE:   return "DIR";
         case INSTRUCTION: return "INSN";
         case REGISTER:    return "REG";
@@ -97,8 +106,13 @@ static const char* lex_all(const char* src) {
         if (n > 0 && n < (int) sizeof(out) - 1) {
             out[n++] = ' ';
         }
-        n += snprintf(&out[n], sizeof(out) - n, "%s(%.*s)",
-                      tk_name(tk.tk_), tk.sz_, tk.txt_);
+        if (tk.tk_ == NUMBER) {
+            n += snprintf(&out[n], sizeof(out) - n, "NUM(%.*s=%ld)",
+                          tk.sz_, tk.txt_, (long) tk.val_);
+        } else {
+            n += snprintf(&out[n], sizeof(out) - n, "%s(%.*s)",
+                          tk_name(tk.tk_), tk.sz_, tk.txt_);
+        }
         if (n >= (int) sizeof(out) - 1) {
             break;
         }
@@ -138,13 +152,13 @@ int main(void) {
     /* The two numeric forms that are correct today. */
     check_s("decimal literal",
             lex_all("ld a,255\n"),
-            "INSN(ld) REG(a) COMMA(,) NUM(255) NL(\n)");
+            "INSN(ld) REG(a) COMMA(,) NUM(255=255) NL(\n)");
     check_s("dollar hex literal",
             lex_all("ld a,$FF\n"),
-            "INSN(ld) REG(a) COMMA(,) HEX(FF) NL(\n)");
+            "INSN(ld) REG(a) COMMA(,) NUM($FF=255) NL(\n)");
     check_s("all-digit h-suffix hex",
             lex_all("ld a,12h\n"),
-            "INSN(ld) REG(a) COMMA(,) HEX(12) NL(\n)");
+            "INSN(ld) REG(a) COMMA(,) NUM(12h=18) NL(\n)");
 
     /* Punctuation the instruction parsers rely on. */
     check_s("indirect operand punctuation",
@@ -152,12 +166,12 @@ int main(void) {
             "INSN(ld) REG(a) COMMA(,) LP(() REG(hl) RP()) NL(\n)");
     check_s("suffix dot",
             lex_all("rst.lil 10h\n"),
-            "INSN(rst) DOT(.) NAME(lil) HEX(10) NL(\n)");
+            "INSN(rst) DOT(.) NAME(lil) NUM(10h=16) NL(\n)");
 
     /* A directive is only a directive to the lexer -- the dot is separate. */
     check_s("dot directive",
             lex_all(".org $400000\n"),
-            "DOT(.) DIR(org) HEX(400000) NL(\n)");
+            "DOT(.) DIR(org) NUM($400000=4194304) NL(\n)");
 
     /* Comments are the parser's job: the lexer just emits the semicolon and
      * whatever follows it. This is what makes the parser's comment state
@@ -175,6 +189,93 @@ int main(void) {
     check_s("no trailing newline",
             lex_all("nop"),
             "INSN(nop)");
+
+    /* A minus is an operator, not part of the number. The old lexer folded
+     * the digits into the token, which is why label-2 and $-2 could not be
+     * written at all. */
+    check_s("minus is an operator",
+            lex_all("ld a,-5\n"),
+            "INSN(ld) REG(a) COMMA(,) MINUS(-) NUM(5=5) NL(\n)");
+    check_s("current pc stays a dollar",
+            lex_all("jr $-2\n"),
+            "INSN(jr) DOLLAR($) MINUS(-) NUM(2=2) NL(\n)");
+    check_s("bare dollar",
+            lex_all("jp $\n"),
+            "INSN(jp) DOLLAR($) NL(\n)");
+
+    /* The literal forms that used to split into a number and a name. */
+    check_s("letter-initial hex is one token",
+            lex_all("db C0h\n"),
+            "DIR(db) NUM(C0h=192) NL(\n)");
+    check_s("hex with letters is one token",
+            lex_all("ld a,1Fh\n"),
+            "INSN(ld) REG(a) COMMA(,) NUM(1Fh=31) NL(\n)");
+    check_s("c-style hex",
+            lex_all("ld a,0x1F\n"),
+            "INSN(ld) REG(a) COMMA(,) NUM(0x1F=31) NL(\n)");
+    check_s("percent binary",
+            lex_all("ld d,%10101010\n"),
+            "INSN(ld) REG(d) COMMA(,) NUM(%10101010=170) NL(\n)");
+    check_s("hash hex",
+            lex_all("ld a,#A0\n"),
+            "INSN(ld) REG(a) COMMA(,) NUM(#A0=160) NL(\n)");
+    check_s("binary suffix",
+            lex_all("ld h,1010b\n"),
+            "INSN(ld) REG(h) COMMA(,) NUM(1010b=10) NL(\n)");
+    check_s("invalid binary stays a name",
+            lex_all("ld h,12b\n"),
+            "INSN(ld) REG(h) COMMA(,) NAME(12b) NL(\n)");
+
+    /* Character literals carry their value; the text is kept only so a bad
+     * one can be shown back to the user. */
+    check_s("character literal",
+            lex_all("ld a,'a'\n"),
+            "INSN(ld) REG(a) COMMA(,) NUM('a'=97) NL(\n)");
+    check_s("escaped character literal",
+            lex_all("ld a,'\\n'\n"),
+            "INSN(ld) REG(a) COMMA(,) NUM('\\n'=10) NL(\n)");
+    check_s("escaped quote",
+            lex_all("db '\\''\n"),
+            "DIR(db) NUM('\\''=39) NL(\n)");
+    /* A backslash followed by the closing quote is a literal backslash, told
+     * apart from an escaped quote only by whether another quote follows. The
+     * reference's corpus pins both spellings to 0x5C. */
+    check_s("lone backslash literal",
+            lex_all("db '\\'\n"),
+            "DIR(db) NUM('\\'=92) NL(\n)");
+    check_s("escaped backslash",
+            lex_all("db '\\\\'\n"),
+            "DIR(db) NUM('\\\\'=92) NL(\n)");
+
+    /* The literal errors the reference rejects. Lexing resumes after a bad
+     * literal rather than swallowing the line, so the trailing quote of a
+     * two-character literal comes back as a second bad token. */
+    check_s("empty literal",
+            lex_all("ld a,''\n"),
+            "INSN(ld) REG(a) COMMA(,) BAD('') NL(\n)");
+    check_s("unterminated literal",
+            lex_all("ld a,'a\n"),
+            "INSN(ld) REG(a) COMMA(,) BAD('a) NL(\n)");
+    check_s("two-character literal",
+            lex_all("ld a,'ab'\n"),
+            "INSN(ld) REG(a) COMMA(,) BAD('a) REG(b) BAD(') NL(\n)");
+    check_s("bad escape",
+            lex_all("ld a,'\\+'\n"),
+            "INSN(ld) REG(a) COMMA(,) BAD('\\+) BAD(') NL(\n)");
+
+    /* Expression operators, including the two-character shifts and the
+     * brackets that group (parentheses cannot -- they mean indirection). */
+    check_s("arithmetic operators",
+            lex_all("db 1+2*3-4/5\n"),
+            "DIR(db) NUM(1=1) PLUS(+) NUM(2=2) STAR(*) NUM(3=3) "
+            "MINUS(-) NUM(4=4) FS(/) NUM(5=5) NL(\n)");
+    check_s("bitwise and shifts",
+            lex_all("db 1<<2>>3&4|5^6~7\n"),
+            "DIR(db) NUM(1=1) SHL(<<) NUM(2=2) SHR(>>) NUM(3=3) "
+            "AMP(&) NUM(4=4) PIPE(|) NUM(5=5) CARET(^) NUM(6=6) TILDE(~) NUM(7=7) NL(\n)");
+    check_s("brackets group",
+            lex_all("db [1+2]\n"),
+            "DIR(db) LB([) NUM(1=1) PLUS(+) NUM(2=2) RB(]) NL(\n)");
 
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);

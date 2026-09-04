@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "conv.h"
+#include "expr.h"
 #include "instruction_parser.h"
 #include "lexer.h"
 
@@ -33,16 +34,26 @@ parser* pr_init(parser* p, const char* fname) {
     p->sz_ = 128 << 10;
     p->buf_ = (uint8_t*) malloc(p->sz_ * sizeof(uint8_t));
     if (p->buf_ == NULL) {
+        ht_destroy(&p->labels_);
         lex_destroy(&p->lex_);
+
         return NULL;
     }
 
     if (ls_init(&p->ls_, 1024) == NULL) {
+        /* This used to fall through and hand back a parser whose label stack
+         * had never been allocated. */
         free(p->buf_);
+        ht_destroy(&p->labels_);
         lex_destroy(&p->lex_);
+
+        return NULL;
     }
 
-    p->org_ = 0x400000;
+    /* The Agon load address for an ordinary program, and the reference's
+     * default (START_ADDRESS in its config.h). It was 0x400000 here, one zero
+     * too many, so every address in a source without an .ORG was wrong. */
+    p->org_ = 0x40000;
     p->adl_ = true;
     p->skip_ws_ = true;
     p->comment_ = false;
@@ -57,6 +68,9 @@ uint8_t* pr_buf(parser* p, int* sz) {
 
 void pr_destroy(parser* p) {
     free(p->buf_);
+    p->buf_ = NULL;
+    ls_destroy(&p->ls_);
+    ht_destroy(&p->labels_);
     lex_destroy(&p->lex_);
 }
 
@@ -78,9 +92,11 @@ token next(parser* p) {
             case SEMI_COLON:
                 p->comment_ = true;
                 continue;
-            case DIRECTIVE:
-                return tk;
             default:
+                /* The comment check used to sit below a DIRECTIVE case, so a
+                 * directive name inside a comment was handed to the parser as
+                 * a real directive. "; starting at byte 64." was enough to
+                 * break a file, because "byte" is a directive. */
                 if (p->comment_) {
                     continue;
                 }
@@ -109,51 +125,24 @@ static const char* parse_adl(parser* p) {
     }
 
     next(p);
-    if (p->tk_.tk_ != NUMBER || (p->tk_.txt_[0] != '1' && p->tk_.txt_[0] != '0')) {
+    if (p->tk_.tk_ != NUMBER || (p->tk_.val_ != 0 && p->tk_.val_ != 1)) {
         return pr_msg(p, "ADL is 0 or 1");
     }
-    p->adl_ = p->tk_.txt_[0] == '1';
+    p->adl_ = p->tk_.val_ == 1;
 
     return NULL;
 }
 
-static int natoi(char* str, uint8_t sz) {
-    int v = 0;
-    int mul = 1;
-    for (char i = 1; i <= sz; i++) {
-        v += (str[sz-i] - '0') * mul;
-        mul *= 10;
-    }
-    return v;
-}
-
-static int natoh(char* str, uint8_t sz) {
-    int v = 0;
-    int mul = 1;
-    for (char i = 1; i <= sz; i++) {
-        const char ch = str[sz-i];
-        if (ch >= '0' && ch <= '9') {
-            v += (ch - '0') * mul;
-        } else if (ch >= 'A' && ch <= 'F') {
-            v += (ch - 'A' + 10) * mul;
-        } else if (ch >= 'a' && ch <= 'f') {
-            v += (ch - 'a' + 10) * mul;
-        } else {
-            break;
-        }
-        mul *= 16;
-    }
-    return v;
-}
-
-int tk2i(token tk) {
-    if (tk.tk_ == NUMBER) {
-        return natoi(tk.txt_, tk.sz_);
-    } else if (tk.tk_ == HEX_NUMBER) {
-        return natoh(tk.txt_, tk.sz_);
+/* The lexer converts a literal as it reads it, so this is now only a guard
+ * against being handed a token that is not a number at all. It used to
+ * re-parse the token text, with a hand-rolled decimal routine that read the
+ * leading '-' as a digit and returned -25 for "-5". */
+value tk2i(token tk) {
+    if (tk.tk_ != NUMBER) {
+        return 0;
     }
 
-    return -1;
+    return tk.val_;
 }
 
 bool pr_wbyte(parser* p, uint8_t b) {
@@ -164,35 +153,54 @@ bool pr_wbyte(parser* p, uint8_t b) {
     return true;
 }
 
-void pr_stack_label(parser* p, char* label, int sz) {
-    ls_push(&p->ls_, label, sz, p->pos_, p->lex_.lcount_);
+const char* pr_stack_label(parser* p, char* label, int sz) {
+    if (!ls_push(&p->ls_, label, sz, p->pos_, p->lex_.lcount_)) {
+        return pr_msg(p, "label too long");
+    }
     p->pos_ += 3;
+
+    return NULL;
 }
 
-void pr_stack_relative_label(parser* p, char* label, int sz) {
-    ls_push(&p->ls_, label, sz, p->pos_, p->lex_.lcount_);
+const char* pr_stack_relative_label(parser* p, char* label, int sz) {
+    if (!ls_push(&p->ls_, label, sz, p->pos_, p->lex_.lcount_)) {
+        return pr_msg(p, "label too long");
+    }
     p->pos_ += 1;
+
+    return NULL;
 }
 
 static const char* parse_org(parser* p) {
-    token tk = next(p);
-    if (tk.tk_ != NUMBER && tk.tk_ != HEX_NUMBER) {
-        return pr_msg(p, "expected number.");
+    next(p);
+
+    value v = 0;
+    const char* err = expr_eval(p, &v);
+    if (err != NULL) {
+        return err;
     }
-    p->org_ = tk2i(tk);
+    p->org_ = v;
+
     return NULL;
 }
 
 static const char* parse_align(parser* p) {
-    token tk = next(p);
-    if (tk.tk_ != NUMBER && tk.tk_ != HEX_NUMBER) {
-        return pr_msg(p, "expected number.");
+    next(p);
+
+    value align = 0;
+    const char* err = expr_eval(p, &align);
+    if (err != NULL) {
+        return err;
     }
 
-    int align = tk2i(tk);
+    /* Still aligning to an absolute offset rather than to a boundary. That is
+     * wrong, and it is fixed with the rest of the directives; changing it here
+     * would put a byte-level change in a commit that is meant to be about
+     * where values come from. */
     while (p->pos_ < align) {
         pr_wbyte(p, 0);
     }
+
     return NULL;
 }
 
@@ -265,37 +273,41 @@ static const char* parse_asciz(struct _parser* p) {
 
 
 static const char* parse_db(parser* p) {
-    const char* err = NULL;
-    for (token tk = next(p); tk.tk_ != NONE; tk = next(p)) {
-        switch (tk.tk_) {
-            case NUMBER:
-            case HEX_NUMBER: {
-                int v = tk2i(tk);
-                if (v < -128 || v > 255)  {
-                    return pr_msg(p, "expected a byte value.");
-                }
-                pr_wbyte(p, ((uint8_t) v) & 0xFF);
-                break;
+    next(p);
+
+    while (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
+        if (p->tk_.tk_ == D_QUOTE) {
+            const char* err = parse_quoted(p);
+            if (err != NULL) {
+                return err;
             }
-            case D_QUOTE:
-                err = parse_quoted(p);
-                if (err != NULL) {
-                    return err;
-                }
-                break;
-            default:
-                return pr_msg(p, "expected string or numbers");
+            next(p);
+        } else {
+            /* Every element is a full expression now, so db 'a'+1 and
+             * db 128+127-255 work the same way the reference reads them. */
+            value v = 0;
+            const char* err = expr_eval(p, &v);
+            if (err != NULL) {
+                return err;
+            }
+            /* Out of range truncates rather than failing. The reference
+             * warns ("Value truncated to 8 bit") and carries on emitting the
+             * low byte, so refusing here would diverge on any source it
+             * accepts. zap has nowhere to put a warning until diagnostics
+             * exist; the byte is what has to match. */
+            pr_wbyte(p, (uint8_t) (v & 0xFF));
         }
 
-        // We either now have a comma because there is more info to process or a new line.
-        tk = next(p);
-        if (tk.tk_ == NEW_LINE) {
-           return NULL;
+        // Either a comma, because there is more to process, or the end of the line.
+        if (p->tk_.tk_ == NEW_LINE || p->tk_.tk_ == NONE) {
+            return NULL;
         }
-        if (tk.tk_ != COMMA) {
+        if (p->tk_.tk_ != COMMA) {
             return pr_msg(p, "expected a comma");
         }
+        next(p);
     }
+
     return NULL;
 }
 
@@ -357,7 +369,12 @@ static const char* parse_instruction(parser* p) {
 }
 
 static const char* parse_label(parser* p) {
-    ht_nset(&p->labels_, p->tk_.txt_, p->tk_.sz_, p->pos_+p->org_);
+    /* A name too long for the table used to be dropped silently, so the label
+     * simply did not exist and every reference to it failed later with no
+     * hint why. */
+    if (!ht_nset(&p->labels_, p->tk_.txt_, p->tk_.sz_, p->pos_ + p->org_)) {
+        return pr_msg(p, "label too long");
+    }
     token tk = next(p);
     if (tk.tk_ != COLON) {
         return pr_msg(p, "expected a colon");

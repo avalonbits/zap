@@ -13,17 +13,19 @@
 } while (false)
 #endif
 
-extern int tk2i(token tk);
+extern value tk2i(token tk);
 extern const char* pr_msg(parser* p, const char* msg);
 extern token next(parser* p);
 extern bool pr_wbyte(parser* p, uint8_t b);
-extern void pr_stack_label(parser* p, char* label, int sz);
-extern void pr_stack_relative_label(parser* p, char* label, int sz);
 
-union _value {
-    int i;
+/* Scratch used to split a value into little-endian bytes. Still file scope,
+ * still shared by every handler -- that goes away with the rest of the globals
+ * in the library-surface work; renamed here only because the value type now
+ * owns that name. */
+union _opnd_bytes {
+    value i;
     uint8_t b[4];
-} value;
+} opnd;
 
 typedef enum _isa_suffix {
     SUF_NONE = 0x00,
@@ -85,13 +87,14 @@ static const char* parse_label_op(parser* p)  {
     bool ok = false;
     int addr = ht_nget(&p->labels_, tk.txt_, tk.sz_, &ok);
     if (ok) {
-        value.i = addr;
+        opnd.i = addr;
         for (uint8_t i = 0; i < 3; i++) {
-            pr_wbyte(p, value.b[i]);
+            pr_wbyte(p, opnd.b[i]);
         }
     } else {
-        pr_stack_label(p, tk.txt_, tk.sz_);
+        return pr_stack_label(p, tk.txt_, tk.sz_);
     }
+
     return NULL;
 }
 
@@ -106,16 +109,17 @@ static const char* parse_relative_label_op(parser* p)  {
         }
         pr_wbyte(p, (uint8_t) d);
     } else {
-        pr_stack_relative_label(p, tk.txt_, tk.sz_);
+        return pr_stack_relative_label(p, tk.txt_, tk.sz_);
     }
+
     return NULL;
 }
 
 
 static void parse_number(parser* p) {
-    value.i = tk2i(p->tk_);
+    opnd.i = tk2i(p->tk_);
     for (uint8_t i = 0; i < 3; i++) {
-        pr_wbyte(p, value.b[i]);
+        pr_wbyte(p, opnd.b[i]);
     }
 }
 
@@ -158,7 +162,6 @@ const char* parse_jp(parser* p) {
         case NAME:
             pr_wbyte(p, 0xC3);
             return parse_label_op(p);
-        case HEX_NUMBER:
         case NUMBER:
             pr_wbyte(p,  0xC3);
             parse_number(p);
@@ -175,13 +178,12 @@ const char* parse_jr(parser* p) {
     switch (tk.tk_) {
         case NAME:
             return parse_relative_label_op(p);
-        case HEX_NUMBER:
         case NUMBER:
-            value.i = tk2i(tk);
-            if (value.i < -128 || value.i > 127) {
+            opnd.i = tk2i(tk);
+            if (opnd.i < -128 || opnd.i > 127) {
                 return pr_msg(p, "invalid operand");
             }
-            pr_wbyte(p, (uint8_t) value.i);
+            pr_wbyte(p, (uint8_t) opnd.i);
             break;
         default:
             return pr_msg(p, "invalid operand");
@@ -216,7 +218,7 @@ static const char* parse_ld_a_indirect(parser* p) {
                     CONSUME(p, PLUS, "missing operator");
 
                     tk = next(p);
-                    if (tk.tk_ != NUMBER && tk.tk_ != HEX_NUMBER) {
+                    if (tk.tk_ != NUMBER) {
                         return pr_msg(p, "invalid operand");
                     }
 
@@ -246,13 +248,12 @@ static const char* parse_ld_r(parser* p) {
     uint8_t isa;
     switch (tk.tk_) {
         case NUMBER:
-        case HEX_NUMBER:
             pr_wbyte(p, 0x06 | ((reg.tt_-REG_B) << 3));
-            value.i = tk2i(tk);
-            if (value.i < -128 | value.i > 255) {
+            opnd.i = tk2i(tk);
+            if (opnd.i < -128 || opnd.i > 255) {
                 return pr_msg(p, "invalid operand");
             }
-            pr_wbyte(p, value.b[0]);
+            pr_wbyte(p, opnd.b[0]);
             return NULL;
         case REGISTER:
             switch (tk.tt_) {
@@ -325,7 +326,6 @@ const char* parse_ld(parser* p) {
                     pr_wbyte(p, isa);
                     return parse_label_op(p);
                 case NUMBER:
-                case HEX_NUMBER:
                     pr_wbyte(p, 0x21);
                     parse_number(p);
                     return NULL;
@@ -440,7 +440,7 @@ const char* parse_rst(parser* p) {
     }
 
     next(p);
-    if (p->tk_.tk_ != NUMBER && p->tk_.tk_ != HEX_NUMBER) {
+    if (p->tk_.tk_ != NUMBER) {
         return pr_msg(p, "expected number");
     }
     if (suf != SUF_NONE) {

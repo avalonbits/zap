@@ -24,6 +24,14 @@ typedef struct _parser {
     struct _label_stack ls_;
 } parser;
 
+/* Shared with the instruction and expression parsers. */
+token next(parser* p);
+const char* pr_msg(parser* p, const char* msg);
+bool pr_wbyte(parser* p, uint8_t b);
+value tk2i(token tk);
+const char* pr_stack_label(parser* p, char* label, int sz);
+const char* pr_stack_relative_label(parser* p, char* label, int sz);
+
 parser* pr_init(parser* p, const char* fname);
 void pr_destroy(parser* p);
 

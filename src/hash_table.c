@@ -64,6 +64,26 @@ hash_table* ht_init(hash_table* ht, int entries) {
     return ht;
 }
 
+/* Frees the bucket array and every node chained off it. Buckets themselves
+ * live in the array; only the overflow nodes were malloc'd separately. */
+void ht_destroy(hash_table* ht) {
+    if (ht->node_ == NULL) {
+        return;
+    }
+
+    for (uint24_t i = 0; i < ht->sz_; i++) {
+        hash_node* n = ht->node_[i].next_;
+        while (n != NULL) {
+            hash_node* next = n->next_;
+            free(n);
+            n = next;
+        }
+    }
+    free(ht->node_);
+    ht->node_ = NULL;
+    ht->sz_ = 0;
+}
+
 void ht_clear(hash_table* ht) {
     for (uint24_t i = 0; i < ht->sz_; i++) {
         ht->node_[i].key_[0] = 0;
@@ -86,8 +106,7 @@ bool icase_equal(const char* s1, const char* s2, uint8_t ksz) {
 }
 
 bool ht_nset(hash_table* ht, const char* key, uint8_t ksz, int value) {
-    // Hash table keys MUST have at most 25 characters.
-    if (ksz > 25 || ksz <= 0) {
+    if (ksz > MAX_NAME || ksz <= 0) {
         return false;
     }
 
@@ -137,7 +156,7 @@ bool ht_set(hash_table* ht, const char* key, int value) {
 int ht_nget(hash_table* ht, const char* key, uint8_t ksz, bool* ok) {
     if (ok) *ok = false;
 
-    if (ksz > 25) {
+    if (ksz > MAX_NAME) {
         return 0;
     }
 

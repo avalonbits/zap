@@ -28,6 +28,13 @@ bool br_suspend(buf_reader* br);
 bool br_resume(buf_reader* br);
 
 char br_char(buf_reader* br);
+
+/* Reads one byte as 0..255, or -1 at end of file.
+ *
+ * br_char cannot be used on binary data: it returns a char, and a data byte of
+ * 0xFF is indistinguishable from its EOF sentinel, so an .incbin stopped at
+ * the first 0xFF in the file. */
+int br_byte(buf_reader* br);
 char br_peek(buf_reader* br);
 void br_next(buf_reader* br);
 

@@ -228,6 +228,18 @@ const char* op_parse(parser* p, operand* op) {
         }
         next(p);
 
+        /* The shadow accumulator, written "af'". The lexer hands the lone
+         * apostrophe back as a bad character literal, which is what it is
+         * anywhere else -- "ld a,a'" has to stay an error -- so it is only
+         * taken as the shadow marker after AF, the one register that has the
+         * spelling. */
+        if (op->reg == R_AF && p->tk_.tk_ == BAD_LITERAL
+            && p->tk_.sz_ == 1 && p->tk_.txt_[0] == '\'') {
+            next(p);
+
+            return NULL;
+        }
+
         /* LEA and PEA write their displacement without parentheses --
          * "lea ix, iy+5" -- because they compute an address rather than
          * dereference one. */

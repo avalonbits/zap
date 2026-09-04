@@ -315,7 +315,7 @@ static const char* emit_row(parser* p, const isa_row* row, operand* a,
         if (!rel->imm_known) {
             return pr_stack_fixup(p, rel->name, rel->name_sz, FIX_REL8, rel->anon);
         }
-        const int d = (int) rel->imm - (p->addr_ + 1);
+        const int d = (int) rel->imm - (pr_addr(p) + 1);
         if (d < -128 || d > 127) {
             return pr_msg(p, "relative jump too far");
         }

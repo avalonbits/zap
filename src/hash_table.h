@@ -7,12 +7,17 @@
 #include "value.h"
 
 typedef struct _hash_node {
-    /* The key and its length. The length is stored rather than the
-     * terminator it replaces, so the node is the same size: every probe used
-     * to call strlen on the stored key just to compare lengths, which on a
-     * real program cost more than the comparison it guarded. A zero length
-     * marks a free slot. */
-    char key_[MAX_NAME];
+    /* Where the key is, rather than the key itself. Names live in one block
+     * shared by the table, and a node holds an offset into it and a length.
+     *
+     * The key used to be a MAX_NAME array inside the node, so every bucket
+     * reserved 64 bytes of name whether it held a three-character name or
+     * nothing at all: a node was 71 bytes on the eZ80 and a 1024-bucket table
+     * was 72 KB of a 512 KB machine. A node is 10 bytes now.
+     *
+     * An offset rather than a pointer because the block is grown with
+     * realloc, which moves it. A zero length still marks a free slot. */
+    uint24_t koff_;
     uint8_t ksz_;
     int value_;
     struct _hash_node* next_;
@@ -21,6 +26,13 @@ typedef struct _hash_node {
 typedef struct _hash_table {
     hash_node* node_;
     uint24_t sz_;
+
+    /* Every key in the table, end to end. Names are appended and never moved
+     * within it, so a node's offset stays valid; growing the table rehashes
+     * the nodes and leaves this alone. */
+    char* keys_;
+    uint24_t keys_len_;
+    uint24_t keys_cap_;
 
     /* How many keys are stored. The table doubles when this passes twice the
      * bucket count: an 8-bit hash held it at 256 buckets, and BBC BASIC's 1619

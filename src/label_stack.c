@@ -38,6 +38,14 @@ const char* ls_text(const label_stack* ls, const label_node* n) {
 bool ls_push(label_stack* ls, const char* text, int sz, int bpos,
              int next, int here, int line, fixup_kind kind, uint16_t scope,
              int anon) {
+    /* text_len_ is a byte. An operand's expression is captured into a
+     * 128-character buffer so this cannot be exceeded today, but a silent
+     * truncation here would corrupt the deferred expression rather than fail,
+     * so it is refused instead of assumed. */
+    if (sz < 0 || sz > 255) {
+        return false;
+    }
+
     if (sz <= 0) {
         return false;
     }
@@ -68,7 +76,7 @@ bool ls_push(label_stack* ls, const char* text, int sz, int bpos,
 
     label_node* n = &ls->nodes_[ls->pos_];
     n->text_off_ = ls->text_len_;
-    n->text_len_ = sz;
+    n->text_len_ = (uint8_t) sz;
     for (int i = 0; i < sz; i++) {
         ls->text_[ls->text_len_ + i] = text[i];
     }

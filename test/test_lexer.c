@@ -20,6 +20,7 @@
 
 #include "lexer.h"
 #include "isa.h"
+#include "value.h"
 #include "parser.h"
 
 static int failures = 0;
@@ -425,6 +426,40 @@ int main(void) {
             "DIR(db) LB([) NUM(1=1) PLUS(+) NUM(2=2) RB(]) NL(\n)");
 
     check_no_mnemonic_shadowed();
+
+    /* Registers and flags are matched before the literal test, so the two
+     * orders only agree while no register or flag name also parses as a
+     * number. The single-character forms are forced to decimal precisely so
+     * a..f are not read as hex digits, and mb, ixh and iyh reach scan_base and
+     * fail on their first character -- none of that is obvious enough to leave
+     * to the eye, and getting it wrong turns a register into a literal
+     * silently. */
+    {
+        static const char* regs[] = {"a","b","c","d","e","f","h","l","i","r",
+                                     "af","bc","de","hl","ix","iy","sp","mb",
+                                     "ixh","ixl","iyh","iyl",
+                                     "z","p","m","nz","nc","po","pe", 0};
+        int bad = 0;
+        for (int i = 0; regs[i]; i++) {
+            value v = 0;
+            char up[8];
+            int n = 0;
+            for (const char* q = regs[i]; *q; q++) {
+                up[n++] = (char) (*q - 32);
+            }
+            up[n] = 0;
+            if (num_parse(regs[i], n, &v) || num_parse(up, n, &v)) {
+                fprintf(stderr, "FAIL  %s parses as a number\n", regs[i]);
+                bad++;
+            }
+        }
+        if (bad == 0) {
+            fprintf(stderr, "PASS  %-44s 29 names\n",
+                    "no register or flag parses as a number");
+        } else {
+            failures += bad;
+        }
+    }
 
     check_reg("a", REGISTER, REG_A);
     check_reg("b", REGISTER, REG_B);

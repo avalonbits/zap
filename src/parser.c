@@ -125,6 +125,8 @@ static parser* pr_setup(parser* p, const char* fname) {
     p->cond_depth_ = 0;
     p->skip_depth_ = 0;
     p->undefined_ = false;
+    p->wait_hash_ = 0;
+    p->def_hash_ = 0;
     p->pc_used_ = false;
     p->adl_ = true;
     p->cpu_ = CPU_EZ80;
@@ -256,6 +258,67 @@ static int anon_ref(const char* name, int sz) {
 
 /* Resolves a name to its value. Sets *known false when it cannot be resolved
  * yet, which is a forward reference and the caller's cue to leave a hole. */
+/* Files the symbol an evaluation could not resolve, so the fixup it produces
+ * can be found again when that symbol is defined. Only the first is kept:
+ * 99.9% of deferred expressions name exactly one symbol, and one that names
+ * two simply waits for whichever is filed and is re-attempted after it. */
+/* Defined below, next to the rest of the fixup handling. */
+static const char* settle_waiting(parser* p, uint16_t h);
+
+/* Remembers a symbol this statement defined, as the hash of its scoped key.
+ *
+ * The hash rather than the key: this runs on every label a program defines --
+ * 1,619 of them for BBC BASIC -- and keeping the name meant copying up to 64
+ * bytes here and hashing them again when the statement ended. The bucket walk
+ * needs nothing else, since each fixup carries the hash it is waiting for.
+ *
+ * Deferred to the end of the statement because a name can enter the table
+ * twice within one: "LIST1L: EQU $-LIST1" is a label definition followed by an
+ * equ, and only the second value is the real one. */
+static void pr_note_defined(parser* p, const char* key, int ksz) {
+    if (ksz <= 0 || ksz > MAX_NAME) {
+        p->def_hash_ = 0;
+
+        return;
+    }
+
+    const uint16_t h = pearson_hash_n(key, (uint8_t) ksz, false, true);
+    p->def_hash_ = h == 0 ? 1 : h;
+}
+
+/* Settles references waiting on whatever the finished statement defined.
+ *
+ * Callers test def_hash_ themselves rather than calling in to find it zero.
+ * This runs at the end of every statement, and on a source that defines no
+ * labels at all -- where there is never anything to settle -- the call alone
+ * was costing most of a second: a load and a branch inline is what the common
+ * case deserves. */
+#define PR_SETTLE(p) ((p)->def_hash_ == 0 ? NULL : pr_settle_defined(p))
+
+static const char* pr_settle_defined(parser* p) {
+    const uint16_t h = p->def_hash_;
+    p->def_hash_ = 0;
+
+    return settle_waiting(p, h);
+}
+
+void pr_note_waiting(parser* p, const char* name, int sz) {
+    if (p->wait_hash_ != 0) {
+        return;
+    }
+
+    char key[MAX_NAME + 1];
+    const int ksz = scoped_key(p, name, sz, key);
+    if (ksz <= 0) {
+        return;
+    }
+
+    const uint16_t h = pearson_hash_n(key, (uint8_t) ksz, false, true);
+
+    /* Zero means "nothing waiting", so it cannot also mean a real hash. */
+    p->wait_hash_ = h == 0 ? 1 : h;
+}
+
 const char* pr_resolve(parser* p, const char* name, int sz, value* out,
                        bool* known, int* anon) {
     *known = false;
@@ -435,7 +498,7 @@ const char* pr_stack_fixup(parser* p, const char* text, int sz,
     /* addr_ is now the address of the next instruction, which is exactly what
      * a relative displacement is measured from. */
     if (!ls_push(&p->ls_, text, sz, bpos, pr_addr(p), p->stmt_addr_,
-                 p->lex_.lcount_, kind, p->scope_, anon)) {
+                 p->lex_.lcount_, kind, p->scope_, anon, p->wait_hash_)) {
         return pr_msg(p, "too many forward references");
     }
 
@@ -626,6 +689,8 @@ static const char* parse_equ(parser* p) {
     if (!ht_nset(&p->labels_, p->last_label_, (uint8_t) p->last_label_sz_, v)) {
         return pr_msg(p, "label too long");
     }
+
+    pr_note_defined(p, p->last_label_, p->last_label_sz_);
 
     return NULL;
 }
@@ -1228,6 +1293,8 @@ static const char* parse_label(parser* p) {
         return pr_msg(p, "label too long");
     }
 
+    pr_note_defined(p, key, ksz);
+
     for (int i = 0; i < ksz; i++) {
         p->last_label_[i] = key[i];
     }
@@ -1254,6 +1321,21 @@ static const char* resolve_fixup(parser* p, const label_node* ln, value* out) {
     const int saved_stmt = p->stmt_addr_;
     const bool saved_undef = p->undefined_;
 
+    /* The current token as well. This re-lexes the captured expression, so it
+     * advances the token the caller was holding. That did not matter while
+     * this only ran after parsing had finished, but settling a reference the
+     * moment its label is defined runs it in the middle of a statement, and
+     * without this the rest of that statement was dropped. */
+    const token saved_tk = p->tk_;
+
+    /* And the include depth, hidden for the duration. The expression is read
+     * through a reader of its own, and when that runs out next() sees NONE
+     * with sources still suspended and pops one -- destroying the lexer of the
+     * file being assembled and losing the rest of it. post_process never hit
+     * this because every include is closed by the time it runs. */
+    const int saved_depth = p->inc_depth_;
+    p->inc_depth_ = 0;
+
     lexer tmp;
     if (br_open_mem(&tmp.rd_, ls_text(&p->ls_, ln), ln->text_len_) == NULL) {
         return pr_msg(p, "out of memory");
@@ -1277,6 +1359,8 @@ static const char* resolve_fixup(parser* p, const label_node* ln, value* out) {
     p->scope_ = saved_scope;
     p->stmt_addr_ = saved_stmt;
     p->undefined_ = saved_undef;
+    p->tk_ = saved_tk;
+    p->inc_depth_ = saved_depth;
 
     return err;
 }
@@ -1287,8 +1371,82 @@ static const char* resolve_fixup(parser* p, const label_node* ln, value* out) {
  * the JR opcode -- to decide relative from absolute, and then appended through
  * pr_wbyte instead of writing at the hole, so a forward JR overwrote whatever
  * followed it. Both are recorded on the fixup now. */
+/* Writes a resolved value into the hole a fixup reserved. */
+static const char* apply_fixup(parser* p, const label_node* ln, int v) {
+    if (ln->kind_ == FIX_REL8) {
+        const int d = v - ln->next_;
+        if (d < -128 || d > 127) {
+            p->lex_.lcount_ = ln->line_;
+            p->stmt_line_ = ln->line_;
+
+            return pr_msg(p, "relative jump too far");
+        }
+        p->buf_[ln->bpos_] = (uint8_t) (d & 0xFF);
+
+        return NULL;
+    }
+
+    const int width = (ln->kind_ == FIX_ABS8) ? 1
+                    : (ln->kind_ == FIX_ABS16) ? 2
+                    : (ln->kind_ == FIX_ABS24) ? 3 : 4;
+    for (int i = 0; i < width; i++) {
+        p->buf_[ln->bpos_ + i] = (uint8_t) ((v >> (i * 8)) & 0xFF);
+    }
+
+    return NULL;
+}
+
+/* Settles the references that were waiting on a symbol that has just been
+ * defined.
+ *
+ * Without this a fixup sat until the end of the file even when the label it
+ * wanted was on the next line, so a program held every forward reference it
+ * ever made -- 2,149 of them at once for BBC BASIC, which is 128 KB of a
+ * 512 KB machine. Retiring them here makes the live count follow how far
+ * forward a reference reaches instead of how long the file is.
+ *
+ * An expression naming two symbols is re-attempted and stays pending until
+ * both are known; that is 0.1% of them. A hash collision costs the same
+ * wasted attempt and is equally harmless. Errors are left for post_process:
+ * an expression that cannot be evaluated yet is not an error, it is simply
+ * not ready. */
+static const char* settle_waiting(parser* p, uint16_t h) {
+    if (ls_live_count(&p->ls_) == 0) {
+        return NULL;
+    }
+
+    int idx = ls_waiting_on(&p->ls_, h);
+    while (idx >= 0) {
+        const int next = ls_next_waiting(&p->ls_, idx);
+        const label_node* ln = ls_at(&p->ls_, idx);
+
+        if (ln->wait_ == h && ln->anon_ < 0) {
+            value ev = 0;
+            const bool saved_undef = p->undefined_;
+
+            p->undefined_ = false;
+            const char* err = resolve_fixup(p, ln, &ev);
+            const bool ready = err == NULL && !p->undefined_;
+            p->undefined_ = saved_undef;
+
+            if (ready) {
+                const char* aerr = apply_fixup(p, ln, (int) ev);
+                if (aerr != NULL) {
+                    return aerr;
+                }
+                ls_retire(&p->ls_, idx);
+            }
+        }
+        idx = next;
+    }
+
+    return NULL;
+}
+
 static const char* post_process(parser* p) {
-    for (const label_node* ln = ls_pop(&p->ls_); ln != NULL; ln = ls_pop(&p->ls_)) {
+    for (int idx = ls_first_live(&p->ls_); idx >= 0;
+         idx = ls_next_live(&p->ls_, idx)) {
+        const label_node* ln = ls_at(&p->ls_, idx);
         int v;
         if (ln->anon_ >= 0) {
             if (ln->anon_ >= p->anon_count_) {
@@ -1310,23 +1468,9 @@ static const char* post_process(parser* p) {
             v = (int) ev;
         }
 
-        if (ln->kind_ == FIX_REL8) {
-            const int d = v - ln->next_;
-            if (d < -128 || d > 127) {
-                p->lex_.lcount_ = ln->line_;
-            p->stmt_line_ = ln->line_;
-
-                return pr_msg(p, "relative jump too far");
-            }
-            p->buf_[ln->bpos_] = (uint8_t) (d & 0xFF);
-            continue;
-        }
-
-        const int width = (ln->kind_ == FIX_ABS8) ? 1
-                        : (ln->kind_ == FIX_ABS16) ? 2
-                        : (ln->kind_ == FIX_ABS24) ? 3 : 4;
-        for (int i = 0; i < width; i++) {
-            p->buf_[ln->bpos_ + i] = (uint8_t) ((v >> (i * 8)) & 0xFF);
+        const char* aerr = apply_fixup(p, ln, v);
+        if (aerr != NULL) {
+            return aerr;
         }
     }
 
@@ -1524,6 +1668,26 @@ const char* pr_parse(parser* p) {
             return pr_msg(p, "line too long");
         }
 
+        /* Settle whatever the previous statement defined -- unless this one is
+         * the equ that gives it its real value.
+         *
+         * "LIST1L: EQU $-LIST1" is two statements to this loop: parse_label
+         * consumes the label and returns, and the equ begins a fresh one. The
+         * label has already entered the table as an address by then, and
+         * settling here would hand every waiting reference that address
+         * instead of the constant. The equ notes the same name again, so
+         * waiting one more statement settles it with the right value.
+         *
+         * This is not hypothetical: it is how BBC BASIC writes a table length,
+         * and the wrong values it produced were the same size as the right
+         * ones -- an output that looks correct and is not. */
+        if (p->tk_.tk_ != DIRECTIVE || p->tk_.tt_ != D_EQU) {
+            const char* serr = PR_SETTLE(p);
+            if (serr != NULL) {
+                return serr;
+            }
+        }
+
         /* Inside a false branch only the conditional directives themselves
          * are read; everything else is passed over. A nested .if still has to
          * be counted, or its .endif would close the outer one. */
@@ -1619,6 +1783,14 @@ const char* pr_parse(parser* p) {
     if (p->cond_depth_ != 0) {
         return pr_msg(p, "if without endif");
     }
+
+    {
+        const char* serr = PR_SETTLE(p);
+        if (serr != NULL) {
+            return serr;
+        }
+    }
+
 
     return post_process(p);
 }

@@ -122,6 +122,21 @@ typedef struct _parser {
      * operand then defers the whole expression instead of failing. */
     bool undefined_;
 
+    /* The scoped-key hash of the first symbol an evaluation found undefined,
+     * so a deferred expression can be filed under what it is waiting for.
+     * Zero means nothing was missing. */
+    uint16_t wait_hash_;
+
+    /* A symbol defined by the statement being parsed, settled once that
+     * statement is finished rather than the moment it enters the table.
+     *
+     * "name: EQU expr" defines the name twice: parse_label enters it as a
+     * label at the current address, and the equ then overwrites it with the
+     * real value. Settling at the first of those hands every waiting
+     * reference the address instead of the constant, which is wrong and looks
+     * right -- the output is the same size, with a few values off. */
+    uint16_t def_hash_;
+
     /* Set when an expression read '$'. Its value depends on where the
      * statement sits, so the constant prescan -- which has no meaningful
      * program counter -- must not fold it. */
@@ -188,6 +203,9 @@ const char* pr_stack_relative_label(parser* p, char* label, int sz, int anon);
 /* The address to report for the byte at addr_: the same thing, unless
  * .relocate is in force. */
 int pr_addr(const parser* p);
+
+/* Records that an evaluation needs this symbol before it can finish. */
+void pr_note_waiting(parser* p, const char* name, int sz);
 
 const char* pr_resolve(parser* p, const char* name, int sz, value* out,
                        bool* known, int* anon);

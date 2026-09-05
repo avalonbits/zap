@@ -188,6 +188,7 @@ static const char* operand_at(parser* p, value* out, int depth, capture* cap) {
                  * Somewhere that cannot defer -- a directive that has to size
                  * something now -- turns this into the error. */
                 p->undefined_ = true;
+                pr_note_waiting(p, p->tk_.txt_, p->tk_.sz_);
                 v = 0;
             }
             cap_token(cap, &p->tk_);
@@ -254,6 +255,7 @@ const char* expr_eval(parser* p, value* out) {
      * next directive that evaluated anything. */
     p->undefined_ = false;
     p->pc_used_ = false;
+    p->wait_hash_ = 0;
 
     const char* err = eval_at(p, out, 0, NULL);
     if (err == NULL && p->undefined_) {
@@ -266,8 +268,12 @@ const char* expr_eval(parser* p, value* out) {
 
 const char* expr_capture(parser* p, value* out, char* text, int max,
                          int* text_sz) {
+    /* wait_hash_ too: it names the symbol *this* expression is waiting for,
+     * so leaving it set from the last one files every later fixup under a
+     * name that has already been defined, and none of them are ever settled. */
     p->undefined_ = false;
     p->pc_used_ = false;
+    p->wait_hash_ = 0;
 
     capture cap;
     cap.buf = text;

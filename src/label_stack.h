@@ -67,12 +67,49 @@ typedef struct _label_node {
     /* For a forward reference to an anonymous label (@f / @n), which one in
      * source order it means. -1 for an ordinary expression. */
     int anon_;
+
+    /* Which symbol this is waiting on, as the hash of its scoped key, and the
+     * next fixup waiting on the same one.
+     *
+     * A fixup used to sit here until the end of the file even when the label
+     * it wanted appeared on the next line, so a program held every forward
+     * reference it had ever made: BBC BASIC peaked at 2,149 of them. Indexing
+     * them by what they are waiting for means a fixup is retired when its
+     * symbol is defined, and the live count follows how far forward references
+     * reach rather than how long the file is.
+     *
+     * The hash rather than the name because a name is up to 64 bytes and this
+     * is two. A collision costs one wasted attempt, which is harmless: the
+     * expression is re-evaluated and simply stays pending. */
+    uint16_t wait_;
+
+    /* Doubly linked, so retiring one is O(1). Singly linked, ls_retire had to
+     * walk the bucket from its head to find the node before it -- and that ran
+     * on every retirement, 2,140 of them for BBC BASIC, each a scattered read
+     * into an array of 26-byte nodes on a machine with no cache. prev_ is also
+     * the free-list link once a slot is retired, since nothing else needs it
+     * then. */
+    int link_;
+    int prev_;
 } label_node;
+
+/* Buckets for that index. Small on purpose: it is walked on every label
+ * definition, and a collision only costs a re-evaluation. */
+#define LS_WAIT_BUCKETS 128
 
 typedef struct _label_stack {
     label_node* nodes_;
     int sz_;
+
+    /* High-water mark of slots ever used, and the head of the list of slots
+     * freed by retirement. Retired slots are reused before the array grows,
+     * which is what keeps it small. A slot with text_len_ == 0 is free; a real
+     * fixup always has at least one character of expression. */
     int pos_;
+    int free_;
+    int live_;
+
+    int heads_[LS_WAIT_BUCKETS];
 
     /* Expression texts, packed end to end. Most are a few characters, so an
      * arena costs far less than a fixed field on every node. */
@@ -86,7 +123,22 @@ void ls_destroy(label_stack* ls);
 
 bool ls_push(label_stack* ls, const char* text, int sz, int bpos,
              int next, int here, int line, fixup_kind kind, uint16_t scope,
-             int anon);
+             int anon, uint16_t wait);
+
+/* The first fixup waiting on this hash, and the next after it. Walk with
+ * ls_at to read one. Retiring during the walk is safe: take the next index
+ * before retiring the current. */
+int ls_waiting_on(const label_stack* ls, uint16_t wait);
+int ls_next_waiting(const label_stack* ls, int idx);
+const label_node* ls_at(const label_stack* ls, int idx);
+
+/* Frees a slot and unlinks it from its bucket. */
+void ls_retire(label_stack* ls, int idx);
+
+/* Iterates whatever is still pending, for the end of the assembly. */
+int ls_first_live(const label_stack* ls);
+int ls_next_live(const label_stack* ls, int idx);
+int ls_live_count(const label_stack* ls);
 
 /* The stored expression text for a node. */
 const char* ls_text(const label_stack* ls, const label_node* n);

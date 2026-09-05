@@ -85,7 +85,18 @@
  * twice, so the whole field goes, and with it the cost of having an operand at
  * all: two of these are built for every instruction in the source. */
 typedef struct _dop {
-    uint32_t reg;
+    /* 24 bits, not 32.
+     *
+     * The register set is a bitmask and the highest bit in it is R_I at 2^20,
+     * so it fits in the eZ80's native word. Held as uint32_t -- which is what
+     * the shared table declares -- every test of it is done across two
+     * registers on a machine that has a 24-bit one. reg_match is the single
+     * hottest line in the program, run twice for each of three or four
+     * candidate rows per instruction, so the difference is paid constantly.
+     *
+     * The host sees no change at all: uint24_t is uint32_t there. This is one
+     * to judge on the Agon figure alone. */
+    uint24_t reg;
     uint8_t reg_index;
     bool cc;
     uint8_t cc_index;
@@ -172,6 +183,10 @@ static uint8_t isa_len[512];
  * arrays and have no global index of their own. */
 static uint16_t row_modes[NROW];
 static uint8_t row_ccok[NROW];
+
+/* The same register sets the table holds, narrowed to the machine's word. */
+static uint24_t row_rega[NROW];
+static uint24_t row_regb[NROW];
 static int16_t row_base[512];
 
 static bool tables_ready = false;
@@ -218,6 +233,8 @@ static void build_tables(void) {
                 (((uint16_t) (row->condA & MODECHECK) << 8)
                  | (uint16_t) (row->condB & MODECHECK));
             row_ccok[r] = (uint8_t) ((row->flags & F_CCOK) != 0);
+            row_rega[r] = (uint24_t) row->regsetA;
+            row_regb[r] = (uint24_t) row->regsetB;
             r++;
         }
     }
@@ -248,7 +265,7 @@ static int mnemonic_of(const char* s, int n) {
 /* Recognised straight from the text, with the bit and the index the encoder
  * wants. zap reaches these through a token type and then a switch; there is no
  * token here to carry one. */
-static bool reg_of_text(const char* s, int n, uint32_t* bit, uint8_t* index,
+static bool reg_of_text(const char* s, int n, uint24_t* bit, uint8_t* index,
                         bool* is_cc, uint8_t* cc_index) {
     *is_cc = false;
     *cc_index = 0;
@@ -330,6 +347,7 @@ static bool reg_of_text(const char* s, int n, uint32_t* bit, uint8_t* index,
 #define C_NAME  0x02
 #define C_DIGIT 0x04
 #define C_NUM   0x08
+#define C_MNEM  0x10
 
 static uint8_t cclass[256];
 
@@ -349,6 +367,15 @@ static void build_cclass(void) {
         cclass[c] |= C_NAME | C_DIGIT | C_NUM;
     }
     cclass[(uint8_t) '_'] |= C_NAME;
+
+    /* A mnemonic runs over its suffix too, so the dot belongs to the same run
+     * -- asking for it separately made the scan two tests per character. */
+    for (int i = 0; i < 256; i++) {
+        if (cclass[i] & C_NAME) {
+            cclass[i] |= C_MNEM;
+        }
+    }
+    cclass[(uint8_t) '.'] |= C_MNEM;
     cclass[(uint8_t) '$'] |= C_NUM;
     cclass[(uint8_t) '#'] |= C_NUM;
     cclass[(uint8_t) '%'] |= C_NUM;
@@ -418,7 +445,7 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
         }
         const int n = (int) (p - s);
 
-        uint32_t bit = R_NONE;
+        uint24_t bit = R_NONE;
         uint8_t index = 0;
         bool is_cc = false;
         uint8_t cc_index = 0;
@@ -564,7 +591,7 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
 
 /* ------------------------------------------------------------- selecting */
 
-static inline uint8_t reg_match(uint32_t regset, uint32_t reg) {
+static inline uint8_t reg_match(uint24_t regset, uint24_t reg) {
     return (uint8_t) (((regset & reg) != 0) | ((regset | reg) == 0));
 }
 
@@ -577,8 +604,8 @@ static const isa_row* match_row(int idx, const dop* a, const dop* b) {
     for (uint8_t i = 0; i < insn->count; i++, r++) {
         const isa_row* row = &insn->rows[i];
         const uint8_t ccok = row_ccok[r];
-        const uint8_t rega = (uint8_t) (reg_match(row->regsetA, a->reg) | ccok);
-        const uint8_t regb = reg_match(row->regsetB, b->reg);
+        const uint8_t rega = (uint8_t) (reg_match(row_rega[r], a->reg) | ccok);
+        const uint8_t regb = reg_match(row_regb[r], b->reg);
         const uint8_t cond = (uint8_t)
             ((row_modes[r] == want) | (ccok & has_cc));
 
@@ -600,7 +627,7 @@ typedef struct _emitted {
     uint8_t opcode;
 } emitted;
 
-static inline uint8_t ddfd_prefix(uint32_t reg) {
+static inline uint8_t ddfd_prefix(uint24_t reg) {
     if (reg & (R_IX | R_IXH | R_IXL)) {
         return 0xDD;
     }
@@ -751,7 +778,7 @@ static bool assemble_line(dz* z, const char* p, const char* e) {
     }
 
     const char* s = p;
-    while (p < e && (name_ch(*p) || *p == '.')) {
+    while (p < e && (cclass[(uint8_t) *p] & C_MNEM) != 0) {
         p++;
     }
     const int n = (int) (p - s);

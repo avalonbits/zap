@@ -68,7 +68,7 @@ static int scoped_key(parser* p, const char* name, int sz, char* out) {
     return n;
 }
 
-static parser* pr_setup(parser* p, const char* fname) {
+static parser* pr_setup(parser* p) {
     /* Labels are case-sensitive; only the reserved words are not. */
     if (ht_init(&p->labels_, 255, false) == 0) {
         lex_destroy(&p->lex_);
@@ -114,9 +114,6 @@ static parser* pr_setup(parser* p, const char* fname) {
     p->scope_ = 0;
     p->last_label_sz_ = 0;
     p->anon_count_ = 0;
-    p->fname_ = fname;
-    p->mem_ = NULL;
-    p->mem_len_ = 0;
     p->inc_depth_ = 0;
     p->has_diag_ = false;
     mt_init(&p->macros_);
@@ -138,7 +135,7 @@ parser* pr_init(parser* p, const char* fname) {
         return NULL;
     }
 
-    return pr_setup(p, fname);
+    return pr_setup(p);
 }
 
 parser* pr_init_mem(parser* p, const char* text, int len, const char* name) {
@@ -160,14 +157,9 @@ parser* pr_init_mem(parser* p, const char* text, int len, const char* name) {
      * never calls. */
     lex_prime();
 
-    if (pr_setup(p, NULL) == NULL) {
+    if (pr_setup(p) == NULL) {
         return NULL;
     }
-
-    /* The prescan re-reads from the same text, so assembling from memory
-     * behaves exactly as assembling the same source from a file does. */
-    p->mem_ = text;
-    p->mem_len_ = len;
 
     return p;
 }
@@ -544,6 +536,47 @@ const char* pr_stack_fixup(parser* p, const char* text, int sz,
      * a relative displacement is measured from. */
     if (!ls_push(&p->ls_, text, sz, bpos, pr_addr(p), p->stmt_addr_,
                  p->lex_.lcount_, kind, p->scope_, anon, p->wait_hash_)) {
+        return pr_msg(p, "too many forward references");
+    }
+
+    return NULL;
+}
+
+/* Reserves a run of `count` elements of `width` bytes and remembers to fill
+ * them once the value is known. Same idea as pr_stack_fixup, but the hole is
+ * as long as the directive asked for rather than one operand wide. */
+static const char* pr_stack_fill(parser* p, const char* text, int sz,
+                                 int width, int count) {
+    const int bpos = p->pos_;
+
+    for (int e = 0; e < count; e++) {
+        for (int i = 0; i < width; i++) {
+            if (!pr_wbyte(p, 0)) {
+                return pr_msg(p, "output too large");
+            }
+        }
+    }
+
+    const fixup_kind kind = (fixup_kind) ((int) FIX_FILL1 + width - 1);
+    if (!ls_push(&p->ls_, text, sz, bpos, count, p->stmt_addr_,
+                 p->lex_.lcount_, kind, p->scope_, -1, p->wait_hash_)) {
+        return pr_msg(p, "too many forward references");
+    }
+
+    return NULL;
+}
+
+/* Records a fixup over a byte already in the buffer, rather than reserving a
+ * new one. The opcode of a folded operand is written before its value is
+ * known, so the hole is behind us by the time we know we need one. */
+int pr_pos(parser* p) {
+    return p->pos_;
+}
+
+const char* pr_stack_fold(parser* p, const char* text, int sz, int bpos,
+                          int aux) {
+    if (!ls_push(&p->ls_, text, sz, bpos, aux, p->stmt_addr_,
+                 p->lex_.lcount_, FIX_FOLD, p->scope_, -1, p->wait_hash_)) {
         return pr_msg(p, "too many forward references");
     }
 
@@ -1068,7 +1101,10 @@ static const char* parse_ds(parser* p) {
     if (n < 0) {
         return pr_msg(p, "negative size");
     }
-    /* An initialiser here is read and thrown away. That is not an oversight:
+    /* Captured, not evaluated: the value is discarded either way, so demanding
+     * that it be known already rejected sources the reference accepts.
+     *
+     * An initialiser here is read and thrown away. That is not an oversight:
      * the reference warns ("Ignoring unsupported initializer value") and
      * carries on reserving the space uninitialised, so refusing it would
      * reject a source ez80asm accepts. ".ds 10, 0" therefore does not zero
@@ -1076,7 +1112,9 @@ static const char* parse_ds(parser* p) {
     if (p->tk_.tk_ == COMMA) {
         next(p);
         value ignored = 0;
-        err = expr_eval(p, &ignored);
+        char text[128];
+        int text_sz = 0;
+        err = expr_capture(p, &ignored, text, (int) sizeof(text), &text_sz);
         if (err != NULL) {
             return err;
         }
@@ -1104,9 +1142,21 @@ static const char* parse_blk(parser* p, int width) {
     bool given = false;
     if (p->tk_.tk_ == COMMA) {
         next(p);
-        err = expr_eval(p, &v);
+
+        /* Captured rather than evaluated, because the fill may name something
+         * defined further down. The count has to be known now -- it decides
+         * how much space this takes and therefore where everything after it
+         * lands -- but the value written into that space does not, so it
+         * becomes an ordinary fixup over the whole run. This is the only
+         * construct the prescan existed to serve. */
+        char text[128];
+        int text_sz = 0;
+        err = expr_capture(p, &v, text, (int) sizeof(text), &text_sz);
         if (err != NULL) {
             return err;
+        }
+        if (p->undefined_) {
+            return pr_stack_fill(p, text, text_sz, width, (int) n);
         }
         given = true;
     }
@@ -1418,6 +1468,34 @@ static const char* resolve_fixup(parser* p, const label_node* ln, value* out) {
  * followed it. Both are recorded on the fixup now. */
 /* Writes a resolved value into the hole a fixup reserved. */
 static const char* apply_fixup(parser* p, const label_node* ln, int v) {
+    if (ln->kind_ == FIX_FOLD) {
+        uint8_t bits = 0;
+        const char* err = enc_fold(ln->next_, v, &bits);
+        if (err != NULL) {
+            p->lex_.lcount_ = ln->line_;
+            p->stmt_line_ = ln->line_;
+
+            return pr_msg(p, err);
+        }
+        p->buf_[ln->bpos_] |= bits;
+
+        return NULL;
+    }
+
+    if (ln->kind_ >= FIX_FILL1) {
+        /* The whole run takes the same value, and the space for it was
+         * written when the directive was read, so nothing moves here. */
+        const int w = (int) ln->kind_ - (int) FIX_FILL1 + 1;
+        for (int e = 0; e < ln->next_; e++) {
+            for (int i = 0; i < w; i++) {
+                p->buf_[ln->bpos_ + e * w + i] =
+                    (uint8_t) ((v >> (i * 8)) & 0xFF);
+            }
+        }
+
+        return NULL;
+    }
+
     if (ln->kind_ == FIX_REL8) {
         const int d = v - ln->next_;
         if (d < -128 || d > 127) {
@@ -1522,179 +1600,9 @@ static const char* post_process(parser* p) {
     return NULL;
 }
 
-/* A cheap sweep for constant definitions, run before the real pass.
- *
- * It looks only for "name: equ <expr>" and evaluates the ones whose value is
- * already computable. It never tracks the program counter and never sizes an
- * instruction, so it costs a lex of the source and nothing more -- this is not
- * a second assembly pass.
- *
- * What it buys is the ordering freedom the reference has: a constant can be
- * used before the line that defines it. A definition it cannot fold yet -- one
- * that depends on a label's address -- is skipped and left to the main pass,
- * where a label reference is deferred anyway.
- *
- * Failures are deliberately silent. Anything genuinely wrong is reported by
- * the real pass, with the right line number and without this one having to
- * guess whether a name it has not reached yet is a mistake. */
-/* Throws away the rest of the line the prescan is on.
- *
- * It used to pull tokens until the newline, which meant fully lexing -- and
- * hashing every identifier in -- a line it had already decided held no
- * constant. That is nearly every line: big.asm has 46,800 of them and not one
- * contains "equ".
- *
- * The lexer discards the text without tokenising it instead. Nothing is
- * skipped that was not already being discarded, and the line count still
- * advances, so diagnostics stay on the right line.
- *
- * The guard matters: if the current token is already the newline then the
- * scanner sits at the start of the next line, and skipping would swallow a
- * whole line of source. */
-static void pr_skip_rest_of_line(parser* p) {
-    if (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
-        lex_skip_line(&p->lex_);
-    }
-
-    /* And then any run of lines that cannot hold anything this pass wants,
-     * without lexing a token of them. Everything it looks for carries a colon
-     * or a quote: a constant needs a label, a label needs its colon, and an
-     * include names its file in quotes.
-     *
-     * That covers nearly everything. Not one of big.asm's 46,800 lines has
-     * either character; nor do 83% of BBC BASIC's asmb.inc or 87% of
-     * snes.asm. */
-    lex_skip_lines_without(&p->lex_, ':', '"');
-}
-
-static void pr_prescan(parser* p) {
-    if (p->fname_ == NULL && p->mem_ == NULL) {
-        return;
-    }
-
-    lexer saved_lex = p->lex_;
-    const uint16_t saved_scope = p->scope_;
-    const int saved_pos = p->pos_;
-    const int saved_depth = p->inc_depth_;
-
-    if (p->fname_ != NULL) {
-        if (lex_init(&p->lex_, p->fname_) == NULL) {
-            p->lex_ = saved_lex;
-
-            return;
-        }
-    } else {
-        if (br_open_mem(&p->lex_.rd_, p->mem_, p->mem_len_) == NULL) {
-            p->lex_ = saved_lex;
-
-            return;
-        }
-        p->lex_.lcount_ = 1;
-    }
-    p->scope_ = 0;
-    p->pos_ = 0;
-    p->inc_depth_ = 0;
-
-    next(p);
-    token tk = p->tk_;
-    while (tk.tk_ != NONE) {
-        /* Follow includes. A constant defined in an included file has to be
-         * visible to the same forward uses as one defined here. */
-        if (tk.tk_ == DOT) {
-            next(p);
-
-            tk = p->tk_;
-        }
-        if (tk.tk_ == DIRECTIVE && tk.tt_ == D_INCLUDE) {
-            if (parse_include(p) != NULL) {
-                pr_skip_rest_of_line(p);
-            }
-            next(p);
-
-            tk = p->tk_;
-            continue;
-        }
-
-        if (tk.tk_ != NAME) {
-            pr_skip_rest_of_line(p);
-            next(p);
-
-            tk = p->tk_;
-            continue;
-        }
-
-        /* Copy the name before advancing: the token text lives in the lexer's
-         * shared line buffer and the next token overwrites it. */
-        char name[MAX_NAME + 1];
-        int nsz = tk.sz_;
-        if (nsz > MAX_NAME) {
-            nsz = MAX_NAME;
-        }
-        for (int i = 0; i < nsz; i++) {
-            name[i] = tk.txt_[i];
-        }
-
-        const bool global = name[0] != '@';
-        next(p);
-        if (p->tk_.tk_ == COLON) {
-            if (global && p->scope_ < MAX_SCOPE) {
-                p->scope_++;
-            }
-
-            /* Both halves matter: tt_ on an INSTRUCTION token is an index
-             * into the ISA table, and index 19 has the same numeric value as
-             * D_EQU. Without the tk_ check, a label followed by that mnemonic
-             * was harvested as a constant and given a garbage value, which
-             * then resolved jumps to nonsense. */
-            next(p);
-            const token after = p->tk_;
-            if (after.tk_ == DIRECTIVE && after.tt_ == D_EQU) {
-                next(p);
-                value v = 0;
-                p->undefined_ = false;
-                /* An equ whose value is '$' cannot be folded here: the
-                 * prescan has no program counter, so it would store the
-                 * wrong number and any use before the definition would pick
-                 * it up. "FNCHK: EQU $" in BBC BASIC is exactly that. Left
-                 * undefined, it defers and resolves correctly instead. */
-                if (expr_eval(p, &v) == NULL && !p->undefined_ && !p->pc_used_) {
-                    char key[MAX_NAME + 1];
-                    const int ksz = scoped_key(p, name, nsz, key);
-                    if (ksz > 0) {
-                        ht_nset(&p->labels_, key, (uint8_t) ksz, v);
-                    }
-                }
-            }
-        }
-
-        pr_skip_rest_of_line(p);
-        next(p);
-
-        tk = p->tk_;
-    }
-
-    /* Close anything an include left open, then put the real source back. */
-    while (p->inc_depth_ > 0) {
-        br_destroy(&p->lex_.rd_);
-        p->lex_ = p->inc_[--p->inc_depth_];
-    }
-    br_destroy(&p->lex_.rd_);
-
-    p->lex_ = saved_lex;
-    p->scope_ = saved_scope;
-    p->pos_ = saved_pos;
-    p->inc_depth_ = saved_depth;
-    p->undefined_ = false;
-
-    /* The comment flag has to come back too. A source whose last line ends
-     * inside a comment with no trailing newline left it set, and the real
-     * pass then treated the whole file as commented out -- assembling to
-     * nothing, with no error at all. */
-}
-
 const char* pr_parse(parser* p) {
     // top level parser. On every iteration we are at the beginning of a new line.
-    pr_prescan(p);
+
 
     p->pos_ = 0;
     p->addr_ = p->org_;

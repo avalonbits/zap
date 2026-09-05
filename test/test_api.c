@@ -122,15 +122,30 @@ int main(void) {
         zap_free(&r);
     }
 
-    /* The prescan runs for a memory source too, so a constant used before its
-     * definition folds the same way it would from a file -- including in a
-     * size-determining position, which cannot be deferred. */
+    /* A constant used before its definition folds from memory exactly as it
+     * does from a file, wherever the value can be deferred: the byte is
+     * written now and settled when the equ is reached. */
+    {
+        zap_result r;
+        const char* fwd = "  rst TARGET\n  db 9\nTARGET: equ 8\n";
+        const bool ok = zap_assemble_mem(fwd, (int) strlen(fwd), "m", &r);
+        check("constant used before definition, from memory",
+              ok && r.size == 2 && r.bytes[0] == 0xCF && r.bytes[1] == 0x09);
+        zap_free(&r);
+    }
+
+    /* Where it cannot be deferred, it is an error -- and so it is in the
+     * reference. "ds SIZE" decides where everything after it lands, so there
+     * is nothing to write now and settle later. ez80asm says
+     * "Unknown identifier 'SIZE'" and produces no output; zap used to accept
+     * this because the prescan had already folded SIZE, which made zap the
+     * more permissive of the two. */
     {
         zap_result r;
         const char* fwd = "  ds SIZE\n  db 9\nSIZE: equ 4\n";
         const bool ok = zap_assemble_mem(fwd, (int) strlen(fwd), "m", &r);
-        check("constant used before definition, from memory",
-              ok && r.size == 5 && r.bytes[4] == 0x09);
+        check("a size that is not yet known is rejected, as ez80asm does",
+              !ok);
         zap_free(&r);
     }
 

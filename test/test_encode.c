@@ -78,6 +78,18 @@ static void insn_is(const char* insn, const char* want) {
     }
 }
 
+/* Like insn_is, but for a source of several lines and with its own label, so a
+ * forward reference has somewhere to be defined. */
+static void insn_is_named(const char* name, const char* src, const char* want) {
+    const char* got = emit(src);
+    if (strcmp(got, want) == 0) {
+        fprintf(stderr, "PASS  %-46s %s\n", name, got);
+    } else {
+        fprintf(stderr, "FAIL  %-46s got %s, want %s\n", name, got, want);
+        failures++;
+    }
+}
+
 int main(void) {
     /* The plain register forms, which the Y and Z transforms build. */
     insn_is("ld a,b", "78");
@@ -162,23 +174,53 @@ int main(void) {
     insn_is("ld a,a'", "ERR");
     insn_is("ld a,b c", "ERR");
 
-    /* A value that folds into the opcode byte has to be known where it is
-     * written -- there is no hole to leave. These used to emit bit 0, rst 0
-     * and im 0 and report success. */
+    /* A value that folds into the opcode byte and is never defined is still an
+     * error. These used to emit bit 0, rst 0 and im 0 and report success. */
     insn_is("bit later,a", "ERR");
     insn_is("rst later", "ERR");
     insn_is("im later", "ERR");
-    /* A constant defined further down is fine: the prescan has folded it. */
+
+    /* But one defined further down is not, and this is what the prescan used
+     * to exist for. There is no hole to leave for a value that folds into the
+     * opcode, but there does not need to be one: the byte is written with the
+     * operand contributing nothing, which is exactly the base the transform
+     * ORs into, so settling it later sets the same bits.
+     *
+     * Each of these must land on a different bit field of the opcode, or a
+     * fold that wrote the wrong bits would still look right. */
     {
-        const char* got = emit("    rst target\ntarget: equ 8\n");
-        if (strcmp(got, "CF") == 0) {
-            fprintf(stderr, "PASS  %-32s %s\n", "rst with a later constant", got);
-        } else {
-            fprintf(stderr, "FAIL  %-32s got %s, want CF\n",
-                    "rst with a later constant", got);
-            failures++;
+        static const struct { const char* name; const char* src; const char* want; } folds[] = {
+            {"rst with a later constant",  "    rst target\ntarget: equ 8\n",       "CF"},
+            {"rst 0 with a later constant","    rst target\ntarget: equ 0\n",       "C7"},
+            {"bit with a later constant",  "    bit target,a\ntarget: equ 7\n",     "CB 7F"},
+            {"im with a later constant",   "    im target\ntarget: equ 2\n",        "ED 5E"},
+            {"set with a later constant",  "    set target,b\ntarget: equ 3\n",     "CB D8"},
+            {"res with a later constant",  "    res target,c\ntarget: equ 5\n",     "CB A9"},
+            /* Through an expression, not just a bare name. */
+            {"a folded expression",        "    rst target*8\ntarget: equ 1\n",     "CF"},
+        };
+        for (unsigned i = 0; i < sizeof(folds) / sizeof(folds[0]); i++) {
+            const char* got = emit(folds[i].src);
+            if (strcmp(got, folds[i].want) == 0) {
+                fprintf(stderr, "PASS  %-32s %s\n", folds[i].name, got);
+            } else {
+                fprintf(stderr, "FAIL  %-32s got %s, want %s\n",
+                        folds[i].name, got, folds[i].want);
+                failures++;
+            }
         }
     }
+
+    /* The range checks travel with the deferred value -- they cannot run where
+     * the instruction is written, because there is nothing to check yet. A
+     * later constant that is out of range has to be caught when it arrives,
+     * not silently truncated into the opcode. */
+    insn_is_named("later rst address that is not a multiple of 8",
+                  "    rst target\ntarget: equ 3\n", "ERR");
+    insn_is_named("later bit number above 7",
+                  "    bit target,a\ntarget: equ 9\n", "ERR");
+    insn_is_named("later interrupt mode above 2",
+                  "    im target\ntarget: equ 5\n", "ERR");
 
     /* A relative jump computes its displacement from the next instruction. */
     insn_is("jr $", "18 FE");

@@ -36,7 +36,24 @@ typedef enum _fixup_kind {
     FIX_ABS16,      /* two-byte address, Z80 mode or a short suffix */
     FIX_ABS24,      /* three-byte address, ADL mode */
     FIX_ABS32,      /* four bytes, for dw32 */
-    FIX_REL8        /* one signed byte, relative to the next instruction */
+    FIX_REL8,       /* one signed byte, relative to the next instruction */
+
+    /* A value that folds into the opcode byte itself -- rst, bit, im, set,
+     * res. There is no hole to leave, but there does not need to be one: the
+     * byte is written with the operand contributing nothing, which is exactly
+     * the base the transform ORs into, so settling it later ORs in the same
+     * bits the immediate path would have. next_ carries the transform and the
+     * range check to re-run. */
+    FIX_FOLD,
+
+    /* A run of identical elements whose value is not known yet: blkb and its
+     * wider forms, where the count is known now but the fill is not. One kind
+     * per element width, so the width needs no field of its own; the element
+     * count rides in next_, which only FIX_REL8 otherwise uses. */
+    FIX_FILL1,
+    FIX_FILL2,
+    FIX_FILL3,
+    FIX_FILL4
 } fixup_kind;
 
 typedef struct _label_node {
@@ -54,7 +71,9 @@ typedef struct _label_node {
     uint8_t text_len_;
 
     int bpos_;   /* offset in the output buffer to patch */
-    int next_;   /* address of the instruction after this one, for FIX_REL8 */
+    /* Address of the instruction after this one, for FIX_REL8. For the
+     * FIX_FILL kinds it is instead how many elements to write. */
+    int next_;
     int here_;   /* the statement's address, so '$' still means something */
 
     /* The source line, for the diagnostic. 24 bits of it is more line numbers

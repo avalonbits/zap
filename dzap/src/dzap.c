@@ -154,9 +154,26 @@ static inline bool emit(dz* z, uint8_t b) {
 #define NLEN    8
 #define NBUCKET (NLETTER * NLEN)
 
+#define NROW 322
+
 static int16_t bucket_head[NBUCKET];
 static int16_t bucket_next[512];
 static uint8_t isa_len[512];
+
+/* What each row demands of the two operands' modes, in one value.
+ *
+ * Selecting a row asked `(row->condA & MODECHECK) == modeA` and the same for
+ * B: four loads and two masks per candidate row, to compare against something
+ * fixed when the table was generated. Both sides are folded here into one
+ * 16-bit value per row, so the test becomes a single compare -- and rows are
+ * scanned three or four deep for every instruction in the source.
+ *
+ * Indexed by a row number assigned here, since the rows live in 114 separate
+ * arrays and have no global index of their own. */
+static uint16_t row_modes[NROW];
+static uint8_t row_ccok[NROW];
+static int16_t row_base[512];
+
 static bool tables_ready = false;
 
 static inline int letter_of(char c) {
@@ -190,6 +207,19 @@ static void build_tables(void) {
         const int b = bucket_of(name[0], k);
         bucket_next[i] = bucket_head[b];
         bucket_head[b] = (int16_t) i;
+    }
+
+    int r = 0;
+    for (int i = 0; i < isa_table_count; i++) {
+        row_base[i] = (int16_t) r;
+        for (int j = 0; j < isa_table[i].count; j++) {
+            const isa_row* row = &isa_table[i].rows[j];
+            row_modes[r] = (uint16_t)
+                (((uint16_t) (row->condA & MODECHECK) << 8)
+                 | (uint16_t) (row->condB & MODECHECK));
+            row_ccok[r] = (uint8_t) ((row->flags & F_CCOK) != 0);
+            r++;
+        }
     }
 }
 
@@ -347,17 +377,19 @@ static inline bool digit_ch(char c) {
  * nothing else. Arithmetic between literals is one of the things to add back
  * and price later.
  */
+/* An operand with nothing in it, to copy from.
+ *
+ * Clearing ten fields by hand is ten stores, twice for every line in the
+ * source -- and two of them are the four-byte immediate and displacement,
+ * which on a 24-bit machine are not one store each. Copying a prepared struct
+ * lets the compiler move it in whatever way suits, and says once what "empty"
+ * means instead of in three places that have to agree. */
+static const dop dop_none = {
+    R_NONE, 0, false, 0, NOREQ, false, false, 0, false, 0
+};
+
 static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
-    op->reg = R_NONE;
-    op->reg_index = 0;
-    op->cc = false;
-    op->cc_index = 0;
-    op->mode = NOREQ;
-    op->indirect = false;
-    op->has_disp = false;
-    op->disp = 0;
-    op->has_imm = false;
-    op->imm = 0;
+    *op = dop_none;
 
     const char* p = *pp;
     while (p < e && is_space_ch(*p)) {
@@ -466,8 +498,45 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
             ns = s + 1;
             nn = n - 1;
         }
+        /* 0x... and plain decimal, which is what an instruction stream is
+         * made of, without the general parser. num_parse has to consider a
+         * leading $ or # or %, a trailing h or b or o, and a lone character
+         * being decimal so that a..f are not hex digits -- none of which can
+         * apply to a run that starts with a digit and holds only digits. */
         value v = 0;
-        if (nn <= 0 || !num_parse(ns, nn, &v)) {
+        bool got = false;
+        if (nn >= 3 && ns[0] == '0' && (ns[1] | 0x20) == 'x') {
+            value acc = 0;
+            int k = 2;
+            for (; k < nn; k++) {
+                const char c = (char) (ns[k] | 0x20);
+                if (c >= '0' && c <= '9') {
+                    acc = (acc << 4) | (c - '0');
+                } else if (c >= 'a' && c <= 'f') {
+                    acc = (acc << 4) | (c - 'a' + 10);
+                } else {
+                    break;
+                }
+            }
+            if (k == nn) {
+                v = acc;
+                got = true;
+            }
+        } else if (nn > 0 && digit_ch(ns[0])) {
+            value acc = 0;
+            int k = 0;
+            for (; k < nn; k++) {
+                if (!digit_ch(ns[k])) {
+                    break;
+                }
+                acc = acc * 10 + (ns[k] - '0');
+            }
+            if (k == nn) {
+                v = acc;
+                got = true;
+            }
+        }
+        if (!got && (nn <= 0 || !num_parse(ns, nn, &v))) {
             z->err = "expected a value";
 
             return false;
@@ -499,20 +568,19 @@ static inline uint8_t reg_match(uint32_t regset, uint32_t reg) {
     return (uint8_t) (((regset & reg) != 0) | ((regset | reg) == 0));
 }
 
-static const isa_row* match_row(const isa_insn* insn, const dop* a,
-                                const dop* b) {
-    const uint8_t modeA = a->mode;
-    const uint8_t modeB = b->mode;
+static const isa_row* match_row(int idx, const dop* a, const dop* b) {
+    const isa_insn* insn = &isa_table[idx];
+    const uint16_t want = (uint16_t) (((uint16_t) a->mode << 8) | b->mode);
+    const uint8_t has_cc = (uint8_t) (a->cc != 0);
+    int r = row_base[idx];
 
-    for (uint8_t i = 0; i < insn->count; i++) {
+    for (uint8_t i = 0; i < insn->count; i++, r++) {
         const isa_row* row = &insn->rows[i];
-        const uint8_t ccok = (uint8_t) ((row->flags & F_CCOK) != 0);
+        const uint8_t ccok = row_ccok[r];
         const uint8_t rega = (uint8_t) (reg_match(row->regsetA, a->reg) | ccok);
         const uint8_t regb = reg_match(row->regsetB, b->reg);
         const uint8_t cond = (uint8_t)
-            ((((row->condA & MODECHECK) == modeA)
-            & ((row->condB & MODECHECK) == modeB))
-            | (ccok & (uint8_t) (a->cc != 0)));
+            ((row_modes[r] == want) | (ccok & has_cc));
 
         if (rega & regb & cond) {
             if ((row->cpu & CPU_EZ80) == 0) {
@@ -714,19 +782,10 @@ static bool assemble_line(dz* z, const char* p, const char* e) {
             return false;
         }
     } else {
-        b.reg = R_NONE;
-        b.reg_index = 0;
-        b.cc = false;
-        b.cc_index = 0;
-        b.mode = NOREQ;
-        b.indirect = false;
-        b.has_disp = false;
-        b.disp = 0;
-        b.has_imm = false;
-        b.imm = 0;
+        b = dop_none;
     }
 
-    const isa_row* row = match_row(&isa_table[idx], &a, &b);
+    const isa_row* row = match_row(idx, &a, &b);
     if (row == NULL) {
         z->err = "no such instruction form";
 

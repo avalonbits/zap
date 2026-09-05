@@ -36,7 +36,13 @@ lexer* lex_init(lexer* lex, const char* fname);
 void lex_prime(void);
 void lex_destroy(lexer* lex);
 
-token lex_next(lexer* lex);
+/* Reads the next token into *out.
+ *
+ * Written through a pointer rather than returned: a token is 13 bytes on the
+ * eZ80, and returning one by value is a block copy on every call -- 473,762 of
+ * them on the benchmark source. Shrinking that same copy by four bytes was
+ * worth 3.4%, so removing it outright is the same trade taken further. */
+void lex_next(lexer* lex, token* out);
 
 /* Reads the body of a double-quoted string, the opening quote already
  * consumed, resolving backslash escapes. Returns the number of bytes, or -1 if

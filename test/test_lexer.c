@@ -98,7 +98,8 @@ static const char* lex_all(const char* src) {
 
     int n = 0;
     out[0] = 0;
-    for (token tk = lex_next(&lex); tk.tk_ != NONE; tk = lex_next(&lex)) {
+    token tk;
+    for (lex_next(&lex, &tk); tk.tk_ != NONE; lex_next(&lex, &tk)) {
         if (n > 0 && n < (int) sizeof(out) - 1) {
             out[n++] = ' ';
         }

@@ -67,16 +67,29 @@ void mt_destroy(macro_table* mt) {
 }
 
 macro* mt_add(macro_table* mt, const char* name, int name_sz,
-              char* body, int body_sz) {
-    if (mt->count == MACRO_MAX || name_sz <= 0 || name_sz > MAX_NAME) {
+              char* body, int body_sz, mt_error* why) {
+    *why = MT_OK;
+
+    if (name_sz <= 0 || name_sz > MAX_NAME) {
+        *why = MT_BAD_NAME;
+
+        return NULL;
+    }
+    if (mt->count == MACRO_MAX) {
+        *why = MT_FULL;
+
         return NULL;
     }
     if (mt_find(mt, name, name_sz) != NULL) {
+        *why = MT_DUPLICATE;
+
         return NULL;
     }
 
     macro* m = (macro*) malloc(sizeof(macro));
     if (m == NULL) {
+        *why = MT_NO_MEMORY;
+
         return NULL;
     }
     mt->m[mt->count] = m;

@@ -17,6 +17,7 @@
 
 #include "macro.h"
 #include "parser.h"
+#include "zap.h"
 
 static int failures = 0;
 
@@ -60,6 +61,22 @@ static const char* emit(const char* src) {
     unlink(path);
 
     return out;
+}
+
+/* Checks the diagnostic rather than the bytes: several failures used to share
+ * one message, so the message is worth pinning. */
+static void msg_is(const char* name, const char* src, const char* want) {
+    zap_result r;
+    const bool failed = !zap_assemble_mem(src, (int) strlen(src), "m", &r)
+                     || !r.ok;
+    const char* got = (failed && r.ndiags == 1) ? r.diags[0].msg : "<none>";
+    if (strcmp(got, want) == 0) {
+        fprintf(stderr, "PASS  %-42s %s\n", name, got);
+    } else {
+        fprintf(stderr, "FAIL  %-42s got \"%s\", want \"%s\"\n", name, got, want);
+        failures++;
+    }
+    zap_free(&r);
 }
 
 static void is(const char* name, const char* src, const char* want) {
@@ -193,6 +210,25 @@ int main(void) {
                           "  macro m%d\n  nop\n  endmacro\n", i);
         }
         is("one macro past the limit", src, "ERR");
+    }
+
+    /* The reasons mt_add can refuse are now told apart, so the message names
+     * the actual problem. Out of memory cannot be provoked from a test without
+     * a failing allocator, but it is the reason the distinction exists: on a
+     * 512 KB machine it is reachable, and reporting it as a duplicate sends a
+     * user hunting for a mistake in their source that is not there. The three
+     * that can be provoked are checked here. */
+    {
+        char src[MACRO_MAX * 40 + 64];
+        int n = 0;
+        for (int i = 0; i <= MACRO_MAX; i++) {
+            n += snprintf(&src[n], sizeof(src) - n,
+                          "  macro m%d\n  nop\n  endmacro\n", i);
+        }
+        msg_is("a full table says so", src, "too many macros");
+        msg_is("a repeated name says so",
+               "  macro m\n  nop\n  endmacro\n  macro m\n  nop\n  endmacro\n",
+               "duplicate macro");
     }
 
     if (failures) {

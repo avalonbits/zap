@@ -158,7 +158,7 @@ static void transform(emitted* out, operand* op, uint8_t type, parser* p,
     (void) p;
 }
 
-static uint8_t reg_match(uint32_t regset, uint32_t reg) {
+static uint8_t reg_match(uint24_t regset, uint32_t reg) {
     /* Either the row's set includes this register, or neither names one.
      * Bitwise rather than || so neither half is a branch. */
     return (uint8_t) (((regset & reg) != 0) | ((regset | reg) == 0));

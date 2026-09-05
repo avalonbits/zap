@@ -27,6 +27,34 @@ Data size selection is the single most critical factor when writing efficient C 
 | `int16_t` / `uint16_t` | 16-bit | **Poor** (unverified) | Avoid (believed to cause masking/extension overhead) |
 | `int24_t` / `uint24_t` / `int` | 24-bit | **Excellent** | Memory pointers, array indexing, general math |
 
+### Narrowing pays only if the operations stay narrow -- *measured*
+
+Choosing a narrower type for a field is not on its own an optimisation. What
+decides it is the width of **everything that touches the field**: if a narrowed
+value is used in an expression with a wider one, C promotes it back, and the
+conversion is paid at every use. That can cost more than the wider field ever
+did.
+
+Measured in zap, on an Agon, narrowing 32-bit fields to the native 24-bit word:
+
+| what was narrowed | what reads it | result |
+| :--- | :--- | :--- |
+| `operand.imm` | shifts and masks that stay 24-bit | **−0.8% synth** |
+| `operand.reg` alone | compared against a 32-bit table field, so widens back | **+2.4% synth** |
+| `operand.reg` and the table field together | nothing widens, but a shared struct is repacked | +1.0% synth |
+
+The same idea, applied three ways, gains 0.8% or costs 2.4% depending only on
+what the field is used *with*. The middle row is the trap: it is the change that
+looks most obviously correct in isolation, and it is the worst of the three.
+
+Two rules follow:
+
+* **Narrow a field only when every operation on it narrows with it.** Half a
+  conversion is worse than none.
+* **Beware narrowing a field in a struct other code shares.** Repacking moves
+  every field after it, and that cost lands on code that has nothing to do with
+  the change.
+
 ---
 
 ## 2. Core Architecture Rules
@@ -59,6 +87,22 @@ Data size selection is the single most critical factor when writing efficient C 
 
 ### Avoid Passing Structures by Value
 * **The Strategy:** Never pass structures to functions by value. Doing so triggers an expensive block memory copy (`LDIR`) onto the stack. Always pass structures via a pointer.
+
+---
+
+### Branchless is not unconditional -- *measured*
+
+Section 2's advice that data-driven code beats chains of `if`/`else` holds for a
+branch that **selects a value**, where both alternatives cost about the same and
+the branch buys nothing.
+
+It does not hold for a branch that **skips work**. zap's instruction-row
+selection evaluated every term of its test so the whole thing could be one
+branch. Rejecting a candidate on the cheapest term first, and only then paying
+for the expensive ones, was worth **23.2% in dzap and 6.4% on zap's
+instruction-dense benchmark** -- on a chip with no branch predictor.
+
+The distinction is whether the branch avoids computation. If it does, take it.
 
 ---
 

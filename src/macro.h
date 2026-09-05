@@ -20,6 +20,7 @@
 #define _MACRO_H_
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "value.h"
 
@@ -62,6 +63,19 @@ typedef struct _macro {
 typedef struct _macro_table {
     macro* m[MACRO_MAX];
     int count;
+
+    /* Which lower-cased first characters any macro starts with.
+     *
+     * mt_find runs on every identifier that begins a statement, which on a
+     * real source is nearly every line, and almost none of them name a macro.
+     * Scanning the table to discover that meant dereferencing a pointer and
+     * comparing a length for each macro defined, every time -- 2.7% of all
+     * work on BBC BASIC, which defines seven.
+     *
+     * One indexed load answers it instead. A byte per character rather than a
+     * packed bitmap because the eZ80 indexes a 256-byte table in a single
+     * instruction and has no cheap shift by a variable amount. */
+    uint8_t first_[256];
 } macro_table;
 
 void mt_init(macro_table* mt);

@@ -53,6 +53,9 @@ void mt_init(macro_table* mt) {
     for (int i = 0; i < MACRO_MAX; i++) {
         mt->m[i] = NULL;
     }
+    for (int i = 0; i < 256; i++) {
+        mt->first_[i] = 0;
+    }
 }
 
 void mt_destroy(macro_table* mt) {
@@ -98,6 +101,7 @@ macro* mt_add(macro_table* mt, const char* name, int name_sz,
     }
     m->name[name_sz] = 0;
     m->name_sz = name_sz;
+    mt->first_[(uint8_t) lower(name[0])] = 1;
     m->argc = 0;
     m->body = body;
     m->body_sz = body_sz;
@@ -107,6 +111,12 @@ macro* mt_add(macro_table* mt, const char* name, int name_sz,
 }
 
 const macro* mt_find(const macro_table* mt, const char* name, int name_sz) {
+    /* Nothing starts with this character, so nothing can match it. This is the
+     * answer for almost every identifier in a source and costs one load. */
+    if (name_sz <= 0 || !mt->first_[(uint8_t) lower(name[0])]) {
+        return NULL;
+    }
+
     for (int i = 0; i < mt->count; i++) {
         if (same_name(mt->m[i]->name, mt->m[i]->name_sz, name, name_sz)) {
             return mt->m[i];

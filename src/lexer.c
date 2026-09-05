@@ -677,6 +677,29 @@ void lex_next(lexer* lex, token* out) {
         ch = scan_close(lex, tkp, &sc);
     }
 
+    /* Registers and flags are decided before the literal test rather than
+     * after it.
+     *
+     * num_parse runs on every identifier-shaped token to claim things like Ah
+     * and 0b1h as numbers, and its cheap reject lets every one-character token
+     * through -- so a, b, c and d each reached scan_base before being
+     * recognised as registers. On a source dense in registers that was 6% of
+     * all work spent proving that "a" is not a decimal number.
+     *
+     * Safe because no register or flag name parses as a number, which the test
+     * asserts for all 29 of them in both cases rather than leaving it to the
+     * eye: the single-character forms are forced to decimal so a..f are not
+     * hex digits, and of the longer ones only mb, ixh and iyh even reach
+     * scan_base, where they fail on their first character. If that ever stops
+     * being true the two orders disagree and the test says so. */
+    const int reg = reg_or_flag(tkp->txt_, tkp->sz_);
+    if (reg != 0) {
+        tkp->tk_ = unpack_tk(reg);
+        tkp->tt_ = unpack_tt(reg);
+
+        return;
+    }
+
     // A literal is claimed before a name, so Ah and 0b1h are numbers rather
     // than identifiers. That also means an identifier can never shadow a
     // literal, which is how the reference resolves the same ambiguity.
@@ -698,15 +721,6 @@ void lex_next(lexer* lex, token* out) {
      * colon has to be immediate -- "lbl :" is not a label there either. */
     if (l_peek(lex) == ':') {
         tkp->label_ = true;
-
-        return;
-    }
-
-    /* Registers and flags are answered without a hash. */
-    const int reg = reg_or_flag(tkp->txt_, tkp->sz_);
-    if (reg != 0) {
-        tkp->tk_ = unpack_tk(reg);
-        tkp->tt_ = unpack_tt(reg);
 
         return;
     }

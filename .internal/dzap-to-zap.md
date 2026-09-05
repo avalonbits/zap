@@ -60,10 +60,22 @@ the simplification.
 | change | dzap | zap |
 |---|---|---|
 | Row early-out | −23.2% | **−1.2% bbcbasic, −6.4% synth — kept** |
-| Character class table | part of −12.3% | **−1.6% bbcbasic, −3.1% synth — kept** |
+| Character class table | measured alone here | **−1.6% bbcbasic, −3.1% synth — kept** |
+| 24-bit immediate in the operand | part of −4.7% | **−0.1% bbcbasic, −0.8% synth — kept** |
 | 24-bit register masks | −9.4% | +0.5% to +6.5% — reverted, three variants |
+| Instruction head written as one block | part of −2.2% | +0.8% to +0.9% — reverted. Most instructions have one head byte, so building an array and calling `pr_wblock`, which does a memcpy, costs more than the single `pr_wbyte` it replaced. |
+| Precomputed row modes | part of −3.7% | **Not measured, and not worth it.** It needs the same `row_base` indirection that try 2 of the masks isolated at +2.6…3.9%, to save two masked loads per row. |
 
-Cumulative on zap so far: bbcbasic 18.42s → 17.90s, synth 38.06s → 34.54s (−9.2%).
+Cumulative on zap: bbcbasic 18.42s → 17.88s (−2.9%), rokky 2.28s → 2.20s
+(−3.5%), synth 38.06s → 34.28s (−9.9%). synth's ratio against ez80asm goes
+0.89x → 0.75x.
+
+**Three of six transferred.** The two that paid most touch neither the data
+layout nor add indirection: an early-out that skips work, and a table that
+replaces comparisons. The three that failed all either added a level of
+indirection or repacked a shared struct. That is the rule this exercise
+actually produced -- not "narrow your types", but *change control flow and
+lookup tables freely; be very careful with layout and indirection.*
 
 The spread on the early-out is the shape to expect from all of these: synth is
 11.3 source bytes per instruction and takes the full benefit, BBC BASIC is 41.5

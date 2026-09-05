@@ -92,12 +92,9 @@ typedef enum _isa_transform {
 /* One encoding of one mnemonic: what the two operands have to look like, how
  * they fold into the opcode, and the bytes to emit. */
 typedef struct _isa_row {
-    /* 24 bits: the set's highest bit is R_I at 2^20. This is the table side of
-     * the narrowing on its own -- the operand stays 32-bit, so a compare
-     * between them widens this back. */
-    uint24_t regsetA;
+    uint32_t regsetA;
     uint8_t condA;
-    uint24_t regsetB;
+    uint32_t regsetB;
     uint8_t condB;
     uint8_t transformA;
     uint8_t transformB;

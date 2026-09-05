@@ -167,6 +167,28 @@ int main(void) {
         check("free is safe on a failed result", true);
     }
 
+    /* A diagnostic raised while re-evaluating a fixup still names its source.
+     *
+     * resolve_fixup swaps in a lexer of its own to read the expression back,
+     * and that lexer's name field was never initialised -- so an error found
+     * at that point printed whatever was on the stack. It came out as fifty
+     * bytes of binary ahead of the message, which is how the first real bug in
+     * that path presented and why it took so long to read.
+     *
+     * A reference that is never defined is resolved at the end, from exactly
+     * that lexer. */
+    {
+        zap_result r;
+        const char* src = "  ld a, NEVER_DEFINED\n";
+        const bool ok = zap_assemble_mem(src, (int) strlen(src), "buffer.asm", &r);
+        check("an unresolved reference is an error", !ok && r.ndiags == 1);
+        if (r.ndiags == 1) {
+            check("a fixup's diagnostic names its source",
+                  strcmp(r.diags[0].file, "buffer.asm") == 0);
+        }
+        zap_free(&r);
+    }
+
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);
     }

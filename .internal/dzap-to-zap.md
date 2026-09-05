@@ -28,6 +28,8 @@ Three verdicts:
 | Mnemonic's `.` folded into the class table | part of −12.3% | **Portable.** |
 | Immediate held as `int` (24-bit) rather than 32-bit `value` | part of −4.7% | **Portable.** An instruction's immediate is at most three bytes; zap's `operand.imm` is the same `value` type and its emitter has the same ceiling. Invisible on the host, like the register masks. |
 | No pre-scan for the line end — one pass over the source instead of two | part of −4.7% | **Conditional**, and closer to a redesign than a transplant. zap is driven token-by-token through `lex_next` rather than line-by-line, so the idea (nothing needs the line bound, because no scan can cross a newline) applies but the shape does not. |
+| Literal and displacement accumulators narrowed to `int` | part of −2.2% | **Portable.** Third application of the idea behind the two biggest wins; an operand is at most three bytes and a displacement one signed byte. |
+| Output reserved once per instruction, not bounds-checked per byte | part of −2.2% | **Portable, and half-built already.** zap has `pr_reserve`; it is `pr_wbyte` still testing on every byte that would change. |
 
 ## Standing note
 
@@ -45,6 +47,7 @@ above are about *semantics*, and the sizes are always from the Agon.
       + row precompute, operand copy, literals    17.10s   1,203
       + 24-bit masks, dot in table                15.00s   1,055
       + 24-bit immediate, single-pass lines       14.30s   1,006
+      + narrowed accumulators, reserve per insn   13.98s     983
 
-Roughly two thirds of the 27.5% so far is portable or conditional; the rest is
+Roughly two thirds of the 29.1% so far is portable or conditional; the rest is
 the simplification.

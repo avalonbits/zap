@@ -143,13 +143,27 @@ static bool out_grow(dz* z) {
     return true;
 }
 
-static inline bool emit(dz* z, uint8_t b) {
-    if (z->pos == z->cap && !out_grow(z)) {
-        return false;
+/* Room for the longest instruction, asked for once.
+ *
+ * Testing on every byte written meant a bounds check per output byte when an
+ * instruction knows in advance that it cannot need more than a handful. The
+ * longest form here is two prefixes, an opcode, two displacements and two
+ * three-byte immediates. */
+#define OUT_MAX_INSN 12
+
+static bool out_reserve(dz* z, int n) {
+    while (z->pos + n > z->cap) {
+        if (!out_grow(z)) {
+            return false;
+        }
     }
-    z->out[z->pos++] = b;
 
     return true;
+}
+
+/* Only valid after out_reserve has been asked for enough. */
+static inline void put(dz* z, uint8_t b) {
+    z->out[z->pos++] = b;
 }
 
 /* ------------------------------------------------------------- mnemonics */
@@ -489,14 +503,32 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
                 while (p < e && num_ch(*p)) {
                     p++;
                 }
-                value d = 0;
-                if (!num_parse(ds, (int) (p - ds), &d)) {
-                    z->err = "bad displacement";
+                /* A displacement is one signed byte by the time it is
+                 * written, so it is accumulated in the machine's word rather
+                 * than the evaluator's 32-bit one. */
+                int d = 0;
+                if (digit_ch(*ds)) {
+                    const char* q = ds;
+                    while (q < p && digit_ch(*q)) {
+                        d = d * 10 + (*q - '0');
+                        q++;
+                    }
+                    if (q != p) {
+                        z->err = "bad displacement";
 
-                    return false;
+                        return false;
+                    }
+                } else {
+                    value dv = 0;
+                    if (!num_parse(ds, (int) (p - ds), &dv)) {
+                        z->err = "bad displacement";
+
+                        return false;
+                    }
+                    d = (int) dv;
                 }
                 op->has_disp = true;
-                op->disp = neg ? -(int) d : (int) d;
+                op->disp = neg ? -d : d;
                 while (p < e && is_space_ch(*p)) {
                     p++;
                 }
@@ -544,10 +576,10 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
          * leading $ or # or %, a trailing h or b or o, and a lone character
          * being decimal so that a..f are not hex digits -- none of which can
          * apply to a run that starts with a digit and holds only digits. */
-        value v = 0;
+        int v = 0;
         bool got = false;
         if (nn >= 3 && ns[0] == '0' && (ns[1] | 0x20) == 'x') {
-            value acc = 0;
+            int acc = 0;
             int k = 2;
             for (; k < nn; k++) {
                 const char c = (char) (ns[k] | 0x20);
@@ -564,7 +596,7 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
                 got = true;
             }
         } else if (nn > 0 && digit_ch(ns[0])) {
-            value acc = 0;
+            int acc = 0;
             int k = 0;
             for (; k < nn; k++) {
                 if (!digit_ch(ns[k])) {
@@ -577,12 +609,16 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
                 got = true;
             }
         }
-        if (!got && (nn <= 0 || !num_parse(ns, nn, &v))) {
-            z->err = "expected a value";
+        if (!got) {
+            value gv = 0;
+            if (nn <= 0 || !num_parse(ns, nn, &gv)) {
+                z->err = "expected a value";
 
-            return false;
+                return false;
+            }
+            v = (int) gv;
         }
-        op->imm = (int) (neg ? -v : v);
+        op->imm = neg ? -v : v;
         op->has_imm = true;
         op->mode |= IMM;
 
@@ -704,27 +740,19 @@ static void transform(emitted* out, dop* op, uint8_t type) {
     }
 }
 
-static bool emit_imm(dz* z, const isa_row* row, const dop* op, uint8_t cond) {
-    int width;
-    if (cond & IMM_N) {
-        width = 1;
-    } else if (cond & IMM_MMN) {
-        width = DZ_ADL ? 3 : 2;
-    } else {
-        width = DZ_ADL ? 3 : 2;
-    }
-    (void) row;
+static void emit_imm(dz* z, const dop* op, uint8_t cond) {
+    const int width = (cond & IMM_N) ? 1 : (DZ_ADL ? 3 : 2);
 
     for (int i = 0; i < width; i++) {
-        if (!emit(z, (uint8_t) ((op->imm >> (i * 8)) & 0xFF))) {
-            return false;
-        }
+        put(z, (uint8_t) ((op->imm >> (i * 8)) & 0xFF));
     }
-
-    return true;
 }
 
 static bool emit_row(dz* z, const isa_row* row, dop* a, dop* b) {
+    if (!out_reserve(z, OUT_MAX_INSN)) {
+        return false;
+    }
+
     emitted out;
     out.prefix1 = 0;
     out.prefix2 = row->prefix;
@@ -744,38 +772,30 @@ static bool emit_row(dz* z, const isa_row* row, dop* a, dop* b) {
         (out.prefix1 == 0xDD || out.prefix1 == 0xFD) && out.prefix2 == 0xCB
         && (row->flags & (F_DISPA | F_DISPB));
 
-    if (out.prefix1 != 0 && !emit(z, out.prefix1)) {
-        return false;
+    if (out.prefix1 != 0) {
+        put(z, out.prefix1);
     }
-    if (out.prefix2 != 0 && !emit(z, out.prefix2)) {
-        return false;
+    if (out.prefix2 != 0) {
+        put(z, out.prefix2);
     }
-    if (!dd_before_opcode && !emit(z, out.opcode)) {
-        return false;
+    if (!dd_before_opcode) {
+        put(z, out.opcode);
     }
     if (row->flags & F_DISPA) {
-        if (!emit(z, (uint8_t) (a->disp & 0xFF))) {
-            return false;
-        }
+        put(z, (uint8_t) (a->disp & 0xFF));
     }
     if (row->flags & F_DISPB) {
-        if (!emit(z, (uint8_t) (b->disp & 0xFF))) {
-            return false;
-        }
+        put(z, (uint8_t) (b->disp & 0xFF));
     }
-    if (dd_before_opcode && !emit(z, out.opcode)) {
-        return false;
+    if (dd_before_opcode) {
+        put(z, out.opcode);
     }
 
     if (a->has_imm && (row->condA & (IMM_N | IMM_MMN))) {
-        if (!emit_imm(z, row, a, row->condA)) {
-            return false;
-        }
+        emit_imm(z, a, row->condA);
     }
     if (b->has_imm && (row->condB & (IMM_N | IMM_MMN))) {
-        if (!emit_imm(z, row, b, row->condB)) {
-            return false;
-        }
+        emit_imm(z, b, row->condB);
     }
 
     return true;

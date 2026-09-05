@@ -239,66 +239,6 @@ int main(void) {
         free(buf);
     }
 
-    /* The prescan's line skipper.
-     *
-     * It stops on the first line holding either wanted character and leaves
-     * the reader positioned at the start of that line; every line before it is
-     * consumed and counted. The line count matters as much as the position --
-     * diagnostics from the main pass are numbered from it, so a skipper that
-     * lands in the right place with the wrong count reports every later error
-     * against the wrong line. It used to reach the newline twice, once to find
-     * it and once to step over it; folding those together is only correct if
-     * both still come out exactly here. */
-    {
-        static const char* SRC =
-            "  nop\n"          /* 1 */
-            "  ret\n"          /* 2 */
-            "lab: equ 4\n"     /* 3 -- has both */
-            "  nop\n";         /* 4 -- lcount_ starts at 1, so this lands on 3 */
-        char path[] = "/tmp/zap_skip_XXXXXX";
-        int fd = mkstemp(path);
-        check("skip: scratch file", fd >= 0);
-        const size_t n = strlen(SRC);
-        check("skip: written", write(fd, SRC, n) == (long) n);
-        close(fd);
-
-        lexer lex;
-        check("skip: opened", lex_init(&lex, path) != NULL);
-        lex_skip_lines_without(&lex, ':', '=');
-        check("skip: consumed exactly two lines", lex.lcount_ == 3);
-
-        /* Positioned at the start of that line, not past it. */
-        token tk;
-        lex_next(&lex, &tk);
-        check("skip: left the reader at the label",
-              tk.sz_ == 3 && memcmp(tk.txt_, "lab", 3) == 0);
-        lex_destroy(&lex);
-        unlink(path);
-    }
-
-    /* Nothing matches: every line is consumed and counted, and a last line
-     * without a newline terminates rather than spinning. */
-    {
-        static const char* SRC = "  nop\n  ret\n  nop";
-        char path[] = "/tmp/zap_skip_XXXXXX";
-        int fd = mkstemp(path);
-        check("skip2: scratch file", fd >= 0);
-        const size_t n = strlen(SRC);
-        check("skip2: written", write(fd, SRC, n) == (long) n);
-        close(fd);
-
-        lexer lex;
-        check("skip2: opened", lex_init(&lex, path) != NULL);
-        lex_skip_lines_without(&lex, ':', '=');
-        check("skip2: counted both newlines", lex.lcount_ == 3);
-
-        token tk;
-        lex_next(&lex, &tk);
-        check("skip2: ran out of source", tk.tk_ == NONE);
-        lex_destroy(&lex);
-        unlink(path);
-    }
-
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);
     }

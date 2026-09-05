@@ -74,14 +74,6 @@ typedef struct _parser {
     int anon_[256];
     int anon_count_;
 
-    /* How the constant prescan re-reads the source: by name for a file, or by
-     * pointer for one held in memory. The caller's text has to stay valid for
-     * the duration of the parse, which it does -- the parser does not outlive
-     * the call. */
-    const char* fname_;
-    const char* mem_;
-    int mem_len_;
-
     /* Sources suspended by an .include, innermost last. next() pops one when
      * the current file runs out, so an include reads as if its text had been
      * written in place. */
@@ -198,6 +190,15 @@ bool pr_wblock(parser* p, const uint8_t* src, int n);
 value tk2i(token tk);
 const char* pr_stack_fixup(parser* p, const char* text, int sz,
                            fixup_kind kind, int anon);
+/* Where the next byte will be written, so a fixup can be placed over a byte
+ * that is written before it is known to need one. */
+int pr_pos(parser* p);
+
+/* Records a fixup over an opcode byte already written, for an operand whose
+ * value folds into it and is not known yet. */
+const char* pr_stack_fold(parser* p, const char* text, int sz, int bpos,
+                          int aux);
+
 const char* pr_stack_label(parser* p, char* label, int sz, int anon);
 const char* pr_stack_relative_label(parser* p, char* label, int sz, int anon);
 /* The address to report for the byte at addr_: the same thing, unless

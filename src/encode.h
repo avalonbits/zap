@@ -31,4 +31,14 @@ struct _parser;
  * selects the operand size for this instruction alone. */
 const char* enc_instruction(struct _parser* p);
 
+/* Re-applies a folded operand once its value is known.
+ *
+ * `aux` is what emit_row recorded: the transform in the low byte and which
+ * range check to re-run in the next. Returns the bits to OR into the opcode
+ * byte, or an error message if the value is out of range for it. */
+const char* enc_fold(int aux, int v, uint8_t* bits);
+
+/* What emit_row records for a folded operand it could not resolve. */
+int enc_fold_aux(uint8_t transform, uint16_t cond);
+
 #endif  /* _ENCODE_H_ */

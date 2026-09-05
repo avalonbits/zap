@@ -230,6 +230,67 @@ static bool folds_known(uint8_t tr, const operand* op) {
     }
 }
 
+/* The range check that belongs to a folded operand, kept with the fold so it
+ * can be re-run when the value finally arrives. */
+enum { FCHK_NONE = 0, FCHK_RST, FCHK_BIT, FCHK_IM };
+
+int enc_fold_aux(uint8_t transform, uint16_t cond) {
+    int chk = FCHK_NONE;
+    if (transform == TR_N) {
+        chk = FCHK_RST;
+    } else if (cond & IMM_BIT) {
+        chk = FCHK_BIT;
+    } else if (cond & IMM_NSELECT) {
+        chk = FCHK_IM;
+    }
+
+    return (chk << 8) | (int) transform;
+}
+
+const char* enc_fold(int aux, int v, uint8_t* bits) {
+    const uint8_t tr = (uint8_t) (aux & 0xFF);
+
+    switch ((aux >> 8) & 0xFF) {
+        case FCHK_RST:
+            if (v & 0x47) {
+                return "illegal restart address";
+            }
+            break;
+        case FCHK_BIT:
+            if (v < 0 || v > 7) {
+                return "bit number must be 0..7";
+            }
+            break;
+        case FCHK_IM:
+            if (v < 0 || v > 2) {
+                return "interrupt mode must be 0, 1 or 2";
+            }
+            break;
+        default:
+            break;
+    }
+
+    /* The same OR the transform would have done, and nothing else: every other
+     * operand's contribution is already in the byte. */
+    switch (tr) {
+        case TR_N:
+            *bits = (uint8_t) v;
+            break;
+        case TR_BIT:
+        case TR_Y:
+            *bits = (uint8_t) ((v & 0x07) << 3);
+            break;
+        case TR_SELECT:
+            *bits = (uint8_t) (((v == 1) ? 2 : (v == 2) ? 3 : 0) << 3);
+            break;
+        default:
+            *bits = 0;
+            break;
+    }
+
+    return NULL;
+}
+
 static const char* emit_row(parser* p, const isa_row* row, operand* a,
                             operand* b, uint8_t suffix) {
     emitted out;
@@ -242,24 +303,43 @@ static const char* emit_row(parser* p, const isa_row* row, operand* a,
         return pr_msg(p, "illegal suffix for this instruction");
     }
 
-    /* A value that folds into the opcode byte has to be known now: there is
-     * no hole to leave, and the range checks below cannot run on a value that
-     * is not there yet. Without this, "rst later" with later undefined
-     * emitted C7 -- rst 0 -- and reported success, and bit and im did the
-     * same. A constant defined further down still works, because the prescan
-     * has already folded it. */
-    if (!folds_known(row->transformA, a) || !folds_known(row->transformB, b)) {
+    /* A value that folds into the opcode byte is deferred rather than demanded.
+     *
+     * There is no hole to leave, but there does not need to be one. The byte
+     * is written with this operand contributing nothing -- an unknown
+     * immediate is zero, and every transform here ORs -- so the byte in the
+     * buffer is exactly the base the value ORs into. Settling it later sets
+     * the same bits the immediate path would have.
+     *
+     * This is what the prescan used to be for. It swept the whole source for
+     * "name: equ ..." before assembling, so that "rst target" could see a
+     * target defined further down, and it cost 6.8% of big.asm's instructions
+     * and 11.0% of BBC BASIC's to serve a case this handles directly.
+     *
+     * Without either, "rst later" emitted C7 -- rst 0 -- and reported success.
+     * The range checks move to the fixup with the value. */
+    const bool defer_a = !folds_known(row->transformA, a);
+    const bool defer_b = !folds_known(row->transformB, b);
+    if (defer_a && defer_b) {
+        /* Both operands folding and both unknown would need two fixups on one
+         * byte. No row in the table does this, and guessing at it would be
+         * worse than saying so. */
         return pr_msg(p, "value must be known here");
     }
+    const operand* fold_op = defer_a ? a : (defer_b ? b : NULL);
+    const int fold_aux = fold_op == NULL ? 0
+                       : enc_fold_aux(defer_a ? row->transformA : row->transformB,
+                                      defer_a ? row->condA : row->condB);
 
-    /* Range checks the reference makes before emitting anything. */
-    if ((row->condA & IMM_BIT) && (a->imm < 0 || a->imm > 7)) {
+    /* Range checks the reference makes before emitting anything. A deferred
+     * operand has no value to check, so its checks travel with its fixup. */
+    if (fold_op == NULL && (row->condA & IMM_BIT) && (a->imm < 0 || a->imm > 7)) {
         return pr_msg(p, "bit number must be 0..7");
     }
-    if ((row->condA & IMM_NSELECT) && (a->imm < 0 || a->imm > 2)) {
+    if (fold_op == NULL && (row->condA & IMM_NSELECT) && (a->imm < 0 || a->imm > 2)) {
         return pr_msg(p, "interrupt mode must be 0, 1 or 2");
     }
-    if (row->transformA == TR_N && (a->imm & 0x47)) {
+    if (fold_op == NULL && row->transformA == TR_N && (a->imm & 0x47)) {
         return pr_msg(p, "illegal restart address");
     }
     if ((row->flags & F_DISPA) && (a->disp < -128 || a->disp > 127)) {
@@ -298,8 +378,16 @@ static const char* emit_row(parser* p, const isa_row* row, operand* a,
     if (out.prefix2 != 0 && !pr_wbyte(p, out.prefix2)) {
         return pr_msg(p, "output too large");
     }
+    const int opcode_pos = pr_pos(p);
     if (!dd_before_opcode && !pr_wbyte(p, out.opcode)) {
         return pr_msg(p, "output too large");
+    }
+    if (fold_op != NULL && !dd_before_opcode) {
+        const char* ferr = pr_stack_fold(p, fold_op->expr, fold_op->expr_sz,
+                                         opcode_pos, fold_aux);
+        if (ferr != NULL) {
+            return ferr;
+        }
     }
 
     if (row->flags & F_DISPA) {

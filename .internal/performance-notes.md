@@ -155,6 +155,41 @@ Keep it separate from `test/corpus`. That one is small, fast and runs on every
 commit; a full corpus of real programs is a different thing with a different
 cadence, and mixing them would make the fast check slow enough to skip.
 
+## Tried and reverted: the operand fast path and lazy capture
+
+Evaluating `0x42` the general way is eight nested calls to reach a value the
+lexer already converted and left in the token, and `expr_capture` copied every
+expression's text although 60.7% of them on BBC BASIC are never re-read. Both
+looked like clear wins. Measured on the Agon, neither was:
+
+| | bbcbasic | rokky | synth |
+|---|---|---|---|
+| main | **18.42** | **2.28** | 38.06 |
+| lazy capture + split eval_at | 18.90 | 2.30 | 36.92 |
+| eager capture + split eval_at | 19.04 | 2.34 | 37.06 |
+| lazy capture + eval_at parameter | 18.86 | 2.30 | **36.90** |
+
+Every variant is slower than main on both real programs and faster only on the
+synthetic one. `synth` is made entirely of literal operands, so a literal fast
+path helps it and nothing else; real sources reach for symbols, where the fast
+path never fires and its machinery is pure cost.
+
+Two hypotheses about *why* were both wrong, and both took a target run to
+disprove. First that the lazy capture was the expensive half -- it is the
+cheaper one, beating eager on all three. Then that splitting `eval_at` in two
+put a call on every expression -- replacing the split with a parameter moved
+BBC BASIC by 0.04s. The cost is spread through the added machinery, not in any
+one thing worth naming.
+
+**Do not retry this shape without a real source that is dense in literal
+operands.** If one turns up in the full corpus (see below) it would change the
+answer; `synth` alone is not evidence, being a file this project wrote to
+exercise the encoder.
+
+What survived is in ed16510: an uninitialised filename in `resolve_fixup`, and
+tests for deferred expressions, ADL widths and an include ending mid-expression
+-- all of which cover behaviour that already existed and had nothing pinning it.
+
 ## Things that were measured and turned out not to matter
 
 Recording these so they are not re-litigated:

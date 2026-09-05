@@ -51,9 +51,35 @@ above are about *semantics*, and the sizes are always from the Agon.
       + 24-bit immediate, single-pass lines       14.30s   1,006
       + narrowed accumulators, reserve per insn   13.98s     983
       + cheap-test early-out in row selection     10.74s     756
+      (round 7 tried and reverted -- see below)
 
 Roughly two thirds of the 45.5% so far is portable or conditional; the rest is
 the simplification.
+
+## Round 7: both halves lost
+
+| | 256 KiB | vs baseline |
+|---|---|---|
+| baseline | **10.74s** | |
+| skip the first character in the mnemonic compare | 11.20s | +4.3% |
+| ...and merge `row_modes` with `row_ccok` | 12.76s | +18.8% |
+
+**Skipping a known-equal character costs more than it saves.** The bucket
+already agrees on the first letter, so `same_ci(name + 1, s + 1, n - 1)` looked
+free — but it adds two pointer additions and a subtraction per candidate to
+remove one iteration from a loop that runs one to three times.
+
+**Packing a flag into the spare bit of a `uint16_t` cost about 14%.** It
+replaced a byte load and a 16-bit compare with a 16-bit load and two 16-bit
+`AND`s. The guide's §1 says 16-bit is the worst width in ADL mode because the
+architecture has no dedicated 16-bit truncation and the compiler must mask the
+upper 8 bits of a 24-bit register. That is the obvious explanation and the
+direction is right, but this measurement does not isolate it: the change also
+removed a byte load and altered the comparison, so it is evidence for the
+guide's entry rather than a clean verification of it. The entry stays marked
+unverified.
+
+Both reverted. Neither is portable, since neither is an improvement anywhere.
 
 ## Branchless is not unconditional
 

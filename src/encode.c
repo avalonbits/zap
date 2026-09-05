@@ -158,9 +158,10 @@ static void transform(emitted* out, operand* op, uint8_t type, parser* p,
     (void) p;
 }
 
-static bool reg_match(uint32_t regset, uint32_t reg) {
-    /* Either the row's set includes this register, or neither names one. */
-    return (regset & reg) != 0 || (regset | reg) == 0;
+static uint8_t reg_match(uint32_t regset, uint32_t reg) {
+    /* Either the row's set includes this register, or neither names one.
+     * Bitwise rather than || so neither half is a branch. */
+    return (uint8_t) (((regset & reg) != 0) | ((regset | reg) == 0));
 }
 
 static const isa_row* match_row(const isa_insn* insn, const operand* a,
@@ -171,19 +172,19 @@ static const isa_row* match_row(const isa_insn* insn, const operand* a,
     for (uint8_t i = 0; i < insn->count; i++) {
         const isa_row* row = &insn->rows[i];
 
-        bool rega = reg_match(row->regsetA, a->reg);
-        const bool regb = reg_match(row->regsetB, b->reg);
-        bool cond = ((row->condA & MODECHECK) == modeA)
-                 && ((row->condB & MODECHECK) == modeB);
+        /* Every term evaluated and combined bitwise, so the whole row test is
+         * one branch instead of a chain of short-circuiting ones. A row that
+         * takes a condition code accepts one in place of the register it
+         * would otherwise want, which folds in as two more terms. */
+        const uint8_t ccok = (uint8_t) ((row->flags & F_CCOK) != 0);
+        const uint8_t rega = (uint8_t) (reg_match(row->regsetA, a->reg) | ccok);
+        const uint8_t regb = reg_match(row->regsetB, b->reg);
+        const uint8_t cond = (uint8_t)
+            ((((row->condA & MODECHECK) == modeA)
+            & ((row->condB & MODECHECK) == modeB))
+            | (ccok & (uint8_t) (a->cc != 0)));
 
-        /* A row that takes a condition code accepts one in place of the
-         * register it would otherwise want. */
-        if (row->flags & F_CCOK) {
-            cond = cond || a->cc;
-            rega = true;
-        }
-
-        if (rega && regb && cond) {
+        if (rega & regb & cond) {
             if ((row->cpu & cpu) == 0) {
                 return NULL;  /* the form exists, but not on this CPU */
             }

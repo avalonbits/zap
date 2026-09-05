@@ -30,8 +30,8 @@ static void clear(zap_result* out) {
     out->ndiags = 0;
 }
 
-/* Runs a parser that has already been set up, and copies what it produced out
- * of it so the caller owns it. */
+/* Runs a parser that has already been set up and takes what it produced out of
+ * it, so the caller owns it and the parser no longer does. */
 static bool finish(parser* p, zap_result* out) {
     const char* err = pr_parse(p);
 
@@ -45,20 +45,9 @@ static bool finish(parser* p, zap_result* out) {
         return false;
     }
 
+    /* Taken, not copied: the parser's buffer becomes the result's. */
     int sz = 0;
-    const uint8_t* buf = pr_buf(p, &sz);
-
-    if (sz > 0) {
-        out->bytes = (uint8_t*) malloc((size_t) sz);
-        if (out->bytes == NULL) {
-            pr_destroy(p);
-
-            return false;
-        }
-        for (int i = 0; i < sz; i++) {
-            out->bytes[i] = buf[i];
-        }
-    }
+    out->bytes = pr_take_buf(p, &sz);
     out->size = sz;
     out->origin = p->start_;
     out->ok = true;

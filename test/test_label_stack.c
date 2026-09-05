@@ -47,6 +47,16 @@ static bool push(label_stack* ls, const char* text, uint16_t wait) {
 }
 
 int main(void) {
+    /* Nothing is allocated until the first push. A stack that is created and
+     * never used has to survive being asked about and destroyed anyway --
+     * big.asm takes exactly this path over 473 KB of source. */
+    label_stack empty;
+    check("init allocates nothing", ls_init(&empty, 1024) != NULL);
+    check("empty has nothing live", ls_live_count(&empty) == 0);
+    check("empty has no first live", ls_first_live(&empty) == -1);
+    check("empty bucket is empty", ls_waiting_on(&empty, 7) == -1);
+    ls_destroy(&empty);
+
     label_stack ls;
     if (ls_init(&ls, 8) == NULL) {
         printf("FAIL  ls_init\n");

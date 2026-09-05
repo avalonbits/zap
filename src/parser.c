@@ -172,6 +172,51 @@ parser* pr_init_mem(parser* p, const char* text, int len, const char* name) {
     return p;
 }
 
+/* Hands the output buffer to the caller, who then owns it.
+ *
+ * Copying it out instead meant the whole program existed twice at once: the
+ * parser's buffer is alive until pr_destroy, so a 96.8 KB output cost 96.8 KB
+ * to copy on top of the 128 KB holding it -- 74% of the peak, on a machine
+ * with 512 KB, to duplicate something nobody needed twice.
+ *
+ * The buffer is also trimmed to what was written. It grows by doubling, so a
+ * 96.8 KB program sits in 128 KB and the last 31 KB of that has never been
+ * touched. Shrinking cannot move the block on any allocator worth the name,
+ * but a failure is harmless either way: the original is still valid and still
+ * the right answer, just larger than it needs to be. */
+uint8_t* pr_take_buf(parser* p, int* sz) {
+    /* high_ still says how much was written even after the buffer is gone, so
+     * asking twice has to be answered by whether it is still here. Reading
+     * high_ alone made the second call realloc(NULL, high_) -- a fresh buffer
+     * of uninitialised bytes, handed out as if it were the program. */
+    if (p->buf_ == NULL) {
+        *sz = 0;
+
+        return NULL;
+    }
+
+    *sz = p->high_;
+
+    if (p->high_ <= 0) {
+        free(p->buf_);
+        p->buf_ = NULL;
+
+        return NULL;
+    }
+
+    uint8_t* trimmed = (uint8_t*) realloc(p->buf_, (size_t) p->high_);
+    if (trimmed != NULL) {
+        p->buf_ = trimmed;
+        p->sz_ = p->high_;
+    }
+
+    uint8_t* taken = p->buf_;
+    p->buf_ = NULL;
+    p->sz_ = 0;
+
+    return taken;
+}
+
 uint8_t* pr_buf(parser* p, int* sz) {
     /* Only as far as something was actually written. Trailing padding from a
      * ds or align at the end of the file is not part of the output. */

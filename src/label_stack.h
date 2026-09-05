@@ -106,6 +106,9 @@ typedef struct _label_stack {
      * which is what keeps it small. A slot with text_len_ == 0 is free; a real
      * fixup always has at least one character of expression. */
     int pos_;
+    /* The size to allocate on the first push, kept until then. */
+    int want_;
+
     int free_;
     int live_;
 

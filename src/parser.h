@@ -220,4 +220,8 @@ void pr_destroy(parser* p);
 const char* pr_parse(parser* p);
 uint8_t* pr_buf(parser* p, int* sz);
 
+/* The same bytes, but the caller takes ownership and the parser gives them up.
+ * Trimmed to what was actually written. */
+uint8_t* pr_take_buf(parser* p, int* sz);
+
 #endif  // _PARSER_H_

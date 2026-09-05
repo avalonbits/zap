@@ -60,6 +60,16 @@ int lex_string(lexer* lex, char* out, int max);
  * expansion substitutes into it before it is lexed. Returns the length, or -1
  * if `stop` is never found, -2 if it does not fit. The terminating line is
  * consumed. */
+/* Skips lines holding neither character, stopping at the start of one that
+ * does. The prescan uses it to pass over source that cannot define a constant
+ * or open an include. */
+void lex_skip_lines_without(lexer* lex, char a, char b);
+
+/* Discards the rest of the current line without tokenising it, advancing the
+ * line count. The prescan uses it for the lines it has no interest in, which
+ * is nearly all of them. */
+void lex_skip_line(lexer* lex);
+
 int lex_capture(lexer* lex, const char* stop, char* out, int max);
 
 #endif  // _LEXER_H_

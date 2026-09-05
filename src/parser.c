@@ -1342,6 +1342,36 @@ static const char* post_process(parser* p) {
  * Failures are deliberately silent. Anything genuinely wrong is reported by
  * the real pass, with the right line number and without this one having to
  * guess whether a name it has not reached yet is a mistake. */
+/* Throws away the rest of the line the prescan is on.
+ *
+ * It used to pull tokens until the newline, which meant fully lexing -- and
+ * hashing every identifier in -- a line it had already decided held no
+ * constant. That is nearly every line: big.asm has 46,800 of them and not one
+ * contains "equ".
+ *
+ * The lexer discards the text without tokenising it instead. Nothing is
+ * skipped that was not already being discarded, and the line count still
+ * advances, so diagnostics stay on the right line.
+ *
+ * The guard matters: if the current token is already the newline then the
+ * scanner sits at the start of the next line, and skipping would swallow a
+ * whole line of source. */
+static void pr_skip_rest_of_line(parser* p) {
+    if (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
+        lex_skip_line(&p->lex_);
+    }
+
+    /* And then any run of lines that cannot hold anything this pass wants,
+     * without lexing a token of them. Everything it looks for carries a colon
+     * or a quote: a constant needs a label, a label needs its colon, and an
+     * include names its file in quotes.
+     *
+     * That covers nearly everything. Not one of big.asm's 46,800 lines has
+     * either character; nor do 83% of BBC BASIC's asmb.inc or 87% of
+     * snes.asm. */
+    lex_skip_lines_without(&p->lex_, ':', '"');
+}
+
 static void pr_prescan(parser* p) {
     if (p->fname_ == NULL && p->mem_ == NULL) {
         return;
@@ -1382,9 +1412,7 @@ static void pr_prescan(parser* p) {
         }
         if (tk.tk_ == DIRECTIVE && tk.tt_ == D_INCLUDE) {
             if (parse_include(p) != NULL) {
-                while (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
-                    next(p);
-                }
+                pr_skip_rest_of_line(p);
             }
             next(p);
 
@@ -1393,9 +1421,7 @@ static void pr_prescan(parser* p) {
         }
 
         if (tk.tk_ != NAME) {
-            while (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
-                next(p);
-            }
+            pr_skip_rest_of_line(p);
             next(p);
 
             tk = p->tk_;
@@ -1446,9 +1472,7 @@ static void pr_prescan(parser* p) {
             }
         }
 
-        while (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
-            next(p);
-        }
+        pr_skip_rest_of_line(p);
         next(p);
 
         tk = p->tk_;

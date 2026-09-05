@@ -26,6 +26,8 @@ Three verdicts:
 | Literal fast path: read `0x…` and decimal without `num_parse` | part of −3.7% | **Not portable.** Already tried on zap and reverted: **+3.4% on bbcbasic**, faster only on literal-dense synthetic input. In zap an operand can be a symbol or an expression, so the fast path must fall through to the general evaluator and the fall-through is what costs. dzap's version works because that case does not exist. |
 | **Register masks held as `uint24_t` rather than `uint32_t`** | **−12.3%** | **Portable, and the one to take first.** The mask's highest bit is `R_I` at 2^20, so the set fits the eZ80's native word. `src/operand.h:75` declares `uint32_t reg` and `src/isa.h:95` `uint32_t regsetA`; zap runs the same test in the same shape. Nothing to do with labels. |
 | Mnemonic's `.` folded into the class table | part of −12.3% | **Portable.** |
+| Immediate held as `int` (24-bit) rather than 32-bit `value` | part of −4.7% | **Portable.** An instruction's immediate is at most three bytes; zap's `operand.imm` is the same `value` type and its emitter has the same ceiling. Invisible on the host, like the register masks. |
+| No pre-scan for the line end — one pass over the source instead of two | part of −4.7% | **Conditional**, and closer to a redesign than a transplant. zap is driven token-by-token through `lex_next` rather than line-by-line, so the idea (nothing needs the line bound, because no scan can cross a newline) applies but the shape does not. |
 
 ## Standing note
 
@@ -42,6 +44,7 @@ above are about *semantics*, and the sizes are always from the Agon.
       + lengths, class table, length buckets      17.76s   1,250
       + row precompute, operand copy, literals    17.10s   1,203
       + 24-bit masks, dot in table                15.00s   1,055
+      + 24-bit immediate, single-pass lines       14.30s   1,006
 
-Roughly two thirds of the 23.9% so far is portable or conditional; the rest is
+Roughly two thirds of the 27.5% so far is portable or conditional; the rest is
 the simplification.

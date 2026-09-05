@@ -105,7 +105,17 @@ typedef struct _dop {
     bool has_disp;
     int disp;
     bool has_imm;
-    value imm;
+
+    /* An instruction's immediate is at most three bytes -- a 24-bit address in
+     * ADL mode -- so it is held in the machine's own word rather than the
+     * 32-bit `value` the expression evaluator deals in. Same reasoning as the
+     * register mask above, and the same invisibility on a host where int is 32
+     * bits anyway.
+     *
+     * Truncating from `value` on the way in is what the emitter would do
+     * regardless: it writes the low one, two or three bytes and the rest was
+     * never going to be looked at. */
+    int imm;
 } dop;
 
 typedef struct _dz {
@@ -422,7 +432,11 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
     while (p < e && is_space_ch(*p)) {
         p++;
     }
-    if (p >= e || *p == ',') {
+
+    /* The newline ends the operand list. It is checked here rather than by
+     * bounding the scan at the end of the line, because finding that end meant
+     * a whole extra pass over the source. */
+    if (p >= e || *p == ',' || *p == '\n') {
         *pp = p;
 
         return true;   /* nothing there */
@@ -568,7 +582,7 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
 
             return false;
         }
-        op->imm = neg ? -v : v;
+        op->imm = (int) (neg ? -v : v);
         op->has_imm = true;
         op->mode |= IMM;
 
@@ -769,11 +783,21 @@ static bool emit_row(dz* z, const isa_row* row, dop* a, dop* b) {
 
 /* ------------------------------------------------------------------ main */
 
-static bool assemble_line(dz* z, const char* p, const char* e) {
+/* Assembles one line and reports where it stopped.
+ *
+ * The end of the line is not looked for first. It used to be: the caller
+ * scanned to the newline to bound this one, and then this one scanned the same
+ * bytes again -- two passes over every byte in the source to parse it once.
+ * Nothing here needs the bound, because no scan can run past a newline
+ * anyway: it is not a space, not a name character and not part of a number, so
+ * every loop stops on it. The caller is told where parsing ended and steps
+ * over the newline from there. */
+static bool assemble_line(dz* z, const char* p, const char* e, const char** stop) {
     while (p < e && is_space_ch(*p)) {
         p++;
     }
-    if (p >= e) {
+    *stop = p;
+    if (p >= e || *p == '\n') {
         return true;
     }
 
@@ -811,6 +835,8 @@ static bool assemble_line(dz* z, const char* p, const char* e) {
     } else {
         b = dop_none;
     }
+
+    *stop = p;
 
     const isa_row* row = match_row(idx, &a, &b);
     if (row == NULL) {
@@ -851,20 +877,27 @@ static bool run(dz* z, const char* path) {
             }
         }
 
-        /* The buffer holds whole lines, so the end of this one is in it. */
+        /* The buffer holds whole lines, so this one's newline is in it. */
         const char* const base = r->buf_;
-        uint24_t i = r->bpos_;
-        const uint24_t end = r->bsz_;
-        while (i < end && base[i] != '\n') {
-            i++;
-        }
+        const char* const end = &base[r->bsz_];
+        const char* stop = &base[r->bpos_];
 
         z->line++;
-        if (!assemble_line(z, &base[r->bpos_], &base[i])) {
+        if (!assemble_line(z, &base[r->bpos_], end, &stop)) {
             return false;
         }
 
-        r->bpos_ = (i < end) ? i + 1 : end;
+        /* Whatever ended the line is here or a step away: parsing stops at the
+         * newline, and anything else between is trailing space. */
+        while (stop < end && *stop != '\n' && is_space_ch(*stop)) {
+            stop++;
+        }
+        if (stop < end && *stop != '\n') {
+            z->err = "unexpected text after the instruction";
+
+            return false;
+        }
+        r->bpos_ = (uint24_t) ((stop < end ? stop + 1 : end) - base);
     }
 
     return true;

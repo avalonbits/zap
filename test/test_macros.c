@@ -231,6 +231,39 @@ int main(void) {
                "duplicate macro");
     }
 
+    /* Invocation is case-insensitive, and so is the first-character reject that
+     * decides whether the table is worth scanning at all.
+     *
+     * mt_find is called for every identifier that begins a statement, and
+     * almost none of them name a macro; one indexed load on the lower-cased
+     * first character answers that without touching a macro. It has to fold
+     * the same way on both sides -- a macro recorded under 'M' and looked up
+     * under 'm' is invisible, and the failure is silent: the invocation is
+     * left as an unknown instruction rather than reported as a missing macro.
+     * These invoke in a different case from the definition in both
+     * directions. */
+    is("macro defined upper, invoked lower",
+       "  macro MyMacro\n  ld a,b\n  endmacro\n  mymacro\n",
+       "78");
+    is("macro defined lower, invoked upper",
+       "  macro lowmac\n  ld a,c\n  endmacro\n  LOWMAC\n",
+       "79");
+    is("macro defined mixed, invoked mixed differently",
+       "  macro fOoBaR\n  ld a,d\n  endmacro\n  FoObAr\n",
+       "7A");
+
+    /* The duplicate check goes through the same path, so a name that differs
+     * only in case is still a duplicate. */
+    msg_is("a repeated name in another case says so",
+           "  macro Dup\n  nop\n  endmacro\n  macro dUP\n  nop\n  endmacro\n",
+           "duplicate macro");
+
+    /* An identifier sharing no first character with any macro must still reach
+     * the instruction it actually is, rather than being swallowed. */
+    is("a non-macro identifier is unaffected",
+       "  macro zzz\n  nop\n  endmacro\n  ld a,b\n",
+       "78");
+
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);
     }

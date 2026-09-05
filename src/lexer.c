@@ -176,6 +176,48 @@ static inline char l_char(lexer* lex) {
     return r->bpos_ < r->bsz_ ? r->buf_[r->bpos_++] : (char) EOF;
 }
 
+/* Runs over a stretch of characters without going back to the reader for each.
+ *
+ * l_peek and l_char reach through the lexer for buf_, bpos_ and bsz_ on every
+ * character: a load of the base, a load of the position, a load of the limit,
+ * a compare, an indexed load, and a store back. That is the right shape for
+ * deciding what a token is, which happens once, and the wrong one for scanning
+ * the body of a name, which happens for every character of every identifier in
+ * the source.
+ *
+ * These hold the three in locals for the length of a run and write the
+ * position back once at the end. The compiler cannot do it: buf_reader is
+ * reachable through a pointer, so it has to assume anything might change it.
+ *
+ * Safe because none of these refills. The buffer holds whole lines, so the
+ * only point at which more input can be needed is the start of a token, and
+ * lex_next asks there -- a run cannot reach the end of the buffer without
+ * reaching the newline that ends its line first. The bound is kept anyway, so
+ * a buffer that somehow did end mid-line stops the run rather than running off
+ * it. */
+typedef struct _scan {
+    const char* base;
+    uint24_t pos;
+    uint24_t end;
+} scan;
+
+static inline scan scan_open(const lexer* lex) {
+    scan sc;
+    sc.base = lex->rd_.buf_;
+    sc.pos = lex->rd_.bpos_;
+    sc.end = lex->rd_.bsz_;
+
+    return sc;
+}
+
+/* Writes the position back and extends the token by what the run covered. */
+static inline char scan_close(lexer* lex, token* tk, const scan* sc) {
+    tk->sz_ += (int) (sc->pos - lex->rd_.bpos_);
+    lex->rd_.bpos_ = sc->pos;
+
+    return sc->pos < sc->end ? sc->base[sc->pos] : (char) EOF;
+}
+
 /* Extends the token by the character at the scan position.
  *
  * There is nothing to copy: a token's text is a pointer into the buffer, so it
@@ -399,13 +441,19 @@ void lex_next(lexer* lex, token* out) {
     /* Whitespace between tokens is skipped here rather than turned into a
      * token for the caller to throw away. Nothing has wanted one since strings
      * started being read character by character. */
-    char ch = l_char(lex);
-    while (OK_CHAR(ch) && is_space(ch)) {
-        ch = l_char(lex);
+    scan gap = scan_open(lex);
+    while (gap.pos < gap.end && is_space(gap.base[gap.pos])) {
+        gap.pos++;
     }
-    if (!OK_CHAR(ch)) {
+    if (gap.pos >= gap.end) {
+        lex->rd_.bpos_ = gap.pos;
+
         return;
     }
+    const char ch0 = gap.base[gap.pos];
+    gap.pos++;
+    lex->rd_.bpos_ = gap.pos;
+    char ch = ch0;
 
     /* The token's text is a run of the buffer beginning at the character just
      * consumed. Nothing is copied: it grows by counting. */
@@ -444,21 +492,24 @@ void lex_next(lexer* lex, token* out) {
              * until the newline, and returned that. Emitting the newline
              * directly is the same token stream with one less round trip and
              * no flag to keep. */
-            char c = l_peek(lex);
-            while (OK_CHAR(c) && c != '\n') {
-                l_next(lex);
-                c = l_peek(lex);
+            /* The token does not grow over a comment, so the position is
+             * written back directly rather than through scan_close. */
+            scan sc = scan_open(lex);
+            while (sc.pos < sc.end && sc.base[sc.pos] != '\n') {
+                sc.pos++;
             }
-            if (c == '\n') {
-                l_next(lex);
+            const bool had_nl = sc.pos < sc.end;
+            if (had_nl) {
+                sc.pos++;   /* and the newline that ends it */
             }
+            lex->rd_.bpos_ = sc.pos;
             lex->lcount_++;
 
             /* Retype the token. It began at the semicolon, but what it
              * stands for is the newline -- the character just consumed. A file
              * that ends without one leaves nothing to point at, and the token
              * carries no text. */
-            if (c == '\n') {
+            if (had_nl) {
                 tkp->txt_ = &lex->rd_.buf_[lex->rd_.bpos_ - 1];
                 tkp->sz_ = 1;
             } else {
@@ -520,10 +571,12 @@ void lex_next(lexer* lex, token* out) {
         return;
     }
 
-    ch = l_peek(lex);
-    while (OK_CHAR(ch) && is_ascdig(ch)) {
-        take_ch(lex, tkp);
-        ch = l_peek(lex);
+    {
+        scan sc = scan_open(lex);
+        while (sc.pos < sc.end && is_ascdig(sc.base[sc.pos])) {
+            sc.pos++;
+        }
+        ch = scan_close(lex, tkp, &sc);
     }
 
     /* A dot continues a name unless what has been read so far is a mnemonic,
@@ -532,11 +585,11 @@ void lex_next(lexer* lex, token* out) {
      * have both. */
     while (ch == '.' && !is_mnemonic(tkp->txt_, tkp->sz_)) {
         take_ch(lex, tkp);
-        ch = l_peek(lex);
-        while (OK_CHAR(ch) && is_ascdig(ch)) {
-            take_ch(lex, tkp);
-            ch = l_peek(lex);
+        scan sc = scan_open(lex);
+        while (sc.pos < sc.end && is_ascdig(sc.base[sc.pos])) {
+            sc.pos++;
         }
+        ch = scan_close(lex, tkp, &sc);
     }
 
     // A literal is claimed before a name, so Ah and 0b1h are numbers rather

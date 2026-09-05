@@ -24,7 +24,7 @@ Three verdicts:
 | Precomputed row modes and `F_CCOK`, one 16-bit compare per row | part of −3.7% | **Portable.** Pure table preparation; zap runs the identical test in its own `match_row`. |
 | Operand cleared by copying a zeroed template | part of −3.7% | **Conditional** on shrinking zap's operand first. dzap's is small; zap's is **153 bytes on the eZ80**, 128 of it the expression buffer for deferred fixups. Copying that would be worse than the ten stores it replaces. |
 | Literal fast path: read `0x…` and decimal without `num_parse` | part of −3.7% | **Not portable.** Already tried on zap and reverted: **+3.4% on bbcbasic**, faster only on literal-dense synthetic input. In zap an operand can be a symbol or an expression, so the fast path must fall through to the general evaluator and the fall-through is what costs. dzap's version works because that case does not exist. |
-| ~~Register masks held as `uint24_t`~~ | dzap −12.3% **bundled**; on zap **+0.5% to +3.9% — reverted** | **Does not transfer.** Tried on zap twice: changing `isa_row`'s field type cost 0.5–1.0%, and the faithful side-array port cost 2.6–3.9%, because the indirection it adds is not repaid where `match_row` is reached far less often per source byte. The dzap round it came from also changed the class table in the same measurement and was never split, so the −12.3% cannot be attributed to the masks at all. Recorded as a measurement error of mine, not a property of the idea. |
+| Register masks held as `uint24_t` | dzap **−9.4%** measured alone | **Does not transfer.** Three variants tried on zap, all slower: repacking `isa_row`'s field type +0.5…1.0%; narrow side arrays with the operand left at 32 bits +2.6…3.9%; both together, which is dzap's exact shape, +4.0…6.5%. Try 2 isolates the indirection at ~3%, and try 3 adding narrowing on top makes it worse -- which points at zap's `operand` being **153 bytes**, so narrowing `reg` shifts everything after it including the 128-byte `expr` array, on a struct whose fields are read constantly. dzap's operand is 28 bytes with nothing to misalign. |
 | Mnemonic's `.` folded into the class table | part of −12.3% | **Portable.** |
 | Immediate held as `int` (24-bit) rather than 32-bit `value` | part of −4.7% | **Portable.** An instruction's immediate is at most three bytes; zap's `operand.imm` is the same `value` type and its emitter has the same ceiling. Invisible on the host, like the register masks. |
 | No pre-scan for the line end — one pass over the source instead of two | part of −4.7% | **Conditional**, and closer to a redesign than a transplant. zap is driven token-by-token through `lex_next` rather than line-by-line, so the idea (nothing needs the line bound, because no scan can cross a newline) applies but the shape does not. |
@@ -60,7 +60,10 @@ the simplification.
 | change | dzap | zap |
 |---|---|---|
 | Row early-out | −23.2% | **−1.2% bbcbasic, −6.4% synth — kept** |
-| 24-bit register masks | bundled | +0.5% to +3.9% — reverted, both ways |
+| Character class table | part of −12.3% | **−1.6% bbcbasic, −3.1% synth — kept** |
+| 24-bit register masks | −9.4% | +0.5% to +6.5% — reverted, three variants |
+
+Cumulative on zap so far: bbcbasic 18.42s → 17.90s, synth 38.06s → 34.54s (−9.2%).
 
 The spread on the early-out is the shape to expect from all of these: synth is
 11.3 source bytes per instruction and takes the full benefit, BBC BASIC is 41.5

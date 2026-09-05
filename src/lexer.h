@@ -21,7 +21,6 @@
 
 typedef struct _lexer  {
     buf_reader rd_;
-    char line_[256];
     int lcount_;
 
     /* Which source this is, for diagnostics. A program with a dozen includes

@@ -147,7 +147,33 @@ typedef struct _parser {
 } parser;
 
 /* Shared with the instruction and expression parsers. */
-token next(parser* p);
+/* Inline: it is called once per token -- 108,445 times on BBC BASIC -- and
+ * what it does around lex_next is one branch. */
+static inline void next(parser* p) {
+    p->tk_ = lex_next(&p->lex_);
+
+    /* The only thing left to handle is the end of an included file: go back
+     * to the one that included it and keep reading, so the include reads as
+     * if its text had been written in place. */
+    if (p->tk_.tk_ == NONE && p->inc_depth_ > 0) {
+        br_destroy(&p->lex_.rd_);
+        --p->inc_depth_;
+        p->lex_ = p->inc_[p->inc_depth_];
+        p->scope_ = p->inc_scope_[p->inc_depth_];
+        if (p->inc_macro_[p->inc_depth_]) {
+            p->macro_depth_--;
+        }
+
+        /* The end of an included file ends the line as well. Its last line
+         * often has no trailing newline, and without this it ran on into the
+         * line after the .include. */
+        p->tk_.tk_ = NEW_LINE;
+        p->tk_.txt_ = NULL;   /* synthesised: there is no source text for it */
+        p->tk_.sz_ = 0;
+        p->tk_.val_ = 0;
+        p->tk_.label_ = false;
+    }
+}
 const char* pr_msg(parser* p, const char* msg);
 bool pr_wbyte(parser* p, uint8_t b);
 

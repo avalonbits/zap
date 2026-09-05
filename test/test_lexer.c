@@ -220,10 +220,14 @@ int main(void) {
             "NL(\n) INSN(nop) NL(\n)");
 
     /* One closing the file with no trailing newline still terminates the
-     * statement rather than running off the end. */
+     * statement rather than running off the end. It carries no text: token
+     * text points into the source now, and there is no newline in the source
+     * to point at. The parser keys on the token rather than its text, and
+     * already handles a zero-length NEW_LINE -- it makes one itself at the end
+     * of an included file. */
     check_s("comment at end of file with no newline",
             lex_all("nop ; trailing"),
-            "INSN(nop) NL(\n)");
+            "INSN(nop) NL()");
 
     /* Strings arrive as delimiters plus their contents. */
     check_s("quoted string delimiters",

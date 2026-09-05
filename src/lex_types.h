@@ -48,6 +48,10 @@ typedef enum _TOKEN {
     // A character literal that is empty, unterminated, holds more than one
     // character, or uses an escape that does not exist.
     BAD_LITERAL,
+
+    /* A line longer than the reader's whole buffer, which is the only way
+     * the buffer can fail to end on a newline. */
+    LINE_TOO_LONG,
     DIRECTIVE,
     INSTRUCTION,
     REGISTER,
@@ -233,9 +237,16 @@ typedef enum _TK_TYPE {
 
 typedef struct _token {
     char* txt_;
+
+    /* sz_ stays an int: with token text pointing into the source, a token is
+     * only bounded by its line, and a line may be as long as the buffer. */
     int sz_;
-    TOKEN tk_;
-    TK_TYPE tt_;
+
+    /* TOKEN has 29 values and TK_TYPE 183, so both fit a byte. On the eZ80
+     * that takes the token from 17 bytes to 13 -- every field there is its
+     * natural width, so four bytes come straight off every copy. */
+    uint8_t tk_;
+    uint8_t tt_;
 
     // Set for NUMBER. Carried on the token so that no site has to convert the
     // text a second time.

@@ -4,7 +4,10 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
+#include <string.h>
+
 #include "hash_table.h"
+
 #include "isa.h"
 #include "value.h"
 
@@ -147,20 +150,43 @@ static bool is_ascdig(char ch) {
 
 #define OK_CHAR(ch) (ch != EOF && ch != ESUSP)
 
-/* Appends to the token text, refusing to run off the end. The buffer used to
- * be written without a bound, so a name longer than the line buffer wrote past
- * the lexer struct. An over-long token is truncated here and will fail to
- * resolve as a name or a literal, which is the right outcome for input that
- * cannot be legal anyway. */
 static bool is_mnemonic(const char* txt, int sz) {
     return unpack_tk(ht_nget(&words, txt, (uint8_t) sz, NULL)) == INSTRUCTION;
 }
 
-static void push_ch(lexer* lex, token* tk, char ch) {
-    if (tk->sz_ < (int) sizeof(lex->line_) - 1) {
-        tk->txt_[tk->sz_++] = ch;
-    }
+/* Characters come straight out of the reader's buffer.
+ *
+ * None of these refills. The buffer holds whole lines, so the only point at
+ * which more input can be needed is the start of a token, and lex_next asks
+ * there. That takes the refill test off the path every character used to pay
+ * for. */
+static inline char l_peek(const lexer* lex) {
+    const buf_reader* r = &lex->rd_;
+
+    return r->bpos_ < r->bsz_ ? r->buf_[r->bpos_] : (char) EOF;
 }
+
+static inline void l_next(lexer* lex) {
+    lex->rd_.bpos_++;
+}
+
+static inline char l_char(lexer* lex) {
+    buf_reader* r = &lex->rd_;
+
+    return r->bpos_ < r->bsz_ ? r->buf_[r->bpos_++] : (char) EOF;
+}
+
+/* Extends the token by the character at the scan position.
+ *
+ * There is nothing to copy: a token's text is a pointer into the buffer, so it
+ * grows by counting one more character of what it already points at. That also
+ * retires the bound the copy needed -- a token cannot outrun its line, and a
+ * line has to fit the buffer to be read at all. */
+static inline void take_ch(lexer* lex, token* tk) {
+    lex->rd_.bpos_++;
+    tk->sz_++;
+}
+
 
 /* Reads the body of a character literal, the opening quote already consumed.
  *
@@ -171,12 +197,11 @@ static void push_ch(lexer* lex, token* tk, char ch) {
 static void lex_char_literal(lexer* lex, token* tk) {
     tk->tk_ = BAD_LITERAL;
 
-    char ch = br_peek_inline(&lex->rd_);
+    char ch = l_peek(lex);
     if (!OK_CHAR(ch) || ch == '\n') {
         return;  /* nothing after the opening quote */
     }
-    push_ch(lex, tk, ch);
-    br_next_inline(&lex->rd_);
+    take_ch(lex, tk);
 
     if (ch == '\'') {
         return;  /* the empty literal '' -- both quotes consumed */
@@ -184,14 +209,13 @@ static void lex_char_literal(lexer* lex, token* tk) {
 
     char val;
     if (ch == '\\') {
-        const char esc = br_peek_inline(&lex->rd_);
+        const char esc = l_peek(lex);
         if (!OK_CHAR(esc) || esc == '\n') {
             return;
         }
-        push_ch(lex, tk, esc);
-        br_next_inline(&lex->rd_);
+        take_ch(lex, tk);
 
-        if (esc == '\'' && br_peek_inline(&lex->rd_) != '\'') {
+        if (esc == '\'' && l_peek(lex) != '\'') {
             /* '\' -- the quote just consumed was the closing one, so the
              * backslash stands for itself. */
             tk->tk_ = NUMBER;
@@ -206,11 +230,10 @@ static void lex_char_literal(lexer* lex, token* tk) {
         val = ch;
     }
 
-    if (br_peek_inline(&lex->rd_) != '\'') {
+    if (l_peek(lex) != '\'') {
         return;  /* more than one character, or never closed */
     }
-    push_ch(lex, tk, '\'');
-    br_next_inline(&lex->rd_);
+    take_ch(lex, tk);
 
     tk->tk_ = NUMBER;
     tk->val_ = (value) (unsigned char) val;
@@ -220,11 +243,10 @@ static void lex_char_literal(lexer* lex, token* tk) {
  * A bare $ is the program counter rather than a literal, so it stays a
  * DOLLAR for the expression evaluator to resolve. */
 static void lex_prefixed_number(lexer* lex, token* tk, TOKEN bare) {
-    char ch = br_peek_inline(&lex->rd_);
+    char ch = l_peek(lex);
     while (OK_CHAR(ch) && is_hex_digit(ch)) {
-        push_ch(lex, tk, ch);
-        br_next_inline(&lex->rd_);
-        ch = br_peek_inline(&lex->rd_);
+        take_ch(lex, tk);
+        ch = l_peek(lex);
     }
 
     if (tk->sz_ > 1 && num_parse(tk->txt_, tk->sz_, &tk->val_)) {
@@ -239,11 +261,11 @@ int lex_string(lexer* lex, char* out, int max) {
     int n = 0;
 
     while (true) {
-        const char ch = br_peek_inline(&lex->rd_);
+        const char ch = l_peek(lex);
         if (!OK_CHAR(ch) || ch == '\n') {
             return -1;
         }
-        br_next_inline(&lex->rd_);
+        l_next(lex);
 
         if (ch == '"') {
             return n;
@@ -251,11 +273,11 @@ int lex_string(lexer* lex, char* out, int max) {
 
         char put = ch;
         if (ch == '\\') {
-            const char esc = br_peek_inline(&lex->rd_);
+            const char esc = l_peek(lex);
             if (!OK_CHAR(esc) || esc == '\n') {
                 return -1;
             }
-            br_next_inline(&lex->rd_);
+            l_next(lex);
             if (!esc_char(esc, &put)) {
                 return -2;
             }
@@ -272,27 +294,41 @@ int lex_capture(lexer* lex, const char* stop, char* out, int max) {
     int n = 0;
 
     while (true) {
-        /* Read one raw line. */
-        int start = n;
-        bool got_line = false;
-        while (true) {
-            const char ch = br_peek_inline(&lex->rd_);
-            if (!OK_CHAR(ch)) {
-                break;
-            }
-            br_next_inline(&lex->rd_);
-            if (ch == '\n') {
-                lex->lcount_++;
-                got_line = true;
-            }
-            if (n >= max) {
-                return -2;
-            }
-            out[n++] = ch;
-            if (got_line) {
-                break;
+        const int start = n;
+
+        /* Refill through the same path the scanner uses. Reading raw here --
+         * which is what this did -- refills without trimming to a newline, so
+         * a macro body crossing a buffer boundary left the buffer ending in
+         * the middle of a line. The scanner does not check for a refill on
+         * every character, so the next token was silently truncated at that
+         * point: seven placements in a sweep of forty-one either failed or,
+         * worse, assembled to different bytes. */
+        if (lex->rd_.bpos_ >= lex->rd_.bsz_) {
+            bool too_long = false;
+            if (!br_fill_lines(&lex->rd_, &too_long)) {
+                return too_long ? -2 : -1;
             }
         }
+
+        /* One whole line. The buffer never ends mid-line, so the newline that
+         * ends this one is in it, unless this is the last line of the file. */
+        const char* line = &lex->rd_.buf_[lex->rd_.bpos_];
+        const uint24_t avail = lex->rd_.bsz_ - lex->rd_.bpos_;
+        uint24_t len = 0;
+        while (len < avail && line[len] != '\n') {
+            len++;
+        }
+        if (len < avail) {
+            len++;   /* take the newline with it */
+            lex->lcount_++;
+        }
+
+        if (n + (int) len > max) {
+            return -2;
+        }
+        memcpy(&out[n], line, (size_t) len);
+        n += (int) len;
+        lex->rd_.bpos_ += len;
 
         if (n == start) {
             return -1;  /* end of file without the terminator */
@@ -334,29 +370,42 @@ int lex_capture(lexer* lex, const char* stop, char* out, int max) {
             }
         }
 
-        if (!got_line) {
-            return -1;
-        }
     }
 }
 
 token lex_next(lexer* lex) {
     token tk = {NULL, 0, NONE, TY_NONE, 0, false};
 
+    /* The one place more input can be needed. A token never spans a refill,
+     * because the buffer ends on a newline and no token contains one. */
+    if (lex->rd_.bpos_ >= lex->rd_.bsz_) {
+        bool too_long = false;
+        if (!br_fill_lines(&lex->rd_, &too_long)) {
+            if (too_long) {
+                lex->lcount_++;
+                tk.tk_ = LINE_TOO_LONG;
+            }
+
+            return tk;
+        }
+    }
+
     /* Whitespace between tokens is skipped here rather than turned into a
      * token for the caller to throw away. Nothing has wanted one since strings
      * started being read character by character. */
-    char ch = br_char_inline(&lex->rd_);
+    char ch = l_char(lex);
     while (OK_CHAR(ch) && is_space(ch)) {
-        ch = br_char_inline(&lex->rd_);
+        ch = l_char(lex);
     }
     if (!OK_CHAR(ch)) {
         return tk;
     }
 
-    tk.txt_ = lex->line_;
+    /* The token's text is a run of the buffer beginning at the character just
+     * consumed. Nothing is copied: it grows by counting. */
+    tk.txt_ = &lex->rd_.buf_[lex->rd_.bpos_ - 1];
+    tk.sz_ = 1;
     tk.tk_ = UNKNOWN;
-    push_ch(lex, &tk, ch);
 
     switch (ch) {
         case '=':  tk.tk_ = EQUALS;      return tk;
@@ -389,19 +438,26 @@ token lex_next(lexer* lex) {
              * until the newline, and returned that. Emitting the newline
              * directly is the same token stream with one less round trip and
              * no flag to keep. */
-            char c = br_peek_inline(&lex->rd_);
+            char c = l_peek(lex);
             while (OK_CHAR(c) && c != '\n') {
-                br_next_inline(&lex->rd_);
-                c = br_peek_inline(&lex->rd_);
+                l_next(lex);
+                c = l_peek(lex);
             }
             if (c == '\n') {
-                br_next_inline(&lex->rd_);
+                l_next(lex);
             }
             lex->lcount_++;
 
-            /* Retype the token: the semicolon was pushed before the switch. */
-            tk.sz_ = 0;
-            push_ch(lex, &tk, '\n');
+            /* Retype the token. It began at the semicolon, but what it
+             * stands for is the newline -- the character just consumed. A file
+             * that ends without one leaves nothing to point at, and the token
+             * carries no text. */
+            if (c == '\n') {
+                tk.txt_ = &lex->rd_.buf_[lex->rd_.bpos_ - 1];
+                tk.sz_ = 1;
+            } else {
+                tk.sz_ = 0;
+            }
             tk.tk_ = NEW_LINE;
 
             return tk;
@@ -443,9 +499,8 @@ token lex_next(lexer* lex) {
 
         case '<':
         case '>':
-            if (br_peek_inline(&lex->rd_) == ch) {
-                push_ch(lex, &tk, ch);
-                br_next_inline(&lex->rd_);
+            if (l_peek(lex) == ch) {
+                take_ch(lex, &tk);
                 tk.tk_ = (ch == '<') ? SHIFT_L : SHIFT_R;
             }
 
@@ -459,11 +514,10 @@ token lex_next(lexer* lex) {
         return tk;
     }
 
-    ch = br_peek_inline(&lex->rd_);
+    ch = l_peek(lex);
     while (OK_CHAR(ch) && is_ascdig(ch)) {
-        push_ch(lex, &tk, ch);
-        br_next_inline(&lex->rd_);
-        ch = br_peek_inline(&lex->rd_);
+        take_ch(lex, &tk);
+        ch = l_peek(lex);
     }
 
     /* A dot continues a name unless what has been read so far is a mnemonic,
@@ -471,13 +525,11 @@ token lex_next(lexer* lex) {
      * separating "rst.lil" from a label called "FFOBJID.fs", and real sources
      * have both. */
     while (ch == '.' && !is_mnemonic(tk.txt_, tk.sz_)) {
-        push_ch(lex, &tk, ch);
-        br_next_inline(&lex->rd_);
-        ch = br_peek_inline(&lex->rd_);
+        take_ch(lex, &tk);
+        ch = l_peek(lex);
         while (OK_CHAR(ch) && is_ascdig(ch)) {
-            push_ch(lex, &tk, ch);
-            br_next_inline(&lex->rd_);
-            ch = br_peek_inline(&lex->rd_);
+            take_ch(lex, &tk);
+            ch = l_peek(lex);
         }
     }
 
@@ -488,7 +540,7 @@ token lex_next(lexer* lex) {
         tk.tk_ = NUMBER;
         /* Flagged so the parser can tell "5:" -- someone naming a label after
          * a number -- from a bare literal, and say which it is. */
-        tk.label_ = br_peek_inline(&lex->rd_) == ':';
+        tk.label_ = l_peek(lex) == ':';
 
         return tk;
     }
@@ -500,7 +552,7 @@ token lex_next(lexer* lex) {
      * reserved words. That is what lets a routine be called pea: or nz:,
      * which the reference allows and which its Labels corpus depends on. The
      * colon has to be immediate -- "lbl :" is not a label there either. */
-    if (br_peek_inline(&lex->rd_) == ':') {
+    if (l_peek(lex) == ':') {
         tk.label_ = true;
 
         return tk;

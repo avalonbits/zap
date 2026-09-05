@@ -190,38 +190,6 @@ void pr_destroy(parser* p) {
     lex_destroy(&p->lex_);
 }
 
-token next(parser* p) {
-    p->tk_ = lex_next(&p->lex_);
-
-    /* The only thing left to handle is the end of an included file: go back
-     * to the one that included it and keep reading, so the include reads as
-     * if its text had been written in place.
-     *
-     * This used to be a loop around a switch, because a comment arrived as a
-     * semicolon followed by a token per word, all of which had to be pulled
-     * and dropped here. The lexer consumes comments itself now and hands back
-     * the newline, so every other token returns straight through. */
-    if (p->tk_.tk_ == NONE && p->inc_depth_ > 0) {
-        br_destroy(&p->lex_.rd_);
-        --p->inc_depth_;
-        p->lex_ = p->inc_[p->inc_depth_];
-        p->scope_ = p->inc_scope_[p->inc_depth_];
-        if (p->inc_macro_[p->inc_depth_]) {
-            p->macro_depth_--;
-        }
-
-        /* The end of an included file ends the line as well. Its last line
-         * often has no trailing newline, and without this it ran on into the
-         * line after the .include. */
-        p->tk_.tk_ = NEW_LINE;
-        p->tk_.txt_ = p->lex_.line_;
-        p->tk_.sz_ = 0;
-        p->tk_.val_ = 0;
-        p->tk_.label_ = false;
-    }
-
-    return p->tk_;
-}
 
 const char* pr_msg(parser* p, const char* msg) {
     /* The first error is the one worth keeping: assembly stops there, and
@@ -326,7 +294,8 @@ static const char* parse_adl(parser* p) {
         return pr_msg(p, "expected ADL");
     }
 
-    if (next(p).tk_ != EQUALS) {
+    next(p);
+    if (p->tk_.tk_ != EQUALS) {
         return pr_msg(p, "expected =");
     }
 
@@ -659,7 +628,8 @@ static const char* parse_equ(parser* p) {
  * whatever tokens its characters happen to form, so this reassembles the raw
  * text -- which is what a filename needs. */
 static const char* read_string(parser* p, char* buf, int max, int* out_sz) {
-    if (next(p).tk_ != D_QUOTE) {
+    next(p);
+    if (p->tk_.tk_ != D_QUOTE) {
         return pr_msg(p, "expected a quoted string");
     }
 
@@ -1396,12 +1366,15 @@ static void pr_prescan(parser* p) {
     p->pos_ = 0;
     p->inc_depth_ = 0;
 
-    token tk = next(p);
+    next(p);
+    token tk = p->tk_;
     while (tk.tk_ != NONE) {
         /* Follow includes. A constant defined in an included file has to be
          * visible to the same forward uses as one defined here. */
         if (tk.tk_ == DOT) {
-            tk = next(p);
+            next(p);
+
+            tk = p->tk_;
         }
         if (tk.tk_ == DIRECTIVE && tk.tt_ == D_INCLUDE) {
             if (parse_include(p) != NULL) {
@@ -1409,7 +1382,9 @@ static void pr_prescan(parser* p) {
                     next(p);
                 }
             }
-            tk = next(p);
+            next(p);
+
+            tk = p->tk_;
             continue;
         }
 
@@ -1417,7 +1392,9 @@ static void pr_prescan(parser* p) {
             while (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
                 next(p);
             }
-            tk = next(p);
+            next(p);
+
+            tk = p->tk_;
             continue;
         }
 
@@ -1433,7 +1410,8 @@ static void pr_prescan(parser* p) {
         }
 
         const bool global = name[0] != '@';
-        if (next(p).tk_ == COLON) {
+        next(p);
+        if (p->tk_.tk_ == COLON) {
             if (global && p->scope_ < MAX_SCOPE) {
                 p->scope_++;
             }
@@ -1443,7 +1421,8 @@ static void pr_prescan(parser* p) {
              * D_EQU. Without the tk_ check, a label followed by that mnemonic
              * was harvested as a constant and given a garbage value, which
              * then resolved jumps to nonsense. */
-            const token after = next(p);
+            next(p);
+            const token after = p->tk_;
             if (after.tk_ == DIRECTIVE && after.tt_ == D_EQU) {
                 next(p);
                 value v = 0;
@@ -1466,7 +1445,9 @@ static void pr_prescan(parser* p) {
         while (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
             next(p);
         }
-        tk = next(p);
+        next(p);
+
+        tk = p->tk_;
     }
 
     /* Close anything an include left open, then put the real source back. */
@@ -1498,9 +1479,16 @@ const char* pr_parse(parser* p) {
     p->anon_count_ = 0;
     const char* err = NULL;
 
-    for (p->tk_ = next(p); p->tk_.tk_ != NONE; p->tk_ = next(p)) {
+    for (next(p); p->tk_.tk_ != NONE; next(p)) {
         p->stmt_addr_ = pr_addr(p);
         p->stmt_line_ = p->lex_.lcount_;
+
+        /* Checked before the conditional skip below: the line is read before
+         * any conditional is, so one too long to read is an error even inside
+         * a branch that would have skipped it. */
+        if (p->tk_.tk_ == LINE_TOO_LONG) {
+            return pr_msg(p, "line too long");
+        }
 
         /* Inside a false branch only the conditional directives themselves
          * are read; everything else is passed over. A nested .if still has to
@@ -1578,7 +1566,7 @@ const char* pr_parse(parser* p) {
         }
 
         if (p->tk_.tk_ != NEW_LINE) {
-            p->tk_ = next(p);
+            next(p);
             /* End of file ends the last line just as well as a newline does.
              * A source whose final line had no trailing newline used to be
              * rejected outright -- and files in the reference corpus are

@@ -62,13 +62,37 @@ the simplification.
 | Row early-out | −23.2% | **−1.2% bbcbasic, −6.4% synth — kept** |
 | Character class table | measured alone here | **−1.6% bbcbasic, −3.1% synth — kept** |
 | 24-bit immediate in the operand | part of −4.7% | **−0.1% bbcbasic, −0.8% synth — kept** |
-| 24-bit register masks | −9.4% | +0.5% to +6.5% — reverted, three variants |
+| 24-bit register masks | −9.4% | **+0.1% to +6.5% — reverted, five variants.** Fully decomposed below. |
 | Instruction head written as one block | part of −2.2% | +0.8% to +0.9% — reverted. Most instructions have one head byte, so building an array and calling `pr_wblock`, which does a memcpy, costs more than the single `pr_wbyte` it replaced. |
 | Precomputed row modes | part of −3.7% | **Not measured, and not worth it.** It needs the same `row_base` indirection that try 2 of the masks isolated at +2.6…3.9%, to save two masked loads per row. |
 
 Cumulative on zap: bbcbasic 18.42s → 17.88s (−2.9%), rokky 2.28s → 2.20s
 (−3.5%), synth 38.06s → 34.28s (−9.9%). synth's ratio against ez80asm goes
 0.89x → 0.75x.
+
+### The register masks, taken apart
+
+Five variants, each measured on its own, against a baseline of 17.88s bbcbasic
+and 34.28s synth:
+
+| variant | narrowing | repacks | indirection | bbcbasic | synth |
+|---|---|---|---|---|---|
+| table side only | half | `isa_row` | no | +0.1% | +0.3% |
+| operand side only | half | `operand` | no | +1.3% | +2.4% |
+| both sides | full | both | no | +0.5% | +1.0% |
+| side arrays, operand wide | half | no | yes | +2.6% | +3.9% |
+| side arrays, operand narrow | full | no | yes | +4.0% | +6.5% |
+
+Nothing beats leaving it alone. The two costs are visible separately: the
+indirection is worth about 3% wherever it appears, and half-narrowing costs
+more than not narrowing at all because the compare promotes the narrow side
+back. Narrowing the table alone is free only because the smaller struct pays
+for the widening it causes.
+
+The same narrowing is worth 9.4% in dzap. The difference is not the code — it
+is that dzap's hot loop is nearly its whole program and its operand is 28 bytes,
+where zap reaches this code far less often per source byte and its operand is
+153.
 
 **Three of six transferred.** The two that paid most touch neither the data
 layout nor add indirection: an early-out that skips work, and a table that

@@ -64,9 +64,20 @@ hash_table* ht_init(hash_table* ht, int entries, bool icase) {
         return NULL;
     }
 
+    ht->keys_cap_ = 256;
+    ht->keys_len_ = 0;
+    ht->keys_ = (char*) malloc(ht->keys_cap_);
+    if (ht->keys_ == NULL) {
+        free(ht->node_);
+        ht->node_ = NULL;
+
+        return NULL;
+    }
+
     for (uint24_t i = 0; i < ht->sz_; i++) {
         ht->node_[i].next_ = NULL;
         ht->node_[i].ksz_ = 0;
+        ht->node_[i].koff_ = 0;
         ht->node_[i].value_ = 0;
     }
 
@@ -92,6 +103,10 @@ void ht_destroy(hash_table* ht) {
     free(ht->node_);
     ht->node_ = NULL;
     ht->sz_ = 0;
+    free(ht->keys_);
+    ht->keys_ = NULL;
+    ht->keys_len_ = 0;
+    ht->keys_cap_ = 0;
 }
 
 void ht_clear(hash_table* ht) {
@@ -101,6 +116,34 @@ void ht_clear(hash_table* ht) {
             n->ksz_ = 0;
         }
     }
+}
+
+/* Where a node's key lives. */
+static const char* node_key(const hash_table* ht, const hash_node* n) {
+    return &ht->keys_[n->koff_];
+}
+
+/* Appends a key to the block and returns its offset, or -1 if it will not
+ * fit. Keys are never removed, so the block only grows. */
+static long key_intern(hash_table* ht, const char* key, uint8_t ksz) {
+    if (ht->keys_len_ + ksz > ht->keys_cap_) {
+        uint24_t want = ht->keys_cap_ ? ht->keys_cap_ : 256;
+        while (want < ht->keys_len_ + ksz) {
+            want *= 2;
+        }
+        char* grown = (char*) realloc(ht->keys_, (size_t) want);
+        if (grown == NULL) {
+            return -1;
+        }
+        ht->keys_ = grown;
+        ht->keys_cap_ = want;
+    }
+
+    const uint24_t off = ht->keys_len_;
+    memcpy(&ht->keys_[off], key, ksz);
+    ht->keys_len_ += ksz;
+
+    return (long) off;
 }
 
 /* Compares two keys of the same length. The caller has already matched the
@@ -120,6 +163,43 @@ static bool key_equal(const char* s1, const char* s2, uint8_t ksz, bool icase) {
 
 /* Doubles the bucket array and redistributes what is in it. Overflow nodes are
  * reused rather than reallocated: only the array is replaced. */
+/* Puts a node in its bucket for a key already in the block. Growing the table
+ * rehashes every node, and the keys do not move while it does -- so this takes
+ * the offset it already has rather than interning the name a second time. It
+ * does not look for an existing copy, because a rehash never presents one
+ * twice. */
+static bool ht_place(hash_table* ht, uint24_t koff, uint8_t ksz, int value) {
+    const int pos = (int) (pearson_hash_n(&ht->keys_[koff], ksz, ht->icase_,
+                                          ht->sz_ > 256) & (ht->sz_ - 1));
+    hash_node* node = &ht->node_[pos];
+
+    if (node->ksz_ == 0) {
+        node->koff_ = koff;
+        node->ksz_ = ksz;
+        node->value_ = value;
+        ht->count_++;
+
+        return true;
+    }
+
+    while (node->next_ != NULL) {
+        node = node->next_;
+    }
+
+    hash_node* n = (hash_node*) malloc(sizeof(hash_node));
+    if (n == NULL) {
+        return false;
+    }
+    n->koff_ = koff;
+    n->ksz_ = ksz;
+    n->value_ = value;
+    n->next_ = NULL;
+    node->next_ = n;
+    ht->count_++;
+
+    return true;
+}
+
 static bool ht_grow(hash_table* ht);
 
 static bool ht_grow_impl(hash_table* ht) {
@@ -136,6 +216,7 @@ static bool ht_grow_impl(hash_table* ht) {
     for (uint24_t i = 0; i < old_sz * 2; i++) {
         fresh[i].next_ = NULL;
         fresh[i].ksz_ = 0;
+        fresh[i].koff_ = 0;
         fresh[i].value_ = 0;
     }
 
@@ -148,7 +229,7 @@ static bool ht_grow_impl(hash_table* ht) {
         for (hash_node* n = &old[i]; n != NULL; ) {
             hash_node* next = n->next_;
             if (n->ksz_ != 0) {
-                ht_nset(ht, n->key_, n->ksz_, n->value_);
+                ht_place(ht, n->koff_, n->ksz_, n->value_);
             }
             if (n != &old[i]) {
                 free(n);
@@ -174,19 +255,16 @@ bool ht_nset(hash_table* ht, const char* key, uint8_t ksz, int value) {
                            & (ht->sz_ - 1));
     hash_node* node = &ht->node_[pos];
 
-    // Iteratore through all nodes in the chain until we find the key to update
-    // or create a new node.
+    // Walk the chain for a key to update, or the end of it.
+    hash_node* free_slot = NULL;
     do {
         if (node->ksz_ == 0) {
-            memcpy(node->key_, key, ksz);
-            node->ksz_ = ksz;
-            node->value_ = value;
-            ht->count_++;
-
-            return true;
+            free_slot = node;
+            break;
         }
 
-        if (node->ksz_ == ksz && key_equal(node->key_, key, ksz, ht->icase_)) {
+        if (node->ksz_ == ksz
+            && key_equal(node_key(ht, node), key, ksz, ht->icase_)) {
             node->value_ = value;
             return true;
         }
@@ -196,13 +274,28 @@ bool ht_nset(hash_table* ht, const char* key, uint8_t ksz, int value) {
         node = node->next_;
     } while (true);
 
-    // Add a new node.
+    /* New key: it goes in the block once, whether it lands in the bucket
+     * itself or in a node chained off it. */
+    const long off = key_intern(ht, key, ksz);
+    if (off < 0) {
+        return false;
+    }
+
+    if (free_slot != NULL) {
+        free_slot->koff_ = (uint24_t) off;
+        free_slot->ksz_ = ksz;
+        free_slot->value_ = value;
+        ht->count_++;
+
+        return true;
+    }
+
     hash_node* n = (hash_node*) malloc(sizeof(hash_node));
     if (n == NULL) {
         // out of memory.
         return false;
     }
-    memcpy(n->key_, key, ksz);
+    n->koff_ = (uint24_t) off;
     n->ksz_ = ksz;
     n->value_ = value;
     n->next_ = NULL;
@@ -238,7 +331,7 @@ int ht_nget(hash_table* ht, const char* key, uint8_t ksz, bool* ok) {
         if (n->ksz_ != ksz) {
             continue;
         }
-        if (!key_equal(n->key_, key, ksz, ht->icase_)) {
+        if (!key_equal(node_key(ht, n), key, ksz, ht->icase_)) {
             continue;
         }
 

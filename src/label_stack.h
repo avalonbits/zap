@@ -46,12 +46,20 @@ typedef struct _label_node {
      * in nearly every real program. Storing it as text and re-evaluating it
      * once the symbols are known keeps that working in one pass. */
     int text_off_;
-    int text_len_;
+
+    /* An operand's expression is captured into a 128-byte buffer, so its
+     * length is a byte. A whole int here cost two bytes a node on the eZ80,
+     * and a large program holds thousands of these at once: BBC BASIC has
+     * 2,149 live. */
+    uint8_t text_len_;
 
     int bpos_;   /* offset in the output buffer to patch */
     int next_;   /* address of the instruction after this one, for FIX_REL8 */
     int here_;   /* the statement's address, so '$' still means something */
-    int line_;   /* source line, so the error points at the reference */
+
+    /* The source line, for the diagnostic. 24 bits of it is more line numbers
+     * than a file the reader will accept can have. */
+    uint16_t line_;
 
     uint8_t kind_;
     uint16_t scope_;  /* which local scope the names were written in */

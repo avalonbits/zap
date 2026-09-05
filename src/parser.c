@@ -75,7 +75,13 @@ static parser* pr_setup(parser* p, const char* fname) {
         return NULL;
     }
 
-    p->sz_ = 128 << 10;
+    /* The output buffer starts small and doubles. It used to be allocated at
+     * a flat 128 KB whatever the program was, which on an Agon is a quarter of
+     * the machine reserved before a byte is assembled -- BBC BASIC emits
+     * 20,883 bytes and never touched 107 KB of it. pr_reserve already grows
+     * it, so the fixed start bought nothing but the reallocations, and those
+     * are a handful for any real program. */
+    p->sz_ = 8 << 10;
     p->buf_ = (uint8_t*) malloc(p->sz_ * sizeof(uint8_t));
     if (p->buf_ == NULL) {
         ht_destroy(&p->labels_);

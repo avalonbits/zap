@@ -247,6 +247,25 @@ int main(void) {
         }
     }
 
+    /* A deferred expression's length is stored in a byte now, so the bound
+     * matters: a silent truncation would corrupt the expression rather than
+     * fail. The capture buffer is 128 characters and zap refuses longer ones
+     * well before a byte could overflow, so this pins the longest that does
+     * work -- fifteen terms, a 95-character expression.
+     *
+     * The refusal above that is a divergence from the reference, which has no
+     * such limit and assembles expressions of any length. It is not new and is
+     * not addressed here; it belongs in the compatibility notes. */
+    {
+        char src[512];
+        int n = snprintf(src, sizeof(src), "  .assume adl=1\n  .org 0\n  dl ");
+        for (int i = 0; i < 15; i++) {
+            n += snprintf(&src[n], sizeof(src) - n, "%slater", i ? "+" : "");
+        }
+        n += snprintf(&src[n], sizeof(src) - n, "\nlater: equ 1\n");
+        asm_is("a long deferred expression", src, "0F 00 00");
+    }
+
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);
     }

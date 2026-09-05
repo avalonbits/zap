@@ -15,6 +15,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "macro.h"
 #include "parser.h"
 
 static int failures = 0;
@@ -164,6 +165,35 @@ int main(void) {
     is("if without endif",   "  if 1\n  ld a,b\n",  "ERR");
     is("endif without if",   "  endif\n",           "ERR");
     is("else without if",    "  else\n",            "ERR");
+
+    /* The table holds MACRO_MAX macros and refuses the next one. Macros are
+     * allocated as they are defined now rather than reserved in a fixed
+     * array, so this exercises the allocation, the limit and the cleanup --
+     * the last of which ASan checks by running at all. */
+    {
+        char src[MACRO_MAX * 40 + 64];
+        int n = 0;
+        for (int i = 0; i < MACRO_MAX; i++) {
+            n += snprintf(&src[n], sizeof(src) - n,
+                          "  macro m%d\n  nop\n  endmacro\n", i);
+        }
+        n += snprintf(&src[n], sizeof(src) - n, "  m0\n  m%d\n", MACRO_MAX - 1);
+        is("a full table of macros", src, "00 00");
+
+        /* One more than fits is refused rather than overrunning. This is a
+         * limit zap has and the reference does not -- ez80asm assembles 65
+         * macros without complaint, because it allocates them as it goes and
+         * chains them. Now that zap allocates them too, MACRO_MAX is an
+         * arbitrary cap rather than the size of an array, and could be raised
+         * or dropped; that is a behaviour change, so it is left alone here
+         * and belongs in the compatibility notes. */
+        n = 0;
+        for (int i = 0; i <= MACRO_MAX; i++) {
+            n += snprintf(&src[n], sizeof(src) - n,
+                          "  macro m%d\n  nop\n  endmacro\n", i);
+        }
+        is("one macro past the limit", src, "ERR");
+    }
 
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);

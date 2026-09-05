@@ -50,12 +50,18 @@ static bool name_char(char ch) {
 
 void mt_init(macro_table* mt) {
     mt->count = 0;
+    for (int i = 0; i < MACRO_MAX; i++) {
+        mt->m[i] = NULL;
+    }
 }
 
 void mt_destroy(macro_table* mt) {
     for (int i = 0; i < mt->count; i++) {
-        free(mt->m[i].body);
-        mt->m[i].body = NULL;
+        if (mt->m[i] != NULL) {
+            free(mt->m[i]->body);
+            free(mt->m[i]);
+            mt->m[i] = NULL;
+        }
     }
     mt->count = 0;
 }
@@ -69,7 +75,11 @@ macro* mt_add(macro_table* mt, const char* name, int name_sz,
         return NULL;
     }
 
-    macro* m = &mt->m[mt->count];
+    macro* m = (macro*) malloc(sizeof(macro));
+    if (m == NULL) {
+        return NULL;
+    }
+    mt->m[mt->count] = m;
     for (int i = 0; i < name_sz; i++) {
         m->name[i] = name[i];
     }
@@ -85,8 +95,8 @@ macro* mt_add(macro_table* mt, const char* name, int name_sz,
 
 const macro* mt_find(const macro_table* mt, const char* name, int name_sz) {
     for (int i = 0; i < mt->count; i++) {
-        if (same_name(mt->m[i].name, mt->m[i].name_sz, name, name_sz)) {
-            return &mt->m[i];
+        if (same_name(mt->m[i]->name, mt->m[i]->name_sz, name, name_sz)) {
+            return mt->m[i];
         }
     }
 

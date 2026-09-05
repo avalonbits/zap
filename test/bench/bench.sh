@@ -58,6 +58,20 @@ snapshot_binaries() {
     cp "$EZ_BIN"  "$WORK/ez80asm.bin" || exit 1
 }
 
+# Above this much source, ez80asm is run with -m. See where it is used.
+MEM_THRESHOLD=$((256 * 1024))
+
+# How much source a staged sdcard holds: everything except the machine's own
+# files and the ones the runner puts there itself.
+source_bytes() {
+    find "$1" -type f \
+        ! -path "$1/bin/*" ! -path "$1/mos/*" \
+        ! -name 'MOS.bin' ! -name 'firmware.bin' \
+        ! -name 'autoexec.txt' ! -name 'flush.s' ! -name 'flush.bin' \
+        ! -name 'out.bin' \
+        -printf '%s\n' 2>/dev/null | awk '{ n += $1 } END { print n + 0 }'
+}
+
 # The set. Each entry is: name, top-level source, directory to stage.
 #
 # bbcbasic is the big one and the most realistic -- 20 files, deep include
@@ -173,16 +187,30 @@ for name in $want; do
     zsz=$([ -f "$sd/out.bin" ] && stat -c%s "$sd/out.bin" || echo 0)
     zmd=$([ -f "$sd/out.bin" ] && md5sum < "$sd/out.bin" | cut -c1-8 || echo "--------")
 
-    # ez80asm needs -m on an Agon.
+    # ez80asm gets -m only when the source is large enough to need it.
     #
-    # Without it, it sizes its buffers for a desktop and never finishes on a
+    # Without -m it sizes its buffers for a desktop and never finishes on a
     # 512 KB machine: bbcbasic sat on "Pass 1..." indefinitely, while rokky --
-    # a fifteenth the size -- completed normally, which made it look like a
-    # hang in the runner rather than the assembler running out of room. -m is
-    # how ez80asm is actually used on the target, so it is also the honest
-    # thing to time against.
+    # a fifteenth the size -- completed normally either way, which made the
+    # failure look like a hang in the runner rather than the assembler running
+    # out of room.
+    #
+    # Passing it everywhere would be simpler but would not be a fair
+    # comparison: -m costs ez80asm real time (rokky is 2.70s with it and 2.50s
+    # without) and nobody reaches for it until they have to. Timing it against
+    # a flag a user would not have used makes zap look better than it is. The
+    # threshold is on the whole source the assembler reads, includes and all,
+    # since that is what drives the memory it needs rather than the size of the
+    # file named on the command line -- bbcbasic's top-level source is 554
+    # bytes and its tree is 400 KB.
+    staged=$(source_bytes "$sd")
+    mflag=""
+    if [ "$staged" -gt "$MEM_THRESHOLD" ]; then
+        mflag=" -m"
+    fi
+
     rm -f "$sd/out.bin"
-    e=$(run_one "$sd" "ez80asm $src out.bin -m" "e_$name" "ez80asm flush.s flush.bin -m")
+    e=$(run_one "$sd" "ez80asm $src out.bin$mflag" "e_$name" "ez80asm flush.s flush.bin$mflag")
     esz=$([ -f "$sd/out.bin" ] && stat -c%s "$sd/out.bin" || echo 0)
     emd=$([ -f "$sd/out.bin" ] && md5sum < "$sd/out.bin" | cut -c1-8 || echo "--------")
 
@@ -192,6 +220,9 @@ for name in $want; do
     fi
 
     note="$zsz bytes"
+    if [ -n "$mflag" ]; then
+        note="$note, ez80asm -m"
+    fi
     if [ "$zmd" != "$emd" ]; then
         note="$note  MISMATCH zap=$zmd ez80asm=$emd"
     fi

@@ -4,16 +4,16 @@ Recorded on fab-agon-emulator 1.2.4 with `test/bench/bench.sh`, at the commit
 that fixed the runner. Figures are each assembler's own `Done in` line. Every
 output was byte-identical between the two.
 
-| source | zap | ez80asm | ratio |
-|---|---|---|---|
-| bbcbasic | 20.94s | 22.42s | 0.93x |
-| rokky | 2.40s | 2.70s | 0.89x |
-| synth | 40.78s | 45.64s | 0.89x |
+| source | zap | ez80asm | ratio | |
+|---|---|---|---|---|
+| bbcbasic | 20.96s | 22.44s | 0.93x | ez80asm `-m` |
+| rokky | 2.40s | 2.48s | 0.97x | |
+| synth | 40.78s | 45.60s | 0.89x | ez80asm `-m` |
 
-Lower is better. The goal is **0.50x**, which means bbcbasic at about 11.2s and
-synth at about 22.8s.
+Lower is better. The goal is **0.50x**: bbcbasic at 11.2s, rokky at 1.24s, synth
+at 22.8s -- about a 45% cut across the board.
 
-## ez80asm is run with -m, on every source
+## ez80asm gets -m only above 256 KiB of source
 
 `-m` is ez80asm's minimum memory configuration. Without it, it sizes its buffers
 for a desktop and never finishes on a 512 KB machine: bbcbasic sat on
@@ -21,14 +21,23 @@ for a desktop and never finishes on a 512 KB machine: bbcbasic sat on
 way, which is what made the failure look like a hang in the runner rather than
 the assembler running out of room.
 
-It is used for **all** sources, not only the ones that need it, because a
-benchmark whose flags vary with the input is not comparing one thing. The cost
-of that consistency is visible: rokky's ez80asm figure is 2.70s with `-m` and
-2.50s without, so the ratio on small sources flatters zap by about 8% relative
-to an ez80asm run the way a desktop user would run it. On the Agon, `-m` is how
-ez80asm is actually used for anything large, so it is the honest comparison --
-but the 2.50s is worth remembering before quoting 0.89x anywhere it might be
-read as a general claim.
+Passing it everywhere would be simpler and would not be fair. `-m` costs
+ez80asm real time -- rokky is 2.48s without it and 2.70s with -- and nobody
+reaches for it until they have to, so timing against a flag a user would not
+have used makes zap look better than it is. Charging it only where the source
+actually needs it moved rokky's ratio from a flattering 0.87x to 0.97x.
+
+The threshold is on **the whole source the assembler reads**, includes and all,
+because that is what drives the memory it needs. The size of the file named on
+the command line would get it exactly backwards: bbcbasic's top-level source is
+554 bytes and its include tree is 400 KB.
+
+    bbcbasic  408,119 bytes  -m
+    rokky      60,861 bytes  no -m
+    synth     471,286 bytes  -m
+
+The runner prints `ez80asm -m` beside the sources that got it, so a reader
+cannot mistake which comparison a row is.
 
 ## What these numbers replace
 
@@ -36,10 +45,9 @@ The previous benchmark, `big.asm`, existed only in a scratch directory and is
 gone. `synth` is a different file and its timings do not continue that series;
 the 57.88s figure quoted against big.asm has no successor here.
 
-`rokky` at 2.40s is the one figure that spans both rigs, and it matches to the
-hundredth, which is the only evidence available that the old and new setups
-agree. zap's bbcbasic figure also reproduces: 20.94s here against 20.96s from
-the old rig.
+Two figures span both rigs and both reproduce: rokky at 2.40s exactly, and zap
+on bbcbasic at 20.96s against the old rig's 20.96s. That is the only evidence
+available that the two setups agree.
 
 ## Regenerating
 

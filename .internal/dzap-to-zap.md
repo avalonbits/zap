@@ -30,6 +30,8 @@ Three verdicts:
 | No pre-scan for the line end — one pass over the source instead of two | part of −4.7% | **Conditional**, and closer to a redesign than a transplant. zap is driven token-by-token through `lex_next` rather than line-by-line, so the idea (nothing needs the line bound, because no scan can cross a newline) applies but the shape does not. |
 | Literal and displacement accumulators narrowed to `int` | part of −2.2% | **Portable.** Third application of the idea behind the two biggest wins; an operand is at most three bytes and a displacement one signed byte. |
 | Output reserved once per instruction, not bounds-checked per byte | part of −2.2% | **Portable, and half-built already.** zap has `pr_reserve`; it is `pr_wbyte` still testing on every byte that would change. |
+| **Row rejected on the cheap test before the expensive one** | **−23.2%** | **Portable, and the largest win measured.** zap's `match_row` has the identical structure and the same two expensive terms. See the note below: it contradicts the branchless guidance, which needs qualifying rather than discarding. |
+| Short mnemonics packed into a word and compared in one operation | **+1.3% — reverted** | **Not portable, and not wanted.** Bucketing by letter and length already leaves one or two candidates, so the compare loop it replaced was two or three characters and building the packed key cost more. Recorded so it is not re-invented. |
 
 ## Standing note
 
@@ -48,6 +50,20 @@ above are about *semantics*, and the sizes are always from the Agon.
       + 24-bit masks, dot in table                15.00s   1,055
       + 24-bit immediate, single-pass lines       14.30s   1,006
       + narrowed accumulators, reserve per insn   13.98s     983
+      + cheap-test early-out in row selection     10.74s     756
 
-Roughly two thirds of the 29.1% so far is portable or conditional; the rest is
+Roughly two thirds of the 45.5% so far is portable or conditional; the rest is
 the simplification.
+
+## Branchless is not unconditional
+
+`ez80_advanced_optimization_guide.md` says data-driven beats chains of if/else
+on a chip with no branch predictor, and that was measured and is true -- for a
+branch that only **selects a value**. The row early-out **skips work**: one
+compare of a precomputed value avoids two `reg_match` calls, on three rows out
+of four. That is worth far more than the pipeline costs, and it was the single
+largest win in this whole exercise at 23.2%.
+
+zap's `match_row` was deliberately made branchless earlier in the project for
+the reason that does not apply here. Carrying this over is likely the most
+valuable single thing dzap has produced.

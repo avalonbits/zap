@@ -150,7 +150,7 @@ typedef struct _parser {
 /* Inline: it is called once per token -- 108,445 times on BBC BASIC -- and
  * what it does around lex_next is one branch. */
 static inline void next(parser* p) {
-    p->tk_ = lex_next(&p->lex_);
+    lex_next(&p->lex_, &p->tk_);
 
     /* The only thing left to handle is the end of an included file: go back
      * to the one that included it and keep reading, so the include reads as

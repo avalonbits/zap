@@ -373,8 +373,14 @@ int lex_capture(lexer* lex, const char* stop, char* out, int max) {
     }
 }
 
-token lex_next(lexer* lex) {
-    token tk = {NULL, 0, NONE, TY_NONE, 0, false};
+void lex_next(lexer* lex, token* out) {
+    token* const tkp = out;
+    tkp->txt_ = NULL;
+    tkp->sz_ = 0;
+    tkp->tk_ = NONE;
+    tkp->tt_ = TY_NONE;
+    tkp->val_ = 0;
+    tkp->label_ = false;
 
     /* The one place more input can be needed. A token never spans a refill,
      * because the buffer ends on a newline and no token contains one. */
@@ -383,10 +389,10 @@ token lex_next(lexer* lex) {
         if (!br_fill_lines(&lex->rd_, &too_long)) {
             if (too_long) {
                 lex->lcount_++;
-                tk.tk_ = LINE_TOO_LONG;
+                tkp->tk_ = LINE_TOO_LONG;
             }
 
-            return tk;
+            return;
         }
     }
 
@@ -398,33 +404,33 @@ token lex_next(lexer* lex) {
         ch = l_char(lex);
     }
     if (!OK_CHAR(ch)) {
-        return tk;
+        return;
     }
 
     /* The token's text is a run of the buffer beginning at the character just
      * consumed. Nothing is copied: it grows by counting. */
-    tk.txt_ = &lex->rd_.buf_[lex->rd_.bpos_ - 1];
-    tk.sz_ = 1;
-    tk.tk_ = UNKNOWN;
+    tkp->txt_ = &lex->rd_.buf_[lex->rd_.bpos_ - 1];
+    tkp->sz_ = 1;
+    tkp->tk_ = UNKNOWN;
 
     switch (ch) {
-        case '=':  tk.tk_ = EQUALS;      return tk;
-        case '+':  tk.tk_ = PLUS;        return tk;
-        case '*':  tk.tk_ = STAR;        return tk;
-        case '/':  tk.tk_ = F_SLASH;     return tk;
-        case '&':  tk.tk_ = AMPERSAND;   return tk;
-        case '|':  tk.tk_ = PIPE;        return tk;
-        case '^':  tk.tk_ = CARET;       return tk;
-        case '~':  tk.tk_ = TILDE;       return tk;
-        case '"':  tk.tk_ = D_QUOTE;     return tk;
-        case '\\': tk.tk_ = B_SLASH;     return tk;
-        case '(':  tk.tk_ = L_PAREN;     return tk;
-        case ')':  tk.tk_ = R_PAREN;     return tk;
-        case '[':  tk.tk_ = L_BRACKET;   return tk;
-        case ']':  tk.tk_ = R_BRACKET;   return tk;
-        case ',':  tk.tk_ = COMMA;       return tk;
-        case '.':  tk.tk_ = DOT;         return tk;
-        case ':':  tk.tk_ = COLON;       return tk;
+        case '=':  tkp->tk_ = EQUALS;      return;
+        case '+':  tkp->tk_ = PLUS;        return;
+        case '*':  tkp->tk_ = STAR;        return;
+        case '/':  tkp->tk_ = F_SLASH;     return;
+        case '&':  tkp->tk_ = AMPERSAND;   return;
+        case '|':  tkp->tk_ = PIPE;        return;
+        case '^':  tkp->tk_ = CARET;       return;
+        case '~':  tkp->tk_ = TILDE;       return;
+        case '"':  tkp->tk_ = D_QUOTE;     return;
+        case '\\': tkp->tk_ = B_SLASH;     return;
+        case '(':  tkp->tk_ = L_PAREN;     return;
+        case ')':  tkp->tk_ = R_PAREN;     return;
+        case '[':  tkp->tk_ = L_BRACKET;   return;
+        case ']':  tkp->tk_ = R_BRACKET;   return;
+        case ',':  tkp->tk_ = COMMA;       return;
+        case '.':  tkp->tk_ = DOT;         return;
+        case ':':  tkp->tk_ = COLON;       return;
         case ';': {
             /* A comment runs to the end of the line and none of it means
              * anything, so it is consumed here rather than handed to the
@@ -453,70 +459,70 @@ token lex_next(lexer* lex) {
              * that ends without one leaves nothing to point at, and the token
              * carries no text. */
             if (c == '\n') {
-                tk.txt_ = &lex->rd_.buf_[lex->rd_.bpos_ - 1];
-                tk.sz_ = 1;
+                tkp->txt_ = &lex->rd_.buf_[lex->rd_.bpos_ - 1];
+                tkp->sz_ = 1;
             } else {
-                tk.sz_ = 0;
+                tkp->sz_ = 0;
             }
-            tk.tk_ = NEW_LINE;
+            tkp->tk_ = NEW_LINE;
 
-            return tk;
+            return;
         }
 
         case '\n':
             lex->lcount_++;
-            tk.tk_ = NEW_LINE;
+            tkp->tk_ = NEW_LINE;
 
-            return tk;
+            return;
 
         // A minus is always an operator now. It used to swallow the digits
         // after it, which made -5 a literal and left no way to write label-2
         // or $-2 at all.
         case '-':
-            tk.tk_ = MINUS;
+            tkp->tk_ = MINUS;
 
-            return tk;
+            return;
 
         case '\'':
-            lex_char_literal(lex, &tk);
+            lex_char_literal(lex, tkp);
 
-            return tk;
+            return;
 
         case '$':
-            lex_prefixed_number(lex, &tk, DOLLAR);
+            lex_prefixed_number(lex, tkp, DOLLAR);
 
-            return tk;
+            return;
 
         case '#':
-            lex_prefixed_number(lex, &tk, HASH);
+            lex_prefixed_number(lex, tkp, HASH);
 
-            return tk;
+            return;
 
         case '%':
-            lex_prefixed_number(lex, &tk, UNKNOWN);
+            lex_prefixed_number(lex, tkp, UNKNOWN);
 
-            return tk;
+            return;
 
         case '<':
         case '>':
             if (l_peek(lex) == ch) {
-                take_ch(lex, &tk);
-                tk.tk_ = (ch == '<') ? SHIFT_L : SHIFT_R;
+                take_ch(lex, tkp);
+                tkp->tk_ = (ch == '<') ? SHIFT_L : SHIFT_R;
             }
 
-            return tk;
+            return;
 
         default:
             break;
     }
 
     if (!is_ascdig(ch)) {
-        return tk;
+        return;
     }
 
     ch = l_peek(lex);
     while (OK_CHAR(ch) && is_ascdig(ch)) {
-        take_ch(lex, &tk);
+        take_ch(lex, tkp);
         ch = l_peek(lex);
     }
 
@@ -524,11 +530,11 @@ token lex_next(lexer* lex) {
      * in which case it introduces a suffix instead. That is the only thing
      * separating "rst.lil" from a label called "FFOBJID.fs", and real sources
      * have both. */
-    while (ch == '.' && !is_mnemonic(tk.txt_, tk.sz_)) {
-        take_ch(lex, &tk);
+    while (ch == '.' && !is_mnemonic(tkp->txt_, tkp->sz_)) {
+        take_ch(lex, tkp);
         ch = l_peek(lex);
         while (OK_CHAR(ch) && is_ascdig(ch)) {
-            take_ch(lex, &tk);
+            take_ch(lex, tkp);
             ch = l_peek(lex);
         }
     }
@@ -536,16 +542,16 @@ token lex_next(lexer* lex) {
     // A literal is claimed before a name, so Ah and 0b1h are numbers rather
     // than identifiers. That also means an identifier can never shadow a
     // literal, which is how the reference resolves the same ambiguity.
-    if (num_parse(tk.txt_, tk.sz_, &tk.val_)) {
-        tk.tk_ = NUMBER;
+    if (num_parse(tkp->txt_, tkp->sz_, &tkp->val_)) {
+        tkp->tk_ = NUMBER;
         /* Flagged so the parser can tell "5:" -- someone naming a label after
          * a number -- from a bare literal, and say which it is. */
-        tk.label_ = l_peek(lex) == ':';
+        tkp->label_ = l_peek(lex) == ':';
 
-        return tk;
+        return;
     }
 
-    tk.tk_ = NAME;
+    tkp->tk_ = NAME;
 
     /* An identifier with a colon straight after it is a label being defined,
      * so it keeps its own name rather than being resolved against the
@@ -553,16 +559,16 @@ token lex_next(lexer* lex) {
      * which the reference allows and which its Labels corpus depends on. The
      * colon has to be immediate -- "lbl :" is not a label there either. */
     if (l_peek(lex) == ':') {
-        tk.label_ = true;
+        tkp->label_ = true;
 
-        return tk;
+        return;
     }
 
-    const int val = ht_nget(&words, tk.txt_, tk.sz_, NULL);
+    const int val = ht_nget(&words, tkp->txt_, tkp->sz_, NULL);
     if (unpack_tk(val) != NONE) {
-        tk.tk_ = unpack_tk(val);
-        tk.tt_ = unpack_tt(val);
+        tkp->tk_ = unpack_tk(val);
+        tkp->tt_ = unpack_tt(val);
     }
 
-    return tk;
+    return;
 }

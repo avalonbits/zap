@@ -15,7 +15,9 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "macro.h"
 #include "parser.h"
+#include "zap.h"
 
 static int failures = 0;
 
@@ -59,6 +61,22 @@ static const char* emit(const char* src) {
     unlink(path);
 
     return out;
+}
+
+/* Checks the diagnostic rather than the bytes: several failures used to share
+ * one message, so the message is worth pinning. */
+static void msg_is(const char* name, const char* src, const char* want) {
+    zap_result r;
+    const bool failed = !zap_assemble_mem(src, (int) strlen(src), "m", &r)
+                     || !r.ok;
+    const char* got = (failed && r.ndiags == 1) ? r.diags[0].msg : "<none>";
+    if (strcmp(got, want) == 0) {
+        fprintf(stderr, "PASS  %-42s %s\n", name, got);
+    } else {
+        fprintf(stderr, "FAIL  %-42s got \"%s\", want \"%s\"\n", name, got, want);
+        failures++;
+    }
+    zap_free(&r);
 }
 
 static void is(const char* name, const char* src, const char* want) {
@@ -164,6 +182,54 @@ int main(void) {
     is("if without endif",   "  if 1\n  ld a,b\n",  "ERR");
     is("endif without if",   "  endif\n",           "ERR");
     is("else without if",    "  else\n",            "ERR");
+
+    /* The table holds MACRO_MAX macros and refuses the next one. Macros are
+     * allocated as they are defined now rather than reserved in a fixed
+     * array, so this exercises the allocation, the limit and the cleanup --
+     * the last of which ASan checks by running at all. */
+    {
+        char src[MACRO_MAX * 40 + 64];
+        int n = 0;
+        for (int i = 0; i < MACRO_MAX; i++) {
+            n += snprintf(&src[n], sizeof(src) - n,
+                          "  macro m%d\n  nop\n  endmacro\n", i);
+        }
+        n += snprintf(&src[n], sizeof(src) - n, "  m0\n  m%d\n", MACRO_MAX - 1);
+        is("a full table of macros", src, "00 00");
+
+        /* One more than fits is refused rather than overrunning. This is a
+         * limit zap has and the reference does not -- ez80asm assembles 65
+         * macros without complaint, because it allocates them as it goes and
+         * chains them. Now that zap allocates them too, MACRO_MAX is an
+         * arbitrary cap rather than the size of an array, and could be raised
+         * or dropped; that is a behaviour change, so it is left alone here
+         * and belongs in the compatibility notes. */
+        n = 0;
+        for (int i = 0; i <= MACRO_MAX; i++) {
+            n += snprintf(&src[n], sizeof(src) - n,
+                          "  macro m%d\n  nop\n  endmacro\n", i);
+        }
+        is("one macro past the limit", src, "ERR");
+    }
+
+    /* The reasons mt_add can refuse are now told apart, so the message names
+     * the actual problem. Out of memory cannot be provoked from a test without
+     * a failing allocator, but it is the reason the distinction exists: on a
+     * 512 KB machine it is reachable, and reporting it as a duplicate sends a
+     * user hunting for a mistake in their source that is not there. The three
+     * that can be provoked are checked here. */
+    {
+        char src[MACRO_MAX * 40 + 64];
+        int n = 0;
+        for (int i = 0; i <= MACRO_MAX; i++) {
+            n += snprintf(&src[n], sizeof(src) - n,
+                          "  macro m%d\n  nop\n  endmacro\n", i);
+        }
+        msg_is("a full table says so", src, "too many macros");
+        msg_is("a repeated name says so",
+               "  macro m\n  nop\n  endmacro\n  macro m\n  nop\n  endmacro\n",
+               "duplicate macro");
+    }
 
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);

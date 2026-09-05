@@ -49,18 +49,40 @@ typedef struct _macro {
     int body_sz;
 } macro;
 
+/* Macros are allocated when they are defined, not reserved.
+ *
+ * This held macro m[MACRO_MAX] inline: 64 slots of 621 bytes, 39,744 of them,
+ * whether the source defined a macro or not -- and macro_table sits inside
+ * parser, which is a local in zap_assemble_file, so that was 39 KB of stack on
+ * a machine with 512 KB of everything. Most of it was args[8][65], eight
+ * argument names at full length for macros that usually take none.
+ *
+ * An array of pointers is 192 bytes idle, and one allocation per macro
+ * actually written. */
 typedef struct _macro_table {
-    macro m[MACRO_MAX];
+    macro* m[MACRO_MAX];
     int count;
 } macro_table;
 
 void mt_init(macro_table* mt);
 void mt_destroy(macro_table* mt);
 
-/* Adds a macro, taking ownership of body. Returns NULL if the table is full
- * or the name is already taken. */
+/* Why mt_add refused. Out of memory is worth telling apart from the others:
+ * on a 512 KB machine it is a condition a user can actually hit, and
+ * reporting it as "duplicate or too many macros" sends them looking for a
+ * mistake in their source that is not there. */
+typedef enum _mt_error {
+    MT_OK = 0,
+    MT_DUPLICATE,
+    MT_FULL,
+    MT_BAD_NAME,
+    MT_NO_MEMORY
+} mt_error;
+
+/* Adds a macro, taking ownership of body. Returns NULL on failure and sets
+ * *why to the reason. */
 macro* mt_add(macro_table* mt, const char* name, int name_sz,
-              char* body, int body_sz);
+              char* body, int body_sz, mt_error* why);
 
 /* Finds a macro by name, case-insensitively, as the reserved words are. */
 const macro* mt_find(const macro_table* mt, const char* name, int name_sz);

@@ -709,11 +709,15 @@ static const char* parse_macro(parser* p) {
         return pr_msg(p, n == -1 ? "macro without endmacro" : "macro body too long");
     }
 
-    macro* m = mt_add(&p->macros_, name, name_sz, body, n);
+    mt_error why = MT_OK;
+    macro* m = mt_add(&p->macros_, name, name_sz, body, n, &why);
     if (m == NULL) {
         free(body);
 
-        return pr_msg(p, "duplicate or too many macros");
+        return pr_msg(p, why == MT_NO_MEMORY ? "out of memory"
+                       : why == MT_FULL      ? "too many macros"
+                       : why == MT_DUPLICATE ? "duplicate macro"
+                                             : "bad macro name");
     }
     for (int i = 0; i < argc; i++) {
         for (int k = 0; k < arg_sz[i]; k++) {

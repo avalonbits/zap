@@ -90,7 +90,12 @@ typedef struct _operand {
     int disp;
 
     bool has_imm;
-    value imm;
+
+    /* An instruction's immediate is at most three bytes -- a 24-bit address in
+     * ADL mode -- so it is held in the machine's word rather than the 32-bit
+     * value the evaluator deals in. The emitter writes the low one, two or
+     * three bytes and never looks at the rest. */
+    int imm;
 
     /* An immediate that could not be evaluated yet because a name in it is
      * not defined. The emitter leaves a hole and records the expression's

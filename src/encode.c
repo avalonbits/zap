@@ -158,7 +158,7 @@ static void transform(emitted* out, operand* op, uint8_t type, parser* p,
     (void) p;
 }
 
-static uint8_t reg_match(uint32_t regset, uint32_t reg) {
+static uint8_t reg_match(uint24_t regset, uint32_t reg) {
     /* Either the row's set includes this register, or neither names one.
      * Bitwise rather than || so neither half is a branch. */
     return (uint8_t) (((regset & reg) != 0) | ((regset | reg) == 0));
@@ -169,22 +169,42 @@ static const isa_row* match_row(const isa_insn* insn, const operand* a,
     const uint8_t modeA = a->mode;
     const uint8_t modeB = b->mode;
 
+    const uint8_t has_cc = (uint8_t) (a->cc != 0);
+
     for (uint8_t i = 0; i < insn->count; i++) {
         const isa_row* row = &insn->rows[i];
 
-        /* Every term evaluated and combined bitwise, so the whole row test is
-         * one branch instead of a chain of short-circuiting ones. A row that
-         * takes a condition code accepts one in place of the register it
-         * would otherwise want, which folds in as two more terms. */
+        /* The cheap half decides first, and is allowed to end the candidate.
+         *
+         * Every term used to be evaluated and combined bitwise so the whole
+         * row test was one branch rather than a chain of short-circuiting
+         * ones. That is the right shape when the terms cost the same, and
+         * these do not: the mode test is two masked compares, while reg_match
+         * is the most expensive thing here and runs twice. Three or four rows
+         * are examined for each instruction and all but one are rejected, so
+         * the expensive half is worth paying only for rows that survive the
+         * cheap half -- and that holds even on a chip with no branch
+         * predictor, because the branch skips work rather than selecting a
+         * value.
+         *
+         * Measured on dzap, where the same change was the largest single win
+         * of eight: 13.98s to 10.74s on 256 KiB of instructions.
+         *
+         * A row that takes a condition code accepts one in place of the
+         * register it would otherwise want, so it can match with a mode that
+         * does not -- which is why that term belongs in the rejection rather
+         * than after it. */
         const uint8_t ccok = (uint8_t) ((row->flags & F_CCOK) != 0);
+        if (!((((row->condA & MODECHECK) == modeA)
+             & ((row->condB & MODECHECK) == modeB))
+             | (ccok & has_cc))) {
+            continue;
+        }
+
         const uint8_t rega = (uint8_t) (reg_match(row->regsetA, a->reg) | ccok);
         const uint8_t regb = reg_match(row->regsetB, b->reg);
-        const uint8_t cond = (uint8_t)
-            ((((row->condA & MODECHECK) == modeA)
-            & ((row->condB & MODECHECK) == modeB))
-            | (ccok & (uint8_t) (a->cc != 0)));
 
-        if (rega & regb & cond) {
+        if (rega & regb) {
             if ((row->cpu & cpu) == 0) {
                 return NULL;  /* the form exists, but not on this CPU */
             }

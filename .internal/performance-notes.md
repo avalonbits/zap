@@ -8,9 +8,9 @@ decouples the guest clock from guest work and makes every number meaningless.
 
 | | zap | ez80asm |
 |---|---|---|
-| big.asm (473 KB, 99 KB out) | **59.02s** | 59.32s |
-| BBC BASIC (386 KB tree, 20.9 KB out) | **23.22s** | — |
-| rokky | 2.68s | — |
+| big.asm (473 KB, 99 KB out) | **57.88s** | 59.32s |
+| BBC BASIC (386 KB tree, 20.9 KB out) | **20.96s** | — |
+| rokky | **2.40s** | — |
 | big.asm peak memory | **158.2 KB** | 139 bytes (`-m`) |
 
 Speed is done, or near enough: we were 1.62x slower in July and we are now
@@ -49,34 +49,24 @@ everything else, fairly evenly.
 
 ## Next steps, in the order I would take them
 
-### 1. Lazy prescan — 6.8% to 11.0% of instructions, for 249 files in 250
+### 1. ~~Lazy prescan~~ -- done, and better than planned
 
-The prescan exists to harvest `name: equ <expr>` before the real pass, so that a
-directive which must size something immediately can see a symbol defined further
-down. It costs 6.8% of instructions on big.asm and 11.0% on BBC BASIC, and it
-runs on every file.
+The prescan is gone entirely rather than made lazy. It existed for operands
+whose value folds into the opcode byte -- rst, bit, im, set, res -- where there
+is no hole to leave for a fixup. There did not need to be one: every folding
+transform ORs its value in, and an unknown immediate is zero, so the byte
+already written is exactly the base the value ORs into. Settling it later sets
+the same bits.
 
-I disabled it and ran the whole corpus. **249 of 250 sources are unaffected**,
-as are BBC BASIC, rokky and snes. Exactly one file needs it,
-`Labels/EQU_order_in_defines.s`:
+Worth 2.0% on big.asm and 9.7% on BBC BASIC, and it made zap stricter in four
+places where the prescan had made it wrongly accept what ez80asm rejects
+(`ds SIZE`, `align X`, `fillbyte X`, `if COND` with forward constants).
 
-    before: equ 0x01
-         db before, after1
-         assume adl=before
-        blkb before,after1
-    after1: equ 0x01
-
-So: assemble without the prescan, and only on that specific failure, re-init and
-retry with it. The 1-in-250 case then pays one extra pass, which is exactly what
-all 250 pay today.
-
-**Audit this before building it.** The design is only safe if every directive
-that needs a value immediately *errors* on an undefined symbol and never
-silently substitutes 0. If one of them quietly uses 0, lazy prescanning
-miscompiles silently instead of retrying, which is far worse than the cost it
-saves. The corpus supports the safe reading — the single divergence was a clean
-rejection and zero files assembled to different bytes — but that is evidence,
-not proof. Read every sizing directive.
+The audit this was gated on turned out to be unnecessary -- the question was
+whether a directive might silently substitute 0, and the answer is that the
+folding path had an explicit `folds_known` check and everything else goes
+through `expr_eval`, which errors. Worth remembering that the gate was real but
+the cheaper answer was to remove the need for it rather than to satisfy it.
 
 ### 2. Output streaming — takes output out of the memory limit
 
@@ -101,10 +91,14 @@ outlier: 5.1% of BBC BASIC's patches reach past 16 KB, 24.6% past 4 KB.
 
 So streaming has to be flush-and-seek-back, not flush-and-forget. A 16 KB window
 would cost ~109 seek-patches on BBC BASIC, 1 on rokky, 0 on snes. Worth it —
-output is 81% of big.asm's peak — but **measure the seek first**: agondev builds
-FatFS with `FF_USE_FASTSEEK 0`, so every seek is a linear walk of the FAT chain.
-On a 100 KB output that may not be cheap, and if it is not, the whole idea dies
-there. One microbenchmark on the emulator settles it before any of the work.
+output is 81% of big.asm's peak — and the seek cost, which this was gated on, is
+**not** a problem. Measured on the emulator: writing 100 KB takes 6 cs, and 200
+patches at offsets spread over the whole file -- 400 seeks, with
+`FF_USE_FASTSEEK 0` -- take 2 cs, about 50 microseconds each. The patched file
+verified byte-correct. BBC BASIC's 2,150 patches would cost roughly 0.2s against
+a 21s assembly.
+
+So the gate is open and this is the next big one.
 
 ### 3. Cheap memory wins not yet taken
 
@@ -136,6 +130,31 @@ The remaining ideas, none measured:
   time. Resolving register names in the lexer rather than through the symbol
   table would remove half the lookups. This was scoped once and never tried.
 
+### 5. A full corpus, and a fixed benchmark set
+
+The 247-source corpus is the reference's own test suite: small, single-file,
+none nesting includes, the largest a few hundred lines. Every interesting
+failure so far has come from real programs instead -- a case-insensitive label
+collision, a macro expansion that split a routine's locals, a scope not restored
+across an include -- and there are only three of those in rotation.
+
+Harvest every assembly program from https://github.com/sabotrax/agon-software
+into a separate full corpus, then, in order:
+
+1. Confirm ez80asm assembles them all. Anything it rejects is out of scope --
+   zap is not trying to be better than the reference, it is trying to agree
+   with it.
+2. Confirm zap assembles them all, byte for byte. Expect failures; that is the
+   point of doing this.
+3. Pick a representative subset for benchmarking -- a range of sizes, macro
+   density and include depth -- and pin it. Every timing figure from then on
+   uses that set, so numbers stay comparable across months rather than being
+   re-argued each time.
+
+Keep it separate from `test/corpus`. That one is small, fast and runs on every
+commit; a full corpus of real programs is a different thing with a different
+cadence, and mixing them would make the fast check slow enough to skip.
+
 ## Things that were measured and turned out not to matter
 
 Recording these so they are not re-litigated:
@@ -165,6 +184,12 @@ Recording these so they are not re-litigated:
 - Whether the output file already exists perturbs repeats. Remove it first.
 - A variant whose patch failed to apply builds an unmodified binary and measures
   identically. Check the whole log, not the numbers.
+- A reference binary that cannot run reports every source as a divergence and
+  looks exactly like zap having broken. A relative path to ez80asm resolved to
+  nothing from inside the per-source work directory and turned 247 passes into
+  247 failures with no error printed anywhere. corpus.sh now assembles one
+  known-good source first and refuses to go on if the reference produces
+  nothing.
 - Host instruction counts understate eZ80 gains wherever libc is vectorised.
   The prescan change was 4.0% on the host and 1.8% on target — same direction,
   wrong magnitude. Target numbers are the real ones.

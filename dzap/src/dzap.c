@@ -205,6 +205,14 @@ static uint8_t isa_len[512];
  *
  * Indexed by a row number assigned here, since the rows live in 114 separate
  * arrays and have no global index of their own. */
+/* Mnemonics of three characters or fewer, packed into one word.
+ *
+ * Most of them are two or three characters, and comparing those a character at
+ * a time was 4% of the program -- a loop, a case fold and a test per letter,
+ * to answer something a single comparison can. Folded and packed once at
+ * startup; longer names still go through the character loop. */
+static uint24_t isa_packed[512];
+
 static uint16_t row_modes[NROW];
 static uint8_t row_ccok[NROW];
 
@@ -219,6 +227,16 @@ static inline int letter_of(char c) {
     const char l = (char) (c | 0x20);
 
     return (l >= 'a' && l <= 'z') ? (l - 'a') : 26;
+}
+
+/* Up to three characters, case-folded, in one word. */
+static inline uint24_t pack3(const char* s, int n) {
+    uint24_t v = 0;
+    for (int i = 0; i < n; i++) {
+        v = (v << 8) | (uint24_t) (uint8_t) (s[i] | 0x20);
+    }
+
+    return v;
 }
 
 static inline int bucket_of(char first, int n) {
@@ -242,6 +260,7 @@ static void build_tables(void) {
             k++;
         }
         isa_len[i] = (uint8_t) k;
+        isa_packed[i] = (k <= 3) ? pack3(name, k) : 0;
 
         const int b = bucket_of(name[0], k);
         bucket_next[i] = bucket_head[b];
@@ -275,7 +294,25 @@ static inline bool same_ci(const char* a, const char* b, int n) {
 }
 
 static int mnemonic_of(const char* s, int n) {
-    for (int i = bucket_head[bucket_of(s[0], n)]; i >= 0; i = bucket_next[i]) {
+    int i = bucket_head[bucket_of(s[0], n)];
+    if (i < 0) {
+        return -1;
+    }
+
+    /* The bucket already agrees on length for everything shorter than the
+     * longest bucket, so only the characters are left to check. */
+    if (n <= 3) {
+        const uint24_t want = pack3(s, n);
+        for (; i >= 0; i = bucket_next[i]) {
+            if (isa_packed[i] == want) {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    for (; i >= 0; i = bucket_next[i]) {
         if (isa_len[i] == n && same_ci(isa_table[i].name, s, n)) {
             return i;
         }
@@ -652,14 +689,31 @@ static const isa_row* match_row(int idx, const dop* a, const dop* b) {
     int r = row_base[idx];
 
     for (uint8_t i = 0; i < insn->count; i++, r++) {
-        const isa_row* row = &insn->rows[i];
+        /* The cheapest discriminator first, and it is allowed to end the
+         * candidate outright.
+         *
+         * Every term used to be evaluated for every row so the whole test
+         * could be one branch -- which is the right shape when the terms cost
+         * the same. They do not: the mode test is one compare of a precomputed
+         * value, and reg_match is the most expensive line in the program, run
+         * twice. Three or four rows are scanned per instruction and all but one
+         * are rejected, so paying the expensive half only for rows that
+         * survive the cheap half is worth the branch, even on a chip that does
+         * not predict them. Measured, not assumed.
+         *
+         * A row that takes a condition code can still match with a mode that
+         * does not, which is why the second half of the old expression has to
+         * be part of the rejection rather than after it. */
         const uint8_t ccok = row_ccok[r];
+        if (row_modes[r] != want && !(ccok & has_cc)) {
+            continue;
+        }
+
+        const isa_row* row = &insn->rows[i];
         const uint8_t rega = (uint8_t) (reg_match(row_rega[r], a->reg) | ccok);
         const uint8_t regb = reg_match(row_regb[r], b->reg);
-        const uint8_t cond = (uint8_t)
-            ((row_modes[r] == want) | (ccok & has_cc));
 
-        if (rega & regb & cond) {
+        if (rega & regb) {
             if ((row->cpu & CPU_EZ80) == 0) {
                 return NULL;
             }

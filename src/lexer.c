@@ -290,6 +290,77 @@ int lex_string(lexer* lex, char* out, int max) {
     }
 }
 
+/* Skips whole lines that contain neither of the two characters, stopping at
+ * the start of one that does, or at end of file. Nothing is tokenised and
+ * nothing is consumed from a line that is kept.
+ *
+ * The prescan uses it to pass over source it can prove holds no constant and
+ * no include, which on a body of instructions is all of it. */
+void lex_skip_lines_without(lexer* lex, char a, char b) {
+    while (true) {
+        buf_reader* r = &lex->rd_;
+
+        if (r->bpos_ >= r->bsz_) {
+            bool too_long = false;
+            if (!br_fill_lines(r, &too_long)) {
+                return;   /* end of file, or a line too long for the caller */
+            }
+        }
+
+        bool found = false;
+        for (uint24_t i = r->bpos_; i < r->bsz_; i++) {
+            const char c = r->buf_[i];
+            if (c == '\n') {
+                break;
+            }
+            if (c == a || c == b) {
+                found = true;
+                break;
+            }
+        }
+        if (found) {
+            return;
+        }
+
+        lex_skip_line(lex);
+    }
+}
+
+/* Discards the rest of the current line without tokenising it.
+ *
+ * The buffer holds whole lines, so the end of this one is a memchr away. The
+ * prescan spends most of its time on lines it has already decided it does not
+ * care about, and pulling ten tokens off each -- hashing every identifier in
+ * them -- to reach the newline was the bulk of that.
+ *
+ * The line count still advances, because diagnostics from the main pass are
+ * numbered from it. */
+void lex_skip_line(lexer* lex) {
+    buf_reader* r = &lex->rd_;
+
+    while (true) {
+        if (r->bpos_ >= r->bsz_) {
+            bool too_long = false;
+            if (!br_fill_lines(r, &too_long)) {
+                return;
+            }
+        }
+
+        const char* from = &r->buf_[r->bpos_];
+        const uint24_t avail = r->bsz_ - r->bpos_;
+        const char* nl = (const char*) memchr(from, '\n', (size_t) avail);
+        if (nl != NULL) {
+            r->bpos_ += (uint24_t) (nl - from) + 1;
+            lex->lcount_++;
+
+            return;
+        }
+
+        /* No newline left in the buffer: this is the last line of the file. */
+        r->bpos_ = r->bsz_;
+    }
+}
+
 int lex_capture(lexer* lex, const char* stop, char* out, int max) {
     int n = 0;
 

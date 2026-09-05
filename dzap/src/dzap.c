@@ -451,10 +451,10 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
         p++;
     }
 
-    /* The newline ends the operand list. It is checked here rather than by
-     * bounding the scan at the end of the line, because finding that end meant
-     * a whole extra pass over the source. */
-    if (p >= e || *p == ',' || *p == '\n') {
+    /* The newline ends the operand list, and so does a remark. Both are
+     * checked here rather than by bounding the scan at the end of the line,
+     * because finding that end meant a whole extra pass over the source. */
+    if (p >= e || *p == ',' || *p == '\n' || *p == ';') {
         *pp = p;
 
         return true;   /* nothing there */
@@ -838,7 +838,11 @@ static bool assemble_line(dz* z, const char* p, const char* e, const char** stop
         p++;
     }
     *stop = p;
-    if (p >= e || *p == '\n') {
+
+    /* Nothing, or nothing but a remark. A comment runs to the end of the line,
+     * and the caller steps over the newline, so there is nothing to skip here
+     * -- no scan of the comment's body at all. */
+    if (p >= e || *p == '\n' || *p == ';') {
         return true;
     }
 
@@ -928,15 +932,29 @@ static bool run(dz* z, const char* path) {
             return false;
         }
 
-        /* Whatever ended the line is here or a step away: parsing stops at the
-         * newline, and anything else between is trailing space. */
+            /* Whatever ended the line is here or a step away: parsing stops at the
+         * newline, and anything else between is trailing space or a remark. */
         while (stop < end && *stop != '\n' && is_space_ch(*stop)) {
             stop++;
+        }
+        if (stop < end && *stop == ';') {
+            /* A remark after the instruction. Its body is never looked at --
+             * the search for the newline below walks it once and that is all
+             * a comment ever costs. */
+            while (stop < end && *stop != '\n') {
+                stop++;
+            }
         }
         if (stop < end && *stop != '\n') {
             z->err = "unexpected text after the instruction";
 
             return false;
+        }
+        /* A line that was only a remark stops at the semicolon, so the rest
+         * of it is walked here. This is the whole cost of a comment: one pass
+         * over its bytes, looking for the newline and nothing else. */
+        while (stop < end && *stop != '\n') {
+            stop++;
         }
         r->bpos_ = (uint24_t) ((stop < end ? stop + 1 : end) - base);
     }

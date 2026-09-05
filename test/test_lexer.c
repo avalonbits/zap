@@ -19,6 +19,7 @@
 #include <unistd.h>
 
 #include "lexer.h"
+#include "isa.h"
 #include "parser.h"
 
 static int failures = 0;
@@ -120,6 +121,102 @@ static const char* lex_all(const char* src) {
     unlink(path);
 
     return out;
+}
+
+/* Lexes a single word and reports the kind and type index it was given. */
+static bool classify(const char* word, TOKEN* tk, TK_TYPE* tt) {
+    char path[] = "/tmp/zap_cls_XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) {
+        return false;
+    }
+    const size_t n = strlen(word);
+    if (write(fd, word, n) != (long) n) {
+        close(fd);
+        unlink(path);
+
+        return false;
+    }
+    close(fd);
+
+    lexer lex;
+    if (lex_init(&lex, path) == NULL) {
+        unlink(path);
+
+        return false;
+    }
+    token t;
+    lex_next(&lex, &t);
+    *tk = t.tk_;
+    *tt = t.tt_;
+    br_destroy(&lex.rd_);
+    unlink(path);
+
+    return true;
+}
+
+/* Registers and flags are matched directly rather than looked up, and that
+ * shortcut takes precedence over the reserved-word table.
+ *
+ * It is only safe while no mnemonic shares a name with a register or a flag.
+ * The instruction table is generated, so that is not something to assume once
+ * and forget: if a future eZ80 revision adds a mnemonic called "P" or "MB",
+ * the table would have overridden the flag and the direct match will not, and
+ * the assembler changes meaning with nothing to say so.
+ *
+ * This walks the generated table and asserts every mnemonic in it still lexes
+ * as an instruction. It is the check the shortcut's correctness rests on. */
+static void check_no_mnemonic_shadowed(void) {
+    int shadowed = 0;
+    for (int i = 0; i < isa_table_count; i++) {
+        TOKEN tk = NONE;
+        TK_TYPE tt = TY_NONE;
+        if (!classify(isa_table[i].name, &tk, &tt)) {
+            fprintf(stderr, "FAIL  could not lex mnemonic %s\n", isa_table[i].name);
+            failures++;
+
+            return;
+        }
+        if (tk != INSTRUCTION) {
+            fprintf(stderr, "FAIL  mnemonic %s lexes as %s, not INSTRUCTION\n",
+                    isa_table[i].name, tk_name(tk));
+            shadowed++;
+        }
+    }
+    if (shadowed == 0) {
+        fprintf(stderr, "PASS  %-44s %d mnemonics\n",
+                "no mnemonic shadowed by a register or flag", isa_table_count);
+    } else {
+        failures += shadowed;
+    }
+}
+
+/* Every register and flag, in both cases, with the type index each carries --
+ * a shortcut that returned the right kind and the wrong index would assemble
+ * to different bytes with nothing else in the suite noticing. */
+static void check_reg(const char* word, TOKEN want_tk, TK_TYPE want_tt) {
+    TOKEN tk = NONE;
+    TK_TYPE tt = TY_NONE;
+    char upper[8];
+    size_t n = strlen(word);
+    for (size_t i = 0; i < n && i < sizeof(upper) - 1; i++) {
+        upper[i] = (char) (word[i] >= 'a' && word[i] <= 'z' ? word[i] - 32 : word[i]);
+    }
+    upper[n] = 0;
+
+    if (!classify(word, &tk, &tt) || tk != want_tk || tt != want_tt) {
+        fprintf(stderr, "FAIL  %-44s lower case\n", word);
+        failures++;
+
+        return;
+    }
+    if (!classify(upper, &tk, &tt) || tk != want_tk || tt != want_tt) {
+        fprintf(stderr, "FAIL  %-44s upper case\n", word);
+        failures++;
+
+        return;
+    }
+    fprintf(stderr, "PASS  %-44s %s\n", word, tk_name(want_tk));
 }
 
 int main(void) {
@@ -326,6 +423,59 @@ int main(void) {
     check_s("brackets group",
             lex_all("db [1+2]\n"),
             "DIR(db) LB([) NUM(1=1) PLUS(+) NUM(2=2) RB(]) NL(\n)");
+
+    check_no_mnemonic_shadowed();
+
+    check_reg("a", REGISTER, REG_A);
+    check_reg("b", REGISTER, REG_B);
+    check_reg("c", REGISTER, REG_C);
+    check_reg("d", REGISTER, REG_D);
+    check_reg("e", REGISTER, REG_E);
+    check_reg("f", REGISTER, REG_F);
+    check_reg("h", REGISTER, REG_H);
+    check_reg("l", REGISTER, REG_L);
+    check_reg("i", REGISTER, REG_I);
+    check_reg("r", REGISTER, REG_RR);
+    check_reg("af", REGISTER, REG_AF);
+    check_reg("bc", REGISTER, REG_BC);
+    check_reg("de", REGISTER, REG_DE);
+    check_reg("hl", REGISTER, REG_HL);
+    check_reg("ix", REGISTER, REG_IX);
+    check_reg("iy", REGISTER, REG_IY);
+    check_reg("sp", REGISTER, REG_SP);
+    check_reg("mb", REGISTER, REG_MB);
+    check_reg("ixh", REGISTER, REG_IXH);
+    check_reg("ixl", REGISTER, REG_IXL);
+    check_reg("iyh", REGISTER, REG_IYH);
+    check_reg("iyl", REGISTER, REG_IYL);
+    check_reg("z", FLAG, F_Z);
+    check_reg("p", FLAG, F_P);
+    check_reg("m", FLAG, F_M);
+    check_reg("nz", FLAG, F_NZ);
+    check_reg("nc", FLAG, F_NC);
+    check_reg("po", FLAG, F_PO);
+    check_reg("pe", FLAG, F_PE);
+
+    /* Names that begin like a register but are not one must not be caught by
+     * the shortcut: it decides on length as well as characters, and a
+     * three-character name starting with "i" is the one place that is subtle. */
+    {
+        TOKEN tk = NONE;
+        TK_TYPE tt = TY_NONE;
+        const char* nots[] = {"ab", "ixz", "iz", "sq", "nx", "pq", "izl", "hlx", 0};
+        int bad = 0;
+        for (int i = 0; nots[i]; i++) {
+            if (classify(nots[i], &tk, &tt) && (tk == REGISTER || tk == FLAG)) {
+                fprintf(stderr, "FAIL  %s lexes as a register or flag\n", nots[i]);
+                bad++;
+            }
+        }
+        if (bad == 0) {
+            fprintf(stderr, "PASS  %-44s ok\n", "near-miss names are not registers");
+        } else {
+            failures += bad;
+        }
+    }
 
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);

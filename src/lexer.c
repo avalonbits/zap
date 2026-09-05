@@ -150,6 +150,91 @@ static bool is_ascdig(char ch) {
 
 #define OK_CHAR(ch) (ch != EOF && ch != ESUSP)
 
+/* Register and flag names, matched directly rather than looked up.
+ *
+ * There are 29 of them and none is longer than three characters, and together
+ * they are a third of every identifier the lexer classifies -- 8,744 of 26,400
+ * on BBC BASIC. Hashing a one-character name to discover it is the register B
+ * costs more than deciding it here: this is a compare and a jump, with no
+ * table to load and nothing to miss in a cache the eZ80 does not have.
+ *
+ * Taking precedence over the reserved-word table is safe only because no
+ * mnemonic shares a name with a register or a flag. That is checked rather
+ * than assumed -- see the test, which walks the generated instruction table
+ * looking for one. If a future eZ80 revision adds a mnemonic called "P", the
+ * table would have overridden the flag and this would not, so the test fails
+ * rather than the assembler quietly changing meaning.
+ *
+ * Returns a packed token/type as the table would, or 0 for anything else. */
+static int reg_or_flag(const char* t, int sz) {
+    /* Folded here rather than through lower() per character: at most three
+     * characters, and the lexer's own case-insensitivity is what this has to
+     * reproduce. */
+    const char a = (char) (t[0] | 0x20);
+
+    if (sz == 1) {
+        switch (a) {
+            case 'a': return pack_tktt(REGISTER, REG_A);
+            case 'b': return pack_tktt(REGISTER, REG_B);
+            case 'c': return pack_tktt(REGISTER, REG_C);
+            case 'd': return pack_tktt(REGISTER, REG_D);
+            case 'e': return pack_tktt(REGISTER, REG_E);
+            case 'f': return pack_tktt(REGISTER, REG_F);
+            case 'h': return pack_tktt(REGISTER, REG_H);
+            case 'l': return pack_tktt(REGISTER, REG_L);
+            case 'i': return pack_tktt(REGISTER, REG_I);
+            case 'r': return pack_tktt(REGISTER, REG_RR);
+            case 'z': return pack_tktt(FLAG, F_Z);
+            case 'p': return pack_tktt(FLAG, F_P);
+            case 'm': return pack_tktt(FLAG, F_M);
+            default:  return 0;
+        }
+    }
+
+    if (sz == 2) {
+        const char b = (char) (t[1] | 0x20);
+        switch (a) {
+            case 'a': return b == 'f' ? pack_tktt(REGISTER, REG_AF) : 0;
+            case 'b': return b == 'c' ? pack_tktt(REGISTER, REG_BC) : 0;
+            case 'd': return b == 'e' ? pack_tktt(REGISTER, REG_DE) : 0;
+            case 'h': return b == 'l' ? pack_tktt(REGISTER, REG_HL) : 0;
+            case 's': return b == 'p' ? pack_tktt(REGISTER, REG_SP) : 0;
+            case 'm': return b == 'b' ? pack_tktt(REGISTER, REG_MB) : 0;
+            case 'i':
+                if (b == 'x') return pack_tktt(REGISTER, REG_IX);
+                if (b == 'y') return pack_tktt(REGISTER, REG_IY);
+
+                return 0;
+            case 'n':
+                if (b == 'z') return pack_tktt(FLAG, F_NZ);
+                if (b == 'c') return pack_tktt(FLAG, F_NC);
+
+                return 0;
+            case 'p':
+                if (b == 'o') return pack_tktt(FLAG, F_PO);
+                if (b == 'e') return pack_tktt(FLAG, F_PE);
+
+                return 0;
+            default: return 0;
+        }
+    }
+
+    /* Three characters, and only the index halves reach here. */
+    if (sz == 3 && a == 'i') {
+        const char b = (char) (t[1] | 0x20);
+        const char c = (char) (t[2] | 0x20);
+        if (b == 'x') {
+            if (c == 'h') return pack_tktt(REGISTER, REG_IXH);
+            if (c == 'l') return pack_tktt(REGISTER, REG_IXL);
+        } else if (b == 'y') {
+            if (c == 'h') return pack_tktt(REGISTER, REG_IYH);
+            if (c == 'l') return pack_tktt(REGISTER, REG_IYL);
+        }
+    }
+
+    return 0;
+}
+
 static bool is_mnemonic(const char* txt, int sz) {
     return unpack_tk(ht_nget(&words, txt, (uint8_t) sz, NULL)) == INSTRUCTION;
 }
@@ -613,6 +698,15 @@ void lex_next(lexer* lex, token* out) {
      * colon has to be immediate -- "lbl :" is not a label there either. */
     if (l_peek(lex) == ':') {
         tkp->label_ = true;
+
+        return;
+    }
+
+    /* Registers and flags are answered without a hash. */
+    const int reg = reg_or_flag(tkp->txt_, tkp->sz_);
+    if (reg != 0) {
+        tkp->tk_ = unpack_tk(reg);
+        tkp->tt_ = unpack_tt(reg);
 
         return;
     }

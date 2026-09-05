@@ -46,6 +46,32 @@ if [ ! -f "$ZAP_BIN" ]; then
     exit 2
 fi
 
+# Both binaries are copied once, here, and every source is staged from these
+# copies rather than from the build tree.
+#
+# Staging per source instead meant a `make` while a run was in flight silently
+# changed the binary halfway through it: the first source measured one build
+# and the rest measured another, and the table said nothing about it. A
+# benchmark that can be edited while it runs is not measuring anything.
+snapshot_binaries() {
+    cp "$ZAP_BIN" "$WORK/zap.bin" || exit 1
+    cp "$EZ_BIN"  "$WORK/ez80asm.bin" || exit 1
+}
+
+# Above this much source, ez80asm is run with -m. See where it is used.
+MEM_THRESHOLD=$((256 * 1024))
+
+# How much source a staged sdcard holds: everything except the machine's own
+# files and the ones the runner puts there itself.
+source_bytes() {
+    find "$1" -type f \
+        ! -path "$1/bin/*" ! -path "$1/mos/*" \
+        ! -name 'MOS.bin' ! -name 'firmware.bin' \
+        ! -name 'autoexec.txt' ! -name 'flush.s' ! -name 'flush.bin' \
+        ! -name 'out.bin' \
+        -printf '%s\n' 2>/dev/null | awk '{ n += $1 } END { print n + 0 }'
+}
+
 # The set. Each entry is: name, top-level source, directory to stage.
 #
 # bbcbasic is the big one and the most realistic -- 20 files, deep include
@@ -102,8 +128,19 @@ emu_running_here() {
 # already done, with no emulator left running to explain it. A fifo and an
 # explicit kill make the lifetime ours to end.
 run_one() {
-    local sd="$1" cmd="$2" tag="$3"
-    printf '%s\r\nemulator_exit_success\r\n' "$cmd" > "$sd/autoexec.txt"
+    local sd="$1" cmd="$2" tag="$3" flush="$4"
+
+    # A second, trivial assembly between the measured one and the shutdown.
+    #
+    # Without it the run ends mid-sentence: the capture reads "Wrote Emulator
+    # shutdown triggered by writing 0x0 IO 0x0", because emulator_exit_success
+    # takes effect while the console output of the measured run is still being
+    # flushed to the VDP. The "Done in" line is simply lost, and the run looks
+    # like a program that never finished rather than one whose output was cut
+    # off. Assembling four lines afterwards gives the console time to drain.
+    printf '  nop\n  ret\n' > "$sd/flush.s"
+    printf '%s\r\n%s\r\nemulator_exit_success\r\n' \
+        "$cmd" "$flush" > "$sd/autoexec.txt"
 
     local fifo="$WORK/stdin.$tag"
     rm -f "$fifo"
@@ -118,9 +155,13 @@ run_one() {
     wait "$hold" 2>/dev/null
     rm -f "$fifo"
 
+    # The first figure is the measured run; the flush assembly prints its own
+    # afterwards, which is not what anyone asked for.
     tr -d '\r' < "$WORK/cap.$tag" | grep -aoE 'Done in [0-9]+\.[0-9]+' \
         | head -1 | awk '{print $3}'
 }
+
+snapshot_binaries
 
 want="${*:-$SETS}"
 
@@ -133,8 +174,8 @@ for name in $want; do
     cp -r "$EMU/sdcard/mos" "$sd/" 2>/dev/null
     cp "$EMU/sdcard/MOS.bin" "$EMU/sdcard/firmware.bin" "$sd/" 2>/dev/null
     src=$("stage_$name" "$sd")
-    cp "$ZAP_BIN" "$sd/bin/zap.bin"
-    cp "$EZ_BIN"  "$sd/bin/ez80asm.bin"
+    cp "$WORK/zap.bin"     "$sd/bin/zap.bin"
+    cp "$WORK/ez80asm.bin" "$sd/bin/ez80asm.bin"
 
     if [ "$(emu_running_here)" != "0" ]; then
         echo "an emulator is already using this sdcard; refusing" >&2
@@ -142,12 +183,34 @@ for name in $want; do
     fi
 
     rm -f "$sd/out.bin"
-    z=$(run_one "$sd" "zap $src out.bin" "z_$name")
+    z=$(run_one "$sd" "zap $src out.bin" "z_$name" "zap flush.s flush.bin")
     zsz=$([ -f "$sd/out.bin" ] && stat -c%s "$sd/out.bin" || echo 0)
     zmd=$([ -f "$sd/out.bin" ] && md5sum < "$sd/out.bin" | cut -c1-8 || echo "--------")
 
+    # ez80asm gets -m only when the source is large enough to need it.
+    #
+    # Without -m it sizes its buffers for a desktop and never finishes on a
+    # 512 KB machine: bbcbasic sat on "Pass 1..." indefinitely, while rokky --
+    # a fifteenth the size -- completed normally either way, which made the
+    # failure look like a hang in the runner rather than the assembler running
+    # out of room.
+    #
+    # Passing it everywhere would be simpler but would not be a fair
+    # comparison: -m costs ez80asm real time (rokky is 2.70s with it and 2.50s
+    # without) and nobody reaches for it until they have to. Timing it against
+    # a flag a user would not have used makes zap look better than it is. The
+    # threshold is on the whole source the assembler reads, includes and all,
+    # since that is what drives the memory it needs rather than the size of the
+    # file named on the command line -- bbcbasic's top-level source is 554
+    # bytes and its tree is 400 KB.
+    staged=$(source_bytes "$sd")
+    mflag=""
+    if [ "$staged" -gt "$MEM_THRESHOLD" ]; then
+        mflag=" -m"
+    fi
+
     rm -f "$sd/out.bin"
-    e=$(run_one "$sd" "ez80asm $src out.bin" "e_$name")
+    e=$(run_one "$sd" "ez80asm $src out.bin$mflag" "e_$name" "ez80asm flush.s flush.bin$mflag")
     esz=$([ -f "$sd/out.bin" ] && stat -c%s "$sd/out.bin" || echo 0)
     emd=$([ -f "$sd/out.bin" ] && md5sum < "$sd/out.bin" | cut -c1-8 || echo "--------")
 
@@ -157,6 +220,9 @@ for name in $want; do
     fi
 
     note="$zsz bytes"
+    if [ -n "$mflag" ]; then
+        note="$note, ez80asm -m"
+    fi
     if [ "$zmd" != "$emd" ]; then
         note="$note  MISMATCH zap=$zmd ez80asm=$emd"
     fi

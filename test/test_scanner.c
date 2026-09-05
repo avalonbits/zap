@@ -239,6 +239,35 @@ int main(void) {
         free(buf);
     }
 
+    /* A deferred expression in an include whose last line has no trailing
+     * newline.
+     *
+     * The file ends exactly where the expression does, so next() pops the
+     * source and frees its buffer the moment the expression finishes. A
+     * capture that waited until then to take the text read freed memory --
+     * which on a host still reads back, so the whole corpus passed, and on an
+     * Agon had been reused, so the fixup re-evaluated garbage and BBC BASIC
+     * failed to assemble. Under ASan this is a use-after-free. */
+    {
+        char inc[] = "/tmp/zap_nonl_XXXXXX";
+        int fd = mkstemp(inc);
+        check("nonl: scratch include", fd >= 0);
+        const char* body = "  ld a, LATER";   /* no newline, deliberately */
+        check("nonl: written", write(fd, body, strlen(body)) == (long) strlen(body));
+        close(fd);
+
+        char src[512];
+        snprintf(src, sizeof(src),
+                 "  include \"%s\"\nLATER: equ 5\n", inc);
+
+        zap_result r;
+        const bool ok = asm_file(src, (int) strlen(src), &r) && r.ok;
+        check("a deferred expression at the end of an include",
+              ok && r.size == 2 && r.bytes[0] == 0x3E && r.bytes[1] == 0x05);
+        zap_free(&r);
+        unlink(inc);
+    }
+
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);
     }

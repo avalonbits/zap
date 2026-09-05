@@ -226,6 +226,77 @@ int main(void) {
     insn_is("jr $", "18 FE");
     insn_is("djnz $", "10 FE");
 
+    /* A lone literal operand takes a fast path that skips the expression
+     * evaluator, so the two ways of reaching a value have to agree.
+     *
+     * The literal is consumed before it is known whether an operator follows,
+     * so the case where one does resumes the evaluator with the value already
+     * in hand rather than starting over. If the resumed span did not begin at
+     * the literal, a deferred expression would be re-evaluated from the wrong
+     * text -- and silently, since it still parses. */
+    insn_is("ld a,5", "3E 05");
+    insn_is("ld a,1+2", "3E 03");
+    insn_is("ld a,2*3+1", "3E 07");
+    insn_is("ld a,1+2*3", "3E 09");
+    /* ADL=1, so hl takes a 24-bit immediate. The fast path must not change
+     * the width the mode decides -- it supplies a value, not a size. */
+    insn_is("ld hl,0x1234", "21 34 12 00");
+    insn_is("ld hl,0x1000+0x234", "21 34 12 00");
+    insn_is("ld a,-1", "3E FF");
+    insn_is("ld a,~0", "3E FF");
+    insn_is("ld a,[1+2]*3", "3E 09");
+
+    /* And the same literal in ADL=0, where hl is 16-bit. A fast path that
+     * supplied the value without going through the mode would emit the same
+     * bytes in both modes, which is the failure this catches. */
+    {
+        struct { const char* name; const char* src; const char* want; } modes[] = {
+            {"lone literal, adl=0", "  .assume adl=0\n  ld hl,0x1234\n", "21 34 12"},
+            {"sum, adl=0",          "  .assume adl=0\n  ld hl,0x1000+0x234\n", "21 34 12"},
+            {"lone literal, adl=1", "  .assume adl=1\n  ld hl,0x1234\n", "21 34 12 00"},
+        };
+        for (unsigned i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+            const char* got = emit(modes[i].src);
+            if (strcmp(got, modes[i].want) == 0) {
+                fprintf(stderr, "PASS  %-32s %s\n", modes[i].name, got);
+            } else {
+                fprintf(stderr, "FAIL  %-32s got %s, want %s\n",
+                        modes[i].name, got, modes[i].want);
+                failures++;
+            }
+        }
+    }
+
+    /* The same expressions with a forward reference, so the fast path hands
+     * over to the evaluator and the span has to cover the whole thing. Each is
+     * compared against the identical source with the label defined first. */
+    {
+        static const char* exprs[] = {
+            "LATER", "1+LATER", "LATER+1", "1+LATER*2", "1  +   LATER",
+            "2*LATER", "LATER-1", "[1+LATER]*2", "0x10+LATER", 0
+        };
+        int bad = 0;
+        for (int i = 0; exprs[i]; i++) {
+            char src[256];
+            static char before[256];
+            snprintf(src, sizeof(src), "LATER: equ 5\n    ld a,%s\n", exprs[i]);
+            snprintf(before, sizeof(before), "%s", emit(src));
+            snprintf(src, sizeof(src), "    ld a,%s\nLATER: equ 5\n", exprs[i]);
+            const char* after = emit(src);
+            if (strcmp(before, after) != 0 || strcmp(after, "ERR") == 0) {
+                fprintf(stderr, "FAIL  ld a,%-24s deferred %s, immediate %s\n",
+                        exprs[i], after, before);
+                bad++;
+            }
+        }
+        if (bad == 0) {
+            fprintf(stderr, "PASS  %-32s 9 expressions\n",
+                    "deferred operand matches immediate");
+        } else {
+            failures += bad;
+        }
+    }
+
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);
     }

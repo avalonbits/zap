@@ -81,6 +81,34 @@ static void db_is(const char* expr, const char* want) {
     }
 }
 
+/* The same expression resolved two ways: with the label defined after it, so
+ * the text has to be kept and re-evaluated, and with the label defined before
+ * it, so it resolves on the spot.
+ *
+ * Comparing the two paths against each other rather than against a number
+ * written here is the point. A hand-computed expectation tests my arithmetic
+ * as much as the assembler's -- the first draft of these cases had one wrong --
+ * and what actually needs proving is that deferring an expression does not
+ * change what it means. */
+static void deferred_matches(const char* name, const char* expr) {
+    char src[1024];
+    static char immediate[1024];
+
+    snprintf(src, sizeof(src), "LATER: equ 5\n    db %s\n", expr);
+    snprintf(immediate, sizeof(immediate), "%s", emit(src));
+
+    snprintf(src, sizeof(src), "    db %s\nLATER: equ 5\n", expr);
+    const char* deferred = emit(src);
+
+    if (strcmp(deferred, immediate) == 0 && strcmp(deferred, "ERR") != 0) {
+        fprintf(stderr, "PASS  %-44s %s\n", name, deferred);
+    } else {
+        fprintf(stderr, "FAIL  %-44s deferred %s, immediate %s\n",
+                name, deferred, immediate);
+        failures++;
+    }
+}
+
 int main(void) {
     /* Strictly left to right. These four are the whole reason this file
      * exists: under C precedence they would be 07, 07, 03 and 09. */
@@ -263,6 +291,59 @@ int main(void) {
             fprintf(stderr, "PASS  %-37s %s\n", "65-character label rejected", got);
         } else {
             fprintf(stderr, "FAIL  %-37s got %s, want ERR\n", "65-character label", got);
+            failures++;
+        }
+    }
+
+    /* A deferred expression is re-evaluated from the source text it covered,
+     * not from a string rebuilt out of its tokens. The span has to be exactly
+     * the expression: one character short at either end changes what it means,
+     * and the failure is silent -- the fixup resolves to a different number and
+     * the program assembles to the wrong bytes with no error.
+     *
+     * The spacing cases are the ones that distinguish a span from a rebuild.
+     * The old code emitted tokens separated by single spaces, so it could not
+     * tell these apart; a span reproduces them exactly and has to survive
+     * re-lexing anyway. */
+    deferred_matches("deferred: bare forward reference", "LATER");
+    deferred_matches("deferred: forward reference in a sum", "1+LATER");
+    deferred_matches("deferred: left to right, not precedence", "1+LATER*2");
+    deferred_matches("deferred: irregular spacing", "1  +   LATER");
+    deferred_matches("deferred: no spacing at all", "1+LATER-1");
+    deferred_matches("deferred: brackets", "[1+LATER]*2");
+    deferred_matches("deferred: unary minus on the reference", "10+-LATER");
+    deferred_matches("deferred: shift", "LATER<<2");
+    deferred_matches("deferred: trailing spaces before the newline", "LATER  ");
+
+    /* Two references in one expression, so the fixup is re-attempted and has
+     * to still hold the whole span the second time. */
+    {
+        const char* src = "    db FIRST+SECOND\nFIRST: equ 2\nSECOND: equ 3\n";
+        const char* got = emit(src);
+        if (strcmp(got, "05") == 0) {
+            fprintf(stderr, "PASS  %-44s %s\n", "deferred: two forward references", got);
+        } else {
+            fprintf(stderr, "FAIL  %-44s got %s, want 05\n",
+                    "deferred: two forward references", got);
+            failures++;
+        }
+    }
+
+    /* The span is bounded. An expression too long to keep is refused rather
+     * than truncated, which would resolve to something else entirely. */
+    {
+        char src[1024];
+        int n = snprintf(src, sizeof(src), "    db LATER");
+        for (int i = 0; i < 70; i++) {
+            n += snprintf(&src[n], sizeof(src) - n, "+1");
+        }
+        snprintf(&src[n], sizeof(src) - n, "\nLATER: equ 5\n");
+        const char* got = emit(src);
+        if (strcmp(got, "ERR") == 0) {
+            fprintf(stderr, "PASS  %-44s %s\n", "deferred: over-long expression refused", got);
+        } else {
+            fprintf(stderr, "FAIL  %-44s got %s, want ERR\n",
+                    "deferred: over-long expression refused", got);
             failures++;
         }
     }

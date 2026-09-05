@@ -1437,6 +1437,14 @@ static const char* resolve_fixup(parser* p, const label_node* ln, value* out) {
     }
     tmp.lcount_ = ln->line_;
 
+    /* The name comes with it. Left uninitialised, any diagnostic raised while
+     * re-evaluating a fixup printed whatever happened to be on the stack --
+     * fifty bytes of binary ahead of the message, which is how the first real
+     * bug in this path looked when it appeared. */
+    for (int i = 0; i < (int) sizeof(tmp.fname_); i++) {
+        tmp.fname_[i] = p->lex_.fname_[i];
+    }
+
     p->lex_ = tmp;
     /* The names were written in that scope, and '$' meant that address. */
     p->scope_ = ln->scope_;

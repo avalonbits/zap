@@ -307,22 +307,36 @@ void lex_skip_lines_without(lexer* lex, char a, char b) {
             }
         }
 
-        bool found = false;
-        for (uint24_t i = r->bpos_; i < r->bsz_; i++) {
-            const char c = r->buf_[i];
+        /* One pass, not two. This used to find the newline and then call
+         * lex_skip_line, which walked the same bytes over again with memchr to
+         * find the newline it had just passed -- so every byte of every line
+         * the prescan did not care about was read twice, and that is nearly
+         * every byte of the source. Where the scan stops is already where the
+         * line ends, so stepping over it here costs nothing. */
+        const char* const buf = r->buf_;
+        const uint24_t end = r->bsz_;
+        uint24_t i = r->bpos_;
+
+        while (i < end) {
+            const char c = buf[i];
             if (c == '\n') {
                 break;
             }
             if (c == a || c == b) {
-                found = true;
-                break;
+                return;
             }
-        }
-        if (found) {
-            return;
+            i++;
         }
 
-        lex_skip_line(lex);
+        if (i < end) {
+            /* Stopped on the newline that ends the line. */
+            r->bpos_ = i + 1;
+            lex->lcount_++;
+        } else {
+            /* The buffer holds whole lines, so running out without a newline
+             * means the file's last line has none. */
+            r->bpos_ = end;
+        }
     }
 }
 

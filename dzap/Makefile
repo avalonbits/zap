@@ -15,3 +15,11 @@ LDHAS_EXIT_HANDLER = 0
 include $(shell agondev-config --makefile)
 
 CFLAGS += -Wall -Wextra -I../src
+
+# A hook for a build that measures something, so a measuring build is the
+# ordinary build plus flags rather than a different build. Setting CFLAGS on
+# the command line instead replaces what agondev's makefile put there, which
+# fails in ways that look like the measurement not working.
+#
+#   make EXTRA_CFLAGS='-DZMALLOC -Dmalloc=z_malloc ...'
+CFLAGS += $(EXTRA_CFLAGS)

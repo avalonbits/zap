@@ -168,6 +168,7 @@ Linker script and memory map
  .text          0x00040d0e        0x0 obj/isa_table.o
  .text          0x00040d0e     0x2a8c obj/dzap.o
                 0x00040d0e                _main
+ .text          0x0004379a        0x0 obj/zmalloc.o
  .text          0x0004379a     0x1382 /home/icc/agondev/lib/libagon.a(nanoprintf.o)
                 0x0004379a                _npf_vpprintf
                 0x000448c3                _npf_pprintf
@@ -315,18 +316,19 @@ Linker script and memory map
  *(.dtors)
  .dtors         0x0004526a        0x0 /home/icc/agondev/lib/libagon.a(crt0.o)
 
-.comment        0x00000000      0x4f6
+.comment        0x00000000      0x56d
  .comment       0x00000000       0x77 obj/value.o
  .comment       0x00000077       0x77 obj/conv.o
  .comment       0x000000ee       0x77 obj/buf_reader.o
  .comment       0x00000165       0x77 obj/isa_table.o
  .comment       0x000001dc       0x77 obj/dzap.o
- .comment       0x00000253       0x77 /home/icc/agondev/lib/libagon.a(nanoprintf.o)
- .comment       0x000002ca       0x6a /home/icc/agondev/lib/libagon.a(realloc.c.o)
- .comment       0x00000334       0x6a /home/icc/agondev/lib/libagon.a(free.c.o)
- .comment       0x0000039e       0x6a /home/icc/agondev/lib/libagon.a(malloc.c.o)
- .comment       0x00000408       0x77 /home/icc/agondev/lib/libagon.a(fputc.o)
- .comment       0x0000047f       0x77 /home/icc/agondev/lib/libagon.a(files.o)
+ .comment       0x00000253       0x77 obj/zmalloc.o
+ .comment       0x000002ca       0x77 /home/icc/agondev/lib/libagon.a(nanoprintf.o)
+ .comment       0x00000341       0x6a /home/icc/agondev/lib/libagon.a(realloc.c.o)
+ .comment       0x000003ab       0x6a /home/icc/agondev/lib/libagon.a(free.c.o)
+ .comment       0x00000415       0x6a /home/icc/agondev/lib/libagon.a(malloc.c.o)
+ .comment       0x0000047f       0x77 /home/icc/agondev/lib/libagon.a(fputc.o)
+ .comment       0x000004f6       0x77 /home/icc/agondev/lib/libagon.a(files.o)
 
 .fini_array     0x0004526a        0x0
  *(.fini_array)
@@ -354,6 +356,7 @@ Linker script and memory map
  .data          0x00047065        0x0 obj/buf_reader.o
  .data          0x00047065        0x0 obj/isa_table.o
  .data          0x00047065        0x0 obj/dzap.o
+ .data          0x00047065        0x0 obj/zmalloc.o
  .data          0x00047065        0x0 /home/icc/agondev/lib/libagon.a(nanoprintf.o)
  .data          0x00047065        0x0 /home/icc/agondev/lib/libagon.a(realloc.c.o)
  .data          0x00047065        0x0 /home/icc/agondev/lib/libagon.a(memmove.o)
@@ -424,6 +427,7 @@ Linker script and memory map
  .bss           0x000470b3        0x0 obj/buf_reader.o
  .bss           0x000470b3        0x0 obj/isa_table.o
  .bss           0x000470b3     0x390d obj/dzap.o
+ .bss           0x0004a9c0        0x0 obj/zmalloc.o
  .bss           0x0004a9c0        0x0 /home/icc/agondev/lib/libagon.a(nanoprintf.o)
  .bss           0x0004a9c0        0x0 /home/icc/agondev/lib/libagon.a(realloc.c.o)
  .bss           0x0004a9c0        0x0 /home/icc/agondev/lib/libagon.a(memmove.o)
@@ -511,5 +515,6 @@ LOAD obj/conv.o
 LOAD obj/buf_reader.o
 LOAD obj/isa_table.o
 LOAD obj/dzap.o
+LOAD obj/zmalloc.o
 LOAD /home/icc/agondev/lib/libagon.a
 OUTPUT(bin/dzap.noname.bin binary)

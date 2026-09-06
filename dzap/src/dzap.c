@@ -1413,9 +1413,10 @@ static bool run(dz* z, const char* path) {
         /* A line that was only a remark stops at the semicolon, so the rest
          * of it is walked here. This is the whole cost of a comment: one pass
          * over its bytes, looking for the newline and nothing else. */
-        while (*stop != '\n') {
-            stop++;
-        }
+        /* stop is on the newline: the test above returned for every
+         * other case, and the comment skip before it ends on one too.
+         * The loop that used to search for it from here could never
+         * take a step. */
         p = (stop < end) ? stop + 1 : end;
     }
 

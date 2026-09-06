@@ -1163,14 +1163,38 @@ randomly generated programs -- globals and locals, forward and backward
 references, in and out of scope, labels sharing a line with an instruction.
 Where both refuse a program they refuse the same ones.
 
-### Not implemented, and refused rather than misread
+### Anonymous labels
 
-`@@` with `@f`/`@n` and `@b`/`@p` -- the anonymous labels. `@@` may be defined
-any number of times and is reached by position rather than by name, so reading
-either as an ordinary local gives a wrong answer in a source that has both, and
-calling a second `@@` a redefinition would be an error that looks right for the
-wrong reason. The corpus has 171 definitions and 238 references, so this is a
-feature to add and not an oddity to ignore. Refusing them by name turned a
-silent divergence into an error immediately: the first version of the local
-benchmark generator used `@a`, `@b`, `@c`, and dzap assembled the whole file
-while the reference refused it.
+    isa_real         4.84s -> 4.88s   +0.8%   340 -> 343 cycles/byte
+    isa_even         4.98s -> 5.00s   +0.4%   350 -> 352
+    isa_degenerate   4.88s -> 4.90s   +0.4%   343 -> 345
+
+on sources containing none, against local labels' 2.7%. Cheap because neither
+end adds anything to a hot path: one test on a line that defines a label, and
+one on an operand that already began with an at sign.
+
+`@@`, written as often as you like and reached by position -- `@b`/`@p` for the
+one above, `@f`/`@n` for the one below. 171 definitions and 238 references in
+the corpus, so about as common as named locals.
+
+The reference does it with a temporary file: pass 1 writes every `@@` address
+into it and pass 2 reads them back one at a time, keeping a previous and a next.
+One pass needs neither. **Backward is not a reference at all** -- the address is
+already known, so `@b` is the same as a label defined above and never reaches
+the fixup list. **Forward is a symbol with no name and no bucket**: every `@f`
+since the last `@@` points at the same one, writing the next `@@` defines it and
+starts another, and an `@f` with nothing after it is an undefined symbol like
+any other, reported against the line that used it. Nothing new was needed.
+
+Two behaviours worth writing down, both established against the reference
+rather than reasoned about, and both about the same line:
+
+  - an anonymous label takes effect **at once**, unlike a global label whose
+    scope starts on the next line, so `@@: jp @b` jumps to itself;
+  - `@f` on a line that defines one means the **next** one, which falls out of
+    resolving the pending symbol before making a new one.
+
+Only the exact two-character spellings are reserved: `@ff` and `@bb` are
+ordinary locals. A local really may be called `@f` -- the reference accepts the
+definition and then leaves it unreachable, because `@f` in an operand is the
+anonymous one -- and dzap does the same.

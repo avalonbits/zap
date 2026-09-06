@@ -455,6 +455,21 @@ typedef struct _dz {
     int line;
     const char* err;
 
+    /* Anonymous labels: `@@`, which may be written any number of times and is
+     * reached by position rather than by name -- `@b`/`@p` for the one above,
+     * `@f`/`@n` for the one below.
+     *
+     * Backward needs nothing but the address of the last one seen. Forward is
+     * a reference to a label that has not been written yet, which is what the
+     * fixup list already exists for, so it is a symbol with no name and no
+     * bucket: every `@f` between two `@@` points at the same one, and writing
+     * the next `@@` defines it and starts another. An `@f` with no `@@` after
+     * it is then an undefined symbol like any other, reported against the line
+     * that used it. */
+    int anon_prev;
+    bool anon_has_prev;
+    sym* anon_fwd;
+
     /* The line a global label was defined on, while the scope it opens has
      * not started yet; 0 when there is none pending.
      *
@@ -835,6 +850,47 @@ static bool sym_define(dz* z, const char* name, int len, int addr) {
     sp->addr = addr;
 
     return true;
+}
+
+/* Writes an anonymous label here.
+ *
+ * It takes effect at once, which is what separates it from a global: `@@: jp
+ * @b` jumps to itself, while `two: jp @l` still reads `@l` in the scope `two`
+ * is closing. And `@f` on the same line means the *next* one, which falls out
+ * of resolving the pending symbol before a new one is made for what follows. */
+static bool anon_define(dz* z, int addr) {
+    z->anon_prev = addr;
+    z->anon_has_prev = true;
+    if (z->anon_fwd != NULL) {
+        z->anon_fwd->defined = true;
+        z->anon_fwd->addr = addr;
+        z->anon_fwd = NULL;
+    }
+
+    return true;
+}
+
+/* The symbol every `@f` since the last `@@` is waiting on, made if there is
+ * not one. Nameless and in no bucket: nothing ever looks it up, and the only
+ * thing that finds it again is this field. */
+static sym* anon_next(dz* z) {
+    if (z->anon_fwd == NULL) {
+        if (!sym_room(z, 0)) {
+            z->err = "out of memory for labels";
+
+            return NULL;
+        }
+        sym* sp = &z->blocks->nodes[z->syms_used++];
+        sp->next = NULL;
+        sp->nameoff = 0;
+        sp->len = 0;
+        sp->defined = false;
+        sp->islocal = false;
+        sp->addr = 0;
+        z->anon_fwd = sp;
+    }
+
+    return z->anon_fwd;
 }
 
 /* Defines a local in the current scope. Same shape as sym_define, against the
@@ -2026,36 +2082,46 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
         bool got = false;
         if (ns[0] == '@') {
             /* `@f` and `@n` are the next anonymous label, `@b` and `@p` the
-             * previous one -- reserved spellings in the reference, whatever a
-             * local of that name would mean, and a local really can be called
-             * `@b`: the reference accepts the definition and then leaves it
-             * unreachable. Refused rather than read as a local, which would
-             * resolve to the wrong address in a source that has both. */
-            if (nn == 2) {
-                const char k = (char) (ns[1] | 0x20);
-                if (k == 'f' || k == 'n' || k == 'b' || k == 'p') {
-                    z->err = "anonymous labels are not supported";
+             * previous one. Reserved spellings, whatever a local of that name
+             * would mean -- and a local really can be called `@b`: the
+             * reference accepts the definition and then leaves it unreachable,
+             * because the reference wins here. Only these exact two-character
+             * spellings; `@bb` and `@ff` are ordinary locals. */
+            const char k2 = nn == 2 ? (char) (ns[1] | 0x20) : 0;
+            if (k2 == 'b' || k2 == 'p') {
+                /* Backward is not a reference at all: the address is already
+                 * known, so this is the same as a label defined above. */
+                if (!z->anon_has_prev) {
+                    z->err = "no anonymous label above this one";
 
                     return false;
                 }
-            }
-            /* A local label, and nothing else: no radix accepts a leading at
-             * sign, and the reference does not test a local against the number
-             * formats either. Going straight to the lookup also keeps `@abch`
-             * from being read as hexadecimal by the trailing-h rule below. */
-            const sym* sp = loc_intern(z, ns, nn);
-            if (sp == NULL) {
-                return false;
-            }
-            if (sp->defined) {
-                v = sp->addr;
-            } else if (neg) {
-                z->err = "a label cannot be negated";
-
-                return false;
+                v = z->anon_prev;
             } else {
-                op->fwd = sp;
-                v = 0;
+                const sym* sp;
+                if (k2 == 'f' || k2 == 'n') {
+                    sp = anon_next(z);
+                } else {
+                    /* A local label, and nothing else: no radix accepts a
+                     * leading at sign, and the reference does not test a local
+                     * against the number formats either. Going straight to the
+                     * lookup also keeps `@abch` from being read as hexadecimal
+                     * by the trailing-h rule below. */
+                    sp = loc_intern(z, ns, nn);
+                }
+                if (sp == NULL) {
+                    return false;
+                }
+                if (sp->defined) {
+                    v = sp->addr;
+                } else if (neg) {
+                    z->err = "a label cannot be negated";
+
+                    return false;
+                } else {
+                    op->fwd = sp;
+                    v = 0;
+                }
             }
             got = true;
         } else if (nn >= 3 && ns[0] == '0' && (ns[1] | 0x20) == 'x') {
@@ -2574,22 +2640,16 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
     if (*p == ':') {
         const int addr = DZ_ORG + (int) (z->o - z->out);
         if (*s == '@') {
-            /* `@@` is the reference's anonymous label, not a local: it may be
-             * defined any number of times and is reached by `@f` and `@b`
-             * rather than by name. dzap has no such thing, and treating it as
-             * an ordinary local would accept the first one and then call the
-             * second a redefinition -- a wrong answer wearing a right-looking
-             * error. Refused by name instead. 171 of them in the Agon corpus,
-             * so this is a feature to add and not an oddity to ignore. */
+            /* `@@` is an anonymous label, not a local: it has no name to
+             * collide with, so writing it twice is not a redefinition. */
             if (n == 2 && s[1] == '@') {
-                z->err = "anonymous labels are not supported";
-
-                return false;
-            }
-            /* A local. It is not tested against the number formats: the
-             * reference returns before that check for a local, so `@123:` and
-             * `@0ffh:` are labels there and have to be here. */
-            if (!loc_define(z, s, n, addr)) {
+                if (!anon_define(z, addr)) {
+                    return false;
+                }
+            } else if (!loc_define(z, s, n, addr)) {
+                /* A local. It is not tested against the number formats: the
+                 * reference returns before that check for a local, so `@123:`
+                 * and `@0ffh:` are labels there and have to be here. */
                 return false;
             }
         } else {

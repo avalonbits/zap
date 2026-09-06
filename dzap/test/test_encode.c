@@ -847,30 +847,71 @@ int main(void) {
         check("local storage is reused between scopes", got, "1");
     }
 
-    /* Anonymous labels, which dzap does not have. `@@` may be defined any
-     * number of times and is reached by `@f`/`@n` and `@b`/`@p`, so reading
-     * either as an ordinary local gives a wrong answer in a source that has
-     * both -- and calling a second `@@` a redefinition would be an error that
-     * looks right for the wrong reason. Refused by name until they exist:
-     * the Agon corpus has 171 definitions and 238 references. */
-    check("an anonymous label definition", emit("@@:\n  nop\n"), "ERR");
-    check("an anonymous label defined twice",
-          emit("@@:\n  nop\n@@:\n  nop\n"), "ERR");
-    /* The reserved spellings as references, each with a local of that name
-     * defined in scope so that reading them as ordinary locals would succeed.
-     * Written the other way -- `@@:` and then `jp @f` -- the definition is
-     * refused first and the reference is never reached, which makes the test
-     * pass whether or not the reference is checked at all. The reference
-     * assembler refuses all four too: it reads them as anonymous, and no
-     * anonymous label has been defined. */
-    check("a forward anonymous reference",
-          emit("outer:\n@f:\n  nop\n  jp @f\n"), "ERR");
-    check("a backward anonymous reference",
-          emit("outer:\n@b:\n  nop\n  jp @b\n"), "ERR");
-    check("the n spelling of forward",
-          emit("outer:\n@n:\n  nop\n  jp @n\n"), "ERR");
-    check("the p spelling of backward",
-          emit("outer:\n@p:\n  nop\n  jp @p\n"), "ERR");
+    /* Anonymous labels: `@@`, written any number of times and reached by
+     * position rather than by name -- `@b`/`@p` for the one above, `@f`/`@n`
+     * for the one below. Expected bytes generated from the reference, like
+     * every other row here.
+     *
+     * The addresses are the whole test. Every one of these assembles under any
+     * plausible wrong answer too: what says `@b` found the nearer of two `@@`,
+     * or that `@f` on a line that defines one means the *next* one and not
+     * itself, is which address comes out. */
+    check("backward to the @@ above",
+          emit("@@:\n  nop\n  jp @b\n"), "00 C3 00 00 04");
+    check("forward to the @@ below",
+          emit("  jp @f\n@@:\n  nop\n"), "C3 04 00 04 00");
+    /* An anonymous label takes effect at once, unlike a global, whose scope
+     * starts on the next line: this jumps to itself. */
+    check("@@ and a reference on one line", emit("@@: jp @b\n"), "C3 00 00 04");
+    check("two @@, backward takes the nearer",
+          emit("@@:\n  nop\n@@:\n  nop\n  jp @b\n"), "00 00 C3 01 00 04");
+    check("two @@, forward takes the nearer",
+          emit("  jp @f\n@@:\n  nop\n@@:\n  nop\n"), "C3 04 00 04 00 00");
+    /* And on a line that defines one, forward means the one after it. */
+    check("forward from between two @@",
+          emit("@@:\n  jp @f\n@@:\n  nop\n"), "C3 04 00 04 00");
+    check("backward from between two @@",
+          emit("@@:\n  nop\n  jp @b\n@@:\n  nop\n"), "00 C3 00 00 04 00");
+    check("many @f before one @@",
+          emit("  jp @f\n  jp @f\n@@:\n  nop\n"),
+          "C3 08 00 04 C3 08 00 04 00");
+    check("@@ twice with nothing between",
+          emit("@@:\n@@:\n  jp @b\n"), "C3 00 00 04");
+    check("both spellings of each direction",
+          emit("  jp @n\n@@:\n  jp @p\n"), "C3 04 00 04 C3 04 00 04");
+    check("the spelling is case-insensitive",
+          emit("  jp @F\n@@:\n  nop\n"), "C3 04 00 04 00");
+    /* Not name-scoped: a global label between them changes nothing, and they
+     * do not disturb the local table either. */
+    check("a global label between two anonymous ones",
+          emit("@@:\n  nop\nmid:\n  nop\n  jp @b\n"), "00 00 C3 00 00 04");
+    check("anonymous and local labels together",
+          emit("one:\n@l:\n@@:\n  nop\n  jp @b\n  jp @l\n"),
+          "00 C3 00 00 04 C3 00 00 04");
+    /* Every operand position, not just a jump target. */
+    check("@f as an immediate", emit("  ld hl, @f\n@@:\n  nop\n"),
+          "21 04 00 04 00");
+    check("@f inside parentheses", emit("  ld a, (@f)\n@@:\n  nop\n"),
+          "3A 04 00 04 00");
+    check("a relative jump backward", emit("@@:\n  nop\n  jr @b\n"), "00 18 FD");
+    check("a relative jump forward", emit("  jr @f\n@@:\n  nop\n"), "18 00 00");
+
+    /* The refusals. `@@` has no name, so it is not something a reference can
+     * name; and a direction with nothing in it is an error rather than zero. */
+    check("@b with no @@ above it", emit("  jp @b\n"), "ERR");
+    check("@f with no @@ below it", emit("@@:\n  nop\n  jp @f\n"), "ERR");
+    check("@@ as a reference", emit("@@:\n  nop\n  jp @@\n"), "ERR");
+
+    /* Only the exact two-character spellings are reserved. Three characters is
+     * an ordinary local -- and a local really may be called `@f`, which the
+     * reference accepts and then leaves unreachable, because `@f` in an
+     * operand is the anonymous one. */
+    check("@ff is an ordinary local",
+          emit("one:\n@ff:\n  nop\n  jp @ff\n"), "00 C3 00 00 04");
+    check("@bb is an ordinary local",
+          emit("one:\n@bb:\n  nop\n  jp @bb\n"), "00 C3 00 00 04");
+    check("a local named @f cannot be reached",
+          emit("one:\n@f:\n  nop\n@@:\n  jp @f\n"), "ERR");
     /* But a local may still be called `@bb`: only the two-character
      * spellings are reserved. */
     check("a local whose name starts with b",

@@ -109,7 +109,6 @@ typedef struct _dop {
     uint8_t cc_index;
     uint8_t mode;
     bool indirect;
-    bool has_disp;
     int disp;
     bool has_imm;
 
@@ -801,7 +800,20 @@ static inline bool digit_ch(char c) {
  * lets the compiler move it in whatever way suits, and says once what "empty"
  * means instead of in three places that have to agree. */
 static const dop dop_none = {
-    0, 0, 0, 1, 0, false, 0, NOREQ, false, false, 0, false, 0
+    /* By name, not by position. Adding a field to dop silently shifted every
+     * value after it once already: noreg took indirect's initialiser and the
+     * operand came out claiming to hold a register. Nothing about that is
+     * visible at the point of the mistake. */
+    .r0 = 0, .r1 = 0, .r2 = 0,
+    .noreg = 1,
+    .reg_index = 0,
+    .cc = false,
+    .cc_index = 0,
+    .mode = NOREQ,
+    .indirect = false,
+    .disp = 0,
+    .has_imm = false,
+    .imm = 0,
 };
 
 /* A run of hexadecimal digits, assembled into a value.
@@ -1037,7 +1049,6 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
                     }
                     d = (int) dv;
                 }
-                op->has_disp = true;
                 op->disp = neg ? -d : d;
                 while (is_space_ch(*p)) {
                     p++;

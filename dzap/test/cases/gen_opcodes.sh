@@ -48,6 +48,15 @@ collect() {
     # negative displacement and no negative immediate at all. dzap reaches them
     # through a separate branch that negates the value, so a corpus without
     # them cannot say whether that branch works.
+    #
+    # And every literal syntax the reference accepts, which is a different set
+    # from the one people assume: hexadecimal as 0x, a trailing h, $ or #;
+    # binary as a trailing b, 0b or %; decimal plain. There is **no octal** --
+    # 777o, 777q and 0o777 are all refused, checked against ez80asm rather
+    # than taken from a manual. A leading zero is decimal too -- 010 is ten,
+    # and 08 assembles -- so there is no octal in any spelling. Only 0x and
+    # the trailing h have fast paths in dzap; the rest reach num_parse, and
+    # being here is what says they still agree.
     cat <<'EOF'
 	ld a,(ix-1)
 	ld a,(ix-128)
@@ -73,6 +82,23 @@ collect() {
 	srl (ix-6)
 	ld a,-1
 	ld b,-128
+	ld a,1010b
+	ld a,11111111b
+	ld b,0b1010
+	ld c,%1010
+	ld d,10101010B
+	ld a,42h
+	ld a,0ffh
+	ld hl,aabbccH
+	ld a,$42
+	ld a,#42
+	ld hl,$123456
+	ld bc,0x1234
+	ld a,0
+	ld a,255
+	ld a,010
+	ld a,0100
+	ld a,08
 	ld hl,-1
 	ld de,-2
 	ld bc,-32768

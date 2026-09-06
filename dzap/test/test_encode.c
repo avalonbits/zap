@@ -242,6 +242,38 @@ int main(void) {
         { "ld a, -128", "3E 80" },
         { "ld a, (ix-128)", "DD 7E 80" },
 
+        /* Every radix syntax the reference accepts, checked against it
+         * rather than taken from a manual. Hexadecimal is 0x, a trailing h,
+         * $ or #; binary is 0b, a trailing b, or %; decimal is plain. Only
+         * 0x and the trailing h have fast paths -- the rest reach num_parse,
+         * and these are what say the two still agree. */
+        { "ld a, 42h", "3E 42" },
+        { "ld a, 42H", "3E 42" },
+        { "ld a, $42", "3E 42" },
+        { "ld a, #42", "3E 42" },
+        { "ld hl, $123456", "21 56 34 12" },
+        { "ld a, 1010b", "3E 0A" },
+        { "ld a, 1010B", "3E 0A" },
+        { "ld a, 11111111b", "3E FF" },
+        { "ld a, 0b1010", "3E 0A" },
+        { "ld a, %1010", "3E 0A" },
+        { "ld a, 0h", "3E 00" },
+        { "ld a, 0b", "3E 00" },
+        { "ld a, 777", "3E 09" },
+
+        /* A leading zero is decimal, not octal. 010 is ten and not eight,
+         * 0100 is a hundred and not sixty-four, and 08 and 09 assemble --
+         * which octal would refuse. Checked against ez80asm; this is the
+         * assumption most likely to be imported from C by whoever adds a
+         * radix next. */
+        { "ld a, 010", "3E 0A" },
+        { "ld a, 0100", "3E 64" },
+        { "ld a, 017", "3E 11" },
+        { "ld a, 08", "3E 08" },
+        { "ld a, 09", "3E 09" },
+        { "ld a, 00", "3E 00" },
+        { "ld a, 0011", "3E 0B" },
+
         { "im 2", "ED 5E" },
         { "rst 0x18", "DF" },
         { "out (0xFE), a", "D3 FE" },
@@ -262,6 +294,28 @@ int main(void) {
         "ld i, b",
         "frobnicate",
         "ld a, b, c",
+
+        /* There is no octal, and no radix letter leads. Every one of these
+         * looks like a literal somebody would expect to work and the
+         * reference refuses all of them, so accepting one would be a
+         * disagreement that emits plausible bytes. */
+        "ld a, 777o",
+        "ld a, 777q",
+        "ld a, 0o777",
+        "ld a, 0q777",
+        "ld a, b1010",
+        "ld a, o777",
+        "ld a, q777",
+        "ld a, h42",
+        "ld a, 0h42",
+        "ld a, @777",
+        "ld a, &42",
+        "ld a, 0d66",
+
+        /* A digit outside the radix its suffix names. */
+        "ld a, 8b",
+        "ld a, 9b",
+        "ld a, 1010y",
     };
     for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         check_insn(bad[i], "ERR");

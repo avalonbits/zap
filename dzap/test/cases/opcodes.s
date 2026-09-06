@@ -15,7 +15,7 @@
 ; else. Compared against ez80asm by test/run.sh like every other case file.
 ;
 ; Regenerate with dzap/test/cases/gen_opcodes.sh. Do not edit by hand.
-; 1174 forms, from 1538 candidates.
+; 1191 forms, from 1555 candidates.
 
     ld a,(aabbh)
     ld a,(aabbh)
@@ -1181,6 +1181,23 @@
 	srl (ix-6)
 	ld a,-1
 	ld b,-128
+	ld a,1010b
+	ld a,11111111b
+	ld b,0b1010
+	ld c,%1010
+	ld d,10101010B
+	ld a,42h
+	ld a,0ffh
+	ld hl,aabbccH
+	ld a,$42
+	ld a,#42
+	ld hl,$123456
+	ld bc,0x1234
+	ld a,0
+	ld a,255
+	ld a,010
+	ld a,0100
+	ld a,08
 	ld hl,-1
 	ld de,-2
 	ld bc,-32768

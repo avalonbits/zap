@@ -37,6 +37,7 @@ Three verdicts:
 | Hot functions kept out of `main`, so every frame fits ix's range | **−7.8%** on pure, **−28.3%** on the row-heavy shape | **Portable, and zap has it worse.** See the section below. |
 | Row data in one record per row, walked by a pointer | **−10.1%** on pure, **−35.0%** on the row-heavy shape | **Portable.** zap's `match_row` runs the identical test and reads `regsetA`/`regsetB` as `uint32_t` straight out of the isa table. |
 | Register sets as separate byte planes | **+8.5% — reverted** | Recorded so it is not re-invented: it removes the right calls and replaces them with eight `ld hl, base; add hl, bc; ld a, (hl)` sequences per row. The same split *inside one record* is the row above. |
+| **Rows sorted by mode, with a pointer to the next different one** | **−15.5%** on the row-heavy shape, **−5.0%** on the mix | **Portable.** zap's `match_row` walks the same rows in the same order and has the same 57-row `ld`. The one thing to carry across with it: the jump must hold a *pointer*, not a stride — `ri += skip` was 2.5% slower than no skip at all, because a variable stride times a struct size is a call to `__imulu`. |
 | Hex literals assembled a byte at a time, not `acc = (acc << 4) \| d` | **−2.6%** on six-digit immediates, neutral elsewhere | **Portable.** zap's `num_parse` accumulates the same way. Narrow: the compiler will not turn even `<< 8` into a byte move, so every hex digit was a call to `__ishl`, but that is a smaller share of a literal's cost than the shape timings suggested. |
 | First letter to bucket base as a table, replacing a multiply | **−2.0%** on pure, **−2.4%** on `nop` | **Conditional**, on the same thing as the length buckets themselves — zap's lexer is context-free and does not know a statement start is a mnemonic. The *technique* is portable and the multiply is the point: `letter * NLEN` is a call to `__imulu`, because MLT is 8-bit and this is an int. |
 
@@ -94,6 +95,7 @@ above are about *semantics*, and the sizes are always from the Agon.
       (round 7 tried and reverted -- see below)
       + shift tables, emit_imm, frames, row rec.  8.92s     627
       + hex literals, bucket base table            8.76s     616
+      + rows indexed by operand mode                8.32s     585
 
 The last two lines are one session's six changes, each measured on its own
 against the same build of the same file. That round's baseline re-measured as
@@ -116,7 +118,7 @@ showed up here.
 On `ld (ix+8), a` alone, which scans 43 of ld's 57 rows and so shows row
 selection undiluted: 42.54s to 19.76s, **−53.6%**.
 
-**55.6% in total.** Roughly two thirds of it is portable or conditional; the
+**57.8% in total.** Roughly two thirds of it is portable or conditional; the
 rest is the simplification.
 
 ## What an instruction costs
@@ -135,6 +137,22 @@ instruction costs about a tenth of the floor.
 | `ld (ix+8), a` | (ix+d), reg | 12,141 | 809 | 3 | **43** |
 | the 40-shape mix | varied | 6,948 | 616 | | |
 
+After indexing the rows by mode:
+
+| instruction | cyc/insn | was | rows walked |
+|---|---|---|---|
+| `nop` | 4,706 | 4,927 | 1 |
+| `ld a, b` | 5,640 | 6,193 | 5 |
+| `ld a, 0x42` | 6,930 | 6,894 | 2 |
+| `bit 3, (iy+4)` | 8,356 | 8,442 | 2 |
+| `ld hl, 0x123456` | 8,602 | 8,614 | 1 |
+| `ld (ix+8), a` | **10,260** | 12,141 | 43 → 7 mode groups |
+| the mix | **6,599** | 6,948 | |
+
+**585 cycles per byte.** The spread between the cheapest and dearest
+instruction is down from 2.5× to 2.2×, and what is left of it is immediate
+width and output length rather than row selection.
+
 **About 4,900 cycles is the floor** — read the line, scan the mnemonic, look it
 up, match one row, write one byte — and it is paid by every instruction whatever
 its shape. Everything else is marginal:
@@ -148,11 +166,8 @@ its shape. Everything else is marginal:
 Two things follow. Cycles per *byte* runs backwards to cycles per instruction —
 `ld hl, 0x123456` is the second most expensive instruction here and the
 cheapest per byte, because a long instruction amortises the fixed cost over
-more source. Only the mix is a fair per-byte figure. And row scanning is still
-the largest single variable cost: `ld` has 57 rows and the displacement form
-reaches the forty-third, so it costs more than twice what the same instruction
-costs in any other addressing mode. Indexing the rows by operand mode, instead
-of walking them, is the next thing worth doing.
+more source. Only the mix is a fair per-byte figure. And row scanning was the
+largest single variable cost — which is what the mode index below addressed.
 
 ## Applying these to zap
 

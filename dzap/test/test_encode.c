@@ -190,6 +190,13 @@ int main(void) {
         { "ld hl, 1000000", "21 40 42 0F" },
         { "ld a, -1", "3E FF" },
 
+        /* More digits than fit. The value keeps the low three bytes and the
+         * rest are dropped, which is what the reference does. These matter
+         * because the digits past the sixth are never assembled, so they are
+         * only seen by the check that runs after it. */
+        { "ld hl, 0x1234567", "21 67 45 23" },
+        { "ld hl, 0x12345678", "21 78 56 34" },
+
         /* Relative jumps. The displacement is measured from the instruction
          * after this one, so it depends on where the instruction sits -- each
          * of these is the first line of its own source, at 0x040000. These
@@ -229,6 +236,19 @@ int main(void) {
     for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         check_insn(bad[i], "ERR");
     }
+
+    /* A digit that is not hex, in each position that is handled differently:
+     * the only digit, the low half of a byte, the last digit assembled, and
+     * one past the sixth. That last is the interesting one: counting back from
+     * the end, the assembly consumes six digits, so a bad digit before those
+     * is never looked at there and is caught only by the loop that follows.
+     * The reference refuses all four. */
+    check("bad digit alone", emit("  ld a, 0xZ\n"), "ERR");
+    check("bad digit low half", emit("  ld a, 0x4Z\n"), "ERR");
+    check("bad digit high half", emit("  ld a, 0xZ4\n"), "ERR");
+    check("bad digit high half of byte 2", emit("  ld hl, 0x12Z456\n"), "ERR");
+    check("bad digit last assembled", emit("  ld hl, 0x12345Z\n"), "ERR");
+    check("bad digit past the sixth", emit("  ld hl, 0xZ1234567\n"), "ERR");
 
     /* Case and spacing are not part of the encoding. */
     check("upper case", emit("  LD A, B\n"), "78");

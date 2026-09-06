@@ -1636,7 +1636,12 @@ static bool run(dz* z, const char* path) {
          * other case, and the comment skip before it ends on one too.
          * The loop that used to search for it from here could never
          * take a step. */
-        p = (stop < end) ? stop + 1 : end;
+        /* No bound on the step. The line always ends on a newline that is
+         * inside the buffer, or on the sentinel one past it, so stop + 1 is
+         * at worst one past the end -- and the refill above tests `p >= end`,
+         * which that satisfies just as `end` did. The compare it replaces was
+         * a 24-bit one, on every line. */
+        p = stop + 1;
     }
 
     return true;

@@ -138,12 +138,37 @@ there is no key set to build one over. Perfect hashing works for a closed set,
 which is exactly what dzap already does for mnemonics and registers -- that
 part is done and is not what labels need.
 
-**What would make this wrong.** Two programs is a thin sample, and a structural
-key is sensitive to naming style in a way a hash is not: `loop_1 ... loop_99`
-would cluster on the last character. Its worst chain is 19 against Pearson's 6.
-8,192 buckets is also 24 KB at three bytes an entry, which is in line with what
-zap's symbol table already spends but is not free. If a third program disagrees
-with these two, prefer the hash -- the guarantee is the point of it.
+### Confirmed on twenty-five programs
+
+The above was two programs, which is a thin sample for a claim about naming
+style. `test/corpus-full/harvest.sh` now fetches every Agon project linked from
+sabotrax/agon-software -- 86 repositories, 996 assembly files, 181,753 lines,
+twelve times the BBC BASIC set. Over the 25 of them with real symbol tables,
+14,063 labels and 30,629 resolved references:
+
+| scheme | probes | cmp chars | hash chars | total | worst chain |
+|---|---|---|---|---|---|
+| Pearson 8-bit (256) | 3.20 | 9.87 | 7.62 | 17.48 | **17** |
+| first \| last \| length (2048) | 3.57 | 11.76 | 0 | 11.76 | 45 |
+| **first \| last \| length (8192)** | 2.64 | 10.83 | **0** | **10.83** | 36 |
+
+**The result holds and widens**: 10.83 characters against 17.48, a 38%
+reduction, on twelve times the sample. Pearson still wins on probes and still
+loses overall, for the same reason -- the hash is a walk.
+
+The two caveats also hold, and one is now quantified. The structural key's
+worst chain is **36 against Pearson's 17**, so its tail is twice as long even
+though its average is better; a program that names everything `loop_1 ...
+loop_99` would sit in that tail. And 8,192 buckets is 24 KB at three bytes an
+entry, in line with what zap's symbol table already spends but not free.
+
+**And the label length limit is wrong.** The two-program sample said 26
+characters was never reached; over 25 programs **39 of 14,063 labels exceed
+it**, the longest real one being 38, and they are ordinary names --
+`VDU_BufferBitmapExpandMappingBufferBit` and its neighbours in AgonConsole8's
+VDU code. ez80asm allows 64. Truncating at 26 would silently merge two labels
+that differ only after the limit, which is the worst way to be wrong, so
+whatever dzap does must compare the whole name even if it keys on part of it.
 
 **Where the address comes from.** The emitter already computes
 `DZ_ORG + (o - z->out)` for relative jumps. A label's value is the same

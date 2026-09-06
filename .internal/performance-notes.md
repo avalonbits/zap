@@ -998,8 +998,37 @@ measures nothing.
   hexadecimal literal with a trailing h: the reference reads it as 0xA00 and
   refuses it as a label. Leading letters now come from g..z.
 
-  **dzap accepts `a00h:` where ez80asm rejects it**, which is a real divergence
-  and is not fixed. The operand parser resolves that ambiguity toward the
-  number; the definition path does not apply the rule at all. Small to fix --
-  refuse a definition whose name would parse as a literal -- and worth a test
-  when it is.
+  **dzap accepted `a00h:` where ez80asm rejects it.** Fixed: a definition whose
+  name would parse as a literal is refused, using the same tests the operand
+  parser applies so the two cannot disagree about what a number is. The
+  reference refuses `a00h:`, `ffh:`, `e5h:`, `ah:`, `1010b:`, `0x10:` and
+  `123:`, and accepts `beef:`, `zzh:`, `h:` and `a0h_x:`; dzap now agrees on
+  all eighteen probes.
+
+  It mattered because it produced plausible bytes rather than an error: `ffh:`
+  defined a label the reference would have refused, and a later `ld a, ffh`
+  then meant 0xFF in one assembler and an address in the other.
+
+## dzap against the reference on the same file
+
+Both on the Agon, on isa_memory -- 262 KB, 9,347 labels:
+
+    dzap        6.06s
+    ez80asm    40.84s
+
+**6.7x**, same 44,563 bytes out. That is the only head-to-head figure taken so
+far; the others in these notes are dzap against itself. zap, by contrast, was
+roughly level with the reference.
+
+### The density neither of them can do
+
+isa_mem2 -- one definition every second line, 15,460 labels in 262 KB:
+
+* **dzap** stops in seconds: `out of memory for labels` at line 28,673 of
+  30,920, wanting about 313 KB of heap.
+* **ez80asm** printed `Pass 1...` and nothing else, and had not finished when a
+  1,200-second cap ended it.
+
+So dzap's ceiling is not unusually low -- it is the one that says so quickly and
+in words. Failing loudly at 93% is worth more than not finishing, and that is a
+property to keep rather than an accident.

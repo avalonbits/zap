@@ -116,6 +116,38 @@ int main(void) {
         { "ldir", "ED B0" },
         { "neg", "ED 44" },
 
+        /* One register from each byte plane of the register mask, on each
+         * side, plus an operand holding no register at all.
+         *
+         * A register is one bit of a 21-bit set, and row selection holds that
+         * set as three byte planes and an empty flag, on the row and on the
+         * operand alike, because a 24-bit AND is a call here. Plane 0 holds
+         * a..l and bc, plane 1 de..ixl, plane 2 iyh..i. Nothing in the source
+         * text says which plane a register lives in -- it is decided by the
+         * bit the register was given -- so a register that moves planes, or a
+         * plane dropped from the test, changes which row an operand matches
+         * and nothing else. `ld mb, a` becoming `ld i, a`'s opcode is what
+         * that looks like, which is why these assert bytes and not
+         * acceptance.
+         *
+         * `ld a, 5` and `jp 0x040000` are the no-register case on the B and
+         * the A side. It is the one worth having twice: an operand holding no
+         * register is all-zero in every plane, so it is separated from a real
+         * register only by the empty flag, and a row selection that forgets
+         * the flag silently accepts registers where a literal was written. */
+        { "ld b, 5", "06 05" },
+        { "ld hl, 0x1234", "21 34 12 00" },
+        { "push af", "F5" },
+        { "ld a, ixl", "DD 7D" },
+        { "ld ixh, 5", "DD 26 05" },
+        { "ld i, a", "ED 47" },
+        { "ld a, r", "ED 5F" },
+        { "ld mb, a", "ED 6D" },
+        { "ld a, iyl", "FD 7D" },
+        { "ld iyh, 5", "FD 26 05" },
+        { "ld a, 5", "3E 05" },
+        { "jp 0x040000", "C3 00 00 04" },
+
         /* Registers, including the (hl) indirection that is a mode rather
          * than a register. */
         { "ld a, b", "78" },

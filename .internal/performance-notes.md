@@ -393,3 +393,40 @@ A methodological note worth keeping: **pricing a call by adding one does not
 predict what removing one saves.** The 430 cycles were real and reproducible on
 two shapes, and the merge still cost time on two others, because removing the
 call also changed what the compiler inlined and how the register path came out.
+
+
+## The operand parse, and why it resists
+
+It is the largest single stage on `isa_real` at 1,433 cycles an instruction,
+28% of everything, and three ways into it have now been measured and closed.
+
+**The entry is 287 cycles a call**, priced by adding a third call per
+instruction on a source that takes the empty path. Two calls, so about 574 of
+the 1,433 is entry: the call, the frame, clearing the operand, and finding
+where it starts.
+
+**Merging the two calls into one.** Tried, and it is a regression on the
+benchmarks that hold the whole instruction set -- +0.9% and +1.2% -- despite
+looking 1.5% faster on the forty-form file. Merged, `op` becomes loop-carried
+and the cheap fixed-parameter load disappears; parsing into a fixed local and
+copying out once addresses that and is 21% to 39% slower still.
+
+**Dropping an argument.** `e` is used only by the two bounded scans and does not
+change for a whole buffer, so it can be a file-scope pointer instead of the
+fourth argument to a function called twice per instruction. It works: −0.4% on
+isa_real, −0.7% on isa_even, both above the noise. **Not taken.** dzap is meant
+to become zap, which assembles includes, and one global buffer end is wrong the
+moment there is a nested reader. A global that has to be un-globalised later is
+a poor trade for half a percent.
+
+**Skipping the call for instructions with no operand.** Only 7.6% of lines in
+isa_real have none -- 1,660 of 21,869 -- so at 287 cycles a call the ceiling is
+44 cycles an instruction, 0.9%, before the cost of testing for it on the other
+92%. That is why the earlier attempt measured +2.0%: the test costs more than
+the saving. Quantitatively dead, not merely unpromising.
+
+What is left is structural. The 574 cycles of entry are two calls with two
+frames, and every way of having fewer has cost more than it saved. Something
+that changed the shape -- parsing both operands in one pass over the line
+without a per-operand call, without a loop-carried destination pointer -- is
+the only thing not yet tried, and the two attempts closest to it both lost.

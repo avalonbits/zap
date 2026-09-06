@@ -190,6 +190,21 @@ int main(void) {
         { "ld hl, 1000000", "21 40 42 0F" },
         { "ld a, -1", "3E FF" },
 
+        /* Relative jumps. The displacement is measured from the instruction
+         * after this one, so it depends on where the instruction sits -- each
+         * of these is the first line of its own source, at 0x040000. These
+         * assembled to the target address truncated to a byte until the
+         * transform was implemented. The last two are the limits, +127 and
+         * -126 from the following instruction. */
+        { "jr 0x040000", "18 FE" },
+        { "jr nz, 0x040000", "20 FE" },
+        { "jr z, 0x040000", "28 FE" },
+        { "jr nc, 0x040000", "30 FE" },
+        { "jr c, 0x040000", "38 FE" },
+        { "djnz 0x040000", "10 FE" },
+        { "jr 0x04007F", "18 7D" },
+        { "jr 0x03FF82", "18 80" },
+
         { "im 2", "ED 5E" },
         { "rst 0x18", "DF" },
         { "out (0xFE), a", "D3 FE" },
@@ -221,6 +236,19 @@ int main(void) {
     check("no space after comma", emit("  ld a,b\n"), "78");
     check("extra spaces", emit("   ld    a  ,   b   \n"), "78");
     check("tab separated", emit("\tld\ta,\tb\n"), "78");
+
+    /* A relative jump measured from a moving address. Assembling each on its
+     * own cannot catch a displacement that ignores how far into the output it
+     * is, because there every instruction sits at the origin. */
+    check("relative jumps down a sequence",
+          emit("  jr 0x040000\n  jr nz, 0x040000\n  djnz 0x040000\n"
+               "  nop\n  jr 0x040020\n  jr c, 0x040000\n  jr 0x03FF90\n"),
+          "18 FE 20 FC 10 FA 00 18 17 38 F5 18 83");
+
+    /* Out of reach in both directions. The reference refuses these and so
+     * must dzap, rather than emitting a wrapped byte. */
+    check("too far forward", emit("  jr 0x040082\n"), "ERR");
+    check("too far back", emit("  jr 0x03FF7F\n"), "ERR");
 
     /* Several lines, so the output accumulates in order. */
     check("three lines", emit("  nop\n  ld a, 0x42\n  ret\n"), "00 3E 42 C9");

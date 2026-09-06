@@ -1126,11 +1126,12 @@ static const isa_row* match_row(const insninfo* insn,
      * not rows of the wrong shape. Of those, A alone rejects 2.00, so B is not
      * computed at all for three rejections in five.
      *
-     * No mode test here. Being in the group is the answer. */
+     * No mode test here, and no ccok either. Being in the group is the answer,
+     * and a mnemonic with a ccok row anywhere in it has no groups at all. */
     const rowinfo* ri = g->rows;
     for (uint8_t k = g->count; k != 0; k--, ri++) {
         if ((uint8_t) ((ri->a0 & a0) | (ri->a1 & a1) | (ri->a2 & a2)
-                       | (ri->aempty & anone) | ri->ccok) != 0
+                       | (ri->aempty & anone)) != 0
             && (uint8_t) ((ri->b0 & b0) | (ri->b1 & b1) | (ri->b2 & b2)
                           | (ri->bempty & bnone)) != 0) {
             const isa_row* row = ri->row;

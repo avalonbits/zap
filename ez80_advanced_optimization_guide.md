@@ -278,6 +278,15 @@ work). Readings are deterministic to the centisecond.
   the frame prologue, and the change lost 0.4% despite also removing a call to
   `__ishru`. The question to ask is where the pointer comes from, not whether
   it is a pointer.
+* **Removing a loop bound can change what the loop computes.** Rewriting
+  `while (p < e && cls(*p)) p++;` as `while (cls(*p)) p++;` -- safe C, given a
+  sentinel that stops the scan -- produced a loop with the pointer
+  pre-decremented and each iteration testing one character *past* it, so the
+  first character was never examined and the scan stopped one short. It does
+  not reduce: the same loop alone compiles correctly, and indexing from a base
+  instead of advancing a pointer fails the same way. The host is no help --
+  every host test passed, at four buffer sizes, under ASan. **Read the
+  generated assembly for any scan you unbound, and test it on hardware.**
 * **The emulator is deterministic to about 0.25%.** Three interleaved repeats
   of two binaries gave 8.24/8.26/8.24 against 8.28/8.28/8.28. Do not claim a
   change under half a percent from a single run, and do not dismiss a

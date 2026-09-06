@@ -436,8 +436,10 @@ the only thing not yet tried, and the two attempts closest to it both lost.
 Round taken 2026-09-06, on the two 256 KiB whole-instruction-set sources.
 `isa_real` went 5.34s to 5.06s and `isa_even` 5.70s to 5.36s, 5.2% and 6.0%,
 output byte-identical throughout. At 5.06s over 262,144 bytes that is **356
-cycles per source byte and 51.8 KiB/s** on `isa_real`, and 377 cycles per byte
-and 48.9 KiB/s on `isa_even`.
+cycles per source byte and 50.6 KiB/s** on `isa_real`, from 376 and 47.9; and
+377 cycles per byte and 47.8 KiB/s on `isa_even`, from 401 and 44.9. The two
+hand-built sources moved with them: `p256` 5.38s to 5.18s and `pure` 10.64s to
+10.26s, both 3.7%.
 
 **Counting first.** An instrumented host build over `isa_real` said 4.08 rows
 examined per instruction, of which **3.40 reached the register test** and only

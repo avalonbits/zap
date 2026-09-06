@@ -167,6 +167,33 @@ After indexing the rows by mode:
 instruction is down from 2.5× to 2.2×, and what is left of it is immediate
 width and output length rather than row selection.
 
+## How many rows each shape actually walks
+
+The row counts in the older tables above are from **before** the rows were
+sorted by operand mode, and stopped describing the code the moment that landed.
+Simulating the walk as it is now:
+
+| form | mode wanted | group skips | rows tested | match_row |
+|---|---|---|---|---|
+| `ld a, b` | 00 | 0 | 1 | 639 |
+| `ld a, 0x42` | 02 | 2 | 2 | 1,155 |
+| `ld hl, 0x123456` | 02 | 2 | 1 | |
+| `ld (ix+8), a` | 10 | 4 | 11 | |
+
+`ld` sorts into seven groups of 14, 14, 5, 5, 12, 2 and 5 rows.
+
+Two things follow. **`ld a, b` is the best case there is** -- its group sorts
+first and it matches on the first row, which is why `match_row` costs it least
+of any shape. And a skip costs about what a row test costs, roughly 170 cycles
+either way, so the index pays only when the groups it steps over are large:
+`ld (ix+8), a` clears 38 rows in four hops, which is the whole point, while a
+shape whose group sorts early was never paying much to begin with.
+
+This is worth stating because the difference between `ld a, b` at 4,043 cycles
+and `ld a, 0x42` at 5,591 looked at first like row selection misbehaving --
+fewer rows for more time. It is not: the first figure is simply the floor of
+what row selection can cost.
+
 ## What each shape costs now
 
 Measured together on one build, so the columns are comparable. "First" is the

@@ -86,18 +86,18 @@
  * twice, so the whole field goes, and with it the cost of having an operand at
  * all: two of these are built for every instruction in the source. */
 typedef struct _dop {
-    /* 24 bits, not 32.
+    /* The register set, split into byte planes and kept that way.
      *
-     * The register set is a bitmask and the highest bit in it is R_I at 2^20,
-     * so it fits in the eZ80's native word. Held as uint32_t -- which is what
-     * the shared table declares -- every test of it is done across two
-     * registers on a machine that has a 24-bit one. reg_match is the single
-     * hottest line in the program, run twice for each of three or four
-     * candidate rows per instruction, so the difference is paid constantly.
+     * It is a bitmask whose highest bit is R_I at 2^20, and every use of it is
+     * a mask or a test against zero -- never arithmetic. Held as one 24-bit
+     * word each of those is a call, because AND is an 8-bit instruction here;
+     * split, they are the byte operations the chip has.
      *
-     * The host sees no change at all: uint24_t is uint32_t there. This is one
-     * to judge on the Agon figure alone. */
-    uint24_t reg;
+     * Split at the point the register is recognised rather than where it is
+     * used. match_row used to do it for both operands on every instruction,
+     * which cost two calls to __ishru even for `nop`, an instruction with no
+     * register operands at all. */
+    uint8_t r0, r1, r2;
     uint8_t reg_index;
     bool cc;
     uint8_t cc_index;
@@ -192,42 +192,6 @@ static inline void put(dz* z, uint8_t b) {
 
 #define NROW 322
 
-static int16_t bucket_head[NBUCKET];
-static int16_t bucket_next[512];
-static uint8_t isa_len[512];
-
-/* What each row demands of the two operands' modes, in one value.
- *
- * Selecting a row asked `(row->condA & MODECHECK) == modeA` and the same for
- * B: four loads and two masks per candidate row, to compare against something
- * fixed when the table was generated. Both sides are folded here into one
- * 16-bit value per row, so the test becomes a single compare -- and rows are
- * scanned three or four deep for every instruction in the source.
- *
- * Indexed by a row number assigned here, since the rows live in 114 separate
- * arrays and have no global index of their own. */
-/* One byte, not two.
- *
- * MODECHECK is four bits wide, so both operands' modes fit in a byte with room
- * to spare -- and a byte compare is native where a 16-bit one is the worst
- * width this chip has. This test runs for every candidate row, and `ld` alone
- * has 57 of them: "ld (ix+8), a" examines 43 before it matches. */
-
-/* The same register sets the table holds, narrowed to the machine's word. */
-/* Everything the row loop reads, in one record per row, walked by a pointer.
- *
- * Three separate problems led here. Holding the register sets as `uint24_t`
- * made `regset & reg` a call to __iand -- AND is an 8-bit instruction on this
- * chip -- and made indexing cost r * 3, a call to __imulu. Splitting them into
- * byte planes fixed both and was still slower (+8.5% on the row-heavy shape),
- * because eight separate arrays mean eight `ld hl, base; add hl, bc;
- * ld a, (hl)` sequences per row.
- *
- * One record indexed off iy is the shape that wins: every field is `ld a,
- * (iy+n)`, and advancing to the next row is a single lea. The fields stay
- * separate bytes rather than packed into a word -- packing two of them into a
- * uint16_t was tried and cost 18.8%, because ADL mode has no 16-bit truncation
- * and the compiler masks. Bytes are the native width for all of this. */
 typedef struct rowinfo rowinfo;
 
 struct rowinfo {
@@ -271,7 +235,64 @@ struct rowinfo {
 };
 
 static rowinfo rowtab[NROW];
-static int16_t row_base[512];
+
+/* One record per mnemonic, holding everything the hot path needs about it and
+ * reached only by pointer.
+ *
+ * The lookup used to hand back an index, and every use of that index was an
+ * array subscript: `isa_table[i].name` once per candidate examined,
+ * `isa_table[idx]` and `rowtab[row_base[idx]]` once the mnemonic was known.
+ * Each of those is the index times a struct size, and the eZ80's multiply is
+ * 8-bit, so each is a call to __imulu.
+ *
+ * Chaining the buckets through pointers and carrying the row block as a
+ * pointer leaves one subscript in the whole path -- the bucket head itself. */
+typedef struct insninfo insninfo;
+
+struct insninfo {
+    const insninfo* next;   /* next candidate in the same bucket */
+    const char* name;
+    const rowinfo* rows;
+    uint8_t len;
+    uint8_t count;
+};
+
+static insninfo insntab[512];
+static const insninfo* bucket_head[NBUCKET];
+
+/* What each row demands of the two operands' modes, in one value.
+ *
+ * Selecting a row asked `(row->condA & MODECHECK) == modeA` and the same for
+ * B: four loads and two masks per candidate row, to compare against something
+ * fixed when the table was generated. Both sides are folded here into one
+ * 16-bit value per row, so the test becomes a single compare -- and rows are
+ * scanned three or four deep for every instruction in the source.
+ *
+ * Indexed by a row number assigned here, since the rows live in 114 separate
+ * arrays and have no global index of their own. */
+/* One byte, not two.
+ *
+ * MODECHECK is four bits wide, so both operands' modes fit in a byte with room
+ * to spare -- and a byte compare is native where a 16-bit one is the worst
+ * width this chip has. This test runs for every candidate row, and `ld` alone
+ * has 57 of them: "ld (ix+8), a" examines 43 before it matches. */
+
+/* The same register sets the table holds, narrowed to the machine's word. */
+/* Everything the row loop reads, in one record per row, walked by a pointer.
+ *
+ * Three separate problems led here. Holding the register sets as `uint24_t`
+ * made `regset & reg` a call to __iand -- AND is an 8-bit instruction on this
+ * chip -- and made indexing cost r * 3, a call to __imulu. Splitting them into
+ * byte planes fixed both and was still slower (+8.5% on the row-heavy shape),
+ * because eight separate arrays mean eight `ld hl, base; add hl, bc;
+ * ld a, (hl)` sequences per row.
+ *
+ * One record indexed off iy is the shape that wins: every field is `ld a,
+ * (iy+n)`, and advancing to the next row is a single lea. The fields stay
+ * separate bytes rather than packed into a word -- packing two of them into a
+ * uint16_t was tried and cost 18.8%, because ADL mode has no 16-bit truncation
+ * and the compiler masks. Bytes are the native width for all of this. */
+
 
 static bool tables_ready = false;
 
@@ -321,7 +342,7 @@ __attribute__((noinline)) static void build_tables(void) {
     }
 
     for (int i = 0; i < NBUCKET; i++) {
-        bucket_head[i] = -1;
+        bucket_head[i] = NULL;
     }
     /* Backwards, so each bucket ends up in table order. */
     for (int i = isa_table_count - 1; i >= 0; i--) {
@@ -330,18 +351,22 @@ __attribute__((noinline)) static void build_tables(void) {
         while (name[k] != 0) {
             k++;
         }
-        isa_len[i] = (uint8_t) k;
+
+        insninfo* ins = &insntab[i];
+        ins->name = name;
+        ins->len = (uint8_t) k;
+        ins->count = isa_table[i].count;
 
         const int b = bucket_of(name[0], k);
-        bucket_next[i] = bucket_head[b];
-        bucket_head[b] = (int16_t) i;
+        ins->next = bucket_head[b];
+        bucket_head[b] = ins;
     }
 
     int r = 0;
     for (int i = 0; i < isa_table_count; i++) {
         const isa_insn* insn = &isa_table[i];
         const int base = r;
-        row_base[i] = (int16_t) base;
+        insntab[i].rows = &rowtab[base];
 
         bool any_cc = false;
         for (int j = 0; j < insn->count; j++) {
@@ -418,14 +443,15 @@ static inline bool same_ci(const char* a, const char* b, int n) {
  * tried here and was 1.3% slower: bucketing by letter and length already
  * leaves one or two candidates, so the compare loop it replaced was two or
  * three characters long, and building the packed key cost more than that. */
-static int mnemonic_of(const char* s, int n) {
-    for (int i = bucket_head[bucket_of(s[0], n)]; i >= 0; i = bucket_next[i]) {
-        if (isa_len[i] == n && same_ci(isa_table[i].name, s, n)) {
-            return i;
+static const insninfo* mnemonic_of(const char* s, int n) {
+    for (const insninfo* ins = bucket_head[bucket_of(s[0], n)]; ins != NULL;
+         ins = ins->next) {
+        if (ins->len == n && same_ci(ins->name, s, n)) {
+            return ins;
         }
     }
 
-    return -1;
+    return NULL;
 }
 
 /* ------------------------------------------------------- registers, flags */
@@ -594,7 +620,7 @@ static inline bool digit_ch(char c) {
  * lets the compiler move it in whatever way suits, and says once what "empty"
  * means instead of in three places that have to agree. */
 static const dop dop_none = {
-    R_NONE, 0, false, 0, NOREQ, false, false, 0, false, 0
+    0, 0, 0, 0, false, 0, NOREQ, false, false, 0, false, 0
 };
 
 static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
@@ -636,7 +662,9 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
         bool is_cc = false;
         uint8_t cc_index = 0;
         if (reg_of_text(s, n, &bit, &index, &is_cc, &cc_index)) {
-            op->reg = bit;
+            op->r0 = (uint8_t) bit;
+            op->r1 = (uint8_t) (bit >> 8);
+            op->r2 = (uint8_t) (bit >> 16);
             op->reg_index = index;
             if (is_cc) {
                 op->cc = true;
@@ -831,24 +859,18 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
 
 
 
-__attribute__((noinline)) static const isa_row* match_row(int idx, const dop* a, const dop* b) {
-    const isa_insn* insn = &isa_table[idx];
+__attribute__((noinline)) static const isa_row* match_row(const insninfo* insn,
+                                                         const dop* a,
+                                                         const dop* b) {
     const uint8_t want = (uint8_t) (shl4[a->mode & 15] | (b->mode & 15));
     const uint8_t has_cc = (uint8_t) (a->cc != 0);
-    const rowinfo* ri = &rowtab[row_base[idx]];
+    const rowinfo* ri = insn->rows;
 
-    /* Split once per instruction, not once per row. Read straight out of the
-     * operand rather than through a local: a byte of a value already in a
-     * register costs a shift, a byte of one still in memory is an indexed
-     * load. */
-    const uint8_t a0 = (uint8_t) a->reg;
-    const uint8_t a1 = (uint8_t) (a->reg >> 8);
-    const uint8_t a2 = (uint8_t) (a->reg >> 16);
-    const uint8_t b0 = (uint8_t) b->reg;
-    const uint8_t b1 = (uint8_t) (b->reg >> 8);
-    const uint8_t b2 = (uint8_t) (b->reg >> 16);
-    const uint8_t anone = (uint8_t) (a->reg == 0);
-    const uint8_t bnone = (uint8_t) (b->reg == 0);
+    /* Already split, by whoever recognised the register. */
+    const uint8_t a0 = a->r0, a1 = a->r1, a2 = a->r2;
+    const uint8_t b0 = b->r0, b1 = b->r1, b2 = b->r2;
+    const uint8_t anone = (uint8_t) ((a0 | a1 | a2) == 0);
+    const uint8_t bnone = (uint8_t) ((b0 | b1 | b2) == 0);
 
     for (uint8_t i = 0; i < insn->count; ) {
         /* The cheapest discriminator first, and it is allowed to end the
@@ -905,11 +927,29 @@ typedef struct _emitted {
     uint8_t opcode;
 } emitted;
 
-static inline uint8_t ddfd_prefix(uint24_t reg) {
-    if (reg & (R_IX | R_IXH | R_IXL)) {
+/* Register-set masks by byte plane, so a test that was a 24-bit AND -- one
+ * call to __iand and one to __lcmpzero -- is one or two byte ANDs. The
+ * assertions tie them to the definitions in operand.h, which is the only thing
+ * stopping them drifting apart silently. */
+#define RP1_IX  0xD0   /* (R_IX  | R_IXH | R_IXL) >> 8  */
+#define RP1_IY  0x20   /* (R_IY  | R_IYH | R_IYL) >> 8  */
+#define RP2_IY  0x03   /* (R_IY  | R_IYH | R_IYL) >> 16 */
+#define RP1_XYL 0x80   /* (R_IXL | R_IYL)         >> 8  */
+#define RP2_XYL 0x02   /* (R_IXL | R_IYL)         >> 16 */
+
+_Static_assert((R_IX | R_IXH | R_IXL) == ((uint32_t) RP1_IX << 8), "IX plane");
+_Static_assert((R_IY | R_IYH | R_IYL)
+                   == (((uint32_t) RP2_IY << 16) | ((uint32_t) RP1_IY << 8)),
+               "IY planes");
+_Static_assert((R_IXL | R_IYL)
+                   == (((uint32_t) RP2_XYL << 16) | ((uint32_t) RP1_XYL << 8)),
+               "IXL/IYL planes");
+
+static inline uint8_t ddfd_prefix(const dop* op) {
+    if ((op->r1 & RP1_IX) != 0) {
         return 0xDD;
     }
-    if (reg & (R_IY | R_IYH | R_IYL)) {
+    if (((op->r1 & RP1_IY) | (op->r2 & RP2_IY)) != 0) {
         return 0xFD;
     }
 
@@ -919,12 +959,12 @@ static inline uint8_t ddfd_prefix(uint24_t reg) {
 static void transform(emitted* out, dop* op, uint8_t type) {
     switch (type) {
         case TR_IR0:
-            if (op->reg & (R_IXL | R_IYL)) {
+            if (((op->r1 & RP1_XYL) | (op->r2 & RP2_XYL)) != 0) {
                 out->opcode |= 0x01;
             }
             break;
         case TR_IR3:
-            if (op->reg & (R_IXL | R_IYL)) {
+            if (((op->r1 & RP1_XYL) | (op->r2 & RP2_XYL)) != 0) {
                 out->opcode |= 0x08;
             }
             break;
@@ -998,14 +1038,22 @@ __attribute__((noinline)) static bool emit_row(dz* z, const isa_row* row, dop* a
     out.opcode = row->opcode;
 
     if (row->flags & F_DDFDOK) {
-        const uint8_t p1 = ddfd_prefix(a->reg);
-        const uint8_t p2 = ddfd_prefix(b->reg);
+        const uint8_t p1 = ddfd_prefix(a);
+        const uint8_t p2 = ddfd_prefix(b);
         out.prefix1 = ((p1 == 0 && p2 != 0) || (!a->indirect && p1 != 0 && p2 != 0))
                       ? p2 : p1;
     }
 
-    transform(&out, a, row->transformA);
-    transform(&out, b, row->transformB);
+    /* Tested rather than called. transform is a real function with a switch
+     * in it, and TR_NONE is the commonest case by a wide margin -- every
+     * instruction whose operands do not fold into the opcode. A load and a
+     * compare replaces a call, a dispatch and a return. */
+    if (row->transformA != TR_NONE) {
+        transform(&out, a, row->transformA);
+    }
+    if (row->transformB != TR_NONE) {
+        transform(&out, b, row->transformB);
+    }
 
     const bool dd_before_opcode =
         (out.prefix1 == 0xDD || out.prefix1 == 0xFD) && out.prefix2 == 0xCB
@@ -1075,8 +1123,8 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
         return false;
     }
 
-    const int idx = mnemonic_of(s, n);
-    if (idx < 0) {
+    const insninfo* insn = mnemonic_of(s, n);
+    if (insn == NULL) {
         z->err = "unknown instruction";
 
         return false;
@@ -1101,7 +1149,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
 
     *stop = p;
 
-    const isa_row* row = match_row(idx, &a, &b);
+    const isa_row* row = match_row(insn, &a, &b);
     if (row == NULL) {
         z->err = "no such instruction form";
 

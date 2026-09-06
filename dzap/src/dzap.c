@@ -453,9 +453,8 @@ static bool sym_room(dz* z, int len) {
 
 /* Case-sensitive, unlike a mnemonic: the reference refuses `jp foo` against a
  * label written FOO. */
-static const sym* sym_find(const dz* z, const char* name, int len) {
-    for (const sym* sp = z->syms[sym_bucket(name, len)].head; sp != NULL;
-         sp = sp->next) {
+static const sym* sym_at(const dz* z, int b, const char* name, int len) {
+    for (const sym* sp = z->syms[b].head; sp != NULL; sp = sp->next) {
         if (sp->len != (uint8_t) len) {
             continue;
         }
@@ -474,7 +473,13 @@ static const sym* sym_find(const dz* z, const char* name, int len) {
 
 /* The entry for a name, made if there is not one. */
 static sym* sym_intern(dz* z, const char* name, int len) {
-    sym* found = (sym*) sym_find(z, name, len);
+    /* Hashed once. It was hashed twice: sym_find computed the bucket to search
+     * and this computed it again to insert, so every name a source mentioned
+     * for the first time was walked twice by the hash -- which is the whole
+     * cost of a Pearson key. */
+    const int b = sym_bucket(name, len);
+
+    sym* found = (sym*) sym_at(z, b, name, len);
     if (found != NULL) {
         return found;
     }
@@ -496,7 +501,6 @@ static sym* sym_intern(dz* z, const char* name, int len) {
     sp->defined = false;
     sp->addr = 0;
 
-    const int b = sym_bucket(name, len);
     sp->next = z->syms[b].head;
     z->syms[b].head = sp;
 

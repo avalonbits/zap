@@ -309,3 +309,54 @@ obvious next target; the sentinel was an attempt at it.
 splitting `parse_operand` so the empty case skips its prologue (+2.0% -- the
 caller already assigns `dop_none` directly when there is no comma, so the
 early-out is rarer than it looks).
+
+
+## The parse_operand entry stage, and why the merge is not in
+
+The entry -- the call, the frame, clearing the operand, finding where it starts
+-- was the largest single piece left of `parse_operand`. It was priced directly,
+by adding a third call per instruction on a source that takes the empty path:
+**about 430 cycles**, on both `nop` and `ld a, b`. Two calls per instruction, so
+merging them into one "parse the operand list" function should be worth one of
+those.
+
+It was built three ways and all seven shapes measured.
+
+| shape | main | merged, inlined | merged, out of line |
+|---|---|---|---|
+| `ld a, 0x42` | 9.66s | **9.10s (−5.8%)** | |
+| `nop` | 5.44s | **5.14s (−5.5%)** | 5.58s (+2.6%) |
+| `ld hl, 0x123456` | 11.96s | **11.36s (−5.0%)** | |
+| `bit 3, (iy+4)` | 11.08s | **10.86s (−2.0%)** | |
+| 256 KiB mix | 6.54s | **6.44s (−1.5%)** | |
+| `ld (ix+8), a` | 14.32s | 14.70s (+2.7%) | |
+| `ld a, b` | 6.98s | 7.22s (+3.4%) | 7.62s (+9.2%) |
+
+Keeping it out of line is worse than either -- the whole win depends on the
+compiler then inlining the merged function into `assemble_line`, which it does,
+taking that frame from 56 bytes to 83. Still short of the 128 where ix
+displacement stops reaching, so that is not the problem.
+
+**Not taken, despite the mix improving.** The two regressions are exactly the
+shapes whose second operand is a register; every shape with an immediate or no
+second operand wins. Register-to-register is the commonest form in real code,
+and `ld a, b` was confirmed at 7.22s on two separate runs.
+
+The deciding point is that the mix cannot arbitrate this. `p256.s` uses **31 of
+the ISA's 114 mnemonics** and 40 of its 322 rows: no `call`, `jp`, `jr` or
+`djnz`, so condition-code rows are barely exercised at all; no block
+instructions beyond `ldir`; none of `lea`, `pea`, `in0`, `out0`, `tst`. Its
+1.5% gain is an average over a sample that happens to over-weight the shapes
+this change helps. Banking that against a 3.4% loss on the commonest real form
+is not a trade worth making on this evidence.
+
+**What to do first.** Build a timing benchmark from the 1,126-form corpus that
+`dzap/test/cases/opcodes.s` already holds for correctness, weighted like real
+source rather than uniformly, and re-run this. The change is a real improvement
+on four shapes out of six and may well be right; the benchmark is what cannot
+currently say so.
+
+A methodological note worth keeping: **pricing a call by adding one does not
+predict what removing one saves.** The 430 cycles were real and reproducible on
+two shapes, and the merge still cost time on two others, because removing the
+call also changed what the compiler inlined and how the register path came out.

@@ -42,6 +42,8 @@ Three verdicts:
 | `transform` call skipped when the type is TR_NONE | **−5.4%** on `nop`, −2.5% on the mix | **Portable.** A load and a compare instead of a call, a dispatch and a return, on the commonest case. |
 | Operand parser split so the empty case skips the big prologue | **+2.0% — reverted** | Recorded so it is not re-invented. The premise was wrong: `assemble_line` already assigns `dop_none` directly when there is no comma, so the empty path is only reached by genuinely operandless instructions. The extra call lands on every other line. |
 | `reg_of_text` returning a prebuilt descriptor instead of four out-parameters | **+0.4% — reverted** | Recorded because it looks like the change that won 20.5% on the instruction lookup, and is not. There the pointer came out of a data structure and replaced a multiply. Here the pointers are twenty-eight compile-time constants in switch arms, and the compiler hoists two of the addresses into the frame prologue — `ld de, _rd_a; ld (ix-17), de` — paid on every operand, including ones that never reach a register. The frame grew 31 bytes to 33. It does remove a call to `__ishru`, and still loses. |
+| Register's first character classified with one table load | **−1.5%** on `ld a, b`, −0.6% on the mix | **Portable.** zap's lexer asks the same question the same way, `name_ch(c) && !digit_ch(c)`, which is two loads of one byte and two masks for one bit of information. |
+| Register bytes written inside the switch that recognises the register | **−4.9%** on `ld a, b`, −2.3% on the mix | **Portable, and the lesson matters more than the change.** This removes exactly the `__ishru` the descriptor row above removed, and wins where that lost. A constant shift folds only while the value is still a constant; after a switch joins, `bit >> 16` is a runtime shift and so a call. Sinking the stores into the arms keeps them constant without creating anything new to take the address of. |
 | **Rows sorted by mode, with a pointer to the next different one** | **−15.5%** on the row-heavy shape, **−5.0%** on the mix | **Portable.** zap's `match_row` walks the same rows in the same order and has the same 57-row `ld`. The one thing to carry across with it: the jump must hold a *pointer*, not a stride — `ri += skip` was 2.5% slower than no skip at all, because a variable stride times a struct size is a call to `__imulu`. |
 | Hex literals assembled a byte at a time, not `acc = (acc << 4) \| d` | **−2.6%** on six-digit immediates, neutral elsewhere | **Portable.** zap's `num_parse` accumulates the same way. Narrow: the compiler will not turn even `<< 8` into a byte move, so every hex digit was a call to `__ishl`, but that is a smaller share of a literal's cost than the shape timings suggested. |
 | First letter to bucket base as a table, replacing a multiply | **−2.0%** on pure, **−2.4%** on `nop` | **Conditional**, on the same thing as the length buckets themselves — zap's lexer is context-free and does not know a statement start is a mnemonic. The *technique* is portable and the multiply is the point: `letter * NLEN` is a call to `__imulu`, because MLT is 8-bit and this is an int. |
@@ -102,6 +104,7 @@ above are about *semantics*, and the sizes are always from the Agon.
       + hex literals, bucket base table            8.76s     616
       + rows indexed by operand mode                8.32s     585
       + byte planes, pointer lookup, TR_NONE       6.90s     485
+      + one class load, register bytes in arms     6.70s     471
 
 The last two lines are one session's six changes, each measured on its own
 against the same build of the same file. That round's baseline re-measured as
@@ -124,7 +127,7 @@ showed up here.
 On `ld (ix+8), a` alone, which scans 43 of ld's 57 rows and so shows row
 selection undiluted: 42.54s to 19.76s, **−53.6%**.
 
-**65.0% in total.** Roughly two thirds of it is portable or conditional; the
+**66.0% in total.** Roughly two thirds of it is portable or conditional; the
 rest is the simplification.
 
 ## What an instruction costs
@@ -179,6 +182,18 @@ width and output length rather than row selection.
     two parse_operand calls                 2,089
     match_row                                 602
     emit_row                                1,020
+
+and `parse_operand` itself, by the same method again -- two operands, so halve
+these for one:
+
+    clear the operand, skip space, empty test   (base)
+    `(` test, name detection, name scan            688
+    reg_of_text and the field stores               700
+    displacement, mode, closing paren              160
+
+The two middle rows are what the changes above address: one of them was
+loading the same class byte twice, the other was shifting a constant that had
+stopped being one.
 
 **parse_operand is 41% of it**, and against `nop`'s 676 for the same stage that
 is about 700 cycles to recognise a one-character register name. It is not one

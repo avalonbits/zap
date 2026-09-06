@@ -453,9 +453,8 @@ static bool sym_room(dz* z, int len) {
 
 /* Case-sensitive, unlike a mnemonic: the reference refuses `jp foo` against a
  * label written FOO. */
-static const sym* sym_find(const dz* z, const char* name, int len) {
-    for (const sym* sp = z->syms[sym_bucket(name, len)].head; sp != NULL;
-         sp = sp->next) {
+static const sym* sym_at(const dz* z, int b, const char* name, int len) {
+    for (const sym* sp = z->syms[b].head; sp != NULL; sp = sp->next) {
         if (sp->len != (uint8_t) len) {
             continue;
         }
@@ -474,7 +473,13 @@ static const sym* sym_find(const dz* z, const char* name, int len) {
 
 /* The entry for a name, made if there is not one. */
 static sym* sym_intern(dz* z, const char* name, int len) {
-    sym* found = (sym*) sym_find(z, name, len);
+    /* Hashed once. It was hashed twice: sym_find computed the bucket to search
+     * and this computed it again to insert, so every name a source mentioned
+     * for the first time was walked twice by the hash -- which is the whole
+     * cost of a Pearson key. */
+    const int b = sym_bucket(name, len);
+
+    sym* found = (sym*) sym_at(z, b, name, len);
     if (found != NULL) {
         return found;
     }
@@ -496,7 +501,6 @@ static sym* sym_intern(dz* z, const char* name, int len) {
     sp->defined = false;
     sp->addr = 0;
 
-    const int b = sym_bucket(name, len);
     sp->next = z->syms[b].head;
     z->syms[b].head = sp;
 
@@ -1323,6 +1327,46 @@ static inline bool hex_digits(const char* d, int n, int* out) {
     return true;
 }
 
+/* Whether a token could be a number at all, decided on two characters.
+ *
+ * Every radix this assembler takes is marked at one end or the other: a
+ * leading digit for decimal, 0x and 0b; a leading $, # or %; a trailing h or
+ * b. A token with none of those is a name and there is nothing to work out.
+ *
+ * It is only a filter. What it lets through still has to be parsed, because a
+ * leading digit does not make a number -- 2 is not a binary digit, so `2b` is
+ * a name, and so are `1z`, `5g` and `123abc`. The reference takes all four as
+ * labels, and assuming otherwise was wrong for four of twenty probes.
+ *
+ * What the filter buys is the common path: an ordinary label neither starts
+ * with a digit nor ends in h or b, so it never reaches the general parser.
+ * Label definitions are 15.5% of the time on isa_real and every one of them
+ * was calling it. */
+static inline bool maybe_numeric(const char* s, int n) {
+    const char f = s[0];
+    const char last = (char) (s[n - 1] | 0x20);
+
+    return digit_ch(f) || f == '$' || f == '#' || f == '%'
+           || last == 'h' || last == 'b';
+}
+
+static bool numeric_token(const char* s, int n) {
+    if (!maybe_numeric(s, n)) {
+        return false;
+    }
+
+    int v = 0;
+    if (n >= 3 && s[0] == '0' && (s[1] | 0x20) == 'x') {
+        return hex_digits(s + 2, n - 2, &v);
+    }
+    if (n >= 2 && (s[n - 1] | 0x20) == 'h') {
+        return hex_digits(s, n - 1, &v);
+    }
+    value gv = 0;
+
+    return num_parse(s, n, &gv);
+}
+
 /* Scans here are mostly unbounded, and safe because the reader keeps a newline
  * one byte past the last valid one.
  *
@@ -1547,7 +1591,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
                 got = true;
             }
         }
-        if (!got && nn > 0 && alpha_ch(ns[0])) {
+        if (!got && nn > 0 && !numeric_token(ns, nn)) {
             /* Not a literal in any radix, so it is a label.
              *
              * Tried after the literal forms and not before them, because a
@@ -1555,10 +1599,12 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
              * letter too -- `aabbcch` is a number and `aabbcc` is a name, and
              * only the suffix tells them apart.
              *
-             * And only where a name could start. `$42`, `#42` and `%1010` are
-             * literals the general parser handles, and they are not digits, so
-             * asking "not a digit" made all three into labels that did not
-             * exist.
+             * And decided by whether any radix accepts it, not by what it
+             * starts with. `$42`, `#42` and `%1010` are literals that begin
+             * with neither a letter nor a digit; `2b`, `1z` and `123abc` are
+             * labels that begin with a digit, and the reference lets them be
+             * referenced as well as defined. Asking "does it start with a
+             * letter" got the first three right and the last three wrong.
              *
              * A label already defined is its address. One that is not is
              * carried on the operand for the emitter to record, because where
@@ -1987,24 +2033,6 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
  *
  * The same tests the operand parser uses, in the same order, so the two cannot
  * disagree about what a number is. */
-static bool numeric_token(const char* s, int n) {
-    int v = 0;
-    if (n >= 3 && s[0] == '0' && (s[1] | 0x20) == 'x') {
-        return hex_digits(s + 2, n - 2, &v);
-    }
-    if (n >= 2 && (s[n - 1] | 0x20) == 'h') {
-        return hex_digits(s, n - 1, &v);
-    }
-    if (digit_ch(s[0])) {
-        /* Decimal, binary, or something the general parser refuses -- either
-         * way it began as a number and is not a name. */
-        return true;
-    }
-
-    value gv = 0;
-
-    return num_parse(s, n, &gv);
-}
 
 __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const char* e, const char** stop) {
     /* Bounded, and it has to be.

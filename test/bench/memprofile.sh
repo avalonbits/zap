@@ -59,5 +59,18 @@ for src in "${SRCS[@]}"; do
     tail -f /dev/null > "$fifo" & hold=$!
     ( cd "$EMU" && timeout 900 ./agon-cli-emulator --sdcard "$sd" -z < "$fifo" > "$WORK/cap" 2>&1 )
     kill "$hold" 2>/dev/null; wait "$hold" 2>/dev/null
-    tr -d '\r' < "$WORK/cap" | sed -n '/^peak /,/headers)/p' | sed 's/^/  /'
+    if tr -d '\r' < "$WORK/cap" | grep -q '^peak '; then
+        tr -d '\r' < "$WORK/cap" | sed -n '/^peak /,/headers)/p' | sed 's/^/  /'
+    else
+        # An empty report is the failure mode this script is most likely to
+        # have -- a build that did not take the flags, a guest that ran out of
+        # memory, an emulator that never started -- and printing nothing makes
+        # all three look like success. Say what the guest said instead.
+        echo "  NO REPORT. What the guest printed:"
+        tr -d '\r' < "$WORK/cap" \
+          | grep -avE '^(Assembling |$)' \
+          | grep -aE 'line [0-9]+: |Error |out of memory|Cannot |RST' \
+          | head -4 | sed 's/^/    /'
+        [ -s "$WORK/cap" ] || echo "    (nothing at all -- did the emulator start?)"
+    fi
 done

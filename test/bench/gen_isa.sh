@@ -140,9 +140,17 @@ END {
     if (n == 0) { print "no forms" > "/dev/stderr"; exit 1 }
 
     if (mode == "memory") {
-        # Every other line a definition, with the shortest name that stays
+        # One line in three is a definition, with the shortest name that stays
         # unique and unambiguous: a letter and three base-36 digits, which is
         # 1.2 million names and cannot be mistaken for a mnemonic.
+        #
+        # One in three and not one in two, because **one in two does not fit**.
+        # At that density 256 KB of source is 15,460 labels and dzap runs out
+        # of memory on the Agon at line 28,673 of 30,920 -- 93% of the way
+        # through -- needing about 313 KB of heap against roughly 310 KB that
+        # a 512 KB machine has left after MOS and the program. That is the real
+        # ceiling and it is worth knowing; it is not a benchmark, because a
+        # benchmark that fails measures nothing and tracks no regression.
         #
         # One reference every sixteenth line, so the fixup list is exercised
         # without dominating -- what this file is for is the table behind the
@@ -151,7 +159,7 @@ END {
         i = 0
         k = 0
         while (bytes < total) {
-            if (i % 2 == 0) {
+            if (i % 3 == 0) {
                 line = mname(k) ":"
                 k++
             } else if (i % 16 == 7 && k > 1) {

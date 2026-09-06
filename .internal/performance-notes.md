@@ -1261,3 +1261,42 @@ One thing that misled the whole afternoon: the CLI test called
 *length*, which is a different and much weaker claim -- the point being that
 `same_ci` may then skip the length. Buckets holding several mnemonics is the
 design. The test has been renamed to say what it checks.
+
+## The symbol chain walk, and why it stays as it is (2026-09-06)
+
+Priced at 4.5% by putting a decoy in every bucket, which adds one full-length
+failing compare per lookup. Working back: 2,604 lookups, 0.22s, so a
+seventeen-character compare costs about 1,557 cycles -- **91 cycles a
+character**, which is sixteen instructions at the eZ80's rate.
+
+The walk itself is not the cost. 536 distinct labels in 2,048 buckets is 1.15
+expected probes, so a lookup finds its answer almost immediately and then has to
+read every character of the name to be sure of it. That compare is irreducible:
+a fingerprint would have false positives, and two labels colliding in both the
+bucket and the fingerprint would silently become one label.
+
+So the only question was the per-character cost, and four shapes answer it:
+
+    index forward (shipped)     4.72s   16 instructions, 3 frame accesses
+    index backward              4.76s
+    pointer + counter           4.76s
+    pointer walk                        24 instructions, 6 frame accesses
+
+The pointer walk is the one `loc_intern` uses and it is *worse* here -- three
+live pointers do not fit where two and an index do. The shape nobody would write
+on purpose is the fastest one.
+
+### And the benchmark is inflating this
+
+isa_real's global labels average **17.1 characters**. The 21,829 in the Agon
+corpus average **8.3**. Every label is hashed once and compared once, so the
+benchmark does 2.1x the per-label character work that real code does: the 4.5%
+here would be about 2.2% on corpus-shaped names, and the symbol key's 6.1%
+before it was halved would have been about 3%.
+
+`real` mode takes its mnemonic weights from the corpus and its label shape from
+a word-list generator that was never checked against one. That is worth fixing
+-- it is a change to `lname()` in gen_isa.sh -- but it invalidates the baselines
+a fourth time, so it should be done deliberately rather than folded into
+something else. **Until then, halve anything the benchmark says about label
+text before believing it of real code.**

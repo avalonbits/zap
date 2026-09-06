@@ -730,7 +730,7 @@ static const dop dop_none = {
  *
  * The two num_ch scans are the exception and keep theirs; see each. `e` stays
  * a parameter for them. */
-static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
+__attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
     *op = dop_none;
 
     const char* p = *pp;
@@ -1048,7 +1048,7 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
  * takes a condition code has to be reached whatever mode the operands were
  * parsed as. Kept out of line so that the register test appears once in the
  * hot path rather than twice. */
-__attribute__((noinline)) static const isa_row* match_row_cc(
+__attribute__((always_inline)) static inline const isa_row* match_row_cc(
     const insninfo* insn, const dop* a, const dop* b, uint8_t want) {
     const uint8_t has_cc = (uint8_t) (a->cc != 0);
     const uint8_t a0 = a->r0, a1 = a->r1, a2 = a->r2;
@@ -1271,7 +1271,7 @@ static uint8_t* emit_imm(uint8_t* o, const dop* op, uint8_t cond) {
     return o;
 }
 
-__attribute__((noinline)) static bool emit_row(dz* z, const isa_row* row, dop* a, dop* b) {
+__attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row* row, dop* a, dop* b) {
     if (!out_reserve(z, OUT_MAX_INSN)) {
         return false;
     }

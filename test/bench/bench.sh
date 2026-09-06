@@ -93,7 +93,8 @@ stage_synth()    { test/bench/gen_synth.sh > "$1/synth.s";              echo syn
 # and 1.2% *slower* on these two, which is why they are in the default set
 # rather than something to remember to run.
 #
-# BOTH NOW CONTAIN LOCAL LABELS, WHICH zap DOES NOT HAVE. It fails on them, so
+# BOTH NOW CONTAIN LOCAL AND ANONYMOUS LABELS, WHICH zap DOES NOT HAVE. It
+# fails on them, so
 # these two rows measure ez80asm alone until zap grows the feature. That is a
 # deliberate consequence of dzap being where the work is: the sources exist to
 # say what dzap costs, and holding them back to what zap can read would have

@@ -349,3 +349,32 @@ in the direction that flatters the work -- on a real assembler, host instruction
 counts overstated the gain from three lexer changes by about 3x, and called the
 token shrink a *regression* when it was the largest win of the set. Measure on
 the target.
+
+### A constant shift is a call, and you cannot write your way out -- *measured*
+
+Section 1a lists `__ishl` among the offenders for variable shifts. It is worth
+saying plainly that a **constant** shift is one too, and that the obvious
+workarounds do not work.
+
+`x * 4` on a 24-bit value compiles to `ld c, 2; call __ishl`. So does `x << 2`.
+So does `x += x; x += x;` -- LLVM canonicalises the pair of adds back into a
+shift before the backend ever sees them, and the backend lowers the shift to a
+helper. There is no spelling of "double this twice" that survives.
+
+What this means in practice is that **turning an array index into an address
+always costs one helper call**, and the only choice is which one:
+
+| element size | what you get |
+| :--- | :--- |
+| 3 bytes (a bare pointer) | `call __imulu` |
+| 4 bytes (a pointer plus a pad) | `call __ishl` |
+| 1 byte (an index, not a pointer) | nothing -- but converting the index back to a pointer costs a scale |
+
+Padding a lookup table's entries to a power of two to buy the cheaper helper
+was worth **1.8%** in a real assembler's mnemonic lookup, once per line of
+source. Going further is not possible: storing byte indices removes the scale
+from the table read and puts an identical one on the array it indexes into.
+
+Note the portability trap. `(uint8_t*) table + b + b + b` does remove the call,
+and is wrong anywhere a pointer is not three bytes -- which includes the host
+the unit tests run on. Change the element size, not the arithmetic.

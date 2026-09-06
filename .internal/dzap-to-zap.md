@@ -37,6 +37,10 @@ Three verdicts:
 | Hot functions kept out of `main`, so every frame fits ix's range | **−7.8%** on pure, **−28.3%** on the row-heavy shape | **Portable, and zap has it worse.** See the section below. |
 | Row data in one record per row, walked by a pointer | **−10.1%** on pure, **−35.0%** on the row-heavy shape | **Portable.** zap's `match_row` runs the identical test and reads `regsetA`/`regsetB` as `uint32_t` straight out of the isa table. |
 | Register sets as separate byte planes | **+8.5% — reverted** | Recorded so it is not re-invented: it removes the right calls and replaces them with eight `ld hl, base; add hl, bc; ld a, (hl)` sequences per row. The same split *inside one record* is the row above. |
+| Register set split into byte planes in the operand, not in match_row | **−3.1%** on `nop`, −2.2% on the mix, −6.5% row-heavy | **Portable.** zap holds the same set as `uint32_t` and masks it in the same places. Every mask on it is a call to `__iand`; split, they are byte ANDs, and `emit_row` went from eleven library calls to none. |
+| Instructions looked up by pointer rather than by index | **−20.5%** on `nop`, **−13.0%** on the mix | **Portable, and the second largest win measured.** Every use of an index is a subscript, and a subscript is the index times a struct size, which is a call to `__imulu`. zap's `enc_instruction` takes the same index and pays the same multiplies. |
+| `transform` call skipped when the type is TR_NONE | **−5.4%** on `nop`, −2.5% on the mix | **Portable.** A load and a compare instead of a call, a dispatch and a return, on the commonest case. |
+| Operand parser split so the empty case skips the big prologue | **+2.0% — reverted** | Recorded so it is not re-invented. The premise was wrong: `assemble_line` already assigns `dop_none` directly when there is no comma, so the empty path is only reached by genuinely operandless instructions. The extra call lands on every other line. |
 | **Rows sorted by mode, with a pointer to the next different one** | **−15.5%** on the row-heavy shape, **−5.0%** on the mix | **Portable.** zap's `match_row` walks the same rows in the same order and has the same 57-row `ld`. The one thing to carry across with it: the jump must hold a *pointer*, not a stride — `ri += skip` was 2.5% slower than no skip at all, because a variable stride times a struct size is a call to `__imulu`. |
 | Hex literals assembled a byte at a time, not `acc = (acc << 4) \| d` | **−2.6%** on six-digit immediates, neutral elsewhere | **Portable.** zap's `num_parse` accumulates the same way. Narrow: the compiler will not turn even `<< 8` into a byte move, so every hex digit was a call to `__ishl`, but that is a smaller share of a literal's cost than the shape timings suggested. |
 | First letter to bucket base as a table, replacing a multiply | **−2.0%** on pure, **−2.4%** on `nop` | **Conditional**, on the same thing as the length buckets themselves — zap's lexer is context-free and does not know a statement start is a mnemonic. The *technique* is portable and the multiply is the point: `letter * NLEN` is a call to `__imulu`, because MLT is 8-bit and this is an int. |
@@ -96,6 +100,7 @@ above are about *semantics*, and the sizes are always from the Agon.
       + shift tables, emit_imm, frames, row rec.  8.92s     627
       + hex literals, bucket base table            8.76s     616
       + rows indexed by operand mode                8.32s     585
+      + byte planes, pointer lookup, TR_NONE       6.90s     485
 
 The last two lines are one session's six changes, each measured on its own
 against the same build of the same file. That round's baseline re-measured as
@@ -118,7 +123,7 @@ showed up here.
 On `ld (ix+8), a` alone, which scans 43 of ld's 57 rows and so shows row
 selection undiluted: 42.54s to 19.76s, **−53.6%**.
 
-**57.8% in total.** Roughly two thirds of it is portable or conditional; the
+**65.0% in total.** Roughly two thirds of it is portable or conditional; the
 rest is the simplification.
 
 ## What an instruction costs
@@ -152,6 +157,31 @@ After indexing the rows by mode:
 **585 cycles per byte.** The spread between the cheapest and dearest
 instruction is down from 2.5× to 2.2×, and what is left of it is immediate
 width and output length rather than row selection.
+
+## Taking the floor apart
+
+`nop` is the cheapest instruction there is, so what it costs is what every
+other instruction is built on top of. Measured by building variants that stop
+after each stage, on 30,000 lines:
+
+| stage | at 4,706 cycles | at 3,428 |
+|---|---|---|
+| read, line loop, scan to the newline | 565 | 578 |
+| classify the mnemonic run | 332 | 332 |
+| `mnemonic_of` | 1,094 | 627 |
+| two `parse_operand` calls | 590 | 676 |
+| `match_row` | — | 602 |
+| `emit_row` | 2,126 (with match_row) | 811 |
+
+Nothing dominates any more. Three changes got it from 4,706 to 3,428 and the
+mix from 585 cycles per byte to 485; all three were the same defect in
+different places — an ordinary-looking C operation that is a library call on
+this chip.
+
+Two things were measured and left alone. A `dop` copy costs about 25 cycles,
+because the compiler does it with `LDIR`, so shrinking the struct would buy
+almost nothing. And splitting the operand parser to keep its 31-byte frame off
+the empty path cost 2% on the mix, for the reason in the table above.
 
 **About 4,900 cycles is the floor** — read the line, scan the mnemonic, look it
 up, match one row, write one byte — and it is paid by every instruction whatever

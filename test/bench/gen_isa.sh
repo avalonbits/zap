@@ -92,9 +92,20 @@
 # about that much.
 #
 # Deterministic: no randomness, no dependence on the environment. Changing this
-# script invalidates every timing taken with it -- and adding labels did, so
-# nothing measured before 2026-09-06 is comparable with anything measured
-# after.
+# script invalidates every timing taken with it, and it has changed twice.
+# Adding labels was the first; adding local labels to `even` and `real` is the
+# second, and the scope cycle it introduced moved the line count of isa_real
+# from 19,399 to 22,068. Nothing measured against an earlier version of this
+# file is comparable with anything measured against this one -- the baselines
+# below are the ones that count.
+#
+#   isa_real         4.84s   340 cycles/byte   22,068 lines
+#   isa_even         4.98s   350               22,429
+#   isa_degenerate   4.88s   343               20,328
+#
+# `degenerate` and `memory` build their own sources and are untouched by this
+# -- degenerate assembles to the same md5 as before -- so their numbers moved
+# only because the assembler did, by the 2.7% local labels cost.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -281,28 +292,75 @@ END {
 
 # Prints one instruction, and the label lines that go with it. Returns the
 # bytes printed, so both loops keep their budget.
-function out(line,   used) {
+#
+# The cycle is 32 lines, which is one scope. It holds four definitions and four
+# references -- the same density as the eight-line cycle it replaces, so the
+# label count per byte has not moved -- but three of the four definitions are
+# local and two of the four references are, one forward and one backward of
+# each kind.
+#
+#     0   global definition          opens the scope
+#     4   backward global reference
+#     8   local definition   @loop
+#    12   backward local reference   @loop, defined above in this scope
+#    16   local definition   @done
+#    20   forward local reference    @skip, defined below in this scope
+#    24   local definition   @skip
+#    28   forward global reference   the label opening the next scope
+#
+# Every local reference stays inside its scope because a local cannot reach out
+# of one. Three locals per scope is above the corpus median of two and well
+# under its worst of twenty. (No apostrophes in these comments: the whole
+# program is inside a single-quoted shell string.)
+function out(line,   used, k) {
     used = 0
-    if (ln % 8 == 0) {
+    k = ln % 32
+    if (k == 0) {
         lbl++
         used += length(lname(lbl)) + 2
         print lname(lbl) ":"
-    } else if (ln % 8 == 4) {
-        if (int(ln / 8) % 2 == 0 && lbl > 1) {
+    } else if (k == 8) {
+        used += 7
+        print "@loop:"
+    } else if (k == 16) {
+        used += 7
+        print "@done:"
+    } else if (k == 24) {
+        used += 7
+        print "@skip:"
+    } else if (k == 4) {
+        if (lbl > 1) {
             used += length(lname(lbl - 1)) + 6
             print "  jp " lname(lbl - 1)
-        } else {
-            used += length(lname(lbl + 1)) + 8
-            print "  call " lname(lbl + 1)
         }
+    } else if (k == 12) {
+        used += 11
+        print "  jp @loop"
+    } else if (k == 20) {
+        used += 13
+        print "  call @skip"
+    } else if (k == 28) {
+        used += length(lname(lbl + 1)) + 8
+        print "  call " lname(lbl + 1)
     }
     ln++
     print line
     return used + length(line) + 1
 }
 
-# The last forward reference has to land on something.
-function finish() {
+# The forward references still outstanding have to land on something.
+#
+# The locals first and the global after them: a global would end the scope, and
+# a local defined on the far side of that is in the wrong one. Each is emitted
+# only if this scope had not already reached the line that defines it, because
+# a second definition in one scope is an error.
+function finish(   k) {
+    k = ln % 32
+    if (k > 0) {
+        if (k <= 8)  print "@loop:"
+        if (k <= 16) print "@done:"
+        if (k <= 24) print "@skip:"
+    }
     print lname(lbl + 1) ":"
 }
 

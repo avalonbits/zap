@@ -1048,7 +1048,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
  * takes a condition code has to be reached whatever mode the operands were
  * parsed as. Kept out of line so that the register test appears once in the
  * hot path rather than twice. */
-__attribute__((noinline)) static const isa_row* match_row_cc(
+__attribute__((always_inline)) static inline const isa_row* match_row_cc(
     const insninfo* insn, const dop* a, const dop* b, uint8_t want) {
     const uint8_t has_cc = (uint8_t) (a->cc != 0);
     const uint8_t a0 = a->r0, a1 = a->r1, a2 = a->r2;

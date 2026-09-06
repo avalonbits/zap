@@ -73,6 +73,15 @@
   ld ix, 0x0400
   ld iy, 0x040000
   ld sp, 0x0BFFFF
+  ld hl, 0x1
+  ld hl, 0x123
+  ld hl, 0x12345
+  ld hl, 0xabcdef
+  ld hl, 0xABCDEF
+  ld de, 0xff00ff
+  ld hl, 65535
+  ld hl, 1000000
+  ld a, -1
 
 ; indirection and index displacement
   ld a, (hl)

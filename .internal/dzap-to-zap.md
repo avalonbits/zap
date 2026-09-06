@@ -37,6 +37,8 @@ Three verdicts:
 | Hot functions kept out of `main`, so every frame fits ix's range | **−7.8%** on pure, **−28.3%** on the row-heavy shape | **Portable, and zap has it worse.** See the section below. |
 | Row data in one record per row, walked by a pointer | **−10.1%** on pure, **−35.0%** on the row-heavy shape | **Portable.** zap's `match_row` runs the identical test and reads `regsetA`/`regsetB` as `uint32_t` straight out of the isa table. |
 | Register sets as separate byte planes | **+8.5% — reverted** | Recorded so it is not re-invented: it removes the right calls and replaces them with eight `ld hl, base; add hl, bc; ld a, (hl)` sequences per row. The same split *inside one record* is the row above. |
+| Hex literals assembled a byte at a time, not `acc = (acc << 4) \| d` | **−2.6%** on six-digit immediates, neutral elsewhere | **Portable.** zap's `num_parse` accumulates the same way. Narrow: the compiler will not turn even `<< 8` into a byte move, so every hex digit was a call to `__ishl`, but that is a smaller share of a literal's cost than the shape timings suggested. |
+| First letter to bucket base as a table, replacing a multiply | **−2.0%** on pure, **−2.4%** on `nop` | **Conditional**, on the same thing as the length buckets themselves — zap's lexer is context-free and does not know a statement start is a mnemonic. The *technique* is portable and the multiply is the point: `letter * NLEN` is a call to `__imulu`, because MLT is 8-bit and this is an int. |
 
 ## The frame-pointer cliff, and what zap has
 
@@ -91,6 +93,7 @@ above are about *semantics*, and the sizes are always from the Agon.
       + cheap-test early-out in row selection     10.74s     756
       (round 7 tried and reverted -- see below)
       + shift tables, emit_imm, frames, row record 8.92s     627
+      + hex literals, bucket base table         8.76s     616
 
 The last line is one session's four changes, each measured on its own against
 the same build of the same file. That round's baseline re-measured as 11.10s
@@ -103,9 +106,15 @@ never against a number from another day:
       + emit_imm reading the field               10.76s   −1.5%
       + hot functions out of main                 9.92s   −7.8%
       + row data in one record                    8.92s  −10.1%
+      + hex literals a byte at a time             8.94s   +0.2%
+      + first letter to bucket base table         8.76s   −2.0%
 
-and on `ld (ix+8), a` alone, which scans 43 of ld's 57 rows and so shows row
-selection undiluted: 42.54s to 19.82s, **−53.4%**.
+The hex change is neutral on this file and worth −2.6% on six-digit
+immediates alone; it is in because it costs nothing elsewhere, not because it
+showed up here.
+
+On `ld (ix+8), a` alone, which scans 43 of ld's 57 rows and so shows row
+selection undiluted: 42.54s to 19.76s, **−53.6%**.
 
 Roughly two thirds of the 45.5% so far is portable or conditional; the rest is
 the simplification.

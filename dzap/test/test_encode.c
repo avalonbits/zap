@@ -161,6 +161,35 @@ int main(void) {
         { "jp 0x040000", "C3 00 00 04" },
         { "call nc, 0x040000", "D4 00 00 04" },
 
+        /* Literals, at every digit count and both cases. The hex path
+         * assembles the value a byte at a time from the last digit back, so
+         * an odd number of digits and a value that does not fill three bytes
+         * are the two cases that go wrong. */
+        { "ld a, 0x0", "3E 00" },
+        { "ld a, 0x7", "3E 07" },
+        { "ld a, 0xff", "3E FF" },
+        { "ld a, 0xFF", "3E FF" },
+        { "ld a, 0xAb", "3E AB" },
+        { "ld hl, 0x1", "21 01 00 00" },
+        { "ld hl, 0x12", "21 12 00 00" },
+        { "ld hl, 0x123", "21 23 01 00" },
+        { "ld hl, 0x1234", "21 34 12 00" },
+        { "ld hl, 0x12345", "21 45 23 01" },
+        { "ld hl, 0x123456", "21 56 34 12" },
+        { "ld hl, 0xabcdef", "21 EF CD AB" },
+        { "ld hl, 0xABCDEF", "21 EF CD AB" },
+        { "ld hl, 0xfedcba", "21 BA DC FE" },
+        { "ld bc, 0x000001", "01 01 00 00" },
+        { "ld de, 0xff00ff", "11 FF 00 FF" },
+        { "ld a, 0", "3E 00" },
+        { "ld a, 9", "3E 09" },
+        { "ld a, 10", "3E 0A" },
+        { "ld a, 99", "3E 63" },
+        { "ld a, 255", "3E FF" },
+        { "ld hl, 65535", "21 FF FF 00" },
+        { "ld hl, 1000000", "21 40 42 0F" },
+        { "ld a, -1", "3E FF" },
+
         { "im 2", "ED 5E" },
         { "rst 0x18", "DF" },
         { "out (0xFE), a", "D3 FE" },

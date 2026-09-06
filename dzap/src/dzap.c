@@ -258,14 +258,16 @@ static const uint8_t shl4[16] = {
     0, 16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240
 };
 
-static inline int letter_of(char c) {
-    const char l = (char) (c | 0x20);
-
-    return (l >= 'a' && l <= 'z') ? (l - 'a') : 26;
-}
+/* First letter to the base of its bucket run, folded into one table.
+ *
+ * This was `letter_of(first) * NLEN`: a case fold, two compares and a
+ * multiply, and the multiply is a call to __imulu because the eZ80's MLT is
+ * 8-bit and this is an int. All of it is a function of the character alone, so
+ * all of it precomputes. 26 * 8 = 208 fits in a byte. */
+static uint8_t letter_base[256];
 
 static inline int bucket_of(char first, int n) {
-    return letter_of(first) * NLEN + (n < NLEN ? n : NLEN - 1);
+    return letter_base[(uint8_t) first] + (n < NLEN ? n : NLEN - 1);
 }
 
 __attribute__((noinline)) static void build_tables(void) {
@@ -273,6 +275,16 @@ __attribute__((noinline)) static void build_tables(void) {
         return;
     }
     tables_ready = true;
+
+    /* Built here rather than in build_cclass, which runs second: bucket_of
+     * reads it and the bucket loop below is its first caller. */
+    for (int i = 0; i < 256; i++) {
+        letter_base[i] = 26 * NLEN;
+    }
+    for (int i = 0; i < 26; i++) {
+        letter_base['a' + i] = (uint8_t) (i * NLEN);
+        letter_base['A' + i] = (uint8_t) (i * NLEN);
+    }
 
     for (int i = 0; i < NBUCKET; i++) {
         bucket_head[i] = -1;
@@ -428,7 +440,21 @@ static bool reg_of_text(const char* s, int n, uint24_t* bit, uint8_t* index,
 
 static uint8_t cclass[256];
 
+/* Nibble value of a hex digit, 0xFF for anything else. Used both to test a
+ * digit and to convert it, so the character is classified once. */
+static uint8_t hexval[256];
+
 static void build_cclass(void) {
+    for (int i = 0; i < 256; i++) {
+        hexval[i] = 0xFF;
+    }
+    for (int i = 0; i < 10; i++) {
+        hexval['0' + i] = (uint8_t) i;
+    }
+    for (int i = 0; i < 6; i++) {
+        hexval['a' + i] = (uint8_t) (10 + i);
+        hexval['A' + i] = (uint8_t) (10 + i);
+    }
     for (int i = 0; i < 256; i++) {
         cclass[i] = 0;
     }
@@ -632,20 +658,50 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
         int v = 0;
         bool got = false;
         if (nn >= 3 && ns[0] == '0' && (ns[1] | 0x20) == 'x') {
-            int acc = 0;
             int k = 2;
-            for (; k < nn; k++) {
-                const char c = (char) (ns[k] | 0x20);
-                if (c >= '0' && c <= '9') {
-                    acc = (acc << 4) | (c - '0');
-                } else if (c >= 'a' && c <= 'f') {
-                    acc = (acc << 4) | (c - 'a' + 10);
-                } else {
-                    break;
-                }
+            while (k < nn && hexval[(uint8_t) ns[k]] != 0xFF) {
+                k++;
             }
             if (k == nn) {
-                v = acc;
+                /* Assembled from the end, a byte at a time, rather than
+                 * accumulated as `acc = (acc << 4) | digit`.
+                 *
+                 * There is no barrel shifter, and the compiler will not turn a
+                 * left shift into a byte move even at a byte boundary: `<< 4`
+                 * and `<< 8` are both `ld c, n; call __ishl`, a loop over the
+                 * bits. That cost about 445 cycles per hex digit, which is why
+                 * `ld hl, 0x123456` timed 2.9s slower than `ld a, 0x42` over
+                 * thirty thousand lines.
+                 *
+                 * Working backwards, two digits make a byte with one table
+                 * lookup for the high nibble, and the bytes go straight into
+                 * the value's own storage. Nothing here shifts anything wider
+                 * than a nibble.
+                 *
+                 * Little-endian, which the eZ80 is and the host is. The
+                 * emitter already writes the low byte first for the same
+                 * reason. Digits past the third byte are dropped, which is
+                 * what the old accumulator did too once it overflowed. */
+                union {
+                    int v;
+                    uint8_t b[sizeof(int)];
+                } u;
+                u.v = 0;
+
+                int j = nn;
+                int bi = 0;
+                while (j > 2) {
+                    uint8_t byte = hexval[(uint8_t) ns[--j]];
+                    if (j > 2) {
+                        byte = (uint8_t) (byte
+                                          | shl4[hexval[(uint8_t) ns[--j]]]);
+                    }
+                    if (bi < 3) {
+                        u.b[bi++] = byte;
+                    }
+                }
+
+                v = u.v;
                 got = true;
             }
         } else if (nn > 0 && digit_ch(ns[0])) {

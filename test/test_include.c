@@ -124,6 +124,26 @@ int main(void) {
         zap_free(&r);
     }
 
+    /* An include on the last line of a file that has no trailing newline.
+     *
+     * parse_include switches the lexer to the new file before returning, and
+     * the end-of-line check in the parse loop then runs against it -- so it
+     * read the *included* file's first token and rejected it. A line ending
+     * in a newline never showed this, because the newline is already in hand
+     * and the check reads nothing.
+     *
+     * ZINC in the full corpus ends `zinc-setup.asm` exactly this way, and it
+     * took the whole program out with an error attributed to the included
+     * file at the including file's line number. */
+    is("include on the last line, no trailing newline",
+       "  nop\n  include \"zt_a.inc\"", "00 78");
+
+    /* And the same one file down, where the include ends an included file. */
+    check("nested scratch written",
+          put("zt_tail.inc", "  ld b,c\n  include \"zt_a.inc\""));
+    is("include ending an included file, no trailing newline",
+       "  nop\n  include \"zt_tail.inc\"\n  ret\n", "00 41 78 C9");
+
     /* A missing file is an error rather than an empty include. */
     is("missing include file", "  include \"zt_no_such.inc\"\n", "ERR");
 
@@ -152,6 +172,7 @@ int main(void) {
     unlink("zt_lbl.inc");
     unlink("zt_local.inc");
     unlink("zt_bad.inc");
+    unlink("zt_tail.inc");
 
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);

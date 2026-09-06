@@ -51,6 +51,20 @@ typedef struct _parser {
      * in the next without either having to be renamed. */
     uint16_t scope_;
 
+    /* The largest scope handed out so far, so none is ever handed out twice.
+     *
+     * scope_ alone is not enough. A global label bumps it and never puts it
+     * back, so it climbs; a macro expansion bumps it and *restores* it when
+     * the expansion ends, so the next expansion of the same macro was given
+     * the same number and its local labels collided with the previous one's.
+     * The first expansion was right and every later one resolved its own
+     * forward @label to the earlier expansion's -- `jr @over_str` in a puts
+     * macro jumped backwards.
+     *
+     * Reset per pass along with scope_, so both passes hand out the same
+     * numbers in the same order. */
+    uint16_t scope_hwm_;
+
     /* Address of the statement being assembled, which is what '$' means.
      * Not addr_: by the time an operand is read the opcode has already been
      * emitted, and "jp $" has to jump to the jp, not to its own operand. */
@@ -101,7 +115,6 @@ typedef struct _parser {
 
     /* Bumped per expansion so a local label inside a macro is a fresh symbol
      * each time it is invoked, rather than colliding with the last one. */
-    uint16_t expand_id_;
 
     /* Conditional assembly. skip_ ends up non-zero while a false branch is
      * being passed over; the depth is tracked so a nested .if inside a

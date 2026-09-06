@@ -122,7 +122,6 @@ static parser* pr_setup(parser* p) {
     p->inc_depth_ = 0;
     p->has_diag_ = false;
     mt_init(&p->macros_);
-    p->expand_id_ = 0;
     p->macro_depth_ = 0;
     p->cond_depth_ = 0;
     p->skip_depth_ = 0;
@@ -914,25 +913,52 @@ static const char* expand_macro(parser* p, const macro* m) {
             return pr_msg(p, "too many macro arguments");
         }
 
-        int n = 0;
         /* An argument runs to the next comma; a negative number and a
-         * bracketed expression both arrive as several tokens. */
+         * bracketed expression both arrive as several tokens.
+         *
+         * Taken as the span of source the tokens cover, not as their texts
+         * joined end to end. A quote is its own token, so `"Running tests"`
+         * arrives as a quote, two names and a quote -- joined, that is
+         * `"Runningtests"`, and the space inside the string is gone. It was
+         * one wrong byte in tetris in the full corpus and a program that
+         * printed `Runningtests`.
+         *
+         * The tokens of one call are all in the same line buffer, which the
+         * reader keeps whole, so the span between the first and the last is
+         * contiguous. A synthesised token has no text and is skipped. */
+        const char* start = NULL;
+        const char* end = NULL;
         while (p->tk_.tk_ != COMMA && p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
-            for (int i = 0; i < p->tk_.sz_; i++) {
-                /* Too long is reported rather than trimmed: a truncated
-                 * argument expands into something that still looks like
-                 * source, so it emits wrong bytes or fails somewhere else
-                 * with an error that does not name the real problem. */
-                /* The buffer holds MACRO_ARG_MAX characters; the length is
-                 * carried separately, so no terminator is needed and all of
-                 * them are usable. A quoted 64-character filename is exactly
-                 * this long, and the reference allows it. */
-                if (n >= MACRO_ARG_MAX) {
-                    return pr_msg(p, "macro argument too long");
+            if (p->tk_.txt_ != NULL) {
+                if (start == NULL) {
+                    start = p->tk_.txt_;
                 }
-                argv[argc][n++] = p->tk_.txt_[i];
+                end = p->tk_.txt_ + p->tk_.sz_;
             }
             next(p);
+        }
+
+        int n = 0;
+        if (start != NULL) {
+            /* Trailing space before the comma is not part of the argument;
+             * space inside it is. */
+            while (end > start && (end[-1] == ' ' || end[-1] == '\t')) {
+                end--;
+            }
+            n = (int) (end - start);
+            /* Too long is reported rather than trimmed: a truncated argument
+             * expands into something that still looks like source, so it
+             * emits wrong bytes or fails somewhere else with an error that
+             * does not name the real problem.
+             *
+             * The buffer holds MACRO_ARG_MAX characters; the length is
+             * carried separately, so no terminator is needed and all of them
+             * are usable. A quoted 64-character filename is exactly this
+             * long, and the reference allows it. */
+            if (n > MACRO_ARG_MAX) {
+                return pr_msg(p, "macro argument too long");
+            }
+            memcpy(argv[argc], start, (size_t) n);
         }
         argl[argc] = n;
         argc++;
@@ -971,11 +997,14 @@ static const char* expand_macro(parser* p, const macro* m) {
     /* A fresh scope for the expansion, so a local label in the body does not
      * collide with the one from the previous invocation. It is restored when
      * the expansion ends -- a macro call in the middle of a routine must not
-     * split that routine's locals in two. */
-    if (p->scope_ < MAX_SCOPE) {
-        p->scope_++;
+     * split that routine's locals in two.
+     *
+     * Taken from the high-water mark rather than by incrementing scope_. The
+     * restore is exactly what made incrementing wrong: the first expansion
+     * got N+1 and put scope_ back to N, so the second got N+1 as well. */
+    if (p->scope_hwm_ < MAX_SCOPE) {
+        p->scope_ = ++p->scope_hwm_;
     }
-    p->expand_id_++;
 
     return NULL;
 }
@@ -988,11 +1017,41 @@ static const char* parse_include(parser* p) {
         return pr_msg(p, "includes nested too deeply");
     }
 
+    /* Into a local first, because finishing the line below can pop the
+     * include stack, and `names[p->inc_depth_]` would then be a different
+     * slot. Written that way it re-opened the file already being read, which
+     * is an include of itself and fills the output buffer. */
+    char name[256];
     int sz = 0;
-    const char* err = read_string(p, names[p->inc_depth_], 256, &sz);
+    const char* err = read_string(p, name, sizeof(name), &sz);
     if (err != NULL) {
         return err;
     }
+
+    /* Finish the including line before the lexer moves.
+     *
+     * The end-of-line check in the parse loop runs after this returns, by
+     * which time p->lex_ is the included file -- so it would read that file's
+     * first token and reject it. On a line ending in a newline the token is
+     * already in hand and the check never reads anything, which is why this
+     * only ever went wrong on an include on the last line of a file with no
+     * trailing newline. One of those is in the corpus, and it took the whole
+     * of ZINC out.
+     *
+     * The token is left as a newline because the including line is over,
+     * whether it ended with one or with the file. */
+    if (p->tk_.tk_ != NEW_LINE) {
+        next(p);
+        if (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
+            return pr_msg(p, "expected a new line.");
+        }
+    }
+    p->tk_.tk_ = NEW_LINE;
+
+    if (p->inc_depth_ == (int) (sizeof(p->inc_) / sizeof(p->inc_[0]))) {
+        return pr_msg(p, "includes nested too deeply");
+    }
+    memcpy(names[p->inc_depth_], name, sizeof(name));
 
     p->inc_[p->inc_depth_] = p->lex_;
     /* An include shares the enclosing scope; a macro expansion does not. */
@@ -1392,10 +1451,10 @@ static const char* parse_label(parser* p) {
     /* A global label opens a new local scope, so the names inside the routine
      * that follows are distinct from the ones before it. */
     if (p->tk_.txt_[0] != '@') {
-        if (p->scope_ == MAX_SCOPE) {
+        if (p->scope_hwm_ == MAX_SCOPE) {
             return pr_msg(p, "too many labels");
         }
-        p->scope_++;
+        p->scope_ = ++p->scope_hwm_;
     }
 
     /* A name too long for the table used to be dropped silently, so the label
@@ -1632,6 +1691,7 @@ const char* pr_parse(parser* p) {
     p->pos_ = 0;
     p->addr_ = p->org_;
     p->scope_ = 0;
+    p->scope_hwm_ = 0;
     p->anon_count_ = 0;
     const char* err = NULL;
 

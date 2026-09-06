@@ -257,10 +257,39 @@ different buffer sizes. What is known:
   `run()` finding `stop` somewhere other than the newline.
 - It is not disk, and the host reproduces nothing at BUF_KB of 1, 2, 4 or 16.
 
-The next step is one 40-second run, not more reading: assemble a four-line file
-containing `ld a, 0x42` on the Agon. That separates "the literal path is wrong
-on target" from "refilling is wrong on target" immediately, and the second
-possibility is already unlikely given sh_reg.
+That run has now been done, and it narrowed things a long way without settling
+them.
+
+**A four-line file fails at line 2.** So it is not refilling: the whole source
+is 41 bytes, one buffer, and line 2's scan ends on a real newline at offset 18,
+nowhere near the sentinel at 41. The sentinel is not even reached.
+
+**The same file assembles correctly on merged HEAD.** So the fault is in this
+change, not in anything already on main.
+
+**The class table is right on the target.** Printed from the guest:
+`cclass['2']` is 0x1E and `num_ch('2')` is 1, so the scan has no reason to stop
+where it does -- and the diagnostic says it stops at offset 17, the final `2`
+of `0x42`, having consumed `0x4` and left `2` as trailing text.
+
+**It fails at `-O1` as well as `-Oz`,** so it is not one optimisation level.
+
+**Adding a `printf` inside the literal path makes it pass** -- with the
+diagnostic in, the target produces `n=4 v=66` and the right bytes, identical to
+the host. That is the signature of a codegen or layout problem rather than a
+logic error, and it is why reading the C has not found it: the C is the same
+code that works on the host at four buffer sizes under ASan.
+
+Where to pick it up: the literal scan compiles to `.LBB3_144` and looks correct
+by hand, but the *other* `num_ch` loop in the same function -- the displacement
+scan at `.LBB3_18` -- pre-increments its pointer and then tests `(iy + 1)`,
+reading one character ahead of where it has advanced to. That is worth
+understanding before anything else, even though the failing instruction does
+not take that path.
+
+The honest position is that this is a heisenbug worth an hour with the
+disassembler and a hardware single-step, not another round of reading the
+source. It buys 3.9% on one shape. It is stashed, not lost.
 
 It also found one real bug on the way in, already fixed in the stash: writing
 the sentinel at `bsz_` clobbers the first character of the partial line the

@@ -474,6 +474,104 @@ int main(void) {
         free(z.out);
     }
 
+    /* Labels.
+     *
+     * The origin is 0x040000, so a label at the top of a source is that
+     * address. Every expectation here was taken from ez80asm.
+     *
+     * A label is recognised by the colon and not by the column: the reference
+     * takes one at any indent, so position decides nothing. */
+    check("a label and a backward jump", emit("foo:\n  jp foo\n"), "C3 00 00 04");
+    check("a label indented", emit("  foo:\n  jp foo\n"), "C3 00 00 04");
+    check("a label sharing a line with an instruction",
+          emit("foo: ld a,b\n  jp foo\n"), "78 C3 00 00 04");
+    check("a label as an immediate", emit("foo:\n  ld hl, foo\n"), "21 00 00 04");
+    check("a label inside an indirect", emit("foo:\n  ld a, (foo)\n"), "3A 00 00 04");
+    check("a backward relative jump to a label",
+          emit("foo:\n  jr foo\n"), "18 FE");
+
+    /* Forward references, which are the whole reason there is a fixup list.
+     * dzap reads a line once and never returns to it, so the bytes go down as
+     * zero and are patched when the source runs out. */
+    check("a forward jump", emit("  jp foo\nfoo:\n  ret\n"), "C3 04 00 04 C9");
+    check("a forward immediate", emit("  ld hl, foo\nfoo:\n"), "21 04 00 04");
+    check("a forward relative jump", emit("  jr foo\nfoo:\n  ret\n"), "18 00 C9");
+    check("a forward reference resolved twice",
+          emit("  jp foo\n  jp foo\nfoo:\n"), "C3 08 00 04 C3 08 00 04");
+
+    /* A relative jump out of reach is refused, and out of reach can only be
+     * known once the label is. Built rather than written out, because it
+     * takes more than 127 bytes to get there -- and `ds 200` would have made
+     * this pass for the wrong reason, dzap having no directives. */
+    {
+        static char far[2048];
+        int n = snprintf(far, sizeof(far), "  jr foo\n");
+        for (int i = 0; i < 130; i++) {
+            n += snprintf(&far[n], sizeof(far) - (size_t) n, "  nop\n");
+        }
+        snprintf(&far[n], sizeof(far) - (size_t) n, "foo:\n  ret\n");
+        check("a forward relative jump too far", emit(far), "ERR");
+
+        n = snprintf(far, sizeof(far), "  jr foo\n");
+        for (int i = 0; i < 100; i++) {
+            n += snprintf(&far[n], sizeof(far) - (size_t) n, "  nop\n");
+        }
+        snprintf(&far[n], sizeof(far) - (size_t) n, "foo:\n  ret\n");
+        check("a forward relative jump just in reach",
+              strncmp(emit(far), "18 64", 5) == 0 ? "18 64" : emit(far), "18 64");
+    }
+
+    /* The errors the reference gives. */
+    check("a label defined twice", emit("foo:\nfoo:\n  nop\n"), "ERR");
+    check("a label that is never defined", emit("  jp nowhere\n"), "ERR");
+    check("labels are case sensitive", emit("FOO:\n  jp foo\n"), "ERR");
+
+    /* A name and a number are told apart by the suffix, not by the first
+     * character: both can begin with a letter. `aabbcch` is a literal even
+     * though a label could be spelled that way, which is what the reference
+     * does. */
+    check("a trailing-h literal is not a label",
+          emit("  ld hl, aabbcch\n"), "21 CC BB AA");
+    check("a label that looks like hex without the suffix",
+          emit("aabbcc:\n  ld hl, aabbcc\n"), "21 00 00 04");
+
+    /* The radix prefixes are literals and not names. Asking "does it start
+     * with a digit" made all three into labels that did not exist. */
+    check("a dollar literal is not a label", emit("  ld a, $42\n"), "3E 42");
+    check("a hash literal is not a label", emit("  ld a, #42\n"), "3E 42");
+    check("a percent literal is not a label", emit("  ld a, %1010\n"), "3E 0A");
+
+    /* Enough labels, and long enough ones, to grow every arena more than once.
+     *
+     * The symbols, their names and the fixups are all realloc'd in blocks, and
+     * the buckets and the fixups hold pointers into them -- so a growth has to
+     * rebase what points at the old block. Short names did not show it: six
+     * hundred of them is 6 KB against an 8 KB step, so the arena never moved
+     * and deleting the rebase failed nothing. These are 30 characters each,
+     * which is past the step several times over and is also the length real
+     * Agon labels reach -- the longest in the full corpus is 38. */
+    {
+        static char big[120000];
+        static const char* pad = "_padded_out_to_thirty_chars";
+        int n = 0;
+        for (int i = 0; i < 600; i++) {
+            n += snprintf(&big[n], sizeof(big) - (size_t) n,
+                          "  jp l%s%03d\n", pad, i);
+        }
+        for (int i = 0; i < 600; i++) {
+            n += snprintf(&big[n], sizeof(big) - (size_t) n,
+                          "l%s%03d:\n  nop\n", pad, i);
+        }
+        const char* got = emit(big);
+        /* The first jump targets the first label, which sits after 600 jumps
+         * of four bytes each. */
+        char want[16];
+        snprintf(want, sizeof(want), "C3 %02X %02X 04", (600 * 4) & 0xFF,
+                 ((600 * 4) >> 8) & 0xFF);
+        check("six hundred long labels, growing every arena",
+              strncmp(got, want, strlen(want)) == 0 ? want : got, want);
+    }
+
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);
     }

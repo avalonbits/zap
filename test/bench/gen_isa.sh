@@ -4,6 +4,7 @@
 #   test/bench/gen_isa.sh even [bytes] > isa_even.s
 #   test/bench/gen_isa.sh real [bytes] > isa_real.s
 #   test/bench/gen_isa.sh degenerate [bytes] > isa_degenerate.s
+#   test/bench/gen_isa.sh memory [bytes] > isa_memory.s
 #
 # gen_pure.sh cycles forty hand-picked forms, which is a plausible instruction
 # stream but not a sample of the instruction set: it reaches 31 of the ISA's
@@ -47,6 +48,18 @@
 #         patching ever stops being linear in the number of fixups, this is
 #         where it shows first.
 #
+#   memory  As many distinct labels as a source of that size can hold, which
+#         is a different worst case from `degenerate` and was found by
+#         measuring: that file maximises the fixup list and uses *less* memory
+#         than isa_real, because it has 468 distinct labels against 1,941 and
+#         the name arena and symbol blocks scale with the count.
+#
+#         A symbol costs eleven bytes of node plus its name, against the name
+#         plus two bytes of source, so **short names are the expensive ones**:
+#         2.8 bytes of table per byte of source at three characters, 1.4 at
+#         twenty. Alternating short definitions with instructions is about the
+#         worst a valid program can be.
+#
 #   real  Weighted by how often each mnemonic appears in the two real programs
 #         in test/corpus -- BBC BASIC and Rokky, 10,440 instructions between
 #         them -- while still containing every form at least once. Says what
@@ -86,7 +99,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-MODE="${1:?usage: gen_isa.sh <even|real|degenerate> [bytes]}"
+MODE="${1:?usage: gen_isa.sh <even|real|degenerate|memory> [bytes]}"
 TOTAL="${2:-262144}"
 CASES="dzap/test/cases/opcodes.s"
 
@@ -125,6 +138,41 @@ BEGIN {
 { form[n++] = $0 }
 END {
     if (n == 0) { print "no forms" > "/dev/stderr"; exit 1 }
+
+    if (mode == "memory") {
+        # One line in three is a definition, with the shortest name that stays
+        # unique and unambiguous: a letter and three base-36 digits, which is
+        # 1.2 million names and cannot be mistaken for a mnemonic.
+        #
+        # One in three and not one in two, because **one in two does not fit**.
+        # At that density 256 KB of source is 15,460 labels and dzap runs out
+        # of memory on the Agon at line 28,673 of 30,920 -- 93% of the way
+        # through -- needing about 313 KB of heap against roughly 310 KB that
+        # a 512 KB machine has left after MOS and the program. That is the real
+        # ceiling and it is worth knowing; it is not a benchmark, because a
+        # benchmark that fails measures nothing and tracks no regression.
+        #
+        # One reference every sixteenth line, so the fixup list is exercised
+        # without dominating -- what this file is for is the table behind the
+        # labels, not the list of unresolved uses.
+        bytes = 0
+        i = 0
+        k = 0
+        while (bytes < total) {
+            if (i % 3 == 0) {
+                line = mname(k) ":"
+                k++
+            } else if (i % 16 == 7 && k > 1) {
+                line = "  jp " mname(int(k / 2))
+            } else {
+                line = form[i % n]
+            }
+            print line
+            bytes += length(line) + 1
+            i++
+        }
+        exit 0
+    }
 
     if (mode == "degenerate") {
         # Sized so that the references fill the first half and the definitions
@@ -256,6 +304,27 @@ function out(line,   used) {
 # The last forward reference has to land on something.
 function finish() {
     print lname(lbl + 1) ":"
+}
+
+# A letter and three base-36 digits: short, unique, and a name rather than a
+# literal.
+#
+# The leading letter is drawn from g..z, which is not a hexadecimal digit. With
+# a..f allowed, `a00h` comes out -- and that is a hexadecimal literal with a
+# trailing h, which the reference reads as 0xA00 and refuses as a label. It is
+# the same ambiguity the operand parser resolves in favour of the number, and a
+# generator that produces it is testing the ambiguity rather than the memory.
+function mname(k,   d, g, r, i2, out2) {
+    d = "0123456789abcdefghijklmnopqrstuvwxyz"
+    g = "ghijklmnopqrstuvwxyz"
+    r = int(k / 20)
+    out2 = ""
+    for (i2 = 0; i2 < 3; i2++) {
+        out2 = substr(d, (r % 36) + 1, 1) out2
+        r = int(r / 36)
+    }
+
+    return substr(g, (k % 20) + 1, 1) out2
 }
 
 function lname(k,   a, b) {

@@ -950,3 +950,56 @@ Two things the plumbing needed, both worth not rediscovering:
   line replaces what agondev's makefile put there, and the build fails in ways
   that look like the measurement simply not working -- an empty report rather
   than an error.
+
+## The memory-degenerate case, and the ceiling it found
+
+`gen_isa.sh memory` is the worst case for *memory*, which is a different file
+from the worst case for time. isa_degenerate maximises the fixup list and uses
+**less** memory than isa_real, because it has 468 distinct labels against 1,941
+and the name arena and symbol blocks scale with the count rather than the
+references.
+
+A symbol costs eleven bytes of node plus its name, against the name plus two
+bytes of source, so **short names are the expensive ones**:
+
+    name length   source/label   table/label   ratio
+              3              5            14   2.80x
+              8             10            19   1.90x
+             20             22            31   1.41x
+
+    isa_memory (9,347 labels)   peak 238,140 bytes   45% of 512 KB
+      source reader                   16,385
+      output buffer                   65,538
+      symbol buckets                   8,192
+      symbol blocks                  107,065
+      names and fixups                40,960
+
+against isa_real's 167 KB. Symbol blocks alone are 45% of the peak.
+
+### Where it stops fitting
+
+One definition every *second* line -- 15,460 labels in 256 KB -- **does not
+fit**: dzap runs out of memory at line 28,673 of 30,920, 93% of the way
+through, wanting about 313 KB against the roughly 310 KB a 512 KB machine has
+left after MOS and the program.
+
+So the ceiling is near **14,000 labels for a 256 KB source**, and the committed
+benchmark is one in three, which is 9,347 and runs. A benchmark that fails
+measures nothing.
+
+### Two things the tooling learned
+
+* **An empty report must be an error.** memprofile.sh printed nothing when the
+  guest failed, which made a build that did not take the flags, a guest out of
+  memory, and an emulator that never started all look alike -- and it did that
+  twice while this was being written. It now prints what the guest said.
+* **A generated label can collide with the literal syntax.** The first names
+  were a letter plus three base-36 digits and produced `a00h`, which is a
+  hexadecimal literal with a trailing h: the reference reads it as 0xA00 and
+  refuses it as a label. Leading letters now come from g..z.
+
+  **dzap accepts `a00h:` where ez80asm rejects it**, which is a real divergence
+  and is not fixed. The operand parser resolves that ambiguity toward the
+  number; the definition path does not apply the rule at all. Small to fix --
+  refuse a definition whose name would parse as a literal -- and worth a test
+  when it is.

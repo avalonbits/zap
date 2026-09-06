@@ -180,6 +180,13 @@ struct sym {
      * The Agon ran out of memory two thirds of the way through. Interning also
      * removes the lookup at resolve time; the address is simply there. */
     bool defined;
+
+    /* Which table this node came from, and so which arena its name is in and
+     * which fixup list a reference to it belongs on. Kept on the node rather
+     * than on the operand because the operand is copied twice a line with an
+     * ldir and this is written once per distinct label. */
+    bool islocal;
+
     int addr;
 };
 
@@ -363,6 +370,58 @@ typedef struct {
     int line;           /* to report against, long after the line is gone */
 } fixup;
 
+/* Local labels -- `@name` -- live in their own table, emptied at the end of
+ * every scope rather than accumulating for the whole program.
+ *
+ * The reference keys a local as the enclosing global label's name with the
+ * local's appended: `outer:` then `@aa:` is one entry spelled `outer@aa`, and
+ * its "Label already defined" message says so. That is one way to build it and
+ * a poor one here -- every local costs the scope's name again in the arena and
+ * on every hash and every compare, and in isa_real a scope name averages
+ * seventeen characters against three for `@aa`.
+ *
+ * The separate table falls out of the semantics instead. A local can only be
+ * satisfied by a definition in its own scope -- the reference refuses `@aa`
+ * defined before any global and used after one -- so when a scope ends every
+ * local in it is finished with: resolved, or an error to report against the
+ * line that used it. Nothing about it is needed afterwards, so the names, the
+ * nodes and the pending references are all reused by the next scope, and a
+ * program's local labels cost the high-water mark of one scope instead of the
+ * sum of all of them.
+ *
+ * 64 nodes a block: the whole Agon corpus has at most 20 locals in one scope,
+ * median 2 and 11 at the 99th percentile, over the 130 files of 1,000 that use
+ * them at all. A scope needing more gets another block, and the blocks are
+ * kept and reused rather than freed, so a program pays for its widest scope
+ * once. */
+#define NLOCB       64    /* local buckets; a power of two, see loc_bucket */
+#define LOCS_STEP   64
+#define LOCNAMES_STEP 256
+
+typedef struct locblock locblock;
+struct locblock {
+    locblock* next;
+    sym nodes[LOCS_STEP];
+};
+
+/* A bucket that empties in constant time.
+ *
+ * Scopes end often -- once per global label, 1,941 of them in isa_real -- so
+ * clearing 64 slots each time is 124,000 stores for a table that usually holds
+ * two entries. The slot carries the scope it belongs to instead, and a slot
+ * whose stamp is not the current one reads as empty however stale its chain.
+ * Ending a scope is then an increment.
+ *
+ * The stamp goes in the byte that was padding: symslot needs one to make the
+ * size a power of two, so this costs nothing at all. */
+typedef struct {
+    sym* head;
+    uint8_t gen;
+} locslot;
+
+_Static_assert((sizeof(locslot) & (sizeof(locslot) - 1)) == 0,
+               "local slot size is a power of two, so indexing is a shift");
+
 typedef struct _dz {
     buf_reader rd;
 
@@ -395,7 +454,67 @@ typedef struct _dz {
 
     int line;
     const char* err;
+
+    /* The line a global label was defined on, while the scope it opens has
+     * not started yet; 0 when there is none pending.
+     *
+     * The reference resolves `two: jp @l` against the scope `two` closed, not
+     * the one it opens: a label and an instruction on one line are two things,
+     * and the operand is read before the scope moves. Ending the scope where
+     * the label is defined instead makes that line refuse a local that the
+     * reference assembles, and assemble one that it refuses -- the same bug
+     * from both sides. */
+    int scope_line;
+
+    /* The local table: buckets, the blocks the nodes come from, their own name
+     * arena, and the references waiting on a definition in this scope. Every
+     * one of the used counters is reset when the scope ends; none of the
+     * capacities are.
+     *
+     * LAST IN THE STRUCT, AND THAT IS NOT TIDINESS. dz is reached through a
+     * pointer and `iy` displacement is a signed byte, so a field past 127 has
+     * its address computed instead of being read in one instruction. The
+     * buckets are 256 bytes on their own; put in the middle they pushed `line`
+     * and `err` out of range, and `line` is written on every line of the
+     * source. That cost 1.3% -- more than the whole feature -- for a table
+     * this program touches only where a label is. */
+    locslot locs[NLOCB];
+    locblock* locfirst;     /* kept, to rewind to */
+    locblock* loccur;
+    int locs_used;          /* in loccur */
+    char* locnames;
+    int locnames_used;
+    int locnames_cap;
+    fixup* lfixups;
+    int lfix_used;
+    int lfix_cap;
+    uint8_t gen;            /* which scope the local buckets belong to */
 } dz;
+
+/* The fields touched on every line have to be reachable in one instruction.
+ *
+ * dz is reached through a pointer and `iy` displacement is a signed byte, so a
+ * field past 127 has its address computed instead. `line` is written once per
+ * line of the source and the output cursor is read and written several times,
+ * which is why those three are named here rather than the struct being trusted
+ * to stay small: the local table alone is 256 bytes of buckets, and putting it
+ * anywhere but the end pushes `line` out of range. That is what this catches,
+ * and it caught it. */
+/* The rule itself, which holds on any machine: the 256 bytes of local buckets
+ * come after every field that is touched per line, not before them. */
+_Static_assert(__builtin_offsetof(dz, locs) > __builtin_offsetof(dz, line),
+               "the local table must come after the per-line fields");
+_Static_assert(__builtin_offsetof(dz, locs) > __builtin_offsetof(dz, lim),
+               "the local table must come after the output cursor");
+
+/* And the displacement itself, where a displacement is what it is. The host
+ * has eight-byte pointers and a dz twice the size, so the number only means
+ * anything on the machine this is for. */
+#ifdef AGONDEV
+_Static_assert(__builtin_offsetof(dz, line) < 128, "dz.line is out of range");
+_Static_assert(__builtin_offsetof(dz, o) < 128, "dz.o is out of range");
+_Static_assert(__builtin_offsetof(dz, lim) < 128, "dz.lim is out of range");
+#endif
 
 /* ------------------------------------------------- symbols, continued */
 
@@ -405,6 +524,7 @@ typedef struct _dz {
 #define NAMES_STEP  (8 * 1024)
 #define SYMS_STEP   512
 #define FIX_STEP    512
+
 
 /* Symbols are allocated in blocks that are never moved.
  *
@@ -499,10 +619,204 @@ static sym* sym_intern(dz* z, const char* name, int len) {
     sp->nameoff = off;
     sp->len = (uint8_t) len;
     sp->defined = false;
+    /* Set where the node is made, not where it is defined: a global that is
+     * referenced before it is defined has to answer this the moment the
+     * reference records a fixup against it. */
+    sp->islocal = false;
     sp->addr = 0;
 
     sp->next = z->syms[b].head;
     z->syms[b].head = sp;
+
+    return sp;
+}
+
+/* ------------------------------------------------------------ local labels */
+
+/* Eight bits of the same key the global table uses. The high three bits it
+ * composes are the ones this table does not have room for, so they are simply
+ * not asked for; sym_bucket's low byte is the Pearson result itself. */
+static inline int loc_bucket(const char* name, int len) {
+    return sym_bucket(name, len) & (NLOCB - 1);
+}
+
+/* Room for one more local node and its name. Blocks are threaded once and
+ * then reused: after a scope ends loccur walks the same list again. */
+static bool loc_room(dz* z, int len) {
+    if (z->locs_used == LOCS_STEP || z->loccur == NULL) {
+        locblock* next = z->loccur != NULL ? z->loccur->next : z->locfirst;
+        if (next == NULL) {
+            Z_SITE("local label blocks");
+            next = (locblock*) malloc(sizeof(locblock));
+            if (next == NULL) {
+                return false;
+            }
+            next->next = NULL;
+            if (z->loccur != NULL) {
+                z->loccur->next = next;
+            } else {
+                z->locfirst = next;
+            }
+        }
+        z->loccur = next;
+        z->locs_used = 0;
+    }
+    if (z->locnames_used + len > z->locnames_cap) {
+        Z_SITE("local label names");
+        int want = z->locnames_cap + LOCNAMES_STEP;
+        while (z->locnames_used + len > want) {
+            want += LOCNAMES_STEP;
+        }
+        char* grown = (char*) realloc(z->locnames, (size_t) want);
+        if (grown == NULL) {
+            return false;
+        }
+        z->locnames = grown;
+        z->locnames_cap = want;
+    }
+
+    return true;
+}
+
+/* Patches one reference, now that the address behind it is known. Shared by
+ * the end of a scope, which settles that scope's local references, and the end
+ * of the source, which settles every global one. */
+static bool patch_fixup(dz* z, const fixup* f) {
+    const sym* sp = f->target;
+    if (!sp->defined) {
+        /* Reported against the line that used it, which is long gone; the
+         * fixup carries the number for exactly this. */
+        z->line = f->line;
+        z->err = "unknown label";
+
+        return false;
+    }
+
+    uint8_t* at = z->out + f->off;
+    if (f->width == 0) {
+        const int d = sp->addr - f->next_addr;
+        if (d < -128 || d > 127) {
+            z->line = f->line;
+            z->err = "relative jump too far";
+
+            return false;
+        }
+        *at = (uint8_t) d;
+
+        return true;
+    }
+
+    at[0] = (uint8_t) sp->addr;
+    if (f->width > 1) {
+        at[1] = (uint8_t) (sp->addr >> 8);
+    }
+    if (f->width > 2) {
+        at[2] = (uint8_t) (sp->addr >> 16);
+    }
+
+    return true;
+}
+
+/* Ends the current scope: settles every local reference it left pending, then
+ * empties the table.
+ *
+ * Every one of them has to settle here. A local reference can only be
+ * satisfied inside its own scope, so one still undefined at this point is
+ * undefined for good -- and reporting it here names the line that used it
+ * while the scope it belonged to is still the subject, rather than at the end
+ * of the source like a global.
+ *
+ * Emptying is three counters and an increment. The nodes and the names are
+ * handed back to be written over, and the buckets are left exactly as they
+ * are: the stamp is what makes them empty. */
+static bool scope_end(dz* z) {
+    for (int i = 0; i < z->lfix_used; i++) {
+        if (!patch_fixup(z, &z->lfixups[i])) {
+            return false;
+        }
+    }
+    z->lfix_used = 0;
+    z->locs_used = LOCS_STEP;   /* forces loc_room back to the first block */
+    z->loccur = NULL;
+    z->locnames_used = 0;
+    if (++z->gen == 0) {
+        /* The stamp has wrapped, so a slot left over from 256 scopes ago would
+         * read as belonging to this one. Once every 256 scopes, empty them
+         * properly. */
+        for (int b = 0; b < NLOCB; b++) {
+            z->locs[b].gen = 0;
+            z->locs[b].head = NULL;
+        }
+        z->gen = 1;
+    }
+
+    return true;
+}
+
+/* The entry for a local name in the current scope, made if there is not one.
+ *
+ * The bucket is empty unless its stamp is this scope's, whatever chain it
+ * still holds from an earlier one -- those nodes have been handed back to the
+ * allocator and may already be something else. */
+static sym* loc_intern(dz* z, const char* name, int len) {
+    /* A scope a global label opened has to have started before this, and this
+     * is the first moment it can matter: nothing but a local can tell the
+     * difference. Asked here rather than on every line of the source, where it
+     * cost 3.5% to answer a question only a line with an `@` on it can ask.
+     *
+     * On a later line than the label, though, and that is the whole point of
+     * the deferral -- `two: jp @l` reads its operand in the scope `two` is
+     * closing, not the one it opens, so the line the label was on is what has
+     * to be compared and not merely whether there was one. */
+    if (z->scope_line != 0 && z->scope_line != z->line) {
+        z->scope_line = 0;
+        if (!scope_end(z)) {
+            return NULL;
+        }
+    }
+
+    const int b = loc_bucket(name, len);
+    if (z->locs[b].gen == z->gen) {
+        for (sym* sp = z->locs[b].head; sp != NULL; sp = (sym*) sp->next) {
+            if (sp->len != (uint8_t) len) {
+                continue;
+            }
+            const char* t = &z->locnames[sp->nameoff];
+            const char* q = name;
+            const char* const qend = name + len;
+            while (q != qend && *t == *q) {
+                t++;
+                q++;
+            }
+            if (q == qend) {
+                return sp;
+            }
+        }
+    } else {
+        z->locs[b].gen = z->gen;
+        z->locs[b].head = NULL;
+    }
+
+    if (!loc_room(z, len)) {
+        z->err = "out of memory for labels";
+
+        return NULL;
+    }
+
+    const int off = z->locnames_used;
+    for (int i = 0; i < len; i++) {
+        z->locnames[off + i] = name[i];
+    }
+    z->locnames_used += len;
+
+    sym* sp = &z->loccur->nodes[z->locs_used++];
+    sp->nameoff = off;
+    sp->len = (uint8_t) len;
+    sp->defined = false;
+    sp->islocal = true;
+    sp->addr = 0;
+    sp->next = z->locs[b].head;
+    z->locs[b].head = sp;
 
     return sp;
 }
@@ -523,25 +837,57 @@ static bool sym_define(dz* z, const char* name, int len, int addr) {
     return true;
 }
 
+/* Defines a local in the current scope. Same shape as sym_define, against the
+ * other table. */
+static bool loc_define(dz* z, const char* name, int len, int addr) {
+    sym* sp = loc_intern(z, name, len);
+    if (sp == NULL) {
+        return false;
+    }
+    if (sp->defined) {
+        z->err = "label defined twice";
+
+        return false;
+    }
+    sp->defined = true;
+    sp->addr = addr;
+
+    return true;
+}
+
 /* Remembers a reference to a label that is not defined yet. The name is
  * copied for the same reason a definition's is: the line it came from is
  * gone by the time this is resolved. */
 static bool fix_add(dz* z, const sym* target, uint8_t width, int off,
                     int next_addr) {
-    if (z->fix_used == z->fix_cap) {
+    /* A reference to a local goes on the scope's own list, because the node it
+     * points at stops meaning this label the moment the scope ends. The flag
+     * is on the node rather than on the operand that carried it here: the
+     * operand is copied twice a line with an ldir and this is written once per
+     * distinct label. */
+    fixup** list = &z->fixups;
+    int* used = &z->fix_used;
+    int* cap = &z->fix_cap;
+    if (target->islocal) {
+        list = &z->lfixups;
+        used = &z->lfix_used;
+        cap = &z->lfix_cap;
+    }
+
+    if (*used == *cap) {
         Z_SITE("fixups");
-        const int want = z->fix_cap + FIX_STEP;
-        fixup* grown = (fixup*) realloc(z->fixups, (size_t) want * sizeof(fixup));
+        const int want = *cap + FIX_STEP;
+        fixup* grown = (fixup*) realloc(*list, (size_t) want * sizeof(fixup));
         if (grown == NULL) {
             z->err = "out of memory for labels";
 
             return false;
         }
-        z->fixups = grown;
-        z->fix_cap = want;
+        *list = grown;
+        *cap = want;
     }
 
-    fixup* f = &z->fixups[z->fix_used++];
+    fixup* f = &(*list)[(*used)++];
     f->target = target;
     f->width = width;
     f->off = off;
@@ -1231,6 +1577,12 @@ static void build_cclass(void) {
     cclass[(uint8_t) '_'] |= C_NUM;
     cclass[(uint8_t) '.'] |= C_NAME | C_NUM;
 
+    /* The at sign, which marks a local label. The reference allows it anywhere
+     * in a name -- `ab@cd:` is a global there -- and only a leading one makes
+     * a label local, so it is an ordinary name character here too and the
+     * leading position is what parse_operand and the definition path test. */
+    cclass[(uint8_t) '@'] |= C_NAME | C_NUM;
+
     /* A mnemonic runs over its suffix too, so the dot belongs to the same run
      * -- asking for it separately made the scan two tests per character. */
     for (int i = 0; i < 256; i++) {
@@ -1251,6 +1603,12 @@ static void build_cclass(void) {
     /* The dot is a name character but must not start one: `.5` is not a label
      * and a mnemonic suffix is scanned as part of the mnemonic. */
     cclass[(uint8_t) '.'] &= (uint8_t) ~C_ALPHA;
+
+    /* Nor may the at sign, and here that is a saving rather than a rule: an
+     * operand starting with one is a local label and cannot be a register, so
+     * leaving it out of C_ALPHA sends it straight to the path that reads a
+     * name and looks it up, past reg_of_text entirely. */
+    cclass[(uint8_t) '@'] &= (uint8_t) ~C_ALPHA;
     cclass[(uint8_t) '$'] |= C_NUM;
     cclass[(uint8_t) '#'] |= C_NUM;
     cclass[(uint8_t) '%'] |= C_NUM;
@@ -1666,7 +2024,41 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
          * apply to a run that starts with a digit and holds only digits. */
         int v = 0;
         bool got = false;
-        if (nn >= 3 && ns[0] == '0' && (ns[1] | 0x20) == 'x') {
+        if (ns[0] == '@') {
+            /* `@f` and `@n` are the next anonymous label, `@b` and `@p` the
+             * previous one -- reserved spellings in the reference, whatever a
+             * local of that name would mean, and a local really can be called
+             * `@b`: the reference accepts the definition and then leaves it
+             * unreachable. Refused rather than read as a local, which would
+             * resolve to the wrong address in a source that has both. */
+            if (nn == 2) {
+                const char k = (char) (ns[1] | 0x20);
+                if (k == 'f' || k == 'n' || k == 'b' || k == 'p') {
+                    z->err = "anonymous labels are not supported";
+
+                    return false;
+                }
+            }
+            /* A local label, and nothing else: no radix accepts a leading at
+             * sign, and the reference does not test a local against the number
+             * formats either. Going straight to the lookup also keeps `@abch`
+             * from being read as hexadecimal by the trailing-h rule below. */
+            const sym* sp = loc_intern(z, ns, nn);
+            if (sp == NULL) {
+                return false;
+            }
+            if (sp->defined) {
+                v = sp->addr;
+            } else if (neg) {
+                z->err = "a label cannot be negated";
+
+                return false;
+            } else {
+                op->fwd = sp;
+                v = 0;
+            }
+            got = true;
+        } else if (nn >= 3 && ns[0] == '0' && (ns[1] | 0x20) == 'x') {
             got = hex_digits(ns + 2, nn - 2, &v);
         } else if (nn >= 2 && (ns[nn - 1] | 0x20) == 'h') {
             /* A trailing h, which is the form the reference's own corpus
@@ -2180,13 +2572,39 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
      * The line may continue: `foo: ld a,b` is a definition and an instruction,
      * and so is `foo:` alone. */
     if (*p == ':') {
-        if (numeric_token(s, n)) {
-            z->err = "invalid label";
+        const int addr = DZ_ORG + (int) (z->o - z->out);
+        if (*s == '@') {
+            /* `@@` is the reference's anonymous label, not a local: it may be
+             * defined any number of times and is reached by `@f` and `@b`
+             * rather than by name. dzap has no such thing, and treating it as
+             * an ordinary local would accept the first one and then call the
+             * second a redefinition -- a wrong answer wearing a right-looking
+             * error. Refused by name instead. 171 of them in the Agon corpus,
+             * so this is a feature to add and not an oddity to ignore. */
+            if (n == 2 && s[1] == '@') {
+                z->err = "anonymous labels are not supported";
 
-            return false;
-        }
-        if (!sym_define(z, s, n, DZ_ORG + (int) (z->o - z->out))) {
-            return false;
+                return false;
+            }
+            /* A local. It is not tested against the number formats: the
+             * reference returns before that check for a local, so `@123:` and
+             * `@0ffh:` are labels there and have to be here. */
+            if (!loc_define(z, s, n, addr)) {
+                return false;
+            }
+        } else {
+            if (numeric_token(s, n)) {
+                z->err = "invalid label";
+
+                return false;
+            }
+            if (!sym_define(z, s, n, addr)) {
+                return false;
+            }
+            /* A global ends the scope before it starts a new one -- but not
+             * until this line is done with, because the rest of it still
+             * belongs to the scope being closed. */
+            z->scope_line = z->line;
         }
         p++;
         while (is_space_ch(*p)) {
@@ -2257,36 +2675,8 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
  * Little-endian, as everywhere else here. */
 static bool resolve_fixups(dz* z) {
     for (int i = 0; i < z->fix_used; i++) {
-        const fixup* f = &z->fixups[i];
-        const sym* sp = f->target;
-        if (!sp->defined) {
-            /* Reported against the line that used it, which is long gone; the
-             * fixup carries the number for exactly this. */
-            z->line = f->line;
-            z->err = "unknown label";
-
+        if (!patch_fixup(z, &z->fixups[i])) {
             return false;
-        }
-
-        uint8_t* at = z->out + f->off;
-        if (f->width == 0) {
-            const int d = sp->addr - f->next_addr;
-            if (d < -128 || d > 127) {
-                z->line = f->line;
-                z->err = "relative jump too far";
-
-                return false;
-            }
-            *at = (uint8_t) d;
-            continue;
-        }
-
-        at[0] = (uint8_t) sp->addr;
-        if (f->width > 1) {
-            at[1] = (uint8_t) (sp->addr >> 8);
-        }
-        if (f->width > 2) {
-            at[2] = (uint8_t) (sp->addr >> 16);
         }
     }
 
@@ -2405,6 +2795,14 @@ static bool run(dz* z, const char* path) {
         p = stop + 1;
     }
 
+    /* The last scope ends with the source, and settles the same way any other
+     * one does. Before the globals, because a local that was never defined
+     * should be reported against the line that used it rather than after a
+     * global's failure somewhere else. */
+    if (!scope_end(z)) {
+        return false;
+    }
+
     return resolve_fixups(z);
 }
 
@@ -2419,10 +2817,17 @@ static void dz_free(dz* z) {
     free(z->syms);
     free(z->names);
     free(z->fixups);
+    free(z->locnames);
+    free(z->lfixups);
     while (z->blocks != NULL) {
         symblock* next = z->blocks->next;
         free(z->blocks);
         z->blocks = next;
+    }
+    while (z->locfirst != NULL) {
+        locblock* next = z->locfirst->next;
+        free(z->locfirst);
+        z->locfirst = next;
     }
     br_destroy(&z->rd);
 }

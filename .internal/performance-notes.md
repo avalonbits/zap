@@ -1127,3 +1127,50 @@ isa_memory benchmark names every label in four characters. Sampling the token
 instead of bounding it survives the corpus and dies on isa_real, whose
 generated names share long stems: `sound_2_draw_loop` and `sound_9_draw_loop`
 agree on the first four characters and the last four. The shipped key stays.
+
+## Local labels (2026-09-06)
+
+`@name`, belonging to the global label above it. The reference keys one as the
+enclosing global name with the local appended -- `outer:` plus `@aa:` is a
+single entry spelled `outer@aa`, which its "Label already defined 'outer@aa'"
+message confirms -- and dzap reaches the same answers from a separate table
+that is emptied at the end of every scope.
+
+    isa_real   4.50s -> 4.62s   +2.7%   316 -> 325 cycles/byte
+    isa_even   4.64s -> 4.74s   +2.2%   326 -> 333
+    labels     4.86s -> 4.98s   +2.5%   342 -> 350
+    labels_local        6.08s           427     (only the new build assembles it)
+
+That is what the feature costs a source containing none of it. What it saves is
+memory, and the corpus says how much. Over the 103 harvested files that use
+local labels, the compound key would hold 14,925 bytes of names and 9,696 bytes
+of nodes, and the worst single file 2,343 bytes -- all of it live until the end
+of the program, because a global table never gives anything back. The separate
+table costs one block of 64 nodes, 768 bytes, and however long the program runs
+it stays 768 bytes: the widest scope in the entire corpus is 20 locals, the
+median 2.
+
+It buys error locality as well. An undefined local is discovered when its scope
+ends, which may be many lines later, but the pending reference carries the line
+that used it -- so `jp @gone` on line 3 is reported against line 3 even though
+nothing notices until line 6.
+
+### Agreement with the reference
+
+Byte-identical on a 262 KiB generated source with 971 scopes, 2,913 local
+definitions and 7,767 references, on the `locals.s` case file, and on 3,700
+randomly generated programs -- globals and locals, forward and backward
+references, in and out of scope, labels sharing a line with an instruction.
+Where both refuse a program they refuse the same ones.
+
+### Not implemented, and refused rather than misread
+
+`@@` with `@f`/`@n` and `@b`/`@p` -- the anonymous labels. `@@` may be defined
+any number of times and is reached by position rather than by name, so reading
+either as an ordinary local gives a wrong answer in a source that has both, and
+calling a second `@@` a redefinition would be an error that looks right for the
+wrong reason. The corpus has 171 definitions and 238 references, so this is a
+feature to add and not an oddity to ignore. Refusing them by name turned a
+silent divergence into an error immediately: the first version of the local
+benchmark generator used `@a`, `@b`, `@c`, and dzap assembled the whole file
+while the reference refused it.

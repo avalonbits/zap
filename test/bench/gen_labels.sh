@@ -3,6 +3,7 @@
 #
 #   test/bench/gen_labels.sh [bytes] > labels.s
 #   test/bench/gen_labels.sh [bytes] same > labels_same.s
+#   test/bench/gen_labels.sh [bytes] local > labels_local.s
 #
 # isa_even and isa_real contain no labels at all, so they say what labels cost
 # a source that does not use them -- the test on every line, and nothing else.
@@ -60,6 +61,55 @@ awk -v want="$BYTES" -v mode="$MODE" 'BEGIN {
     w = split("read|write|draw|move|scan|calc|emit|parse|check|reset|" \
               "flush|store|load|swap|clip|tile|sprite|sound|timer|port|" \
               "queue|stack|frame|pixel|glyph|board|piece|score|level|input", word, "|")
+
+    # The names avoid @b, @f, @n and @p. Those two-character spellings are the
+    # anonymous-label references of the reference assembler -- previous and
+    # next -- whatever a local of that name would mean, so a generator using
+    # @a/@b/@c produces a file the reference refuses. No apostrophes in here
+    # either: the whole program is inside a single-quoted shell string.
+    #
+    # `local` puts the same labels through the local table instead: a global
+    # every 32 lines opening a scope, three locals inside it, and the same
+    # eight references per 32 lines the varied mode has -- four forward and
+    # four backward, every one of them inside the scope it is written in,
+    # because a local reference cannot reach out of one.
+    #
+    # Same line count, same instruction mix, same label density. What differs
+    # is which table the labels land in, so the difference against the varied
+    # mode is what local labels cost and nothing else.
+    if (mode == "local") {
+        size = 0; i = 0; scope = 0
+        while (size < want) {
+            k = i % 32
+            if (k == 0)       { scope++; line = sprintf("g%04d:", scope) }
+            else if (k == 8)  line = "@aa:"
+            else if (k == 16) line = "@bb:"
+            else if (k == 24) line = "@cc:"
+            else if (k == 3)  line = "\tcall @aa"
+            else if (k == 5)  line = "\tcall @aa"
+            else if (k == 11) line = "\tjp @aa"
+            else if (k == 13) line = "\tcall @bb"
+            else if (k == 19) line = "\tjp @bb"
+            else if (k == 21) line = "\tcall @cc"
+            else if (k == 27) line = "\tjp @cc"
+            else if (k == 29) line = "\tjp @aa"
+            else              line = "\t" pool[(i % n) + 1]
+            print line
+            size += length(line) + 1
+            i++
+        }
+        # Whatever scope the file ended in must have its forward references
+        # landed on. Each local is emitted only if this scope had not reached
+        # the line that defines it; a second definition in one scope is an
+        # error, which is the point of being careful here.
+        k = i % 32
+        if (k > 0) {
+            if (k <= 8)  print "@aa:"
+            if (k <= 16) print "@bb:"
+            if (k <= 24) print "@cc:"
+        }
+        exit 0
+    }
 
     size = 0; i = 0; lbl = 0
     while (size < want) {

@@ -113,6 +113,23 @@ on which assembler a file targets, so all 25 programs count for that.
 and 227 labels, assembling to 30 KB -- comparable in output to rokky and
 independent of it. Everything larger in the corpus is ZDS.
 
-Still to do: confirm zap agrees byte for byte on the 32 that assemble -- expect
-failures, that is the point -- and then pin a subset so timings stay comparable
-across months.
+### The ZDS half is a separate problem, and a separate repository
+
+Supporting the ZDS dialect in zap would put a second syntax in the assembler
+for the whole of its life, to read files a converter can rewrite once. The
+converter lives in `~/code/zds2ez80` with its own briefing; what it needs is in
+there rather than here.
+
+Where it stands: the mechanical differences convert -- XREF, XDEF, SEGMENT and
+DEFINE dropped, colons added to labels and equates, macro headers rewritten --
+and BBC BASIC moves from failing on line 10 of its first include to failing on
+ZDS `$$` local labels, of which the corpus has 293. Two problems are open: those
+labels, and the fact that ez80asm has no linker, so a project must become one
+translation unit and the link order the `.zdsproj` records is not a valid
+include order.
+
+Only 6 of the 15 ZDS projects ship a `.zdsproj` at all.
+
+Still to do here: confirm zap agrees byte for byte on the 32 that assemble --
+expect failures, that is the point -- and then pin a subset so timings stay
+comparable across months.

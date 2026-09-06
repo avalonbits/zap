@@ -764,9 +764,16 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
                 /* A displacement is one signed byte by the time it is
                  * written, so it is accumulated in the machine's word rather
                  * than the evaluator's 32-bit one. */
+                /* The first digit is taken outside the loop, so a
+                 * one-digit displacement needs no multiply at all -- and
+                 * almost every displacement is one digit. `d * 10` is a call
+                 * to __imulu, because the eZ80's multiply is 8-bit and this is
+                 * an int; leaving it in the loop meant paying that call even
+                 * for `(ix+8)`, where the accumulator is still zero. */
                 int d = 0;
                 if (digit_ch(*ds)) {
-                    const char* q = ds;
+                    const char* q = ds + 1;
+                    d = *ds - '0';
                     while (q < p && digit_ch(*q)) {
                         d = d * 10 + (*q - '0');
                         q++;
@@ -868,25 +875,46 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
                 } u;
                 u.v = 0;
 
+                /* Three fixed steps rather than a loop with a running byte
+                 * index. A value is at most three bytes, so the loop could
+                 * only ever run three times, and it was paying for that: a
+                 * counter to increment, a bound to test against it, and an
+                 * indexed store into the union, which is address arithmetic
+                 * on every byte. Written out, each store is to a known
+                 * offset. */
                 int j = nn;
-                int bi = 0;
-                while (j > 2) {
-                    uint8_t byte = hexval[(uint8_t) ns[--j]];
+                if (j > 2) {
+                    uint8_t c = hexval[(uint8_t) ns[--j]];
                     if (j > 2) {
-                        byte = (uint8_t) (byte
-                                          | shl4[hexval[(uint8_t) ns[--j]]]);
+                        c = (uint8_t) (c | shl4[hexval[(uint8_t) ns[--j]]]);
                     }
-                    if (bi < 3) {
-                        u.b[bi++] = byte;
+                    u.b[0] = c;
+                }
+                if (j > 2) {
+                    uint8_t c = hexval[(uint8_t) ns[--j]];
+                    if (j > 2) {
+                        c = (uint8_t) (c | shl4[hexval[(uint8_t) ns[--j]]]);
                     }
+                    u.b[1] = c;
+                }
+                if (j > 2) {
+                    uint8_t c = hexval[(uint8_t) ns[--j]];
+                    if (j > 2) {
+                        c = (uint8_t) (c | shl4[hexval[(uint8_t) ns[--j]]]);
+                    }
+                    u.b[2] = c;
                 }
 
                 v = u.v;
                 got = true;
             }
         } else if (nn > 0 && digit_ch(ns[0])) {
-            int acc = 0;
-            int k = 0;
+            /* First digit outside the loop, for the reason given at the
+             * displacement above: a one-digit literal then needs no multiply,
+             * and `im 2`, `rst 0`, `bit 3` and the rest of the small decimals
+             * are exactly that. */
+            int acc = ns[0] - '0';
+            int k = 1;
             for (; k < nn; k++) {
                 if (!digit_ch(ns[k])) {
                     break;

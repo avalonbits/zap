@@ -600,16 +600,53 @@ static bool out_reserve(dz* z) {
  * folding the length into the bucket leaves one or two candidates rather than
  * five.
  */
+/* Marginal pricing of the table walks.
+ *
+ * Each DUP_ flag below writes one of the tables with every entry duplicated,
+ * so the walk over it does twice the work and the program does nothing else
+ * differently. A matching entry is still found at its first copy, so the
+ * output is byte-identical -- which is the check that the measurement is
+ * valid, and every bench run prints the md5 for it. The extra time is then
+ * that walk's cost, with no instrumentation in the code being measured.
+ *
+ * That last part is the point. The same thing attempted by calling a function
+ * twice from assemble_line measures something else: everything there is
+ * inlined into one 3,500-line function, so a second call makes the compiler
+ * outline it and the difference includes the outlining, paid on every line.
+ * That showed up as a fixed 0.49s offset on match_row before the slope did.
+ *
+ *   make EXTRA_CFLAGS=-DDUP_ROW      the register test in match_row
+ *   make EXTRA_CFLAGS=-DDUP_GROUP    the mode group walk
+ *   make EXTRA_CFLAGS=-DDUP_BUCKET   the mnemonic bucket chain
+ *
+ * Measured on isa_real, 4.70s: 3.4%, 0.4% and 6.4%. test/run.sh builds all
+ * three and checks the bytes are unchanged, because a flag that alters the
+ * output prices nothing.
+ */
+#ifdef DUP_ROW
+#define DUP_ROW_N 2
+#else
+#define DUP_ROW_N 1
+#endif
+
 #define NLETTER 27
 #define NLEN    8
 #define NBUCKET (NLETTER * NLEN)
 
+#ifdef DUP_ROW
+#define NROW 644
+#else
 #define NROW 322
+#endif
 
 /* Mode groups across the whole table. 114 mnemonics, no mnemonic having more
  * than seven, and the four that are not grouped at all contributing none.
  * build_tables says so if the table outgrows it. */
+#ifdef DUP_GROUP
+#define NGRP 340
+#else
 #define NGRP 170
+#endif
 
 typedef struct rowinfo rowinfo;
 
@@ -836,11 +873,35 @@ __attribute__((noinline)) static void build_tables(void) {
         insninfo* ins = &insntab[i];
         ins->name = name;
         ins->len = (uint8_t) k;
-        ins->count = isa_table[i].count;
+        ins->count = (uint8_t) (isa_table[i].count * DUP_ROW_N);
 
         const int b = bucket_of(name[0], k);
         ins->next = bucket_head[b].head;
         bucket_head[b].head = ins;
+
+#ifdef DUP_BUCKET
+        /* A decoy ahead of the real entry in the same bucket, sharing its
+         * first character and its length so the compare runs to the last
+         * character before failing. Doubles the chain walk; the real entry is
+         * still found, so the output does not change. */
+        {
+            static char decoy[512][8];
+            insninfo* dec = &insntab[256 + i];
+            for (int q = 0; q < k; q++) {
+                decoy[i][q] = name[q];
+            }
+            decoy[i][k - 1] = (char) (name[k - 1] == 'z' ? 'y' : 'z');
+            decoy[i][k] = 0;
+            dec->name = decoy[i];
+            dec->len = (uint8_t) k;
+            dec->count = 0;
+            dec->ngroups = 0;
+            dec->rows = NULL;
+            dec->groups = NULL;
+            dec->next = bucket_head[b].head;
+            bucket_head[b].head = dec;
+        }
+#endif
     }
 
     /* mnemonic_of compares n characters and does not check the length, which
@@ -893,6 +954,13 @@ __attribute__((noinline)) static void build_tables(void) {
             ri->bempty = (uint8_t) (row->regsetB == 0);
             ri->row = row;
             r++;
+#ifdef DUP_ROW
+            /* The same row again. A matching row is found at its first copy so
+             * the output is unchanged, while every row rejected on the way is
+             * tested twice. */
+            rowtab[r] = rowtab[r - 1];
+            r++;
+#endif
         }
 
         if (any_cc) {
@@ -930,6 +998,15 @@ __attribute__((noinline)) static void build_tables(void) {
                 grptab[g].rows = &rowtab[j];
             }
             g++;
+#ifdef DUP_GROUP
+            /* The same group again. A group is found at its first copy so the
+             * rows walked are unchanged, while every group rejected on the way
+             * is rejected twice. */
+            if (g < NGRP) {
+                grptab[g] = grptab[g - 1];
+            }
+            g++;
+#endif
             j = e;
         }
         insntab[i].ngroups = (uint8_t) (g - gbase);

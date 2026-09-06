@@ -51,6 +51,13 @@ Three verdicts:
 | **Rows sorted by mode, with a pointer to the next different one** | **−15.5%** on the row-heavy shape, **−5.0%** on the mix | **Portable.** zap's `match_row` walks the same rows in the same order and has the same 57-row `ld`. The one thing to carry across with it: the jump must hold a *pointer*, not a stride — `ri += skip` was 2.5% slower than no skip at all, because a variable stride times a struct size is a call to `__imulu`. |
 | Hex literals assembled a byte at a time, not `acc = (acc << 4) \| d` | **−2.6%** on six-digit immediates, neutral elsewhere | **Portable.** zap's `num_parse` accumulates the same way. Narrow: the compiler will not turn even `<< 8` into a byte move, so every hex digit was a call to `__ishl`, but that is a smaller share of a literal's cost than the shape timings suggested. |
 | First letter to bucket base as a table, replacing a multiply | **−2.0%** on pure, **−2.4%** on `nop` | **Conditional**, on the same thing as the length buckets themselves — zap's lexer is context-free and does not know a statement start is a mnemonic. The *technique* is portable and the multiply is the point: `letter * NLEN` is a call to `__imulu`, because MLT is 8-bit and this is an int. |
+| Immediate's low byte read as a byte, not masked off the int | **−0.4%** isa_real, −0.7% isa_even | **Portable.** zap folds the same three bits of the same immediate into an opcode. The lesson is narrower than the change: `x & 7` on an int is a call to `__iand` because the value arrives in `hl` and is masked where it sits, and **casting to `uint8_t` first does not help** -- the cast folds away, since masking three bits off the low byte and off the whole value give the same answer. The *load* has to be a byte load. |
+| One output cursor per instruction, not `out[pos++]` per byte | **−0.4%** isa_real, −0.4% isa_even | **Portable, and the other half of the reserve row above.** `pr_wbyte` reloads the base and the position, adds them, stores the byte and stores the position back, once per byte. The reservation is what makes a bare cursor safe: room for the longest form is already there, so nothing between taking the cursor and writing it back can move the buffer. |
+| **Second operand tested only if the first matched** | **−2.3%** isa_real, −2.1% isa_even | **Portable.** zap's `match_row` builds the same two 0/1 values and ANDs them, computing both before looking at either. Nothing there needs a 0/1 -- the question is whether the operand shares a bit with what the row accepts. Third application of the cheap-test-first row above, and the counts say why it is worth more than it looks: of 4.08 rows examined per instruction, 3.40 reach the register test and A alone rejects 2.00 of them. |
+| **A group index per mnemonic, replacing the skip pointer** | **−1.9%** isa_real, **−2.5%** isa_even | **Portable, and it supersedes the sorted-rows row above.** Rejecting a mode cost a whole turn of the row loop -- counter test, row pointer into `iy`, mode, ccok, skip, next -- twenty instructions to step over rows that could not match, and the rows that did match paid the mode test again on every one. The modes belong in a table of their own, five bytes a group; a row reached through its group carries no mode test at all. 114 mnemonics, 170 groups, none with more than seven. The four with condition-code rows (`call`, `jp`, `jr`, `ret`, ten rows between them) stay ungrouped and keep the per-row test, which is exactly what lets every other mnemonic drop it. |
+| ccok not tested on grouped rows | **−0.4%** isa_real, −0.4% isa_even | **Portable**, and it falls out of the row above: a mnemonic with a condition-code row anywhere in it has no groups, so every grouped row has the flag clear. |
+| One register plane read by index instead of three ANDed | **+6.2% — reverted** | Recorded so it is not re-invented, and it is the most convincing-looking loss so far. An operand's register mask is one-hot, so `(&ri->a0)[plane]` replaces three loads and three ANDs with one of each. It costs 6.2% because the variable index has to be added to the row pointer, which means the row pointer has to be in `hl` to take the `add`, which means it is not in `iy` -- so every other field of the row, and the row pointer itself on the way round the loop, goes through the frame. **Inside a loop over a structure, constant offsets from one index register beat a computed address even when the computed address replaces several constant ones.** Now in the optimization guide. |
+| Mode refined by register class (r8 / r16 / index / index halves / I,R,MB) | **simulated, not taken** | Recorded with its numbers so it need not be measured again. Simulated against the real walk with zero mismatches: full register tests fall 3.40 to 1.11 per instruction, but group rejections rise 0.68 to 5.75 and eat the gain. Refining only the B side is the best of the three variants -- 1.79 full, 2.22 rejections -- and is worth about 2% against the group table, which did not pay for a class table, a duplicated row and a per-instruction code computation. One row of 322 spans two classes (A = IX|IY, B = BC|DE|IX|IY), so any such scheme needs a row to be enterable from more than one class. |
 
 ## The frame-pointer cliff, and what zap has
 
@@ -128,6 +135,29 @@ never against a number from another day:
 The hex change is neutral on this file and worth −2.6% on six-digit
 immediates alone; it is in because it costs nothing elsewhere, not because it
 showed up here.
+
+**The p256 series stops there.** The default benchmark changed to the two
+256 KiB sources that hold the whole instruction set -- `isa_even`, every form
+evenly, and `isa_real`, every form but weighted by 10,440 instructions of BBC
+BASIC and Rokky -- because a forty-form file cannot show what row selection
+costs on a table with a 57-row `ld` in it. The rounds between were measured on
+those and not on p256, so there is no honest way to fill the gap in the series
+above; p256 was re-measured only at the ends of the row-selection round, 5.38s
+to 5.18s, 379 to 364 cycles per byte.
+
+    256 KiB of the whole instruction set          isa_real   isa_even
+      before the row-selection round               5.34s      5.70s
+      + immediate's low byte as a byte             5.32s      5.66s
+      + one output cursor per instruction          5.30s      5.64s
+      + B tested only if A matched                 5.18s      5.52s
+      + a group index per mnemonic                 5.08s      5.38s
+      + ccok dropped from grouped rows             5.06s      5.36s
+
+    isa_real  376 -> 356 cycles/byte, 47.9 -> 50.6 KiB/s
+    isa_even  401 -> 377 cycles/byte, 44.9 -> 47.8 KiB/s
+
+Output byte-identical to ez80asm at every step, on both sources and on every
+case file.
 
 On `ld (ix+8), a` alone, which scans 43 of ld's 57 rows and so shows row
 selection undiluted: 42.54s to 19.76s, **−53.6%**.

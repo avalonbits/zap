@@ -12,10 +12,17 @@
 # happened, and is written up in .internal/performance-notes.md.
 #
 # The forms come from dzap/test/cases/opcodes.s, which is the reference's own
-# opcode corpus filtered to what dzap assembles byte-identically, plus the call
-# forms that corpus happens not to contain. Deriving them from a file that is
-# already checked against ez80asm on every test run means these cannot drift
-# into containing something dzap gets wrong.
+# opcode corpus filtered to what *ez80asm* assembles -- see gen_opcodes.sh --
+# plus the call forms that corpus happens not to contain. Deriving them from a
+# file that is checked against ez80asm on every test run means these cannot
+# drift into containing something dzap gets wrong.
+#
+# That file used to be filtered through dzap instead, which meant these
+# benchmarks measured only the forms dzap already handled: 53 it did not were
+# absent, negative literals among them, so the branch that negates a value was
+# never once executed by either distribution. Regenerating after that was fixed
+# changed both files, and every timing taken before it is against different
+# input and not comparable.
 #
 # TWO DISTRIBUTIONS, because neither alone answers the question:
 #

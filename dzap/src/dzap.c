@@ -730,7 +730,7 @@ static const dop dop_none = {
  *
  * The two num_ch scans are the exception and keep theirs; see each. `e` stays
  * a parameter for them. */
-static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
+__attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
     *op = dop_none;
 
     const char* p = *pp;

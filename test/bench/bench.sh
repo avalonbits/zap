@@ -111,6 +111,31 @@ emu_running_here() {
     echo "$n"
 }
 
+# Does this capture show the guest failing?
+#
+# A run that fails does not end: the assembler returns non-zero, MOS abandons
+# autoexec.txt before reaching emulator_exit_success, and the emulator sits at
+# a prompt until the timeout. That is fifteen minutes of waiting for an answer
+# that arrived in the first thirty seconds, and it looks exactly like a slow
+# run, which is worse than looking like a failure.
+#
+# Matched against the whole capture rather than the tail, because MOS prints
+# its complaint and then keeps drawing a prompt.
+guest_failed() {
+    guest_error "$1" | grep -qa .
+}
+
+# What it said went wrong, for the operator. The banner is dropped before
+# matching: it carries the source's name, and a name can legitimately contain
+# what an error looks like -- "Assembling deadline 12: notes.s" is a clean run.
+guest_error() {
+    tr -d '\r' < "$1" 2>/dev/null \
+        | grep -va '^Assembling ' \
+        | grep -aE \
+            'line [0-9]+: |Error executing autoexec|Error accessing SD card|Cannot (open|write) |RST \$?38|guru meditation' \
+        | head -2
+}
+
 # Runs one assembler over one source and prints the seconds it reported.
 #
 # Returns the assembler's own figure, or nothing if it never printed one. A
@@ -148,12 +173,39 @@ run_one() {
     tail -f /dev/null > "$fifo" &
     local hold=$!
 
+    local cap="$WORK/cap.$tag"
+    : > "$cap"
     (cd "$EMU" && timeout 900 \
-        ./agon-cli-emulator --sdcard "$sd" -z < "$fifo" > "$WORK/cap.$tag" 2>&1)
+        ./agon-cli-emulator --sdcard "$sd" -z < "$fifo" > "$cap" 2>&1) &
+    local emu=$!
+
+    # Watches the console and ends the run the moment the guest says it
+    # failed, instead of leaving it to the timeout.
+    (
+        while kill -0 "$emu" 2>/dev/null; do
+            if guest_failed "$cap"; then
+                kill -9 "$emu" 2>/dev/null
+                break
+            fi
+            sleep 0.5
+        done
+    ) &
+    local watch=$!
+
+    wait "$emu" 2>/dev/null
+    kill "$watch" 2>/dev/null
+    wait "$watch" 2>/dev/null
 
     kill "$hold" 2>/dev/null
     wait "$hold" 2>/dev/null
     rm -f "$fifo"
+
+    if guest_failed "$cap"; then
+        echo "$tag: the guest failed --" >&2
+        guest_error "$cap" | sed 's/^/  /' >&2
+
+        return 0
+    fi
 
     # The first figure is the measured run; the flush assembly prints its own
     # afterwards, which is not what anyone asked for.

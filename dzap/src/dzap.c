@@ -564,6 +564,16 @@ static bool reg_of_text(const char* s, int n, dop* op, bool* is_cc,
  * in the source. */
 #define C_ALPHA 0x20
 
+/* The two characters that decide what kind of operand this is, so that one
+ * class load answers the question instead of four compares.
+ *
+ * C_OPEND is what ends an operand list -- a comma, a newline, or the start of
+ * a remark. C_LPAREN is the open paren that begins an indirect operand. With
+ * C_ALPHA these three are the whole of the decision, and they now come out of
+ * a single byte. */
+#define C_OPEND 0x40
+#define C_LPAREN 0x80
+
 static uint8_t cclass[256];
 
 /* Nibble value of a hex digit, 0xFF for anything else. Used both to test a
@@ -605,6 +615,10 @@ static void build_cclass(void) {
         }
     }
     cclass[(uint8_t) '.'] |= C_MNEM;
+    cclass[(uint8_t) ','] |= C_OPEND;
+    cclass[(uint8_t) '\n'] |= C_OPEND;
+    cclass[(uint8_t) ';'] |= C_OPEND;
+    cclass[(uint8_t) '('] |= C_LPAREN;
     for (int i = 0; i < 256; i++) {
         if ((cclass[i] & C_NAME) != 0 && (cclass[i] & C_DIGIT) == 0) {
             cclass[i] |= C_ALPHA;
@@ -661,26 +675,36 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
         p++;
     }
 
-    /* The newline ends the operand list, and so does a remark. Both are
-     * checked here rather than by bounding the scan at the end of the line,
-     * because finding that end meant a whole extra pass over the source. */
-    if (p >= e || *p == ',' || *p == '\n' || *p == ';') {
+    /* One class load decides what this operand is.
+     *
+     * It used to be four compares and then a load: three to ask whether the
+     * operand list had ended, one for the open paren, and only then a class
+     * lookup to ask whether a register starts here. All of that is one byte's
+     * worth of information about one character, so it is now read once.
+     *
+     * The end of the operand list is still checked here rather than by
+     * bounding the scan at the end of the line, because finding that end meant
+     * a whole extra pass over the source. */
+    uint8_t cl = p < e ? cclass[(uint8_t) *p] : C_OPEND;
+
+    if ((cl & C_OPEND) != 0) {
         *pp = p;
 
         return true;   /* nothing there */
     }
 
-    if (*p == '(') {
+    if ((cl & C_LPAREN) != 0) {
         op->indirect = true;
         op->mode |= INDIRECT;
         p++;
         while (p < e && is_space_ch(*p)) {
             p++;
         }
+        cl = p < e ? cclass[(uint8_t) *p] : C_OPEND;
     }
 
     /* A register or flag? */
-    if (p < e && alpha_ch(*p)) {
+    if ((cl & C_ALPHA) != 0) {
         const char* s = p;
         while (p < e && name_ch(*p)) {
             p++;

@@ -238,3 +238,74 @@ Recording these so they are not re-litigated:
   `db L` with a forward `equ` fails in zap without the prescan; `.DS 10, 0`.
 - `bin/zap.bin` is tracked in git and changes on every build. Decide whether it
   belongs there or in `.gitignore` with a release artifact instead.
+
+
+## Open threads, as of the register-operand round
+
+**The buf_reader sentinel is stashed, not abandoned.** A newline written one
+byte past the buffer's last valid byte lets every scan drop its bound: 16 loops
+and a dozen single tests, and `e` comes off both `parse_operand` and
+`assemble_line` entirely. It measured **-3.9% on `ld a, b`** before it broke.
+
+It fails on the Agon and passes everything on the host, including ASan at four
+different buffer sizes. What is known:
+
+- `sh_reg.s` assembles correctly with it; `p256.s` fails at line 2, which is
+  `ld a, 0x42`. `sh_reg.s` line 2 is `ld a, b`. That points at the literal
+  path, not at refilling.
+- The guest says `unexpected text after the instruction`, which comes from
+  `run()` finding `stop` somewhere other than the newline.
+- It is not disk, and the host reproduces nothing at BUF_KB of 1, 2, 4 or 16.
+
+That run has now been done, and it narrowed things a long way without settling
+them.
+
+**A four-line file fails at line 2.** So it is not refilling: the whole source
+is 41 bytes, one buffer, and line 2's scan ends on a real newline at offset 18,
+nowhere near the sentinel at 41. The sentinel is not even reached.
+
+**The same file assembles correctly on merged HEAD.** So the fault is in this
+change, not in anything already on main.
+
+**The class table is right on the target.** Printed from the guest:
+`cclass['2']` is 0x1E and `num_ch('2')` is 1, so the scan has no reason to stop
+where it does -- and the diagnostic says it stops at offset 17, the final `2`
+of `0x42`, having consumed `0x4` and left `2` as trailing text.
+
+**It fails at `-O1` as well as `-Oz`,** so it is not one optimisation level.
+
+**Adding a `printf` inside the literal path makes it pass** -- with the
+diagnostic in, the target produces `n=4 v=66` and the right bytes, identical to
+the host. That is the signature of a codegen or layout problem rather than a
+logic error, and it is why reading the C has not found it: the C is the same
+code that works on the host at four buffer sizes under ASan.
+
+Where to pick it up: the literal scan compiles to `.LBB3_144` and looks correct
+by hand, but the *other* `num_ch` loop in the same function -- the displacement
+scan at `.LBB3_18` -- pre-increments its pointer and then tests `(iy + 1)`,
+reading one character ahead of where it has advanced to. That is worth
+understanding before anything else, even though the failing instruction does
+not take that path.
+
+The honest position is that this is a heisenbug worth an hour with the
+disassembler and a hardware single-step, not another round of reading the
+source. It buys 3.9% on one shape. It is stashed, not lost.
+
+It also found one real bug on the way in, already fixed in the stash: writing
+the sentinel at `bsz_` clobbers the first character of the partial line the
+reader carries to the next buffer. That produced wrong output with no crash,
+ASan clean, and all 96 checks passing -- every case file is smaller than one
+16 KiB buffer, so none of them ever reached a refill. `dzap/test/cases/refill.s`
+(in the stash) places a line across each of the first three boundaries and
+catches it.
+
+**Where the remaining time is.** `ld a, b` at 4,436 cycles divides as: read and
+line loop 676, mnemonic scan 283, `mnemonic_of` 393, both `parse_operand` calls
+1,757, `match_row` 602, `emit_row` 725. `parse_operand` is 40% and is the
+obvious next target; the sentinel was an attempt at it.
+
+**Two things measured and deliberately left alone:** shrinking the `dop` struct
+(a copy is an `LDIR`, about 25 cycles, so there is nothing to win) and
+splitting `parse_operand` so the empty case skips its prologue (+2.0% -- the
+caller already assigns `dop_none` directly when there is no comma, so the
+early-out is rarer than it looks).

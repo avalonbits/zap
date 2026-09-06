@@ -77,4 +77,12 @@ cli_check "no timing on failure" \
 cli_check "failure is reported" \
     "$(printf '%s' "$bad" | grep -c 'line 1:')" 1
 
+# The benchmark rig's own failure detection. It needs no emulator, and it is
+# here because a rig that cannot tell a slow run from a dead one wastes far
+# more time than the tests it guards.
+echo "=== test_bench_rig ==="
+if ! test/bench/selftest.sh; then
+    status=1
+fi
+
 exit $status

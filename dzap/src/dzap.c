@@ -459,29 +459,44 @@ static const insninfo* mnemonic_of(const char* s, int n) {
 /* Recognised straight from the text, with the bit and the index the encoder
  * wants. zap reaches these through a token type and then a switch; there is no
  * token here to carry one. */
-static bool reg_of_text(const char* s, int n, uint24_t* bit, uint8_t* index,
-                        bool* is_cc, uint8_t* cc_index) {
+/* Writes the register's bytes straight into the operand.
+ *
+ * It used to hand back a 24-bit mask that the caller split into bytes. The
+ * split happens after the switch, where the value is no longer a constant, so
+ * `bit >> 16` compiled to a call to __ishru -- on every register operand in
+ * the source. Written inside each arm the shifts are constant expressions and
+ * fold away, and the operand is a pointer the caller already had. */
+#define SETREG(bits, idx)                        \
+    do {                                         \
+        op->r0 = (uint8_t) (bits);               \
+        op->r1 = (uint8_t) ((bits) >> 8);        \
+        op->r2 = (uint8_t) ((bits) >> 16);       \
+        op->reg_index = (idx);                   \
+    } while (0)
+
+static bool reg_of_text(const char* s, int n, dop* op, bool* is_cc,
+                        uint8_t* cc_index) {
     *is_cc = false;
     *cc_index = 0;
 
     const char a = (char) (s[0] | 0x20);
     if (n == 1) {
         switch (a) {
-            case 'a': *bit = R_A;  *index = 7; return true;
-            case 'b': *bit = R_B;  *index = 0; return true;
-            case 'c': *bit = R_C;  *index = 1;
+            case 'a': SETREG(R_A, 7); return true;
+            case 'b': SETREG(R_B, 0); return true;
+            case 'c': SETREG(R_C, 1);
                       /* Carry has no name of its own: it would collide with
                        * register C, so the instruction decides which it meant. */
                       *is_cc = true; *cc_index = 3; return true;
-            case 'd': *bit = R_D;  *index = 2; return true;
-            case 'e': *bit = R_E;  *index = 3; return true;
-            case 'h': *bit = R_H;  *index = 4; return true;
-            case 'l': *bit = R_L;  *index = 5; return true;
-            case 'i': *bit = R_I;  *index = 0; return true;
-            case 'r': *bit = R_R;  *index = 0; return true;
-            case 'z': *bit = R_NONE; *index = 0; *is_cc = true; *cc_index = 1; return true;
-            case 'p': *bit = R_NONE; *index = 0; *is_cc = true; *cc_index = 6; return true;
-            case 'm': *bit = R_NONE; *index = 0; *is_cc = true; *cc_index = 7; return true;
+            case 'd': SETREG(R_D, 2); return true;
+            case 'e': SETREG(R_E, 3); return true;
+            case 'h': SETREG(R_H, 4); return true;
+            case 'l': SETREG(R_L, 5); return true;
+            case 'i': SETREG(R_I, 0); return true;
+            case 'r': SETREG(R_R, 0); return true;
+            case 'z': SETREG(R_NONE, 0); *is_cc = true; *cc_index = 1; return true;
+            case 'p': SETREG(R_NONE, 0); *is_cc = true; *cc_index = 6; return true;
+            case 'm': SETREG(R_NONE, 0); *is_cc = true; *cc_index = 7; return true;
             default:  return false;
         }
     }
@@ -489,25 +504,25 @@ static bool reg_of_text(const char* s, int n, uint24_t* bit, uint8_t* index,
     if (n == 2) {
         const char b = (char) (s[1] | 0x20);
         switch (a) {
-            case 'a': if (b == 'f') { *bit = R_AF; *index = 3; return true; } return false;
-            case 'b': if (b == 'c') { *bit = R_BC; *index = 0; return true; } return false;
-            case 'd': if (b == 'e') { *bit = R_DE; *index = 1; return true; } return false;
-            case 'h': if (b == 'l') { *bit = R_HL; *index = 2; return true; } return false;
-            case 's': if (b == 'p') { *bit = R_SP; *index = 3; return true; } return false;
-            case 'm': if (b == 'b') { *bit = R_MB; *index = 0; return true; } return false;
+            case 'a': if (b == 'f') { SETREG(R_AF, 3); return true; } return false;
+            case 'b': if (b == 'c') { SETREG(R_BC, 0); return true; } return false;
+            case 'd': if (b == 'e') { SETREG(R_DE, 1); return true; } return false;
+            case 'h': if (b == 'l') { SETREG(R_HL, 2); return true; } return false;
+            case 's': if (b == 'p') { SETREG(R_SP, 3); return true; } return false;
+            case 'm': if (b == 'b') { SETREG(R_MB, 0); return true; } return false;
             case 'i':
-                if (b == 'x') { *bit = R_IX; *index = 2; return true; }
-                if (b == 'y') { *bit = R_IY; *index = 2; return true; }
+                if (b == 'x') { SETREG(R_IX, 2); return true; }
+                if (b == 'y') { SETREG(R_IY, 2); return true; }
 
                 return false;
             case 'n':
-                if (b == 'z') { *bit = R_NONE; *index = 0; *is_cc = true; *cc_index = 0; return true; }
-                if (b == 'c') { *bit = R_NONE; *index = 0; *is_cc = true; *cc_index = 2; return true; }
+                if (b == 'z') { SETREG(R_NONE, 0); *is_cc = true; *cc_index = 0; return true; }
+                if (b == 'c') { SETREG(R_NONE, 0); *is_cc = true; *cc_index = 2; return true; }
 
                 return false;
             case 'p':
-                if (b == 'o') { *bit = R_NONE; *index = 0; *is_cc = true; *cc_index = 4; return true; }
-                if (b == 'e') { *bit = R_NONE; *index = 0; *is_cc = true; *cc_index = 5; return true; }
+                if (b == 'o') { SETREG(R_NONE, 0); *is_cc = true; *cc_index = 4; return true; }
+                if (b == 'e') { SETREG(R_NONE, 0); *is_cc = true; *cc_index = 5; return true; }
 
                 return false;
             default: return false;
@@ -518,11 +533,11 @@ static bool reg_of_text(const char* s, int n, uint24_t* bit, uint8_t* index,
         const char b = (char) (s[1] | 0x20);
         const char c = (char) (s[2] | 0x20);
         if (b == 'x') {
-            if (c == 'h') { *bit = R_IXH; *index = 4; return true; }
-            if (c == 'l') { *bit = R_IXL; *index = 5; return true; }
+            if (c == 'h') { SETREG(R_IXH, 4); return true; }
+            if (c == 'l') { SETREG(R_IXL, 5); return true; }
         } else if (b == 'y') {
-            if (c == 'h') { *bit = R_IYH; *index = 4; return true; }
-            if (c == 'l') { *bit = R_IYL; *index = 5; return true; }
+            if (c == 'h') { SETREG(R_IYH, 4); return true; }
+            if (c == 'l') { SETREG(R_IYL, 5); return true; }
         }
     }
 
@@ -672,19 +687,13 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
         }
         const int n = (int) (p - s);
 
-        uint24_t bit = R_NONE;
-        uint8_t index = 0;
         bool is_cc = false;
         uint8_t cc_index = 0;
-        if (reg_of_text(s, n, &bit, &index, &is_cc, &cc_index)) {
-            op->r0 = (uint8_t) bit;
-            op->r1 = (uint8_t) (bit >> 8);
-            op->r2 = (uint8_t) (bit >> 16);
-            op->reg_index = index;
+        if (reg_of_text(s, n, op, &is_cc, &cc_index)) {
             if (is_cc) {
                 op->cc = true;
                 op->cc_index = cc_index;
-                if (bit == R_NONE) {
+                if ((op->r0 | op->r1 | op->r2) == 0) {
                     /* A flag written as one, which a row asks for with CC. */
                     op->mode |= CC;
                 }

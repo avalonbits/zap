@@ -350,11 +350,44 @@ instructions beyond `ldir`; none of `lea`, `pea`, `in0`, `out0`, `tst`. Its
 this change helps. Banking that against a 3.4% loss on the commonest real form
 is not a trade worth making on this evidence.
 
-**What to do first.** Build a timing benchmark from the 1,126-form corpus that
-`dzap/test/cases/opcodes.s` already holds for correctness, weighted like real
-source rather than uniformly, and re-run this. The change is a real improvement
-on four shapes out of six and may well be right; the benchmark is what cannot
-currently say so.
+**Built that benchmark, and it reversed the verdict.** `gen_isa.sh` produces
+two 256 KiB sources holding all 1,083 forms -- one giving every form equal
+weight, one weighted like the real programs in test/corpus. On both, the merge
+is *slower*:
+
+    isa_even   main 7.02s   merged 7.08s   +0.9%
+    isa_real   main 6.60s   merged 6.68s   +1.2%
+
+Three interleaved repeats of isa_real read 6.60 and 6.68 every time, so that is
+real. The 1.5% gain on p256 was the forty-form sample over-weighting the shapes
+the change helps. **Rejected outright**, not merely deferred.
+
+**Why the register shapes regress, and why the obvious fix is worse.** In the
+original, `op` is a parameter: loaded once into iy, every field store a cheap
+`(iy+n)`. Merged, `op` alternates between the two operands and becomes
+loop-carried -- `ld iy, (ix + 9)` falls from 49 sites to 19 and address
+arithmetic rises from 55 to 61. The register path does the most field stores of
+any path, which is exactly why it is the one that slows down.
+
+Parsing into a fixed local and copying out once should undo that, and it does
+undo the *symptom*: `lea` sites fall back to 57. It is catastrophic anyway.
+
+    isa_real   main 6.60s   merge+tmp 8.00s   +21%
+    isa_even   main 7.02s   merge+tmp 8.68s   +24%
+    ld a, b    main 6.98s   merge+tmp 9.70s   +39%
+
+Two struct copies per instruction should be about 50 cycles by the earlier LDIR
+measurement, and this costs thirty times that, so the copies are not what is
+expensive -- something about the shape defeats the compiler more broadly. Not
+worth chasing further: the entry stage resists this whole line of attack, and
+three variants have now been measured against it.
+
+**Where that leaves the entry stage.** Its ~430 cycles are real and are the
+largest single piece of `parse_operand`, but they are not recoverable by
+restructuring the call. Anything that removes the call changes what the
+compiler inlines and how the operand pointer is addressed, and every version
+tried has paid more for that than the call cost. A different angle is needed --
+not another arrangement of the same two calls.
 
 A methodological note worth keeping: **pricing a call by adding one does not
 predict what removing one saves.** The 430 cycles were real and reproducible on

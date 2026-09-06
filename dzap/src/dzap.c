@@ -125,11 +125,32 @@ typedef struct _dop {
     int imm;
 } dop;
 
+/* Room for the longest instruction, asked for once.
+ *
+ * Testing on every byte written meant a bounds check per output byte when an
+ * instruction knows in advance that it cannot need more than a handful. The
+ * longest form here is two prefixes, an opcode, two displacements and two
+ * three-byte immediates. */
+#define OUT_MAX_INSN 12
+
 typedef struct _dz {
     buf_reader rd;
 
-    uint8_t* out;
-    int pos;
+    /* The output, as three pointers rather than a base and two offsets.
+     *
+     * `pos` was an int, so reserving room was `pos + 12 > cap` -- a signed
+     * comparison, which the compiler cannot do in one subtract: it emitted
+     * eleven instructions and a `call pe, __setflag` to fix the flags up on
+     * overflow, once per instruction assembled. Against a limit held as a
+     * pointer it is a load and an unsigned subtract, and the limit only moves
+     * when the buffer does.
+     *
+     * It pays a second time at both ends of the emitter, which took its cursor
+     * as `out + pos` and put it back as `o - out`. Held as a cursor there is
+     * nothing to add and nothing to subtract. */
+    uint8_t* out;   /* the buffer, for realloc and for writing it out */
+    uint8_t* o;     /* the next byte to write */
+    uint8_t* lim;   /* the last address at which a whole instruction still fits */
     int cap;
 
     int line;
@@ -144,28 +165,25 @@ static bool out_grow(dz* z) {
     if (grown == NULL) {
         return false;
     }
+
+    /* realloc is allowed to move the buffer, so the cursor and the limit are
+     * both relative to a base that may no longer be there. */
+    z->o = grown + (z->o - z->out);
     z->out = grown;
     z->cap = want;
+    z->lim = grown + want - OUT_MAX_INSN;
 
     return true;
 }
 
-/* Room for the longest instruction, asked for once.
- *
- * Testing on every byte written meant a bounds check per output byte when an
- * instruction knows in advance that it cannot need more than a handful. The
- * longest form here is two prefixes, an opcode, two displacements and two
- * three-byte immediates. */
-#define OUT_MAX_INSN 12
-
-static bool out_reserve(dz* z, int n) {
-    while (z->pos + n > z->cap) {
-        if (!out_grow(z)) {
-            return false;
-        }
+/* One `if`, not a loop: OUT_STEP is 32 KB and an instruction is at most 12
+ * bytes, so one growth always leaves room. */
+static bool out_reserve(dz* z) {
+    if (z->o <= z->lim) {
+        return true;
     }
 
-    return true;
+    return out_grow(z);
 }
 
 /* ------------------------------------------------------------- mnemonics */
@@ -1170,7 +1188,7 @@ _Static_assert((R_IXL | R_IYL)
                    == (((uint32_t) RP2_XYL << 16) | ((uint32_t) RP1_XYL << 8)),
                "IXL/IYL planes");
 
-static inline uint8_t ddfd_prefix(const dop* op) {
+__attribute__((always_inline)) static inline uint8_t ddfd_prefix(const dop* op) {
     if ((op->r1 & RP1_IX) != 0) {
         return 0xDD;
     }
@@ -1272,7 +1290,7 @@ static uint8_t* emit_imm(uint8_t* o, const dop* op, uint8_t cond) {
 }
 
 __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row* row, dop* a, dop* b) {
-    if (!out_reserve(z, OUT_MAX_INSN)) {
+    if (!out_reserve(z)) {
         return false;
     }
 
@@ -1283,7 +1301,7 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
      * reservation above is what makes a bare cursor safe: room for the
      * longest form is already there, so nothing between here and the
      * write-back can move the buffer. */
-    uint8_t* o = z->out + z->pos;
+    uint8_t* o = z->o;
 
     emitted out;
     out.prefix1 = 0;
@@ -1359,7 +1377,7 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
         }
     }
 
-    z->pos = (int) (o - z->out);
+    z->o = o;
 
     return true;
 }
@@ -1452,7 +1470,8 @@ static bool run(dz* z, const char* path) {
 
         return false;
     }
-    z->pos = 0;
+    z->o = z->out;
+    z->lim = z->out + z->cap - OUT_MAX_INSN;
     z->line = 0;
 
     /* The cursor is a pointer, not an offset into the buffer.
@@ -1553,12 +1572,13 @@ int main(int argc, char* argv[]) {
 
         return 1;
     }
-    if (z.pos > 0) {
-        mos_fwrite(fh, (char*) z.out, (uint24_t) z.pos);
+    const int written = (int) (z.o - z.out);
+    if (written > 0) {
+        mos_fwrite(fh, (char*) z.out, (uint24_t) written);
     }
     mos_fclose(fh);
 
-    printf("Wrote %s, %d bytes\r\n", argv[2], z.pos);
+    printf("Wrote %s, %d bytes\r\n", argv[2], written);
 
     const uint24_t cs = elapsed_cs(begin, end);
     printf("Done in %u.%02u seconds\r\n", (unsigned) (cs / 100),

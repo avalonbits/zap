@@ -520,3 +520,50 @@ in the hot path is out of line any more. `assemble_line`'s frame is **94 bytes**
 against the 128 that `ix`'s signed displacement allows -- that is the budget,
 and it is the number to re-read before adding anything to the function or to
 `dop`.
+
+## emit_row, and two prices for the same stage
+
+The staged decomposition put `emit_row` at 1.12s, 944 cycles an instruction and
+the largest stage in the program. Pricing it a second way says 0.54s: build one
+that emits twice, rewinding the cursor in between, and take the delta against
+the real build. Output stays byte-identical, which is the check that the rewind
+is honest.
+
+    staged (s4 -> s5)       1.12s   944 cycles/ins   25.7%
+    marginal (emit twice)   0.54s   455 cycles/ins   12.4%
+
+Both are true and they answer different questions. The staged number is
+everything that appears when the stage is added, including the frame growing
+from 82 to 94 bytes and the register allocation of the whole function changing.
+The marginal number is what one more execution costs when the pointers are
+already in registers and the reserve already has room -- a floor, because it
+does not pay for anything the two executions share.
+
+**The real cost is between them, and nearer the lower one.** Which matters,
+because it reorders what to do next: `emit_row` is not the biggest stage. The
+operand parse at 1.06s and `mnemonic_of` at 0.84s both are, and neither has a
+gap between the two ways of measuring, because neither changed the frame.
+
+**Use the marginal method to rank, the staged method to account.** The staged
+numbers sum to the total and the marginal ones do not, which is exactly the
+trade.
+
+### What this round took out of it
+
+* `ddfd_prefix` was `static inline` and the compiler said no -- at -Oz the hint
+  loses to size. Two real calls with frames, for the 42% of instructions whose
+  row allows an index register. Forcing it inline: **3.1% and 2.9%**, the best
+  single line of the round, for 278 bytes.
+* The output held as pointers rather than a base and two offsets: 0.5%. The
+  reserve was `pos + 12 > cap` on two signed ints, which is eleven instructions
+  and a `call pe, __setflag` to fix the flags up on overflow; against a pointer
+  limit it is seven and no call.
+
+### What is not worth doing to it
+
+A fast path for instructions that need no prefix, no displacement, no transform
+and no immediate. Counted: **13.6% of isa_real and 3.8% of isa_even**. The test
+would run on the other 86% and 96%.
+
+`transform` is not the exception either -- it runs for 64% of isa_real and 75%
+of isa_even, so the `!= TR_NONE` test before it is buying less than it looks.

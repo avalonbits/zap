@@ -875,17 +875,34 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
                 } u;
                 u.v = 0;
 
+                /* Three fixed steps rather than a loop with a running byte
+                 * index. A value is at most three bytes, so the loop could
+                 * only ever run three times, and it was paying for that: a
+                 * counter to increment, a bound to test against it, and an
+                 * indexed store into the union, which is address arithmetic
+                 * on every byte. Written out, each store is to a known
+                 * offset. */
                 int j = nn;
-                int bi = 0;
-                while (j > 2) {
-                    uint8_t byte = hexval[(uint8_t) ns[--j]];
+                if (j > 2) {
+                    uint8_t c = hexval[(uint8_t) ns[--j]];
                     if (j > 2) {
-                        byte = (uint8_t) (byte
-                                          | shl4[hexval[(uint8_t) ns[--j]]]);
+                        c = (uint8_t) (c | shl4[hexval[(uint8_t) ns[--j]]]);
                     }
-                    if (bi < 3) {
-                        u.b[bi++] = byte;
+                    u.b[0] = c;
+                }
+                if (j > 2) {
+                    uint8_t c = hexval[(uint8_t) ns[--j]];
+                    if (j > 2) {
+                        c = (uint8_t) (c | shl4[hexval[(uint8_t) ns[--j]]]);
                     }
+                    u.b[1] = c;
+                }
+                if (j > 2) {
+                    uint8_t c = hexval[(uint8_t) ns[--j]];
+                    if (j > 2) {
+                        c = (uint8_t) (c | shl4[hexval[(uint8_t) ns[--j]]]);
+                    }
+                    u.b[2] = c;
                 }
 
                 v = u.v;

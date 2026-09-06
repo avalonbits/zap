@@ -1271,7 +1271,7 @@ static uint8_t* emit_imm(uint8_t* o, const dop* op, uint8_t cond) {
     return o;
 }
 
-__attribute__((noinline)) static bool emit_row(dz* z, const isa_row* row, dop* a, dop* b) {
+__attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row* row, dop* a, dop* b) {
     if (!out_reserve(z, OUT_MAX_INSN)) {
         return false;
     }

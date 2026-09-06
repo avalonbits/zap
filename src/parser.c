@@ -988,11 +988,41 @@ static const char* parse_include(parser* p) {
         return pr_msg(p, "includes nested too deeply");
     }
 
+    /* Into a local first, because finishing the line below can pop the
+     * include stack, and `names[p->inc_depth_]` would then be a different
+     * slot. Written that way it re-opened the file already being read, which
+     * is an include of itself and fills the output buffer. */
+    char name[256];
     int sz = 0;
-    const char* err = read_string(p, names[p->inc_depth_], 256, &sz);
+    const char* err = read_string(p, name, sizeof(name), &sz);
     if (err != NULL) {
         return err;
     }
+
+    /* Finish the including line before the lexer moves.
+     *
+     * The end-of-line check in the parse loop runs after this returns, by
+     * which time p->lex_ is the included file -- so it would read that file's
+     * first token and reject it. On a line ending in a newline the token is
+     * already in hand and the check never reads anything, which is why this
+     * only ever went wrong on an include on the last line of a file with no
+     * trailing newline. One of those is in the corpus, and it took the whole
+     * of ZINC out.
+     *
+     * The token is left as a newline because the including line is over,
+     * whether it ended with one or with the file. */
+    if (p->tk_.tk_ != NEW_LINE) {
+        next(p);
+        if (p->tk_.tk_ != NEW_LINE && p->tk_.tk_ != NONE) {
+            return pr_msg(p, "expected a new line.");
+        }
+    }
+    p->tk_.tk_ = NEW_LINE;
+
+    if (p->inc_depth_ == (int) (sizeof(p->inc_) / sizeof(p->inc_[0]))) {
+        return pr_msg(p, "includes nested too deeply");
+    }
+    memcpy(names[p->inc_depth_], name, sizeof(name));
 
     p->inc_[p->inc_depth_] = p->lex_;
     /* An include shares the enclosing scope; a macro expansion does not. */

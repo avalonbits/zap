@@ -73,6 +73,12 @@ cli_check "no timing on failure" "$(printf '%s' "$bad" | grep -c '^Done in ')" 0
 # a different one.
 cli_check "no two mnemonics share a bucket" \
     "$(printf '%s' "$out" | grep -c 'share a bucket')" 0
+
+# The mode groups are held in a fixed table, sized to the table that exists. An
+# overflow would silently drop the groups that did not fit and every mnemonic
+# after it would stop matching anything, so build_tables says so instead.
+cli_check "the mode groups fit their table" \
+    "$(printf '%s' "$out" | grep -c 'mode groups')" 0
 cli_check "failure is reported"  "$(printf '%s' "$bad" | grep -c 'line 1:')" 1
 
 # The reference itself, on everything in test/cases. Unit tests pin the cases a

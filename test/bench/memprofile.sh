@@ -41,7 +41,7 @@ cp dzap/bin/dzap.bin "$WORK/dzap.bin"
 
 SRCS=("$@")
 if [ "${#SRCS[@]}" -eq 0 ]; then
-    for m in even real degenerate; do
+    for m in even real degenerate memory; do
         ./test/bench/gen_isa.sh "$m" 262144 > "$WORK/isa_$m.s"
         SRCS+=("$WORK/isa_$m.s")
     done

@@ -622,6 +622,37 @@ int main(void) {
 #endif
     }
 
+    /* A label cannot be spelled like a literal.
+     *
+     * The reference refuses `a00h:`, `ffh:`, `e5h:`, `ah:` and `1010b:` --
+     * numbers with a radix suffix -- while accepting `beef:`, `zzh:`, `h:`
+     * and `a0h_x:`, none of which are numbers. dzap accepted every one of
+     * them, which is the direction that produces plausible bytes rather than
+     * an error: `ffh:` defined a label the reference would have refused, and
+     * a later `ld a, ffh` then meant different things in the two assemblers.
+     *
+     * Found by a benchmark generator that produced `a00h` by accident, which
+     * is the only reason it was found at all -- no test reached it. */
+    check("a label spelled as trailing-h hex", emit("a00h:\n  nop\n"), "ERR");
+    check("a short trailing-h label", emit("ah:\n  nop\n"), "ERR");
+    check("a trailing-h label with a leading zero", emit("0ffh:\n  nop\n"), "ERR");
+    check("a label spelled as binary", emit("1010b:\n  nop\n"), "ERR");
+    check("a label spelled as 0x hex", emit("0x10:\n  nop\n"), "ERR");
+    check("a label spelled as decimal", emit("123:\n  nop\n"), "ERR");
+
+    /* And the ones that only look like literals. Hex digits without a suffix
+     * are a name; a suffix on something that is not a digit run is a name;
+     * one letter is a name even when it is `h`. */
+    check("hex digits with no suffix are a label",
+          emit("beef:\n  jp beef\n"), "C3 00 00 04");
+    check("a trailing h on non-hex is a label",
+          emit("zzh:\n  jp zzh\n"), "C3 00 00 04");
+    /* Defined but not referenced: `h` is the register H, and `jp h` is
+     * refused by both for that reason rather than this one. */
+    check("a single h is a label", emit("h:\n  nop\n"), "00");
+    check("a suffix in the middle is a label",
+          emit("a0h_x:\n  jp a0h_x\n"), "C3 00 00 04");
+
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);
     }

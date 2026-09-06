@@ -1973,6 +1973,39 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
  * anyway: it is not a space, not a name character and not part of a number, so
  * every loop stops on it. The caller is told where parsing ended and steps
  * over the newline from there. */
+/* Whether a token would be read as a number rather than as a name.
+ *
+ * A label cannot be spelled like a literal: the reference refuses `a00h:`,
+ * `ffh:`, `e5h:`, `ah:` and `1010b:` -- all of which are numbers with a radix
+ * suffix -- while accepting `beef:`, `zzh:`, `h:` and `a0h_x:`, none of which
+ * are. dzap accepted every one of them, which is a divergence in the direction
+ * that produces plausible bytes rather than an error: `ffh: nop` defined a
+ * label the reference would have refused, and any later `ld a, ffh` then meant
+ * something different in the two assemblers.
+ *
+ * Found by a benchmark generator that produced `a00h` by accident.
+ *
+ * The same tests the operand parser uses, in the same order, so the two cannot
+ * disagree about what a number is. */
+static bool numeric_token(const char* s, int n) {
+    int v = 0;
+    if (n >= 3 && s[0] == '0' && (s[1] | 0x20) == 'x') {
+        return hex_digits(s + 2, n - 2, &v);
+    }
+    if (n >= 2 && (s[n - 1] | 0x20) == 'h') {
+        return hex_digits(s, n - 1, &v);
+    }
+    if (digit_ch(s[0])) {
+        /* Decimal, binary, or something the general parser refuses -- either
+         * way it began as a number and is not a name. */
+        return true;
+    }
+
+    value gv = 0;
+
+    return num_parse(s, n, &gv);
+}
+
 __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const char* e, const char** stop) {
     /* Bounded, and it has to be.
      *
@@ -2018,6 +2051,11 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
      * The line may continue: `foo: ld a,b` is a definition and an instruction,
      * and so is `foo:` alone. */
     if (*p == ':') {
+        if (numeric_token(s, n)) {
+            z->err = "invalid label";
+
+            return false;
+        }
         if (!sym_define(z, s, n, DZ_ORG + (int) (z->o - z->out))) {
             return false;
         }

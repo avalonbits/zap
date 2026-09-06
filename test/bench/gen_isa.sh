@@ -28,11 +28,15 @@
 #         them -- while still containing every form at least once. Says what
 #         the assembler costs on the kind of source people actually feed it.
 #
-# NOT INCLUDED: jr and djnz. dzap emits a zero displacement for both instead of
-# the PC-relative offset, so it disagrees with the reference and cannot be
-# timed against it. They are 10.3% of real instructions, which makes the `real`
-# weighting below optimistic by roughly that much; fixing the relative jumps and
-# regenerating is the right order.
+# NOT INCLUDED: jr and djnz, though not for want of correctness -- dzap now
+# assembles both byte-identically to the reference. A relative displacement
+# reaches 127 bytes forward and 128 back, and without labels there is no way to
+# write a target that stays in reach as the output grows past that in the first
+# hundred bytes of a 256 KiB file. They are covered by
+# dzap/test/cases/relative.s instead, which stays short for the same reason.
+#
+# They are 10.3% of real instructions, so the `real` weighting is optimistic by
+# about that much.
 #
 # Deterministic: no randomness, no dependence on the environment. Changing this
 # script invalidates every timing taken with it.

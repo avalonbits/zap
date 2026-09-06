@@ -79,11 +79,21 @@ source_bytes() {
 # rokky is a smaller real program with a different shape. synth is generated:
 # straight instructions, no labels, no macros, no includes, so it isolates
 # lexing and encoding from everything else.
-SETS="bbcbasic rokky synth"
+SETS="bbcbasic rokky synth isa_even isa_real"
 
 stage_bbcbasic() { cp -r test/corpus/Z_PRG_Agon-bbc-basic-v/tests/* "$1/"; echo bbcbasicvez.s; }
 stage_rokky()    { cp -r test/corpus/Z_PRG_Agon-Rokky/tests/*     "$1/"; echo rokky.s; }
 stage_synth()    { test/bench/gen_synth.sh > "$1/synth.s";              echo synth.s; }
+
+# The two that contain the whole instruction set. See gen_isa.sh: synth and the
+# pure file cycle a few dozen hand-picked forms, which reach 31 of the ISA's 114
+# mnemonics, so a change that helps what they happen to contain and hurts what
+# they do not still reads as an improvement. That is not hypothetical -- an
+# operand-parsing change measured 1.5% faster on the forty-form file and 0.9%
+# and 1.2% *slower* on these two, which is why they are in the default set
+# rather than something to remember to run.
+stage_isa_even() { test/bench/gen_isa.sh even > "$1/isa_even.s";        echo isa_even.s; }
+stage_isa_real() { test/bench/gen_isa.sh real > "$1/isa_real.s";        echo isa_real.s; }
 
 # Two emulators sharing one sdcard directory mutate the filesystem under each
 # other. That produced an RST $38 guru meditation once that looked exactly like

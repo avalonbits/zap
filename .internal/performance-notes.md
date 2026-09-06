@@ -1198,3 +1198,34 @@ Only the exact two-character spellings are reserved: `@ff` and `@bb` are
 ordinary locals. A local really may be called `@f` -- the reference accepts the
 definition and then leaves it unreachable, because `@f` in an operand is the
 anonymous one -- and dzap does the same.
+
+## Where the time goes now (2026-09-06, after the label features)
+
+isa_real, 22,457 lines, 28.3% of them a label line. Priced with the flags in
+dzap.c, every one checked to leave the output identical. Taken on the 4.94s
+build, before the one-pass key:
+
+    mnemonic bucket chain        +0.30s   6.1%
+    the symbol key itself        +0.30s   6.1%   -> roughly halved since
+    global symbol chain walk     +0.22s   4.5%
+    row register test            +0.16s   3.2%   (the ceiling, retired)
+    sym_intern, reference path   +0.16s   3.2%
+    loc_intern, whole            +0.08s   1.6%
+    numeric_token                +0.04s   0.8%
+    mode group walk              +0.02s   0.4%
+
+The key was the biggest single item and is now about half what it was. What is
+left at the top is **the mnemonic bucket chain at 6.1%**, and it has resisted
+two attempts:
+
+  - walking it with pointers instead of subscripts, which helped `sym_at` and
+    did nothing here -- 19 instructions against 18, because the problem is not
+    the indexing but that `assemble_line` is 3,500 lines long and has no
+    registers to spare, so both pointers live in the frame;
+  - taking the last character out of the compare loop, which removes an
+    iteration from every mnemonic on paper and measured as nothing.
+
+Outlining `mnemonic_of` gives the loop its own registers -- the same thing that
+made `pearson8` fast -- but it adds a `call __ishl` per lookup for the bucket
+subscript, which is 22,457 of them. That is the shape of the next attempt if
+there is one: outline it *and* remove the shift, or neither.

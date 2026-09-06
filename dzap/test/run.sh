@@ -147,15 +147,16 @@ else
     done
 fi
 
-# The marginal-pricing flags in dzap.c, which duplicate a table so the walk
-# over it does twice the work. Each one is only a measurement if the program
+# The marginal-pricing flags in dzap.c. The first three duplicate a table so
+# the walk over it does twice the work; the rest duplicate a call to a function
+# that is already out of line, so nothing is outlined by the measurement. Each one is only a measurement if the program
 # still assembles the same bytes -- a flag that changed the output would price
 # something other than the walk, and would do it invisibly, since the number it
 # produced would still look like a number. Built and compared here against the
 # same corpus the reference comparison uses, which is the largest input the
 # host tests have.
 echo "=== test_pricing_flags ==="
-for flag in DUP_ROW DUP_GROUP DUP_BUCKET; do
+for flag in DUP_ROW DUP_GROUP DUP_BUCKET DUP_HASH DUP_SYMCHAIN DUP_INTERN DUP_LOCINTERN DUP_NUMTOK; do
     if ! cc "${CFLAGS[@]}" "-D$flag" -o "$OUT/dzap_$flag" src/dzap.c "${SRCS[@]}" \
          2>"$OUT/$flag.log"; then
         echo "FAIL  -D$flag does not build"

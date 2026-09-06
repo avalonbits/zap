@@ -657,6 +657,15 @@ static bool reg_of_text(const char* s, int n, dop* op, bool* is_cc,
         }
     }
 
+    /* af', which the table holds as plain R_AF -- the row for `ex af, af'` is
+     * R_AF on both sides, so the apostrophe distinguishes nothing here and
+     * only has to be accepted. */
+    if (n == 3 && a == 'a' && (s[1] | 0x20) == 'f' && s[2] == '\'') {
+        SETREG(R_AF, 3);
+
+        return true;
+    }
+
     if (n == 3 && a == 'i') {
         const char b = (char) (s[1] | 0x20);
         const char c = (char) (s[2] | 0x20);
@@ -795,6 +804,102 @@ static const dop dop_none = {
     0, 0, 0, 1, 0, false, 0, NOREQ, false, false, 0, false, 0
 };
 
+/* A run of hexadecimal digits, assembled into a value.
+ *
+ * Assembled from the end, a byte at a time, rather than accumulated as
+ * `acc = (acc << 4) | digit`.
+ *
+ * There is no barrel shifter, and the compiler will not turn a left shift into
+ * a byte move even at a byte boundary: `<< 4` and `<< 8` are both
+ * `ld c, n; call __ishl`, a loop over the bits. That cost about 445 cycles per
+ * hex digit, which is why `ld hl, 0x123456` timed 2.9s slower than
+ * `ld a, 0x42` over thirty thousand lines.
+ *
+ * Working backwards, two digits make a byte with one table lookup for the high
+ * nibble, and the bytes go straight into the value's own storage. Nothing here
+ * shifts anything wider than a nibble.
+ *
+ * Three fixed steps rather than a loop with a running byte index. A value is
+ * at most three bytes, so the loop could only ever run three times, and it was
+ * paying for that: a counter to increment, a bound to test against it, and an
+ * indexed store into the union, which is address arithmetic on every byte.
+ *
+ * The digits are checked here too, rather than in a pass of their own. Each
+ * used to be looked up twice -- once by a loop asking whether the run was hex,
+ * and again here -- and that pass cost 811 cycles of this parse's 2,163, and
+ * 393 even for `ld a, 0x42`, where there are two digits. Most of it was the
+ * loop, not the work.
+ *
+ * hexval gives 0xFF for anything that is not a hex digit and a real nibble is
+ * 0x0F or less, so OR-ing the nibbles together and testing the high half at
+ * the end says whether any was rejected, with no branch per digit.
+ *
+ * Little-endian, which the eZ80 is and the host is. The emitter already writes
+ * the low byte first for the same reason. Digits past the third byte are
+ * dropped, which is what the old accumulator did too once it overflowed.
+ *
+ * Taking the run rather than the whole token is what lets `0x1234` and
+ * `1234h` share this. They used to be different code: the prefixed form came
+ * here and the suffixed form fell through to num_parse, which on the honest
+ * corpus is 46% of every immediate in isa_real. */
+static inline bool hex_digits(const char* d, int n, int* out) {
+    union {
+        int v;
+        uint8_t b[sizeof(int)];
+    } u;
+    u.v = 0;
+
+    uint8_t bad = 0;
+    int j = n;
+
+    if (j > 0) {
+        uint8_t c = hexval[(uint8_t) d[--j]];
+        bad |= c;
+        if (j > 0) {
+            const uint8_t hi = hexval[(uint8_t) d[--j]];
+            bad |= hi;
+            /* Masked: an invalid digit reaches this before `bad` is tested,
+             * and shl4 holds sixteen entries. */
+            c = (uint8_t) (c | shl4[hi & 15]);
+        }
+        u.b[0] = c;
+    }
+    if (j > 0) {
+        uint8_t c = hexval[(uint8_t) d[--j]];
+        bad |= c;
+        if (j > 0) {
+            const uint8_t hi = hexval[(uint8_t) d[--j]];
+            bad |= hi;
+            c = (uint8_t) (c | shl4[hi & 15]);
+        }
+        u.b[1] = c;
+    }
+    if (j > 0) {
+        uint8_t c = hexval[(uint8_t) d[--j]];
+        bad |= c;
+        if (j > 0) {
+            const uint8_t hi = hexval[(uint8_t) d[--j]];
+            bad |= hi;
+            c = (uint8_t) (c | shl4[hi & 15]);
+        }
+        u.b[2] = c;
+    }
+
+    /* Digits past the third byte are dropped from the value but must still be
+     * rejected if they are not hex, or a literal the reference refuses would
+     * assemble here. Only a literal of more than six digits reaches this. */
+    while (j > 0) {
+        bad |= hexval[(uint8_t) d[--j]];
+    }
+
+    if ((bad & 0xF0) != 0) {
+        return false;
+    }
+    *out = u.v;
+
+    return true;
+}
+
 /* Scans here are mostly unbounded, and safe because the reader keeps a newline
  * one byte past the last valid one.
  *
@@ -848,6 +953,12 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
         while (name_ch(*p)) {
             p++;
         }
+        /* The shadow accumulator is a register whose name ends in a character
+         * no other token may contain, so it is taken here rather than given a
+         * class of its own. */
+        if (*p == '\'') {
+            p++;
+        }
         const int n = (int) (p - s);
 
         bool is_cc = false;
@@ -866,7 +977,13 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
             while (is_space_ch(*p)) {
                 p++;
             }
-            if (op->indirect && (*p == '+' || *p == '-')) {
+            /* Not only inside parentheses. `lea bc, ix+5` and `pea ix+5`
+             * take a displacement on a bare register -- their rows ask for
+             * NOREQ with F_DISPA or F_DISPB, not INDIRECT -- and requiring
+             * the parenthesis here is why twelve forms of the reference's own
+             * corpus did not assemble. Row selection rejects the combinations
+             * that are not real, so nothing else has to. */
+            if (*p == '+' || *p == '-') {
                 const bool neg = *p == '-';
                 p++;
                 while (is_space_ch(*p)) {
@@ -940,10 +1057,20 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
             return true;
         }
 
-        /* Not a register, and there are no names here to be anything else. */
-        z->err = "unknown operand";
-
-        return false;
+        /* Not a register -- but it can still be a literal.
+         *
+         * A hexadecimal constant written with a trailing h begins with one of
+         * a..f, so `ld hl, aabbcch` arrives here looking exactly like a name.
+         * num_parse has always known the suffix forms; the operand simply
+         * never reached it, and this said "unknown operand" instead. Forty
+         * forms of the reference's own corpus were wrong for as long as that
+         * was true, and the corpus could not say so because it was filtered
+         * through dzap.
+         *
+         * Rewinding is all it takes: num_ch admits letters, so the literal
+         * scan below reads the whole token, and the closing paren of an
+         * indirect operand is handled there too. */
+        p = s;
     }
 
     /* A literal. */
@@ -973,100 +1100,14 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
         int v = 0;
         bool got = false;
         if (nn >= 3 && ns[0] == '0' && (ns[1] | 0x20) == 'x') {
-            {
-                /* Assembled from the end, a byte at a time, rather than
-                 * accumulated as `acc = (acc << 4) | digit`.
-                 *
-                 * There is no barrel shifter, and the compiler will not turn a
-                 * left shift into a byte move even at a byte boundary: `<< 4`
-                 * and `<< 8` are both `ld c, n; call __ishl`, a loop over the
-                 * bits. That cost about 445 cycles per hex digit, which is why
-                 * `ld hl, 0x123456` timed 2.9s slower than `ld a, 0x42` over
-                 * thirty thousand lines.
-                 *
-                 * Working backwards, two digits make a byte with one table
-                 * lookup for the high nibble, and the bytes go straight into
-                 * the value's own storage. Nothing here shifts anything wider
-                 * than a nibble.
-                 *
-                 * Little-endian, which the eZ80 is and the host is. The
-                 * emitter already writes the low byte first for the same
-                 * reason. Digits past the third byte are dropped, which is
-                 * what the old accumulator did too once it overflowed. */
-                union {
-                    int v;
-                    uint8_t b[sizeof(int)];
-                } u;
-                u.v = 0;
-
-                /* Three fixed steps rather than a loop with a running byte
-                 * index. A value is at most three bytes, so the loop could
-                 * only ever run three times, and it was paying for that: a
-                 * counter to increment, a bound to test against it, and an
-                 * indexed store into the union, which is address arithmetic
-                 * on every byte.
-                 *
-                 * The digits are checked here too, rather than in a pass of
-                 * their own. Each used to be looked up twice -- once by a loop
-                 * asking whether the run was hex, and again here -- and that
-                 * pass cost 811 cycles of this parse's 2,163, and 393 even for
-                 * `ld a, 0x42`, where there are two digits. Most of it was the
-                 * loop, not the work.
-                 *
-                 * hexval gives 0xFF for anything that is not a hex digit and a
-                 * real nibble is 0x0F or less, so OR-ing the nibbles together
-                 * and testing the high half at the end says whether any was
-                 * rejected, with no branch per digit. */
-                uint8_t bad = 0;
-                int j = nn;
-
-                if (j > 2) {
-                    uint8_t c = hexval[(uint8_t) ns[--j]];
-                    bad |= c;
-                    if (j > 2) {
-                        const uint8_t hi = hexval[(uint8_t) ns[--j]];
-                        bad |= hi;
-                        /* Masked: an invalid digit reaches this before `bad`
-                         * is tested, and shl4 holds sixteen entries. */
-                        c = (uint8_t) (c | shl4[hi & 15]);
-                    }
-                    u.b[0] = c;
-                }
-                if (j > 2) {
-                    uint8_t c = hexval[(uint8_t) ns[--j]];
-                    bad |= c;
-                    if (j > 2) {
-                        const uint8_t hi = hexval[(uint8_t) ns[--j]];
-                        bad |= hi;
-                        c = (uint8_t) (c | shl4[hi & 15]);
-                    }
-                    u.b[1] = c;
-                }
-                if (j > 2) {
-                    uint8_t c = hexval[(uint8_t) ns[--j]];
-                    bad |= c;
-                    if (j > 2) {
-                        const uint8_t hi = hexval[(uint8_t) ns[--j]];
-                        bad |= hi;
-                        c = (uint8_t) (c | shl4[hi & 15]);
-                    }
-                    u.b[2] = c;
-                }
-
-                /* Digits past the third byte are dropped from the value but
-                 * must still be rejected if they are not hex, or a literal the
-                 * reference refuses would assemble here. Only a literal of
-                 * more than six digits reaches this. */
-                while (j > 2) {
-                    bad |= hexval[(uint8_t) ns[--j]];
-                }
-
-                if ((bad & 0xF0) == 0) {
-                    v = u.v;
-                    got = true;
-                }
-            }
-        } else if (nn > 0 && digit_ch(ns[0])) {
+            got = hex_digits(ns + 2, nn - 2, &v);
+        } else if (nn >= 2 && (ns[nn - 1] | 0x20) == 'h') {
+            /* A trailing h, which is the form the reference's own corpus
+             * writes: `aabbcch`, and `0ffh`. It begins with a letter as often
+             * as not, so it arrives here only because the register path
+             * rewinds to it. */
+            got = hex_digits(ns, nn - 1, &v);
+                } else if (nn > 0 && digit_ch(ns[0])) {
             /* First digit outside the loop, for the reason given at the
              * displacement above: a one-digit literal then needs no multiply,
              * and `im 2`, `rst 0`, `bit 3` and the rest of the small decimals
@@ -1561,23 +1602,32 @@ static bool run(dz* z, const char* path) {
             return false;
         }
 
-            /* Whatever ended the line is here or a step away: parsing stops at the
-         * newline, and anything else between is trailing space or a remark. */
-        while (is_space_ch(*stop)) {
-            stop++;
-        }
-        if (*stop == ';') {
-            /* A remark after the instruction. Its body is never looked at --
-             * the search for the newline below walks it once and that is all
-             * a comment ever costs. */
-            while (*stop != '\n') {
+            /* Whatever ended the line is here or a step away: parsing stops at
+         * the newline, and anything else between is trailing space or a
+         * remark.
+         *
+         * Asked for the newline first, because that is the answer nearly
+         * every time and the loop below is expensive to *enter*, never mind
+         * to run. The compiler rotates it so the pointer is stored to the
+         * frame and shuffled through two register moves on the way to reading
+         * one byte -- sixteen instructions to discover there is no trailing
+         * space, on every line of the source. One compare replaces them. */
+        if (*stop != '\n') {
+            while (is_space_ch(*stop)) {
                 stop++;
             }
-        }
-        if (*stop != '\n') {
-            z->err = "unexpected text after the instruction";
+            if (*stop == ';') {
+                /* A remark after the instruction. Its body is never looked at
+                 * -- the search for the newline below walks it once and that
+                 * is all a comment ever costs. */
+                while (*stop != '\n') {
+                    stop++;
+                }
+            } else if (*stop != '\n') {
+                z->err = "unexpected text after the instruction";
 
-            return false;
+                return false;
+            }
         }
         /* A line that was only a remark stops at the semicolon, so the rest
          * of it is walked here. This is the whole cost of a comment: one pass
@@ -1586,7 +1636,12 @@ static bool run(dz* z, const char* path) {
          * other case, and the comment skip before it ends on one too.
          * The loop that used to search for it from here could never
          * take a step. */
-        p = (stop < end) ? stop + 1 : end;
+        /* No bound on the step. The line always ends on a newline that is
+         * inside the buffer, or on the sentinel one past it, so stop + 1 is
+         * at worst one past the end -- and the refill above tests `p >= end`,
+         * which that satisfies just as `end` did. The compare it replaces was
+         * a 24-bit one, on every line. */
+        p = stop + 1;
     }
 
     return true;

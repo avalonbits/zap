@@ -213,6 +213,67 @@ int main(void) {
         { "jr 0x04007F", "18 7D" },
         { "jr 0x03FF82", "18 80" },
 
+        /* A hexadecimal literal written with a trailing h begins with a
+         * letter, so the operand parser saw a name and said "unknown
+         * operand". num_parse had always understood the suffix; nothing ever
+         * reached it. Forty forms of the reference's own corpus were wrong for
+         * as long as that was true. */
+        { "ld hl, aabbcch", "21 CC BB AA" },
+        { "ld a, (aabbh)", "3A BB AA 00" },
+        { "ld a, 0ffh", "3E FF" },
+
+        /* lea and pea take a displacement on a bare register: their rows ask
+         * for NOREQ with F_DISPA or F_DISPB, not INDIRECT, and the parser
+         * looked for a displacement only inside parentheses. */
+        { "lea bc, ix+5", "ED 02 05" },
+        { "lea iy, ix+5", "ED 55 05" },
+        { "pea ix+5", "ED 65 05" },
+        { "pea iy-3", "ED 66 FD" },
+
+        /* The shadow accumulator, which the table holds as plain R_AF -- the
+         * row is R_AF on both sides, so the apostrophe only has to be
+         * accepted. */
+        { "ex af, af'", "08" },
+
+        /* Negative literals, which reach the emitter through a branch that
+         * negates the value. The reference corpus has exactly one negative
+         * displacement and no negative immediate at all. */
+        { "ld hl, -1", "21 FF FF FF" },
+        { "ld a, -128", "3E 80" },
+        { "ld a, (ix-128)", "DD 7E 80" },
+
+        /* Every radix syntax the reference accepts, checked against it
+         * rather than taken from a manual. Hexadecimal is 0x, a trailing h,
+         * $ or #; binary is 0b, a trailing b, or %; decimal is plain. Only
+         * 0x and the trailing h have fast paths -- the rest reach num_parse,
+         * and these are what say the two still agree. */
+        { "ld a, 42h", "3E 42" },
+        { "ld a, 42H", "3E 42" },
+        { "ld a, $42", "3E 42" },
+        { "ld a, #42", "3E 42" },
+        { "ld hl, $123456", "21 56 34 12" },
+        { "ld a, 1010b", "3E 0A" },
+        { "ld a, 1010B", "3E 0A" },
+        { "ld a, 11111111b", "3E FF" },
+        { "ld a, 0b1010", "3E 0A" },
+        { "ld a, %1010", "3E 0A" },
+        { "ld a, 0h", "3E 00" },
+        { "ld a, 0b", "3E 00" },
+        { "ld a, 777", "3E 09" },
+
+        /* A leading zero is decimal, not octal. 010 is ten and not eight,
+         * 0100 is a hundred and not sixty-four, and 08 and 09 assemble --
+         * which octal would refuse. Checked against ez80asm; this is the
+         * assumption most likely to be imported from C by whoever adds a
+         * radix next. */
+        { "ld a, 010", "3E 0A" },
+        { "ld a, 0100", "3E 64" },
+        { "ld a, 017", "3E 11" },
+        { "ld a, 08", "3E 08" },
+        { "ld a, 09", "3E 09" },
+        { "ld a, 00", "3E 00" },
+        { "ld a, 0011", "3E 0B" },
+
         { "im 2", "ED 5E" },
         { "rst 0x18", "DF" },
         { "out (0xFE), a", "D3 FE" },
@@ -233,6 +294,28 @@ int main(void) {
         "ld i, b",
         "frobnicate",
         "ld a, b, c",
+
+        /* There is no octal, and no radix letter leads. Every one of these
+         * looks like a literal somebody would expect to work and the
+         * reference refuses all of them, so accepting one would be a
+         * disagreement that emits plausible bytes. */
+        "ld a, 777o",
+        "ld a, 777q",
+        "ld a, 0o777",
+        "ld a, 0q777",
+        "ld a, b1010",
+        "ld a, o777",
+        "ld a, q777",
+        "ld a, h42",
+        "ld a, 0h42",
+        "ld a, @777",
+        "ld a, &42",
+        "ld a, 0d66",
+
+        /* A digit outside the radix its suffix names. */
+        "ld a, 8b",
+        "ld a, 9b",
+        "ld a, 1010y",
     };
     for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         check_insn(bad[i], "ERR");
@@ -271,6 +354,21 @@ int main(void) {
     check("too far forward", emit("  jr 0x040082\n"), "ERR");
     check("too far back", emit("  jr 0x03FF7F\n"), "ERR");
 
+    /* What comes after the instruction, which the line loop decides.
+     *
+     * It asks for the newline first and only then looks for trailing space or
+     * a remark, because the newline is the answer nearly every time. All four
+     * shapes of tail go through that branch, and the reference refuses the
+     * two with text in them. Removing the "unexpected text" report failed no
+     * check at all before these: a trailing token errors either way, just
+     * later and with a different message, so nothing pinned which. */
+    check("trailing text is refused", emit("  nop x\n"), "ERR");
+    check("trailing text after operands is refused",
+          emit("  ld a, b junk\n"), "ERR");
+    check("trailing space alone", emit("  ld a, b \t\n"), "78");
+    check("trailing space then a remark", emit("  nop   \t ; remark\n"), "00");
+    check("remark with no space before it", emit("  nop; remark\n"), "00");
+
     /* Several lines, so the output accumulates in order. */
     check("three lines", emit("  nop\n  ld a, 0x42\n  ret\n"), "00 3E 42 C9");
 
@@ -297,6 +395,46 @@ int main(void) {
           emit("  mmmmmmmmmmm\n"), "ERR");
     check("a long token cannot index past the bucket table",
           emit("  _________\n"), "ERR");
+
+    /* The hexadecimal fast path, driven directly.
+     *
+     * It has a correct fallback: hex_digits rejects anything that is not a
+     * digit run, and num_parse then produces the right answer more slowly. So
+     * disabling the fast path entirely, or handing it the wrong slice of the
+     * token, changes no output and no check above can see it -- verified, all
+     * three fail zero. What the encodings do catch is a fast path that
+     * produces a *wrong* value: swapping two of the bytes fails 40 of them.
+     *
+     * These call it directly so that the path being taken at all is asserted
+     * somewhere, rather than left to the benchmark to notice.
+     *
+     * `0x1234` and `1234h` reach it as the same digit run, which is the point
+     * of it taking a run rather than a token. */
+    {
+        int v = 0;
+        char got[80];
+        const bool a = hex_digits("42", 2, &v);
+        const int v42 = v;
+        const bool b = hex_digits("123456", 6, &v);
+        const int v123456 = v;
+        const bool c = hex_digits("aabbcc", 6, &v);
+        const int vaabbcc = v;
+        v = 0x5A5A5A;
+        const bool d = hex_digits("12z4", 4, &v);   /* not hex: rejected */
+        snprintf(got, sizeof(got), "%d %06X %d %06X %d %06X %d %06X",
+                 a, v42, b, v123456, c, vaabbcc, d, v);
+        check("hex_digits assembles a run and rejects a bad one", got,
+              "1 000042 1 123456 1 AABBCC 0 5A5A5A");
+
+        /* Seven digits: the value keeps the low three bytes and the rest are
+         * dropped, but a bad digit among them still has to be rejected. */
+        const bool e = hex_digits("1234567", 7, &v);
+        const int v7 = v;
+        const bool f = hex_digits("z234567", 7, &v);
+        snprintf(got, sizeof(got), "%d %06X %d", e, v7, f);
+        check("hex_digits drops digits past three bytes but still checks them",
+              got, "1 234567 0");
+    }
 
     /* Growing the output buffer.
      *

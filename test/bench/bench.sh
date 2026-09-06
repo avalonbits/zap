@@ -92,6 +92,12 @@ stage_synth()    { test/bench/gen_synth.sh > "$1/synth.s";              echo syn
 # operand-parsing change measured 1.5% faster on the forty-form file and 0.9%
 # and 1.2% *slower* on these two, which is why they are in the default set
 # rather than something to remember to run.
+#
+# BOTH NOW CONTAIN LOCAL LABELS, WHICH zap DOES NOT HAVE. It fails on them, so
+# these two rows measure ez80asm alone until zap grows the feature. That is a
+# deliberate consequence of dzap being where the work is: the sources exist to
+# say what dzap costs, and holding them back to what zap can read would have
+# made them measure the wrong assembler. The rest of the set is unaffected.
 stage_isa_even() { test/bench/gen_isa.sh even > "$1/isa_even.s";        echo isa_even.s; }
 stage_isa_real() { test/bench/gen_isa.sh real > "$1/isa_real.s";        echo isa_real.s; }
 

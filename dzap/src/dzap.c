@@ -422,6 +422,12 @@ __attribute__((noinline)) static void build_tables(void) {
         const char* name = isa_table[i].name;
         int k = 0;
         while (name[k] != 0) {
+            /* same_ci folds the source and not the name, so a capital here
+             * would make that mnemonic unmatchable and nothing else would say
+             * why. The CLI test looks for this line. */
+            if (name[k] >= 'A' && name[k] <= 'Z') {
+                printf("isa table: %s is not lower case\r\n", name);
+            }
             k++;
         }
 
@@ -536,9 +542,18 @@ __attribute__((noinline)) static void build_tables(void) {
     }
 }
 
-static inline bool same_ci(const char* a, const char* b, int n) {
-    for (int i = 0; i < n; i++) {
-        if (((a[i] | 0x20)) != ((b[i] | 0x20))) {
+/* Two things this does not do, because the bucket already did them.
+ *
+ * It starts at 1. The bucket is chosen by letter_base[first], which maps 'a'
+ * and 'A' to the same base, so every candidate in the chain already agrees
+ * with the source on its first character -- comparing it again was a fifth of
+ * the characters compared, at 4.15 per lookup over isa_real.
+ *
+ * And it folds one side, not two. Every name in the table is lower case,
+ * checked when the table is built, so only the source needs the OR. */
+static inline bool same_ci(const char* name, const char* s, int n) {
+    for (int i = 1; i < n; i++) {
+        if (name[i] != (s[i] | 0x20)) {
             return false;
         }
     }

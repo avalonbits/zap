@@ -79,6 +79,11 @@ cli_check "no two mnemonics share a bucket" \
 # after it would stop matching anything, so build_tables says so instead.
 cli_check "the mode groups fit their table" \
     "$(printf '%s' "$out" | grep -c 'mode groups')" 0
+
+# same_ci case-folds the source and not the table, so a capital in a mnemonic
+# would make that one instruction unmatchable and nothing else would say why.
+cli_check "every mnemonic in the table is lower case" \
+    "$(printf '%s' "$out" | grep -c 'not lower case')" 0
 cli_check "failure is reported"  "$(printf '%s' "$bad" | grep -c 'line 1:')" 1
 
 # The reference itself, on everything in test/cases. Unit tests pin the cases a

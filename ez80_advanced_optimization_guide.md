@@ -205,6 +205,18 @@ work). Readings are deterministic to the centisecond.
 * **24-bit AND is a call.** `AND` is an 8-bit instruction, so `regset & reg` on
   a `uint24_t` compiles to `call __iand`, and indexing an array of them costs
   `r * 3`, a `call __imulu`. Part of the row-record figure above.
+* **A stored pointer beats a computed one -- but not a materialised one.**
+  Handing out a pointer that already exists in a data structure removes the
+  multiply a subscript needs, and was worth 20.5% on one lookup. Returning
+  pointers to many *distinct compile-time* objects is the opposite: with
+  twenty-eight of them in switch arms the compiler hoisted their addresses into
+  the frame prologue, and the change lost 0.4% despite also removing a call to
+  `__ishru`. The question to ask is where the pointer comes from, not whether
+  it is a pointer.
+* **The emulator is deterministic to about 0.25%.** Three interleaved repeats
+  of two binaries gave 8.24/8.26/8.24 against 8.28/8.28/8.28. Do not claim a
+  change under half a percent from a single run, and do not dismiss a
+  consistent 0.4% as noise.
 
 ### Contradicted by measurement
 * **"Data-driven beats branching" is too simple.** Replacing a chain of ~8

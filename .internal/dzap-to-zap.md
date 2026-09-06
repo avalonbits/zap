@@ -41,6 +41,7 @@ Three verdicts:
 | Instructions looked up by pointer rather than by index | **−20.5%** on `nop`, **−13.0%** on the mix | **Portable, and the second largest win measured.** Every use of an index is a subscript, and a subscript is the index times a struct size, which is a call to `__imulu`. zap's `enc_instruction` takes the same index and pays the same multiplies. |
 | `transform` call skipped when the type is TR_NONE | **−5.4%** on `nop`, −2.5% on the mix | **Portable.** A load and a compare instead of a call, a dispatch and a return, on the commonest case. |
 | Operand parser split so the empty case skips the big prologue | **+2.0% — reverted** | Recorded so it is not re-invented. The premise was wrong: `assemble_line` already assigns `dop_none` directly when there is no comma, so the empty path is only reached by genuinely operandless instructions. The extra call lands on every other line. |
+| `reg_of_text` returning a prebuilt descriptor instead of four out-parameters | **+0.4% — reverted** | Recorded because it looks like the change that won 20.5% on the instruction lookup, and is not. There the pointer came out of a data structure and replaced a multiply. Here the pointers are twenty-eight compile-time constants in switch arms, and the compiler hoists two of the addresses into the frame prologue — `ld de, _rd_a; ld (ix-17), de` — paid on every operand, including ones that never reach a register. The frame grew 31 bytes to 33. It does remove a call to `__ishru`, and still loses. |
 | **Rows sorted by mode, with a pointer to the next different one** | **−15.5%** on the row-heavy shape, **−5.0%** on the mix | **Portable.** zap's `match_row` walks the same rows in the same order and has the same 57-row `ld`. The one thing to carry across with it: the jump must hold a *pointer*, not a stride — `ri += skip` was 2.5% slower than no skip at all, because a variable stride times a struct size is a call to `__imulu`. |
 | Hex literals assembled a byte at a time, not `acc = (acc << 4) \| d` | **−2.6%** on six-digit immediates, neutral elsewhere | **Portable.** zap's `num_parse` accumulates the same way. Narrow: the compiler will not turn even `<< 8` into a byte move, so every hex digit was a call to `__ishl`, but that is a smaller share of a literal's cost than the shape timings suggested. |
 | First letter to bucket base as a table, replacing a multiply | **−2.0%** on pure, **−2.4%** on `nop` | **Conditional**, on the same thing as the length buckets themselves — zap's lexer is context-free and does not know a statement start is a mnemonic. The *technique* is portable and the multiply is the point: `letter * NLEN` is a call to `__imulu`, because MLT is 8-bit and this is an int. |
@@ -157,6 +158,40 @@ After indexing the rows by mode:
 **585 cycles per byte.** The spread between the cheapest and dearest
 instruction is down from 2.5× to 2.2×, and what is left of it is immediate
 width and output length rather than row selection.
+
+## What each shape costs now
+
+| instruction | operands | cyc/insn | over the floor | rows |
+|---|---|---|---|---|
+| `nop` | none | 3,428 | — | 1 |
+| `ld a, b` | reg, reg | 5,063 | +1,634 | 5 |
+| `ld a, 0x42` | reg, imm8 | 6,218 | +2,789 | 2 |
+| `bit 3, (iy+4)` | imm, (iy+d) | 7,299 | +3,871 | 2 |
+| `ld hl, 0x123456` | reg, imm24 | 7,447 | +4,018 | 1 |
+| `ld (ix+8), a` | (ix+d), reg | 9,425 | +5,997 | 43 |
+| the 40-shape mix | varied | 5,472 | +2,044 | |
+
+`ld a, b` divides up like this, by the same stop-after-each-stage method:
+
+    read, line loop, scan to the newline      676
+    classify the mnemonic run                 283
+    mnemonic_of                               393
+    two parse_operand calls                 2,089
+    match_row                                 602
+    emit_row                                1,020
+
+**parse_operand is 41% of it**, and against `nop`'s 676 for the same stage that
+is about 700 cycles to recognise a one-character register name. It is not one
+hotspot -- the function is 1,013 instructions with a 31-byte frame, and the
+register path walks a long way through it.
+
+## Measurement noise
+
+Three interleaved repeats of the same two binaries on `ld a, b`: 8.24, 8.26,
+8.24 against 8.28, 8.28, 8.28. The emulator is deterministic to about
+**±0.02s, or 0.25%**, so a change under half a percent is not worth claiming
+from one run, and a consistent 0.4% is real. This is why the descriptor
+experiment above counts as a regression rather than a wash.
 
 ## Taking the floor apart
 

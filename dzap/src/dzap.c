@@ -45,6 +45,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef ZMALLOC
+#include "zmalloc.h"
+#define Z_SITE(x) (z_site = (x))
+#else
+#define Z_SITE(x) ((void) 0)
+#endif
+
 #include "buf_reader.h"
 #include "isa.h"
 #include "operand.h"
@@ -418,6 +425,7 @@ struct symblock {
 
 static bool sym_room(dz* z, int len) {
     if (z->syms_used == SYMS_STEP) {
+        Z_SITE("symbol blocks");
         symblock* b = (symblock*) malloc(sizeof(symblock));
         if (b == NULL) {
             return false;
@@ -427,6 +435,7 @@ static bool sym_room(dz* z, int len) {
         z->syms_used = 0;
     }
     if (z->names_used + len > z->names_cap) {
+        Z_SITE("label names");
         int want = z->names_cap + NAMES_STEP;
         while (z->names_used + len > want) {
             want += NAMES_STEP;
@@ -516,6 +525,7 @@ static bool sym_define(dz* z, const char* name, int len, int addr) {
 static bool fix_add(dz* z, const sym* target, uint8_t width, int off,
                     int next_addr) {
     if (z->fix_used == z->fix_cap) {
+        Z_SITE("fixups");
         const int want = z->fix_cap + FIX_STEP;
         fixup* grown = (fixup*) realloc(z->fixups, (size_t) want * sizeof(fixup));
         if (grown == NULL) {
@@ -540,6 +550,7 @@ static bool fix_add(dz* z, const sym* target, uint8_t width, int off,
 /* ---------------------------------------------------------------- output */
 
 static bool out_grow(dz* z) {
+        Z_SITE("output buffer");
     const int want = z->cap + OUT_STEP;
     uint8_t* grown = (uint8_t*) realloc(z->out, (size_t) want);
     if (grown == NULL) {
@@ -2116,6 +2127,7 @@ static bool resolve_fixups(dz* z) {
 }
 
 static bool run(dz* z, const char* path) {
+    Z_SITE("source reader");
     if (br_open(&z->rd, path, BUF_KB) == NULL) {
         z->err = "cannot open source";
 
@@ -2126,6 +2138,7 @@ static bool run(dz* z, const char* path) {
     if (z->cap < OUT_MIN) {
         z->cap = OUT_MIN;
     }
+    Z_SITE("output buffer");
     z->out = (uint8_t*) malloc((size_t) z->cap);
     if (z->out == NULL) {
         z->err = "out of memory";
@@ -2134,6 +2147,7 @@ static bool run(dz* z, const char* path) {
     }
     z->o = z->out;
     z->lim = z->out + z->cap - OUT_MAX_INSN;
+    Z_SITE("symbol buckets");
     z->syms = (symslot*) calloc(NSYMB, sizeof(symslot));
     if (z->syms == NULL) {
         z->err = "out of memory";
@@ -2142,6 +2156,7 @@ static bool run(dz* z, const char* path) {
     }
     /* One block up front, so sym_define never has to ask whether there is
      * one; it only ever asks whether the newest is full. */
+    Z_SITE("symbol blocks");
     z->blocks = (symblock*) malloc(sizeof(symblock));
     if (z->blocks == NULL) {
         z->err = "out of memory";
@@ -2288,6 +2303,10 @@ int main(int argc, char* argv[]) {
     mos_fclose(fh);
 
     printf("Wrote %s, %d bytes\r\n", argv[2], written);
+
+#ifdef ZMALLOC
+    z_report();
+#endif
 
     const uint24_t cs = elapsed_cs(begin, end);
     printf("Done in %u.%02u seconds\r\n", (unsigned) (cs / 100),

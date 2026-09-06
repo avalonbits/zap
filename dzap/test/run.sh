@@ -123,4 +123,34 @@ else
     done
 fi
 
+# The marginal-pricing flags in dzap.c, which duplicate a table so the walk
+# over it does twice the work. Each one is only a measurement if the program
+# still assembles the same bytes -- a flag that changed the output would price
+# something other than the walk, and would do it invisibly, since the number it
+# produced would still look like a number. Built and compared here against the
+# same corpus the reference comparison uses, which is the largest input the
+# host tests have.
+echo "=== test_pricing_flags ==="
+for flag in DUP_ROW DUP_GROUP DUP_BUCKET; do
+    if ! cc "${CFLAGS[@]}" "-D$flag" -o "$OUT/dzap_$flag" src/dzap.c "${SRCS[@]}" \
+         2>"$OUT/$flag.log"; then
+        echo "FAIL  -D$flag does not build"
+        status=1
+        continue
+    fi
+    bad=0
+    for src in test/cases/*.s; do
+        rm -f "$OUT/base.bin" "$OUT/dup.bin"
+        "$OUT/dzap" "$src" "$OUT/base.bin" > /dev/null 2>&1 || true
+        "$OUT/dzap_$flag" "$src" "$OUT/dup.bin" > /dev/null 2>&1 || true
+        cmp -s "$OUT/base.bin" "$OUT/dup.bin" || { bad=1; echo "      $(basename "$src")"; }
+    done
+    if [ "$bad" = 0 ]; then
+        echo "PASS  -D$flag assembles identical bytes"
+    else
+        echo "FAIL  -D$flag changes the output, so it prices nothing"
+        status=1
+    fi
+done
+
 exit $status

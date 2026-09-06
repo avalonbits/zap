@@ -1032,3 +1032,50 @@ isa_mem2 -- one definition every second line, 15,460 labels in 262 KB:
 So dzap's ceiling is not unusually low -- it is the one that says so quickly and
 in words. Failing loudly at 93% is worth more than not finishing, and that is a
 property to keep rather than an accident.
+
+## Where dzap's time goes, priced rather than guessed (2026-09-06)
+
+isa_real, 262,170 bytes of source, 19,399 lines, 4.70s = 330 cycles/byte.
+
+Two ways of pricing a part, and they do not agree, so which one was used
+matters:
+
+**Data-only duplication.** Write one of dzap's tables with every entry
+duplicated. A matching entry is still found at its first copy, so the output is
+byte-identical -- the check that the measurement is valid -- while every entry
+rejected on the way is examined twice. Nothing in the code being measured
+changes, so the extra time is that walk and nothing else. These are the numbers
+to trust, and they are reproducible from a flag (`DUP_ROW`, `DUP_GROUP`,
+`DUP_BUCKET`; test/run.sh checks each still assembles identical bytes).
+
+    row register test in match_row     +0.16s    3.4%
+    mnemonic bucket chain              +0.30s    6.4%
+    mode group walk                    +0.02s    0.4%
+
+**Calling a function twice from assemble_line.** Unreliable here, and worth
+knowing why. `parse_operand`, `match_row`, `emit_row` and `mnemonic_of` are all
+inlined into one 3,500-line `assemble_line`, so a duplicate call makes the
+compiler outline the function and the difference includes the outlining, paid
+on every line. On `match_row` that is a fixed 0.49s before the per-call slope:
+one extra call costs 1.50s, three cost 3.52s. `parse_operand` is worse -- it is
+`always_inline`, one duplicate is partly folded back into the real call and
+three are not, so the cost per call *rises* with the count. Upper bounds only:
+
+    parse_operand    <= 38%      match_row        <= 21%
+    mnemonic_of      <= 11%      emit_row         <= 10%
+    mnemonic scan       1.7%
+
+### What that says to do next
+
+The table walks are finished. Group walk 0.4%, register test 3.4%, bucket chain
+6.4% -- about 10% between them, and the last three attempts to take any of it
+have each cost more than they saved (see dzap-to-zap.md rows 59-62). Row
+selection has been the focus of this whole optimisation pass and it is the
+wrong place: it looks hot because it walks 3.74 rows per instruction, and
+walking a row is cheap.
+
+The time is in **operand parsing**, by a wide margin, and that is also where
+the features still to be added back -- expressions, local labels -- will land.
+That is the next thing to take apart, and it wants pricing from the inside
+(literal accumulation, the register recogniser, the symbol lookup) rather than
+another whole-function duplication.

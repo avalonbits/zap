@@ -3,6 +3,7 @@
 #
 #   test/bench/gen_isa.sh even [bytes] > isa_even.s
 #   test/bench/gen_isa.sh real [bytes] > isa_real.s
+#   test/bench/gen_isa.sh degenerate [bytes] > isa_degenerate.s
 #
 # gen_pure.sh cycles forty hand-picked forms, which is a plausible instruction
 # stream but not a sample of the instruction set: it reaches 31 of the ISA's
@@ -29,6 +30,22 @@
 #   even  Every form the same number of times. Says what the instruction set
 #         costs. Nothing is over-weighted, so a change cannot look good by
 #         helping whatever happens to be common here.
+#
+#   degenerate  Every label used before any is defined, and defined in the
+#         reverse of the order they were used: the first half of the file
+#         refers to L1..LN five times over, the second half defines LN..L1.
+#         Nothing about it is realistic, which is the point -- it is the worst
+#         case the one-pass design has.
+#
+#         Every reference is forward, so every one becomes a fixup and none can
+#         be resolved where it is read; the fixup list reaches its largest and
+#         stays there until the source runs out. Reversing the definitions
+#         maximises the distance between a use and its definition: L1 is
+#         referenced first and defined last.
+#
+#         What it is for is the shape of the cost, not the size of it. If
+#         patching ever stops being linear in the number of fixups, this is
+#         where it shows first.
 #
 #   real  Weighted by how often each mnemonic appears in the two real programs
 #         in test/corpus -- BBC BASIC and Rokky, 10,440 instructions between
@@ -69,7 +86,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-MODE="${1:?usage: gen_isa.sh <even|real> [bytes]}"
+MODE="${1:?usage: gen_isa.sh <even|real|degenerate> [bytes]}"
 TOTAL="${2:-262144}"
 CASES="dzap/test/cases/opcodes.s"
 
@@ -108,6 +125,55 @@ BEGIN {
 { form[n++] = $0 }
 END {
     if (n == 0) { print "no forms" > "/dev/stderr"; exit 1 }
+
+    if (mode == "degenerate") {
+        # Sized so that the references fill the first half and the definitions
+        # fit in the second. One reference every fourth line, five uses each.
+        half = int(total / 2)
+        refs = int(half / 56)          # ~56 bytes of source per reference
+        nl = int(refs / 5)
+        if (nl < 1) nl = 1
+
+        bytes = 0
+        i = 0
+        r = 0
+        while (bytes < half) {
+            if (r < nl * 5 && i % 4 == 3) {
+                # L1, L2, ... LN, and round again: five passes in total.
+                line = "  call " lname((r % nl) + 1)
+                r++
+            } else {
+                line = form[i % n]
+            }
+            print line
+            bytes += length(line) + 1
+            i++
+        }
+
+        # Top up to five uses each: the byte budget can end the loop above
+        # early, and "at least five" is the point of the shape.
+        while (r < nl * 5) {
+            line = "  call " lname((r % nl) + 1)
+            print line
+            bytes += length(line) + 1
+            r++
+        }
+
+        # LN down to L1, so the label used first is defined last.
+        d = nl
+        while (bytes < total || d > 0) {
+            if (d > 0 && i % 4 == 3) {
+                line = lname(d) ":"
+                d--
+            } else {
+                line = form[i % n]
+            }
+            print line
+            bytes += length(line) + 1
+            i++
+        }
+        exit 0
+    }
 
     if (mode == "even") {
         # Strided rather than sequential. The forms arrive grouped by mnemonic,

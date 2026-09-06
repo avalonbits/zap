@@ -109,6 +109,17 @@ dollar=$("$OUT/dzap" "$OUT/dollar.s" "$OUT/dollar.bin" 2>&1 | tr -d '\r' || true
 cli_check "a name run stopping at \$ is scanned as one token" \
     "$(printf '%s' "$dollar" | grep -c 'line 1: unknown label')" 1
 
+# An undefined local is reported against the line that used it.
+#
+# It is discovered somewhere else entirely -- when the next global label ends
+# the scope, which here is three lines later -- so the line number has to come
+# off the pending reference rather than from wherever the failure surfaced.
+# Nothing in the encoding tests can see a line number.
+printf 'one:\n  nop\n  jp @gone\n  nop\n  nop\ntwo:\n  nop\n' > "$OUT/loc.s"
+loc=$("$OUT/dzap" "$OUT/loc.s" "$OUT/loc.bin" 2>&1 | tr -d '\r' || true)
+cli_check "an undefined local names the line that used it" \
+    "$(printf '%s' "$loc" | grep -c 'line 3: unknown label')" 1
+
 # The reference itself, on everything in test/cases. Unit tests pin the cases a
 # refactor is likely to break; this pins the whole of what dzap claims to do
 # against the assembler it has to agree with, so a case nobody thought to write

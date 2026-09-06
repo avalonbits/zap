@@ -75,10 +75,51 @@ static const char* emit(const char* src) {
     }
     out[n] = 0;
 
-    free(z.out);
-    br_destroy(&z.rd);
+    /* dz_free, not just the output buffer. The symbol table, the name arena,
+     * the fixups and the label blocks were being left behind on every one of
+     * the several hundred calls here, which is 11 MB by the end and a
+     * LeakSanitizer failure that made this program's exit status useless --
+     * so the runner's PASS and FAIL lines were the only signal it carried. */
+    dz_free(&z);
 
     return out;
+}
+
+/* How many local-label blocks a source ends up holding.
+ *
+ * The local table is emptied at the end of every scope and its storage reused,
+ * which is the whole reason it is a separate table -- so a program's locals
+ * cost the widest scope rather than the sum of every scope. Nothing about that
+ * shows up in the bytes, so it is checked directly. */
+static int local_blocks(const char* src) {
+    char path[] = "/tmp/dzap_loc_XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) {
+        return -1;
+    }
+    if (write(fd, src, strlen(src)) != (long) strlen(src)) {
+        close(fd);
+        unlink(path);
+
+        return -1;
+    }
+    close(fd);
+
+    build_tables();
+    build_cclass();
+
+    dz z;
+    memset(&z, 0, sizeof(z));
+    const bool ok = run(&z, path);
+    unlink(path);
+
+    int n = 0;
+    for (const locblock* b = z.locfirst; b != NULL; b = b->next) {
+        n++;
+    }
+    dz_free(&z);
+
+    return ok ? n : -1;
 }
 
 static int range_bad;
@@ -684,6 +725,204 @@ int main(void) {
     check("a single h is a label", emit("h:\n  nop\n"), "00");
     check("a suffix in the middle is a label",
           emit("a0h_x:\n  jp a0h_x\n"), "C3 00 00 04");
+
+    /* Local labels: `@name`, belonging to the global label above them.
+     *
+     * The reference keys one as the enclosing global's name with the local's
+     * appended -- its "Label already defined 'outer@aa'" says so -- which
+     * makes the same spelling under two globals two different labels, and
+     * makes a reference from outside the scope find nothing. dzap reaches the
+     * same answers from a table that is emptied at the end of every scope, so
+     * these pin the behaviour and not the mechanism. Expected bytes generated
+     * from the reference, like every other row here.
+     *
+     * A local is not tested against the number formats -- the reference
+     * returns before that check -- so `@123` and `@0ffh` are labels where the
+     * bare spellings are refused a few lines above. */
+    check("local under a global",
+          emit("outer:\n@loop:\n  jp @loop\n"), "C3 00 00 04");
+    check("local before any global",
+          emit("  nop\n@loop:\n  jp @loop\n"), "00 C3 01 00 04");
+    check("same local name in two scopes",
+          emit("one:\n@l:\n  jp @l\ntwo:\n@l:\n  jp @l\n"),
+          "C3 00 00 04 C3 04 00 04");
+    check("local resolved forward",
+          emit("outer:\n  jp @fwd\n@fwd:\n  nop\n"), "C3 04 00 04 00");
+    check("local and global of one spelling",
+          emit("loop:\n@loop:\n  jp loop\n  jp @loop\n"),
+          "C3 00 00 04 C3 00 00 04");
+    check("local spelled as a number",
+          emit("outer:\n@123:\n  jp @123\n"), "C3 00 00 04");
+    check("local spelled as trailing-h hex",
+          emit("outer:\n@0ffh:\n  jp @0ffh\n"), "C3 00 00 04");
+    check("local as a relative jump",
+          emit("outer:\n@l:\n  jr @l\n"), "18 FE");
+    /* The at sign is an ordinary name character everywhere but the first
+     * position, which is the reference's rule too. */
+    check("at sign inside a global name",
+          emit("ab@cd:\n  jp ab@cd\n"), "C3 00 00 04");
+
+    /* The four refusals, each of which the reference also refuses. The first
+     * three are the scope rule seen from three directions; the last is a
+     * redefinition, which has to still be caught inside a table that is
+     * emptied and reused. */
+    check("local out of scope",
+          emit("one:\n@l:\n  nop\ntwo:\n  jp @l\n"), "ERR");
+    check("local defined in an earlier scope",
+          emit("@aa:\n  nop\nouter:\n  jp @aa\n"), "ERR");
+    check("local never defined", emit("outer:\n  jp @nope\n"), "ERR");
+    check("local defined twice in one scope",
+          emit("outer:\n@l:\n  nop\n@l:\n  nop\n"), "ERR");
+
+    /* A forward local settled at the end of its own scope, with the same name
+     * defined again in the next one.
+     *
+     * This is the case that says local references cannot wait until the end of
+     * the source like global ones do. The node behind the first `@x` is handed
+     * back when scope `one` closes and is holding scope `two`'s `@x` by the
+     * time the source ends, so a reference resolved then would read 0x040005
+     * where it should read 0x040004. Both addresses appear in the expected
+     * bytes, one line apart, which is what makes the difference visible. */
+    check("a forward local settles when its scope does",
+          emit("one:\n  jp @x\n@x:\n  nop\ntwo:\n@x:\n  nop\n  jp @x\n"),
+          "C3 04 00 04 00 00 C3 05 00 04");
+
+    /* A bucket carried over from the previous scope reads as empty.
+     *
+     * The stamp is what empties it, and the chain it still holds is not
+     * cleared -- so a bucket first *used* in a new scope has to drop that
+     * chain rather than link onto it. If it does not, a second name landing in
+     * the same bucket walks past its own node into the last scope's, and finds
+     * a local that is out of scope and defined, which resolves instead of
+     * failing.
+     *
+     * The colliding name is computed rather than written down, so the test
+     * keeps testing this when the key changes. */
+    {
+        build_tables();
+        build_cclass();
+        const int want = loc_bucket("@l", 2);
+        char other[8];
+        bool found = false;
+        for (int a = 'a'; a <= 'z' && !found; a++) {
+            for (int b = 'a'; b <= 'z' && !found; b++) {
+                other[0] = '@';
+                other[1] = (char) a;
+                other[2] = (char) b;
+                other[3] = 0;
+                found = loc_bucket(other, 3) == want;
+            }
+        }
+        check_range("a colliding local name exists", found);
+        if (found) {
+            char src[128];
+            snprintf(src, sizeof(src),
+                     "one:\n@l:\n  nop\ntwo:\n%s:\n  nop\n  jp @l\n", other);
+            check("a bucket left by the last scope is empty", emit(src), "ERR");
+        }
+    }
+
+    /* And the storage behind it is reused rather than accumulated. 200 scopes
+     * of eight locals each: eight fit in one block, so one block is what the
+     * program should end up holding however many scopes it has. Without the
+     * rewind it would hold twenty-five. */
+    {
+        /* 200 scopes of eight locals is about 17 KB of source; the buffer is
+         * sized from that rather than guessed, and the cursor is clamped
+         * because snprintf reports what it would have written, not what it
+         * did. */
+        static char src[32768];
+        size_t at = 0;
+        for (int s2 = 0; s2 < 200; s2++) {
+            at += (size_t) snprintf(&src[at], sizeof(src) - at, "g%03d:\n", s2);
+            check_range("the scope source fits", at < sizeof(src));
+            for (int i = 0; i < 8; i++) {
+                at += (size_t) snprintf(&src[at], sizeof(src) - at,
+                                        "@c%d:\n  nop\n", i);
+                check_range("the scope source fits", at < sizeof(src));
+            }
+        }
+        char got[32];
+        snprintf(got, sizeof(got), "%d", local_blocks(src));
+        check("local storage is reused between scopes", got, "1");
+    }
+
+    /* Anonymous labels, which dzap does not have. `@@` may be defined any
+     * number of times and is reached by `@f`/`@n` and `@b`/`@p`, so reading
+     * either as an ordinary local gives a wrong answer in a source that has
+     * both -- and calling a second `@@` a redefinition would be an error that
+     * looks right for the wrong reason. Refused by name until they exist:
+     * the Agon corpus has 171 definitions and 238 references. */
+    check("an anonymous label definition", emit("@@:\n  nop\n"), "ERR");
+    check("an anonymous label defined twice",
+          emit("@@:\n  nop\n@@:\n  nop\n"), "ERR");
+    /* The reserved spellings as references, each with a local of that name
+     * defined in scope so that reading them as ordinary locals would succeed.
+     * Written the other way -- `@@:` and then `jp @f` -- the definition is
+     * refused first and the reference is never reached, which makes the test
+     * pass whether or not the reference is checked at all. The reference
+     * assembler refuses all four too: it reads them as anonymous, and no
+     * anonymous label has been defined. */
+    check("a forward anonymous reference",
+          emit("outer:\n@f:\n  nop\n  jp @f\n"), "ERR");
+    check("a backward anonymous reference",
+          emit("outer:\n@b:\n  nop\n  jp @b\n"), "ERR");
+    check("the n spelling of forward",
+          emit("outer:\n@n:\n  nop\n  jp @n\n"), "ERR");
+    check("the p spelling of backward",
+          emit("outer:\n@p:\n  nop\n  jp @p\n"), "ERR");
+    /* But a local may still be called `@bb`: only the two-character
+     * spellings are reserved. */
+    check("a local whose name starts with b",
+          emit("outer:\n@bb:\n  jp @bb\n"), "C3 00 00 04");
+
+    /* A global label and an instruction on one line: the scope the label opens
+     * starts with the *next* line, so the operand here still belongs to the
+     * scope being closed.
+     *
+     * Both directions, because ending the scope at the label gets both wrong
+     * in opposite ways -- it refuses the first of these, which the reference
+     * assembles, and assembles the second, which the reference refuses. The
+     * bytes of the first are what pin it: 0x040000 is scope `one`'s @l, and
+     * there is no other address it could resolve to. */
+    check("a global label switches scope from the next line",
+          emit("one:\n@l:\n  nop\ntwo: jp @l\n"), "00 C3 00 00 04");
+    check("and the label it opens is not in scope on its own line",
+          emit("one:\n  nop\ntwo: jp @l\n@l:\n  nop\n"), "ERR");
+    /* On its own line it still switches, which is the ordinary case and the
+     * one the deferral must not break. */
+    check("a global on its own line still switches scope",
+          emit("one:\n@l:\n  nop\ntwo:\n  jp @l\n"), "ERR");
+
+    /* Sixteen locals in one scope and then a second scope reusing the same
+     * storage under the same names. The addresses are what say the reuse did
+     * not carry anything over. */
+    check("a scope reused under the same names",
+          emit("one:\n"
+               "@a01:\n@a02:\n@a03:\n@a04:\n@a05:\n@a06:\n@a07:\n@a08:\n"
+               "@a09:\n@a10:\n@a11:\n@a12:\n@a13:\n@a14:\n@a15:\n@a16:\n"
+               "  jp @a01\n"
+               "two:\n"
+               "@a01:\n  nop\n"
+               "  jp @a01\n"), "C3 00 00 04 00 C3 04 00 04");
+
+    /* And past the first block, which holds 64. The whole Agon corpus has at
+     * most 20 locals in one scope, so nothing real reaches here -- but the
+     * second block is allocated on a different path from the first and then
+     * rewound to the first when the scope ends, and neither of those is
+     * exercised by anything above. Built rather than written out so the count
+     * cannot drift away from LOCS_STEP. */
+    {
+        static char src[2048];
+        int at = snprintf(src, sizeof(src), "one:\n");
+        for (int i = 0; i < LOCS_STEP + 6; i++) {
+            at += snprintf(&src[at], sizeof(src) - (size_t) at, "@b%03d:\n", i);
+        }
+        snprintf(&src[at], sizeof(src) - (size_t) at,
+                 "  jp @b000\ntwo:\n@b000:\n  nop\n  jp @b000\n");
+        check("more locals than one block holds", emit(src),
+              "C3 00 00 04 00 C3 04 00 04");
+    }
 
     /* A name ending in b is not binary unless what precedes it is. The test
      * rejects on two characters before anything walks the name -- a number is

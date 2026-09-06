@@ -845,11 +845,7 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
         int v = 0;
         bool got = false;
         if (nn >= 3 && ns[0] == '0' && (ns[1] | 0x20) == 'x') {
-            int k = 2;
-            while (k < nn && hexval[(uint8_t) ns[k]] != 0xFF) {
-                k++;
-            }
-            if (k == nn) {
+            {
                 /* Assembled from the end, a byte at a time, rather than
                  * accumulated as `acc = (acc << 4) | digit`.
                  *
@@ -880,33 +876,67 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
                  * only ever run three times, and it was paying for that: a
                  * counter to increment, a bound to test against it, and an
                  * indexed store into the union, which is address arithmetic
-                 * on every byte. Written out, each store is to a known
-                 * offset. */
+                 * on every byte.
+                 *
+                 * The digits are checked here too, rather than in a pass of
+                 * their own. Each used to be looked up twice -- once by a loop
+                 * asking whether the run was hex, and again here -- and that
+                 * pass cost 811 cycles of this parse's 2,163, and 393 even for
+                 * `ld a, 0x42`, where there are two digits. Most of it was the
+                 * loop, not the work.
+                 *
+                 * hexval gives 0xFF for anything that is not a hex digit and a
+                 * real nibble is 0x0F or less, so OR-ing the nibbles together
+                 * and testing the high half at the end says whether any was
+                 * rejected, with no branch per digit. */
+                uint8_t bad = 0;
                 int j = nn;
+
                 if (j > 2) {
                     uint8_t c = hexval[(uint8_t) ns[--j]];
+                    bad |= c;
                     if (j > 2) {
-                        c = (uint8_t) (c | shl4[hexval[(uint8_t) ns[--j]]]);
+                        const uint8_t hi = hexval[(uint8_t) ns[--j]];
+                        bad |= hi;
+                        /* Masked: an invalid digit reaches this before `bad`
+                         * is tested, and shl4 holds sixteen entries. */
+                        c = (uint8_t) (c | shl4[hi & 15]);
                     }
                     u.b[0] = c;
                 }
                 if (j > 2) {
                     uint8_t c = hexval[(uint8_t) ns[--j]];
+                    bad |= c;
                     if (j > 2) {
-                        c = (uint8_t) (c | shl4[hexval[(uint8_t) ns[--j]]]);
+                        const uint8_t hi = hexval[(uint8_t) ns[--j]];
+                        bad |= hi;
+                        c = (uint8_t) (c | shl4[hi & 15]);
                     }
                     u.b[1] = c;
                 }
                 if (j > 2) {
                     uint8_t c = hexval[(uint8_t) ns[--j]];
+                    bad |= c;
                     if (j > 2) {
-                        c = (uint8_t) (c | shl4[hexval[(uint8_t) ns[--j]]]);
+                        const uint8_t hi = hexval[(uint8_t) ns[--j]];
+                        bad |= hi;
+                        c = (uint8_t) (c | shl4[hi & 15]);
                     }
                     u.b[2] = c;
                 }
 
-                v = u.v;
-                got = true;
+                /* Digits past the third byte are dropped from the value but
+                 * must still be rejected if they are not hex, or a literal the
+                 * reference refuses would assemble here. Only a literal of
+                 * more than six digits reaches this. */
+                while (j > 2) {
+                    bad |= hexval[(uint8_t) ns[--j]];
+                }
+
+                if ((bad & 0xF0) == 0) {
+                    v = u.v;
+                    got = true;
+                }
             }
         } else if (nn > 0 && digit_ch(ns[0])) {
             /* First digit outside the loop, for the reason given at the

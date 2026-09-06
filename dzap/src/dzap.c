@@ -1035,11 +1035,15 @@ static const isa_row* match_row(const insninfo* insn,
          * Every term used to be evaluated for every row so the whole test
          * could be one branch -- which is the right shape when the terms cost
          * the same. They do not: the mode test is one compare of a precomputed
-         * value, and reg_match is the most expensive line in the program, run
-         * twice. Three or four rows are scanned per instruction and all but one
-         * are rejected, so paying the expensive half only for rows that
+         * value, and the register test below is the most expensive line in the
+         * program, run twice. Paying the expensive half only for rows that
          * survive the cheap half is worth the branch, even on a chip that does
-         * not predict them. Measured, not assumed.
+         * not predict them.
+         *
+         * It rejects less than it looks, though. Counted over isa_real, 4.08
+         * rows are examined per instruction and 3.40 of them get past this
+         * test: the rows an instruction wastes time on are mostly rows of the
+         * right shape with the wrong registers, not rows of the wrong shape.
          *
          * A row that takes a condition code can still match with a mode that
          * does not, which is why the second half of the old expression has to
@@ -1053,16 +1057,25 @@ static const isa_row* match_row(const insninfo* insn,
             continue;
         }
 
-        const isa_row* row = ri->row;
-        const uint8_t ga = (uint8_t) ((ri->a0 & a0) | (ri->a1 & a1)
-                                      | (ri->a2 & a2));
-        const uint8_t gb = (uint8_t) ((ri->b0 & b0) | (ri->b1 & b1)
-                                      | (ri->b2 & b2));
-        const uint8_t rega =
-            (uint8_t) ((ga != 0) | (ri->aempty & anone) | ccok);
-        const uint8_t regb = (uint8_t) ((gb != 0) | (ri->bempty & bnone));
-
-        if (rega & regb) {
+        /* A first, on its own, and B only if A survives.
+         *
+         * These were two 0/1 values ANDed together, which reads well and
+         * compiles badly: each `(g != 0)` is a compare and a branch to pick
+         * between two constants, and both sides were computed before either
+         * was looked at. Nothing here needs a 0/1 -- the question is whether
+         * the operand shares a bit with what the row accepts, so the bits can
+         * be tested where they are. B is then reached only by the rows A did
+         * not already reject.
+         *
+         * This is the line to spend care on -- 3.40 rows per instruction
+         * reach it, against 0.68 that the mode test disposes of. Of those,
+         * 2.00 are rejected by A alone, so B is not computed at all for three
+         * rejections in five. */
+        if ((uint8_t) ((ri->a0 & a0) | (ri->a1 & a1) | (ri->a2 & a2)
+                       | (ri->aempty & anone) | ccok) != 0
+            && (uint8_t) ((ri->b0 & b0) | (ri->b1 & b1) | (ri->b2 & b2)
+                          | (ri->bempty & bnone)) != 0) {
+            const isa_row* row = ri->row;
             if ((row->cpu & CPU_EZ80) == 0) {
                 return NULL;
             }

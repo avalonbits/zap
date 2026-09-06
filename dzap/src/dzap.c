@@ -292,24 +292,47 @@ static void build_pearson(void) {
     }
 }
 
-/* Two passes, composed into eleven bits by writing the bytes rather than
- * shifting: a shift by eight is `call __ishl` on this chip, and the whole
- * point of the comparison is what the key costs. */
-static inline int sym_bucket(const char* name, int len) {
-    uint8_t h1 = 0;
-    uint8_t h2 = 0;
-    for (int i = 0; i < len; i++) {
-        const uint8_t c = (uint8_t) name[i];
-        h1 = pearson[h1 ^ c];
-        h2 = pearson[(uint8_t) (h2 ^ c ^ 0x5A)];
+/* One pass over the name, which is the whole cost of a Pearson key.
+ *
+ * A Pearson hash yields eight bits and the table wants eleven, and the obvious
+ * way to find three more is a second pass seeded differently. That doubles the
+ * per-character work -- and the character loop *is* the key's cost, measured at
+ * 6.1% of runtime -- to buy a spread the table does not need.
+ *
+ * The three bits come from the first character, the last, and the length
+ * instead. All three are already in hand, none of them costs a pass, and the
+ * measurements say the spread is the same. Over the 7,684 distinct global
+ * labels of the Agon corpus, expected probes for a successful lookup are 2.873
+ * against the two-pass key's 2.882 -- marginally *better*, and inside the noise
+ * of the sample either way. Per file, which is what an assembly run sees, both
+ * are 1.000 and the worst file is 1.136 against 1.103.
+ *
+ * The length alone is not enough and the difference is not subtle: names of one
+ * length then reach only 256 of the 2,048 buckets, which takes this
+ * repository's own isa_memory benchmark -- every label four characters -- from
+ * 4.478 probes to 28.427. XORing the two characters in is what rescues it, and
+ * they cost two loads. */
+static uint8_t pearson8(const char* name, int len) {
+    uint8_t h = 0;
+    const char* p = name;
+    for (uint8_t k = (uint8_t) len; k != 0; k--) {
+        h = pearson[h ^ (uint8_t) *p++];
     }
+
+    return h;
+}
+
+/* Composed by writing the bytes rather than shifting: a shift by eight is
+ * `call __ishl` on this chip. The compiler puts the shift back if the union is
+ * written any other way, so this shape is load-bearing. */
+static inline int sym_bucket(const char* name, int len) {
     union {
         int v;
         uint8_t b[sizeof(int)];
     } u;
     u.v = 0;
-    u.b[0] = h1;
-    u.b[1] = (uint8_t) (h2 & 7);
+    u.b[0] = pearson8(name, len);
+    u.b[1] = (uint8_t) ((name[0] ^ name[len - 1] ^ len) & 7);
 
     return u.v;
 }
@@ -531,6 +554,27 @@ _Static_assert(__builtin_offsetof(dz, o) < 128, "dz.o is out of range");
 _Static_assert(__builtin_offsetof(dz, lim) < 128, "dz.lim is out of range");
 #endif
 
+/* Marginal pricing of the label paths. Each duplicates a call to a function
+ * that is already out of line, so nothing gets outlined by the measurement and
+ * the difference is one extra execution. The data-only flags above are still
+ * preferred where one exists for the thing being priced. */
+#if defined(DUP_HASH) || defined(DUP_NUMTOK)
+static volatile int dup_hash_sink;
+#endif
+#ifdef DUP_HASH
+/* The name goes through a volatile pointer, or the duplicate is folded away:
+ * sym_bucket is a pure function of what it is handed, so two calls on the same
+ * arguments are one call, and the measurement would be of nothing. */
+static const char* volatile dup_hash_name;
+#define DUP_HASH_CALL(n, l) \
+    do {                                     \
+        dup_hash_name = (n);                 \
+        dup_hash_sink = sym_bucket(dup_hash_name, (l)); \
+    } while (0)
+#else
+#define DUP_HASH_CALL(n, l) ((void) 0)
+#endif
+
 /* ------------------------------------------------- symbols, continued */
 
 /* Grown in blocks rather than one allocation per label. A label is a few
@@ -612,7 +656,31 @@ static sym* sym_intern(dz* z, const char* name, int len) {
      * and this computed it again to insert, so every name a source mentioned
      * for the first time was walked twice by the hash -- which is the whole
      * cost of a Pearson key. */
+    DUP_HASH_CALL(name, len);
     const int b = sym_bucket(name, len);
+
+#ifdef DUP_SYMCHAIN
+    /* Data only: a decoy ahead of the real entry in the same bucket, same
+     * length and differing in the last character, so the compare runs to the
+     * end before failing. Doubles the chain walk; the real entry is still
+     * found, so the output does not change. */
+    if (sym_at(z, b, name, len) == NULL && sym_room(z, len)) {
+        const int doff = z->names_used;
+        for (int i = 0; i < len; i++) {
+            z->names[doff + i] = name[i];
+        }
+        z->names[doff + len - 1] = (char) (name[len - 1] == 'z' ? 'y' : 'z');
+        z->names_used += len;
+        sym* dec = &z->blocks->nodes[z->syms_used++];
+        dec->nameoff = doff;
+        dec->len = (uint8_t) len;
+        dec->defined = false;
+        dec->islocal = false;
+        dec->addr = 0;
+        dec->next = z->syms[b].head;
+        z->syms[b].head = dec;
+    }
+#endif
 
     sym* found = (sym*) sym_at(z, b, name, len);
     if (found != NULL) {
@@ -651,8 +719,14 @@ static sym* sym_intern(dz* z, const char* name, int len) {
 /* Eight bits of the same key the global table uses. The high three bits it
  * composes are the ones this table does not have room for, so they are simply
  * not asked for; sym_bucket's low byte is the Pearson result itself. */
+/* Six bits of the same pass, and none of the composing.
+ *
+ * It used to mask sym_bucket's answer, which built the eleven-bit key and then
+ * threw five bits away -- and masking an `int` is `call __iand` here, so it
+ * paid a library call for the privilege. The byte the pass produces is what
+ * this wants; masking that is one instruction. */
 static inline int loc_bucket(const char* name, int len) {
-    return sym_bucket(name, len) & (NLOCB - 1);
+    return pearson8(name, len) & (NLOCB - 1);
 }
 
 /* Room for one more local node and its name. Blocks are threaded once and
@@ -790,6 +864,7 @@ static sym* loc_intern(dz* z, const char* name, int len) {
         }
     }
 
+    DUP_HASH_CALL(name, len);
     const int b = loc_bucket(name, len);
     if (z->locs[b].gen == z->gen) {
         for (sym* sp = z->locs[b].head; sp != NULL; sp = (sym*) sp->next) {
@@ -2102,6 +2177,11 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
                 if (k2 == 'f' || k2 == 'n') {
                     sp = anon_next(z);
                 } else {
+#ifdef DUP_LOCINTERN
+                    if (loc_intern(z, ns, nn) == NULL) {
+                        return false;
+                    }
+#endif
                     /* A local label, and nothing else: no radix accepts a
                      * leading at sign, and the reference does not test a local
                      * against the number formats either. Going straight to the
@@ -2150,6 +2230,11 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
                 got = true;
             }
         }
+#ifdef DUP_NUMTOK
+        if (!got && nn > 0) {
+            dup_hash_sink = numeric_token(ns, nn);
+        }
+#endif
         if (!got && nn > 0 && !numeric_token(ns, nn)) {
             /* Not a literal in any radix, so it is a label.
              *
@@ -2168,6 +2253,11 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
              * A label already defined is its address. One that is not is
              * carried on the operand for the emitter to record, because where
              * the bytes land is not known until the row is chosen. */
+#ifdef DUP_INTERN
+            if (sym_intern(z, ns, nn) == NULL) {
+                return false;
+            }
+#endif
             const sym* sp = sym_intern(z, ns, nn);
             if (sp == NULL) {
                 return false;

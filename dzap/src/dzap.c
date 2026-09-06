@@ -43,6 +43,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "buf_reader.h"
 #include "isa.h"
@@ -972,9 +973,11 @@ int main(int argc, char* argv[]) {
     build_tables();
     build_cclass();
 
+    /* Zeroed rather than field by field, because the reader inside it is
+     * freed on both paths below and br_open leaves it untouched when it
+     * fails. */
     dz z;
-    z.out = NULL;
-    z.err = NULL;
+    memset(&z, 0, sizeof(z));
 
     printf("Assembling %s\r\n", argv[1]);
     const clock_t begin = clock();
@@ -985,6 +988,7 @@ int main(int argc, char* argv[]) {
         printf("%s line %d: %s\r\n", argv[1], z.line,
                z.err ? z.err : "out of memory for the output");
         free(z.out);
+        br_destroy(&z.rd);
 
         return 1;
     }
@@ -993,6 +997,7 @@ int main(int argc, char* argv[]) {
     if (fh == 0) {
         printf("Cannot write %s\r\n", argv[2]);
         free(z.out);
+        br_destroy(&z.rd);
 
         return 1;
     }

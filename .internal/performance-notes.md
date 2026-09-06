@@ -1227,5 +1227,37 @@ two attempts:
 
 Outlining `mnemonic_of` gives the loop its own registers -- the same thing that
 made `pearson8` fast -- but it adds a `call __ishl` per lookup for the bucket
-subscript, which is 22,457 of them. That is the shape of the next attempt if
-there is one: outline it *and* remove the shift, or neither.
+subscript. That was the next attempt, and it was tried:
+
+    mnemonic_of out of line                 4.76s   +0.4%
+    mnemonic_of out of line, pointer walk   4.78s   +0.8%
+    same_ci out of line                     generated no better; not measured
+
+against 4.74s. Casting the bucket index to `uint8_t` does not remove the shift
+-- NBUCKET is 216 and the value fits in a byte, and `__ishl` is emitted anyway.
+Outlining `same_ci` alone keeps the lookup inlined and no shift appears, but the
+compiler still spills three values per iteration: folding the source character
+to lower case needs a register the loop does not have, so the tight form never
+appears however the function is arranged.
+
+### And the chain is not what costs
+
+Weighted by how often each mnemonic actually occurs, a lookup examines **1.41**
+candidates. Not twelve, which is what the longest bucket holds, and not the 3.40
+an unweighted average gives: `ld`, `call`, `push`, `cp` and `exx` are all first
+in their chains already, and they are most of the file. A perfect key would take
+it to 1.02, worth about 12 instructions a lookup -- the same size as the
+unrolled compare, which measured as nothing.
+
+So the cost is the *successful* compare, and that has to read every character of
+the name. 2.55 characters at 17 instructions each is most of the 6.1%, and 17 is
+what the register pressure in `assemble_line` allows. The floor is around 4%.
+**Three attempts have measured neutral or worse; this area is done until
+something changes the register pressure, which means until `assemble_line` is
+smaller.**
+
+One thing that misled the whole afternoon: the CLI test called
+"no two mnemonics share a bucket" checks that mnemonics in a bucket agree on
+*length*, which is a different and much weaker claim -- the point being that
+`same_ci` may then skip the length. Buckets holding several mnemonics is the
+design. The test has been renamed to say what it checks.

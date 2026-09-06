@@ -354,6 +354,21 @@ int main(void) {
     check("too far forward", emit("  jr 0x040082\n"), "ERR");
     check("too far back", emit("  jr 0x03FF7F\n"), "ERR");
 
+    /* What comes after the instruction, which the line loop decides.
+     *
+     * It asks for the newline first and only then looks for trailing space or
+     * a remark, because the newline is the answer nearly every time. All four
+     * shapes of tail go through that branch, and the reference refuses the
+     * two with text in them. Removing the "unexpected text" report failed no
+     * check at all before these: a trailing token errors either way, just
+     * later and with a different message, so nothing pinned which. */
+    check("trailing text is refused", emit("  nop x\n"), "ERR");
+    check("trailing text after operands is refused",
+          emit("  ld a, b junk\n"), "ERR");
+    check("trailing space alone", emit("  ld a, b \t\n"), "78");
+    check("trailing space then a remark", emit("  nop   \t ; remark\n"), "00");
+    check("remark with no space before it", emit("  nop; remark\n"), "00");
+
     /* Several lines, so the output accumulates in order. */
     check("three lines", emit("  nop\n  ld a, 0x42\n  ret\n"), "00 3E 42 C9");
 

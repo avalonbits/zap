@@ -1602,23 +1602,32 @@ static bool run(dz* z, const char* path) {
             return false;
         }
 
-            /* Whatever ended the line is here or a step away: parsing stops at the
-         * newline, and anything else between is trailing space or a remark. */
-        while (is_space_ch(*stop)) {
-            stop++;
-        }
-        if (*stop == ';') {
-            /* A remark after the instruction. Its body is never looked at --
-             * the search for the newline below walks it once and that is all
-             * a comment ever costs. */
-            while (*stop != '\n') {
+            /* Whatever ended the line is here or a step away: parsing stops at
+         * the newline, and anything else between is trailing space or a
+         * remark.
+         *
+         * Asked for the newline first, because that is the answer nearly
+         * every time and the loop below is expensive to *enter*, never mind
+         * to run. The compiler rotates it so the pointer is stored to the
+         * frame and shuffled through two register moves on the way to reading
+         * one byte -- sixteen instructions to discover there is no trailing
+         * space, on every line of the source. One compare replaces them. */
+        if (*stop != '\n') {
+            while (is_space_ch(*stop)) {
                 stop++;
             }
-        }
-        if (*stop != '\n') {
-            z->err = "unexpected text after the instruction";
+            if (*stop == ';') {
+                /* A remark after the instruction. Its body is never looked at
+                 * -- the search for the newline below walks it once and that
+                 * is all a comment ever costs. */
+                while (*stop != '\n') {
+                    stop++;
+                }
+            } else if (*stop != '\n') {
+                z->err = "unexpected text after the instruction";
 
-            return false;
+                return false;
+            }
         }
         /* A line that was only a remark stops at the semicolon, so the rest
          * of it is walked here. This is the whole cost of a comment: one pass

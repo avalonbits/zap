@@ -86,6 +86,16 @@ cli_check "every mnemonic in the table is lower case" \
     "$(printf '%s' "$out" | grep -c 'not lower case')" 0
 cli_check "failure is reported"  "$(printf '%s' "$bad" | grep -c 'line 1:')" 1
 
+# Which failure, not just that there was one. Any trailing text errors
+# eventually -- the operand parser rejects a bare token, and a token that got
+# past it becomes the next line's mnemonic and is rejected there -- so the
+# encoding tests, which see only ERR, cannot tell the line loop's own check
+# from those. Deleting it failed no test at all until this one.
+printf '  ld a, b c\n' > "$OUT/trail.s"
+trail=$("$OUT/dzap" "$OUT/trail.s" "$OUT/trail.bin" 2>&1 | tr -d '\r' || true)
+cli_check "trailing text is reported by the line loop" \
+    "$(printf '%s' "$trail" | grep -c 'line 1: unexpected text after the instruction')" 1
+
 # The reference itself, on everything in test/cases. Unit tests pin the cases a
 # refactor is likely to break; this pins the whole of what dzap claims to do
 # against the assembler it has to agree with, so a case nobody thought to write

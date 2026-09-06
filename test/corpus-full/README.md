@@ -130,6 +130,29 @@ include order.
 
 Only 6 of the 15 ZDS projects ship a `.zdsproj` at all.
 
-Still to do here: confirm zap agrees byte for byte on the 32 that assemble --
-expect failures, that is the point -- and then pin a subset so timings stay
-comparable across months.
+## Step two: does zap agree?
+
+`verify.sh` runs zap over the entry points ez80asm accepted and compares the
+bytes. It found three disagreements in 32, all now fixed:
+
+* **An `include` on the last line of a file with no trailing newline.**
+  parse_include switched the lexer before the parse loop's end-of-line check
+  ran, so the check read the *included* file's first token and rejected it.
+  ZINC ends `zinc-setup.asm` exactly that way. The error named the included
+  file at the including file's line number, which is why `options.asm line 109`
+  pointed into a file of fourteen lines.
+* **A second macro expansion reused the first one's scope**, so every
+  expansion after the first resolved its own forward `@label` to the earlier
+  one's. In a `puts` macro -- jump over an inline string -- the jump went
+  backwards. One wrong byte in 2,939.
+* **A macro argument lost the spaces inside a quoted string**, because
+  arguments were joined from token texts and a quote is its own token. The
+  program printed `Runningtests`.
+
+    32 tried, 32 agree
+
+None of the three was reachable from the vendored corpus, and the first two are
+the kind that produce plausible bytes rather than an error.
+
+Still to do here: pin a benchmark subset so timings stay comparable across
+months.

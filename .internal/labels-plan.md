@@ -66,6 +66,85 @@ Two constraints on that key, both measured this session and both non-obvious:
 So: accumulate the key by byte during the scan that already runs, and let the
 mnemonic bucket, `reg_of_text` and the symbol table all take it.
 
+### Keying the symbol table: measured, not assumed
+
+zap uses a Pearson hash, chosen because it suits an 8-bit machine. Measured
+against the labels of the two real programs, **a key built from the first
+character, the last character and the length beats it** -- and not for the
+reason one would guess.
+
+Label lengths, which decide what a key can use:
+
+| | definitions | distinct | median | p95 | max |
+|---|---|---|---|---|---|
+| BBC BASIC | 1,642 | 1,620 | 6 | 13 | **20** |
+| Rokky | 286 | 246 | 8 | 13 | **20** |
+
+**26 characters survives; 16 does not.** BBC BASIC has 14 labels longer than
+16, so a 16-character limit would break real code -- but the *key* can clamp
+the length at 8 without limiting the label, which is what was measured. (For
+reference, ez80asm allows 64 and zap allows 26, a known incompatibility that
+these two programs never reach.)
+
+Probes per reference, over 1,620 distinct labels and 3,618 references:
+
+| scheme | buckets used | max chain | probes |
+|---|---|---|---|
+| first x length<=8 (208) | 133 | 67 | 12.0 |
+| first x length<=16 (416) | 194 | 67 | 11.3 |
+| first16 x length<=16 (256, one byte) | 141 | 80 | 15.3 |
+| first x second (676) | 199 | 67 | 11.1 |
+| Pearson 8-bit (256) | 255 | 14 | 4.2 |
+| Pearson 16-bit (8192) | 1109 | 6 | 1.3 |
+| **first \| last \| length, powers of two (8192)** | 879 | 19 | 1.7 |
+
+Two things to take from it.
+
+**The first two letters carry almost no entropy.** Assembly labels cluster hard
+on prefixes -- `ASC_TO_NUMBER1..4`, `CRTONULL`/`CRTONULL0` -- so first-letter
+and first-two-letter schemes leave most buckets empty and run chains of 67 to
+80. It is the **last** character plus the length that discriminates.
+
+**Probes are the wrong metric.** Pearson has fewer of them, and still loses,
+because hashing is itself a walk over the string. Counting every character
+touched end to end -- the hash *and* the comparisons:
+
+| | compare chars | hash chars | total |
+|---|---|---|---|
+| bbcbasic, Pearson 16-bit (8192) | 5.07 | 5.1 | 10.2 |
+| bbcbasic, Pearson 8-bit (256) | 8.02 | 5.1 | 13.1 |
+| bbcbasic, **first \| last \| length** | 6.31 | **0** | **6.3** |
+| rokky, Pearson 16-bit (8192) | 5.53 | 7.2 | 12.8 |
+| rokky, **first \| last \| length** | 5.96 | **0** | **6.0** |
+
+The structural key touches **40 to 55% fewer characters**, and the Pearson
+figures are generous: a 16-bit Pearson is two table lookups per character, so
+its hash column is really double what is shown.
+
+The compare penalty is real and small. Everything in a structural bucket shares
+its first character, last character and length, so a comparison cannot fail
+fast -- `ASC_TO_NUMBER1` against `ASC_TO_NUMBER2` is thirteen characters before
+it rejects. That costs 1.2 characters per lookup against a hash that costs 5 to
+7.
+
+**Building the index without a multiply.** `first << 8 | last << 3 | length` is
+constructible byte-wise -- the high byte is the first character masked to 5
+bits, the low byte is a 32-entry table lookup for `last << 3` OR-ed with the
+clamped length. No shift, so no call. This matters: a constant shift by two is
+`call __ishl` on this chip.
+
+**A perfect hash is not available.** Labels are discovered while assembling, so
+there is no key set to build one over. Perfect hashing works for a closed set,
+which is exactly what dzap already does for mnemonics and registers -- that
+part is done and is not what labels need.
+
+**What would make this wrong.** Two programs is a thin sample, and a structural
+key is sensitive to naming style in a way a hash is not: `loop_1 ... loop_99`
+would cluster on the last character. Its worst chain is 19 against Pearson's 6.
+8,192 buckets is also 24 KB at three bytes an entry, which is in line with what
+zap's symbol table already spends but is not free. If a third program disagrees
+with these two, prefer the hash -- the guarantee is the point of it.
+
 **Where the address comes from.** The emitter already computes
 `DZ_ORG + (o - z->out)` for relative jumps. A label's value is the same
 expression at the point of definition, so nothing new is needed to know where

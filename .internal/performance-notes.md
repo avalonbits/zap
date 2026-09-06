@@ -430,3 +430,50 @@ frames, and every way of having fewer has cost more than it saved. Something
 that changed the shape -- parsing both operands in one pass over the line
 without a per-operand call, without a loop-carried destination pointer -- is
 the only thing not yet tried, and the two attempts closest to it both lost.
+
+## Row selection, and what it cost to find out
+
+Round taken 2026-09-06, on the two 256 KiB whole-instruction-set sources.
+`isa_real` went 5.34s to 5.06s and `isa_even` 5.70s to 5.36s, 5.2% and 6.0%,
+output byte-identical throughout. At 5.06s over 262,144 bytes that is **356
+cycles per source byte and 51.8 KiB/s** on `isa_real`, and 377 cycles per byte
+and 48.9 KiB/s on `isa_even`.
+
+**Counting first.** An instrumented host build over `isa_real` said 4.08 rows
+examined per instruction, of which **3.40 reached the register test** and only
+0.68 were disposed of by the mode test. The comment in the source claimed the
+opposite -- "all but one are rejected" -- and had been true before the rows
+were grouped by mode. The rows an instruction wastes time on are rows of the
+right shape with the wrong registers.
+
+Per mnemonic, `ld` is **62% of every register test in the file**: 5,502 of
+21,862 instructions, 8.38 rows each, 57 rows in 7 mode groups. Nothing else is
+above 4.4%.
+
+**What worked.**
+
+* Testing A alone and reaching B only if A survived: **2.2%**. A rejects 2.00
+  of the 3.40, so B is not computed for three rejections in five. The two 0/1
+  values that were ANDed together also stopped being materialised.
+* Lifting the modes into a group table: **1.9%**. Rejecting a mode used to cost
+  a whole turn of the row loop -- counter test, row pointer into `iy`, mode,
+  ccok, skip, next -- and is now a compare and a five-byte step. Rows reached
+  through a group carry no mode test at all.
+
+**What did not.** A class-refined mode, splitting each group by which register
+class the operand is in (r8 / r16 / index / index halves / I,R,MB). Simulated
+against the real walk with zero mismatches: full tests fall 3.40 to 1.11, but
+group rejections rise 0.68 to 5.75 and eat it. Refining only the B side is the
+best of the three variants (1.79 full, 2.22 rejections) and is worth about 2%
+against the group table -- not taken, for a class table, a duplicated row and a
+per-instruction code computation. The numbers are here if it is ever worth
+revisiting; the simulation harness is the one thing worth rebuilding first.
+
+One row of 322 spans two register classes (A = IX|IY, B = BC|DE|IX|IY), which
+is why any such scheme needs a row to be enterable from more than one class.
+
+**Where the time is now.** The stage decomposition was taken at 435 cycles per
+byte and said: read line 14%, classify mnemonic 6%, `mnemonic_of` 15%, parse
+operands 28%, `match_row` 27%, `emit_row` 10%. Both of the last two have since
+been cut, so the operand parse is now the largest thing left by some margin,
+and it is the stage with the most closed avenues -- see the section above.

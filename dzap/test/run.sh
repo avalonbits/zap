@@ -71,7 +71,15 @@ cli_check "no timing on failure" "$(printf '%s' "$bad" | grep -c '^Done in ')" 0
 # every name in a bucket has the same length. build_tables says so if that ever
 # stops being true; nothing else would notice until an instruction assembled as
 # a different one.
-cli_check "no two mnemonics share a bucket" \
+#
+# Note what this does *not* say. Buckets hold several mnemonics on purpose --
+# adc, add and and are all in the one keyed by `a` and length 3, and the
+# longest chain is twelve. What has to hold is that they agree on length, which
+# is what lets the compare skip it. The check was called "no two mnemonics
+# share a bucket" for some time, which is a different and false claim, and
+# reading it as true led to an afternoon of reasoning about a chain walk that
+# does not exist.
+cli_check "mnemonics in a bucket agree on length" \
     "$(printf '%s' "$out" | grep -c 'share a bucket')" 0
 
 # The mode groups are held in a fixed table, sized to the table that exists. An

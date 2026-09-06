@@ -280,6 +280,24 @@ int main(void) {
     check("empty source", emit(""), "");
     check("blank lines only", emit("\n\n   \n"), "");
 
+    /* A token too long to be a mnemonic must be rejected before it indexes
+     * the bucket table.
+     *
+     * The bucket is `letter_base[first] + length` and letter_base steps by
+     * NLEN, so a length of NLEN or more runs off the end of its own letter.
+     * Landing on another letter's bucket is harmless -- the first character
+     * cannot match, so same_ci rejects it -- but a mnemonic character that is
+     * not a letter has base 208, the last of the 27, and 208 + 8 is past the
+     * end of a 216-entry table. `_` and the digits are mnemonic characters,
+     * so the source can ask for that read.
+     *
+     * Both are here: the first only documents the aliasing, the second is the
+     * one that bites, under the sanitiser the host runner turns on. */
+    check("a long token lands on another letter's bucket harmlessly",
+          emit("  mmmmmmmmmmm\n"), "ERR");
+    check("a long token cannot index past the bucket table",
+          emit("  _________\n"), "ERR");
+
     /* Growing the output buffer.
      *
      * realloc is allowed to move the block, so out_grow has to carry the

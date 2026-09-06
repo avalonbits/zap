@@ -567,3 +567,65 @@ would run on the other 86% and 96%.
 
 `transform` is not the exception either -- it runs for 64% of isa_real and 75%
 of isa_even, so the `!= TR_NONE` test before it is buying less than it looks.
+
+## The mnemonic lookup, and the operand parse holding out again
+
+`mnemonic_of` had not moved across two measurements -- 0.84s both times -- and
+had two rounds of attention behind it. It moved this time, twice, and both were
+in the getting there rather than the comparing.
+
+    isa_real 4.36s -> 4.16s, 318 -> 292 cycles/byte, 56.6 -> 61.5 KiB/s
+    isa_even 4.68s -> 4.42s, 340 -> 311 cycles/byte, 52.9 -> 57.9 KiB/s
+
+**Both of bucket_of's steps were calls.** The clamp `n < NLEN ? n : NLEN - 1`
+is a *signed* compare, which is eleven instructions and a `call pe, __setflag`
+to fix the flags up on overflow. And `bucket_head[b]` is a subscript on an
+array of pointers, so it is b times three, and three is a call to __imulu.
+
+A token of eight characters or more is not a mnemonic, so the clamp became an
+unsigned rejection. The multiply needed the element size to change: **every
+portable way of writing the subscript keeps the call** -- byte index, unsigned
+index, scaled pointer arithmetic, all measured -- and what removes it is a
+power-of-two size, so the slot carries a pad byte. Worth 1.8% and 2.1%.
+
+`b + b + b` on a cast pointer also removes it and is wrong: a pointer is eight
+bytes on the host, where the tests run. That cost a round trip through a failing
+host test to find.
+
+**same_ci was re-deriving what the bucket had settled.** It compared character
+zero, which letter_base has already matched case-insensitively, and it folded
+both sides when every name in the table is lower case. At 4.15 characters
+compared per lookup that was a fifth of the work. Worth 2.8% and 3.5%.
+
+The chain itself is not the problem and never was: **1.44 candidates per lookup**
+on isa_real, 2.09 on isa_even.
+
+### A shift is a call too
+
+Removing the __imulu put a `call __ishl` in its place -- the backend lowers even
+a constant shift by two to a helper. Writing it as `b += b; b += b` does not
+help: LLVM canonicalises the adds back into a shift first. Any index-to-pointer
+scaling costs one such call, so the win available was trading the expensive
+helper for the cheap one, and that is what the 1.8% is. Getting to zero needs a
+stride of one byte, which means storing indices, which needs a scale to turn
+back into a pointer. There is no arrangement without one.
+
+### The operand parse, two more closed doors
+
+Counted over isa_real: **82% of operands are registers**, 13% immediates, 15%
+parenthesised, 5% nothing. Of the immediates, 66% hex and 30% decimal, and
+**0.00% are negative** in either corpus.
+
+* **A negate the compiler cannot speculate: +1.0%.** `v = neg ? -v : v`
+  if-converts to an unconditional 24-bit negate -- a call to __ineg, and there
+  is no form of it that is not; `0 - v`, `~v + 1` and an explicit if all
+  compile the same. Moving it into a `noinline` helper does produce
+  `call nz, _negated`, so the common path pays one flag test instead of a call
+  -- and it is *slower*, because the allocator must spill around a call it
+  cannot prove will not happen. The spill costs more than the call it avoids.
+* **Holding `indirect` in a local: +0.5%, flat on isa_even.** The struct field
+  was already in a register; the local only added a slot.
+
+The parse resists for the reason it resisted before. Its cost is 82% register
+operands, and that path is a character scan, a switch and five stores, with
+nothing in it that is a call or a re-derivation.

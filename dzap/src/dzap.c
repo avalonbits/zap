@@ -288,7 +288,32 @@ struct insninfo {
 };
 
 static insninfo insntab[512];
-static const insninfo* bucket_head[NBUCKET];
+/* A bucket head, padded so that the array's element size is a power of two.
+ *
+ * The pad byte is the whole point. `bucket_head[b]` on a bare array of
+ * pointers is b times three, and three is a call to __imulu -- MLT is 8-bit
+ * and this is an int, and the compiler will not strength-reduce it or use MLT
+ * for a 24-bit operand. Every portable way of writing the subscript keeps the
+ * call; what removes it is the size, because a power of two is a shift.
+ *
+ * Four bytes here and sixteen on the host, both powers of two, so the
+ * assertion holds either way and is what stops a field being added without
+ * noticing that the multiply came back. 216 slots, so this costs 216 bytes. */
+typedef struct {
+    const insninfo* head;
+    uint8_t pad;
+} bucketslot;
+
+_Static_assert((sizeof(bucketslot) & (sizeof(bucketslot) - 1)) == 0,
+               "bucket slot size is a power of two, so indexing is a shift");
+
+/* The one above passes on the host with the pad deleted, because a bare
+ * pointer is eight bytes there and eight is a power of two. This is the same
+ * intent stated so that the host can see it break. */
+_Static_assert(sizeof(bucketslot) > sizeof(const insninfo*),
+               "the pad is what makes the size a power of two");
+
+static bucketslot bucket_head[NBUCKET];
 
 /* What each row demands of the two operands' modes, in one value.
  *
@@ -355,6 +380,24 @@ static inline int bucket_of(char first, int n) {
     return letter_base[(uint8_t) first] + (n < NLEN ? n : NLEN - 1);
 }
 
+/* The same bucket, reached the way the hot path wants it.
+ *
+ * bucket_of clamps the length, and that clamp is a *signed* compare: eleven
+ * instructions and a `call pe, __setflag` to fix the flags up on overflow, on
+ * every line of the source. A token of eight characters or more is not a
+ * mnemonic -- the longest is five -- so the clamp can be a rejection instead,
+ * and unsigned it is one compare.
+ *
+ * build_tables keeps using bucket_of, where the cost does not matter and the
+ * clamp rather than the rejection is what the table wants. */
+static inline const insninfo* bucket_at(char first, unsigned n) {
+    if (n >= NLEN) {
+        return NULL;
+    }
+
+    return bucket_head[letter_base[(uint8_t) first] + n].head;
+}
+
 __attribute__((noinline)) static void build_tables(void) {
     if (tables_ready) {
         return;
@@ -372,13 +415,19 @@ __attribute__((noinline)) static void build_tables(void) {
     }
 
     for (int i = 0; i < NBUCKET; i++) {
-        bucket_head[i] = NULL;
+        bucket_head[i].head = NULL;
     }
     /* Backwards, so each bucket ends up in table order. */
     for (int i = isa_table_count - 1; i >= 0; i--) {
         const char* name = isa_table[i].name;
         int k = 0;
         while (name[k] != 0) {
+            /* same_ci folds the source and not the name, so a capital here
+             * would make that mnemonic unmatchable and nothing else would say
+             * why. The CLI test looks for this line. */
+            if (name[k] >= 'A' && name[k] <= 'Z') {
+                printf("isa table: %s is not lower case\r\n", name);
+            }
             k++;
         }
 
@@ -388,8 +437,8 @@ __attribute__((noinline)) static void build_tables(void) {
         ins->count = isa_table[i].count;
 
         const int b = bucket_of(name[0], k);
-        ins->next = bucket_head[b];
-        bucket_head[b] = ins;
+        ins->next = bucket_head[b].head;
+        bucket_head[b].head = ins;
     }
 
     /* mnemonic_of compares n characters and does not check the length, which
@@ -400,7 +449,7 @@ __attribute__((noinline)) static void build_tables(void) {
      * Both of those are somebody else's decision to change, so it is checked
      * here rather than assumed, and the CLI test looks for this line. */
     for (int b = 0; b < NBUCKET; b++) {
-        for (const insninfo* x = bucket_head[b]; x != NULL; x = x->next) {
+        for (const insninfo* x = bucket_head[b].head; x != NULL; x = x->next) {
             for (const insninfo* y = x->next; y != NULL; y = y->next) {
                 if (x->len != y->len) {
                     printf("isa table: %s and %s share a bucket\r\n",
@@ -493,9 +542,18 @@ __attribute__((noinline)) static void build_tables(void) {
     }
 }
 
-static inline bool same_ci(const char* a, const char* b, int n) {
-    for (int i = 0; i < n; i++) {
-        if (((a[i] | 0x20)) != ((b[i] | 0x20))) {
+/* Two things this does not do, because the bucket already did them.
+ *
+ * It starts at 1. The bucket is chosen by letter_base[first], which maps 'a'
+ * and 'A' to the same base, so every candidate in the chain already agrees
+ * with the source on its first character -- comparing it again was a fifth of
+ * the characters compared, at 4.15 per lookup over isa_real.
+ *
+ * And it folds one side, not two. Every name in the table is lower case,
+ * checked when the table is built, so only the source needs the OR. */
+static inline bool same_ci(const char* name, const char* s, int n) {
+    for (int i = 1; i < n; i++) {
+        if (name[i] != (s[i] | 0x20)) {
             return false;
         }
     }
@@ -508,7 +566,7 @@ static inline bool same_ci(const char* a, const char* b, int n) {
  * leaves one or two candidates, so the compare loop it replaced was two or
  * three characters long, and building the packed key cost more than that. */
 static const insninfo* mnemonic_of(const char* s, int n) {
-    for (const insninfo* ins = bucket_head[bucket_of(s[0], n)]; ins != NULL;
+    for (const insninfo* ins = bucket_at(s[0], (unsigned) n); ins != NULL;
          ins = ins->next) {
         /* No length test. The bucket is keyed by first character *and*
          * length, and the clamp at NLEN is never reached because the longest

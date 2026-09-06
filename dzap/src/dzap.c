@@ -657,6 +657,15 @@ static bool reg_of_text(const char* s, int n, dop* op, bool* is_cc,
         }
     }
 
+    /* af', which the table holds as plain R_AF -- the row for `ex af, af'` is
+     * R_AF on both sides, so the apostrophe distinguishes nothing here and
+     * only has to be accepted. */
+    if (n == 3 && a == 'a' && (s[1] | 0x20) == 'f' && s[2] == '\'') {
+        SETREG(R_AF, 3);
+
+        return true;
+    }
+
     if (n == 3 && a == 'i') {
         const char b = (char) (s[1] | 0x20);
         const char c = (char) (s[2] | 0x20);
@@ -848,6 +857,12 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
         while (name_ch(*p)) {
             p++;
         }
+        /* The shadow accumulator is a register whose name ends in a character
+         * no other token may contain, so it is taken here rather than given a
+         * class of its own. */
+        if (*p == '\'') {
+            p++;
+        }
         const int n = (int) (p - s);
 
         bool is_cc = false;
@@ -866,7 +881,13 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
             while (is_space_ch(*p)) {
                 p++;
             }
-            if (op->indirect && (*p == '+' || *p == '-')) {
+            /* Not only inside parentheses. `lea bc, ix+5` and `pea ix+5`
+             * take a displacement on a bare register -- their rows ask for
+             * NOREQ with F_DISPA or F_DISPB, not INDIRECT -- and requiring
+             * the parenthesis here is why twelve forms of the reference's own
+             * corpus did not assemble. Row selection rejects the combinations
+             * that are not real, so nothing else has to. */
+            if (*p == '+' || *p == '-') {
                 const bool neg = *p == '-';
                 p++;
                 while (is_space_ch(*p)) {
@@ -940,10 +961,20 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
             return true;
         }
 
-        /* Not a register, and there are no names here to be anything else. */
-        z->err = "unknown operand";
-
-        return false;
+        /* Not a register -- but it can still be a literal.
+         *
+         * A hexadecimal constant written with a trailing h begins with one of
+         * a..f, so `ld hl, aabbcch` arrives here looking exactly like a name.
+         * num_parse has always known the suffix forms; the operand simply
+         * never reached it, and this said "unknown operand" instead. Forty
+         * forms of the reference's own corpus were wrong for as long as that
+         * was true, and the corpus could not say so because it was filtered
+         * through dzap.
+         *
+         * Rewinding is all it takes: num_ch admits letters, so the literal
+         * scan below reads the whole token, and the closing paren of an
+         * indirect operand is handled there too. */
+        p = s;
     }
 
     /* A literal. */

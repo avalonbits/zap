@@ -1,20 +1,25 @@
-; Every instruction form in the reference's own opcode corpus that dzap can
-; assemble: test/corpus/Opcodes and test/corpus/Addressing, with the lines
-; needing features dzap does not have yet removed -- directives, .lil/.sis
-; suffixes, labels, expressions. About eleven hundred forms, including the
-; undocumented set.
+; Every instruction form in the reference's own opcode corpus that ez80asm
+; assembles: test/corpus/Opcodes and test/corpus/Addressing, with labels,
+; directives, ADL suffixes and symbolic operands removed because dzap has none
+; of those features yet. Plus negative displacements and immediates, which the
+; corpus itself barely covers.
+;
+; KEPT BY WHAT THE REFERENCE ACCEPTS, NOT BY WHAT DZAP ACCEPTS. The earlier
+; version of this file was filtered through dzap, which made it a record of
+; what dzap already got right and silently dropped anything it got wrong -- jr
+; and djnz were wrong for the whole life of that file and it could not say so.
 ;
 ; This is breadth the unit tests cannot reach, and it is what makes a change to
 ; row selection safe to make: `ld` alone has 57 rows, and a reordering that
 ; picks the wrong one for some rare addressing mode shows up here and nowhere
 ; else. Compared against ez80asm by test/run.sh like every other case file.
 ;
-; Regenerate by filtering the corpus through dzap and keeping what it accepts.
-; Do not edit by hand.
+; Regenerate with dzap/test/cases/gen_opcodes.sh. Do not edit by hand.
+; 1174 forms, from 1538 candidates.
 
-
+    ld a,(aabbh)
+    ld a,(aabbh)
     jp (hl)
-
     jp (hl)
 	ADC A,(HL)
 	ADC A,IXH
@@ -218,6 +223,15 @@
 	bit 5,l
 	bit 6,l
 	bit 7,l
+ call nz,aabbcch
+ call z,aabbcch
+ call nc,aabbcch
+ call c,aabbcch
+ call po,aabbcch
+ call pe,aabbcch
+ call p,aabbcch
+ call m,aabbcch
+ call aabbcch
  ccf
  cp a,(hl)
  cp a, ixh
@@ -239,7 +253,6 @@
  cpi
  cpir
  cpl
-	;.assume adl=1
 	daa
 	dec (hl)
 	dec ixh
@@ -263,6 +276,7 @@
 	dec sp
 	di
 	ei
+	ex af, af'
 	ex de, hl
 	ex (sp), hl
 	ex (sp), ix
@@ -407,13 +421,23 @@
 	ld (iy), iy
 	ld (ix), iy
 	ld (iy), ix
+	jp nz, aabbcch
+	jp z, aabbcch
+	jp nc, aabbcch
+	jp c, aabbcch
+	jp po, aabbcch
+	jp pe, aabbcch
+	jp p, aabbcch
+	jp m, aabbcch
 	jp (hl)
 	jp (ix)
 	jp (iy)
+	jp aabbcch
 	ld a, i
 	ld a, (ix+5)
 	ld a, (iy+5)
 	ld a, mb
+	ld a, (aabbcch)
 	ld a, r
 	ld a, (bc)
 	ld a, (de)
@@ -472,6 +496,10 @@
 	ld iy, (ix+5)
 	ld ix, (iy+5)
 	ld iy, (iy+5)
+	ld ix, aabbcch
+	ld iy, aabbcch
+	ld ix, (aabbcch)
+	ld iy, (aabbcch)
 	ld (ix+5), ix
 	ld (ix+5), iy
 	ld (iy+5), ix
@@ -499,6 +527,13 @@
 	ld (iy+5), de
 	ld (iy+5), hl
 	ld mb, a
+	ld (aabbcch), a
+	ld (aabbcch), ix
+	ld (aabbcch), iy
+	ld (aabbcch), bc
+	ld (aabbcch), de
+	ld (aabbcch), hl
+	ld (aabbcch), sp
 	ld r, a
 	ld a, (hl)
 	ld b, (hl)
@@ -558,16 +593,34 @@
 	ld bc, (iy+5)
 	ld de, (iy+5)
 	ld hl, (iy+5)
+	ld bc, aabbcch
+	ld de, aabbcch
+	ld hl, aabbcch
+	ld bc, (aabbcch)
+	ld de, (aabbcch)
+	ld hl, (aabbcch)
 	ld (bc), a
 	ld (de), a
 	ld (hl), a
 	ld sp, hl
 	ld sp, ix
 	ld sp, iy
+	ld sp, aabbcch
+	ld sp, (aabbcch)
 	ldd
 	lddr
 	ldi
 	ldir
+	lea ix, ix+5
+	lea iy, ix+5
+	lea ix, iy+5
+	lea iy, iy+5
+	lea bc, ix+5
+	lea de, ix+5
+	lea hl, ix+5
+	lea bc, iy+5
+	lea de, iy+5
+	lea hl, iy+5
 	mlt bc
 	mlt de
 	mlt hl
@@ -625,6 +678,8 @@
 	outd2
 	outi
 	outi2
+	pea ix+5
+	pea iy+5
 	pop af
 	pop ix
 	pop iy
@@ -955,7 +1010,6 @@
 	xor a, e
 	xor a, h
 	xor a, l
-; Test if all Z180 opcodes pass the CPU filter. No need for a binary test, as these instructions are identical to the EZ80's opcodes
     IN0 B,(0)
     IN0 D,(0)
     IN0 H,(0)
@@ -989,173 +1043,104 @@
     MLT DE
     MLT HL
     MLT SP
-; Testing only the undocumented Z80 instructions.
-    inc ixh ; DD 24
-    inc ixl ; DD 2C
-    inc iyh ; FD 24
-    inc iyl ; FD 2C
-
-
-
-    ld ixh,b ; DD 60
-    ld ixh,c ; DD 61
-    ld ixh,d ; DD 62
-    ld ixh,e ; DD 63
-    ld ixh,ixh ; DD 64
-    ld ixh,ixl ; DD 65
-    ld ixh,a ; DD 67
-
-    ld ixl,b ; FD 60
-    ld ixl,c ; FD 61
-    ld ixl,d ; FD 62
-    ld ixl,e ; FD 63
-    ld ixl,ixh ; FD 64
-    ld ixl,ixl ; FD 65
-    ld ixl,a ; FD 67
-
-    ld b,ixh ; 44
-    ld b,ixl ; 45
-    ld c,ixh ; 4C
-    ld c,ixl ; 4D
-    ld d,ixh ; 54
-    ld d,ixl ; 55
-    ld e,ixh ; 5C
-    ld e,ixl ; 5D
-
-    ld ixh,0 ; 26
-    ld ixl,0 ; 2E
-
-    ld a,ixh ; 7C
-    ld a,ixl ; 7D
-
-    inc ixh ; 24
-    inc ixl ; 2C
-
-    dec ixh ; 25
-    dec ixl ; 2D
-
-    add a,ixh ; 84
-    add a,ixl ; 85
-    adc a,ixh ; 8C
-    adc a,ixl ; 8D
-
-    sub ixh ; 94
-    sub ixl ; 95
-    sbc a,ixh ; 9C
-    sbc a,ixl ; 9D
-    and ixh ; A4
-    and ixl ; A5
-    xor ixh ; AC
-    xor ixl ; AD
-    or ixh ; B4
-    or ixl ; B5
-    cp ixh ; BC
-    cp ixl ; BD
-
-    inc iyh;24
-    dec iyh;25
-    ld iyh,0;26
-    inc iyl;2C
-    dec iyl;2D
-    ld iyl,0;2E
-
-    ld b,iyh;44
-    ld b,iyl;45
-    ld c,iyh;4C
-    ld c,iyl;4D
-    ld d,iyh;54
-    ld d,iyl;55
-    ld e,iyh;5C
-    ld e,iyl;5D
-
-    ld iyh,b;60
-    ld iyh,c;61
-    ld iyh,d;62
-    ld iyh,e;63
-    ld iyh,iyh;64
-    ld iyh,iyl;65
-    ld iyh,a;67
-    ld iyl,b;68
-    ld iyl,c;69
-    ld iyl,d;6A
-    ld iyl,e;6B
-    ld iyl,iyh;6C
-    ld iyl,iyl;6D
-    ld iyl,a;6F
-
-    add a,iyh;84
-    add a,iyl;85
-    adc a,iyh;8C
-    adc a,iyl;8D
-    ld a,iyh;7C
-    ld a,iyl;7D
-    sub iyh;94
-    sub iyl;95
-    sbc a,iyh;9C
-    sbc a,iyl;9D
-    and iyh;A4
-    and iyl;A5
-    xor iyh;AC
-    xor iyl;AD
-    or iyh;B4
-    or iyl;B5
-    cp iyh;BC
-    cp iyl;BD
-
-    ; DDCB
-
-
-
-
-
-
-
-
-
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    ; FDCB
-
-
-
-
-
-
-
-
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-; Test avoiding spaces at end of file using mixed DS/ALIGN statements
-        ld hl, 0x40700; should be exactly the same as previous
-        ld hl, 0x40300; should be exactly the same as previous
-        
+    inc ixh
+    inc ixl
+    inc iyh
+    inc iyl
+    ld ixh,b
+    ld ixh,c
+    ld ixh,d
+    ld ixh,e
+    ld ixh,ixh
+    ld ixh,ixl
+    ld ixh,a
+    ld ixl,b
+    ld ixl,c
+    ld ixl,d
+    ld ixl,e
+    ld ixl,ixh
+    ld ixl,ixl
+    ld ixl,a
+    ld b,ixh
+    ld b,ixl
+    ld c,ixh
+    ld c,ixl
+    ld d,ixh
+    ld d,ixl
+    ld e,ixh
+    ld e,ixl
+    ld ixh,0
+    ld ixl,0
+    ld a,ixh
+    ld a,ixl
+    inc ixh
+    inc ixl
+    dec ixh
+    dec ixl
+    add a,ixh
+    add a,ixl
+    adc a,ixh
+    adc a,ixl
+    sub ixh
+    sub ixl
+    sbc a,ixh
+    sbc a,ixl
+    and ixh
+    and ixl
+    xor ixh
+    xor ixl
+    or ixh
+    or ixl
+    cp ixh
+    cp ixl
+    inc iyh
+    dec iyh
+    ld iyh,0
+    inc iyl
+    dec iyl
+    ld iyl,0
+    ld b,iyh
+    ld b,iyl
+    ld c,iyh
+    ld c,iyl
+    ld d,iyh
+    ld d,iyl
+    ld e,iyh
+    ld e,iyl
+    ld iyh,b
+    ld iyh,c
+    ld iyh,d
+    ld iyh,e
+    ld iyh,iyh
+    ld iyh,iyl
+    ld iyh,a
+    ld iyl,b
+    ld iyl,c
+    ld iyl,d
+    ld iyl,e
+    ld iyl,iyh
+    ld iyl,iyl
+    ld iyl,a
+    add a,iyh
+    add a,iyl
+    adc a,iyh
+    adc a,iyl
+    ld a,iyh
+    ld a,iyl
+    sub iyh
+    sub iyl
+    sbc a,iyh
+    sbc a,iyl
+    and iyh
+    and iyl
+    xor iyh
+    xor iyl
+    or iyh
+    or iyl
+    cp iyh
+    cp iyl
+        ld hl, 0x40700
+        ld hl, 0x40300
     ld a,b
     ld a,b
     ld a,b
@@ -1168,11 +1153,41 @@
     ld a,b
     ld a,b
     ld a,b
-; Testing relocation addresses using the .relocate directive
     jp $50000
-
-    ld a,0          ; 50000 / 50001
-    ld a,0          ; 50002 / 50003
-    ld a,0          ; 50004 / 50005
-
-
+    ld a,0
+    ld a,0
+    ld a,0
+	ld a,(ix-1)
+	ld a,(ix-128)
+	ld a,(iy-1)
+	ld a,(iy-128)
+	ld (ix-1),a
+	ld (iy-128),b
+	ld b,(ix-64)
+	ld (ix-7),h
+	adc a,(ix-3)
+	add a,(iy-9)
+	sub (ix-2)
+	and (iy-5)
+	or (ix-100)
+	xor (iy-33)
+	cp (ix-17)
+	inc (iy-4)
+	dec (ix-11)
+	bit 0,(ix-1)
+	set 7,(iy-128)
+	res 3,(ix-99)
+	rlc (iy-8)
+	srl (ix-6)
+	ld a,-1
+	ld b,-128
+	ld hl,-1
+	ld de,-2
+	ld bc,-32768
+	adc a,-5
+	sub -7
+	cp -1
+	and -16
+	or -2
+	xor -128
+	add a,-100

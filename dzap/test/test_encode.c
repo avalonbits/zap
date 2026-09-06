@@ -213,6 +213,35 @@ int main(void) {
         { "jr 0x04007F", "18 7D" },
         { "jr 0x03FF82", "18 80" },
 
+        /* A hexadecimal literal written with a trailing h begins with a
+         * letter, so the operand parser saw a name and said "unknown
+         * operand". num_parse had always understood the suffix; nothing ever
+         * reached it. Forty forms of the reference's own corpus were wrong for
+         * as long as that was true. */
+        { "ld hl, aabbcch", "21 CC BB AA" },
+        { "ld a, (aabbh)", "3A BB AA 00" },
+        { "ld a, 0ffh", "3E FF" },
+
+        /* lea and pea take a displacement on a bare register: their rows ask
+         * for NOREQ with F_DISPA or F_DISPB, not INDIRECT, and the parser
+         * looked for a displacement only inside parentheses. */
+        { "lea bc, ix+5", "ED 02 05" },
+        { "lea iy, ix+5", "ED 55 05" },
+        { "pea ix+5", "ED 65 05" },
+        { "pea iy-3", "ED 66 FD" },
+
+        /* The shadow accumulator, which the table holds as plain R_AF -- the
+         * row is R_AF on both sides, so the apostrophe only has to be
+         * accepted. */
+        { "ex af, af'", "08" },
+
+        /* Negative literals, which reach the emitter through a branch that
+         * negates the value. The reference corpus has exactly one negative
+         * displacement and no negative immediate at all. */
+        { "ld hl, -1", "21 FF FF FF" },
+        { "ld a, -128", "3E 80" },
+        { "ld a, (ix-128)", "DD 7E 80" },
+
         { "im 2", "ED 5E" },
         { "rst 0x18", "DF" },
         { "out (0xFE), a", "D3 FE" },

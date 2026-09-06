@@ -1492,11 +1492,13 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
     }
 
     /* A register or flag? */
+    const char* known_end = NULL;
     if ((cl & C_ALPHA) != 0) {
         const char* s = p;
         while (name_ch(*p)) {
             p++;
         }
+        const char* const nend = p;
         /* The shadow accumulator is a register whose name ends in a character
          * no other token may contain, so it is taken here rather than given a
          * class of its own. */
@@ -1612,19 +1614,41 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
          *
          * Rewinding is all it takes: num_ch admits letters, so the literal
          * scan below reads the whole token, and the closing paren of an
-         * indirect operand is handled there too. */
+         * indirect operand is handled there too.
+         *
+         * What it does not take is scanning the token again. C_NUM contains
+         * every character C_NAME does and three more -- $, # and % -- so the
+         * literal scan below re-reads exactly the characters just read, and
+         * then stops in the same place, unless the character that ended the
+         * name run is one of those three. That is one class test to find out,
+         * against a second pass over the whole token, and the token here is a
+         * label: labels are most of what reaches this line and they are the
+         * longest thing an operand can be.
+         *
+         * The apostrophe needs no special case. It is not a C_NUM character
+         * either, so the literal scan stopped in front of it too; handing over
+         * the end of the name run rather than the position after the
+         * apostrophe is what the rewind was already doing. */
+        if (!num_ch(*nend)) {
+            known_end = nend;
+        }
         p = s;
     }
 
     /* A literal. */
     {
         const char* s = p;
-        if (*p == '-' || *p == '+') {
-            p++;
-        }
-        /* Bounded, for the reason given at the displacement scan above. */
-        while (p < e && num_ch(*p)) {
-            p++;
+        if (known_end != NULL) {
+            /* Already scanned, by the register path that rewound to here. */
+            p = known_end;
+        } else {
+            if (*p == '-' || *p == '+') {
+                p++;
+            }
+            /* Bounded, for the reason given at the displacement scan above. */
+            while (p < e && num_ch(*p)) {
+                p++;
+            }
         }
         const int n = (int) (p - s);
         bool neg = false;

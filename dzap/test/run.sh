@@ -96,6 +96,19 @@ trail=$("$OUT/dzap" "$OUT/trail.s" "$OUT/trail.bin" 2>&1 | tr -d '\r' || true)
 cli_check "trailing text is reported by the line loop" \
     "$(printf '%s' "$trail" | grep -c 'line 1: unexpected text after the instruction')" 1
 
+# The token a name run hands to the literal path.
+#
+# A name that is not a register is re-read as a literal, and that second scan
+# is skipped when it would read the same characters -- which it does unless the
+# character that ended the name run is one of $, # or %, the three C_NUM has
+# that C_NAME does not. Skipping it unconditionally still errors on `ab$cd`,
+# just as the wrong thing: the token becomes `ab` and `$cd` is trailing text.
+# Only the message tells the two apart, so only the message can test it.
+printf '  ld a, ab$cd\n' > "$OUT/dollar.s"
+dollar=$("$OUT/dzap" "$OUT/dollar.s" "$OUT/dollar.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a name run stopping at \$ is scanned as one token" \
+    "$(printf '%s' "$dollar" | grep -c 'line 1: unknown label')" 1
+
 # The reference itself, on everything in test/cases. Unit tests pin the cases a
 # refactor is likely to break; this pins the whole of what dzap claims to do
 # against the assembler it has to agree with, so a case nobody thought to write

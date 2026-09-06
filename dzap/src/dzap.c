@@ -85,6 +85,8 @@
  * case it has to be evaluated again later. Nothing here is ever evaluated
  * twice, so the whole field goes, and with it the cost of having an operand at
  * all: two of these are built for every instruction in the source. */
+typedef struct sym sym;
+
 typedef struct _dop {
     /* The register set, split into byte planes and kept that way.
      *
@@ -110,6 +112,12 @@ typedef struct _dop {
     uint8_t mode;
     bool indirect;
     int disp;
+    /* The label this operand named, when it is not defined yet. imm holds
+     * nothing useful in that case; the emitter records a fixup once it knows
+     * where the bytes land, and run patches them all at the end. NULL on every
+     * operand that is not a forward reference, which is most of them. */
+    const sym* fwd;
+
     bool has_imm;
 
     /* An instruction's immediate is at most three bytes -- a 24-bit address in
@@ -132,6 +140,222 @@ typedef struct _dop {
  * three-byte immediates. */
 #define OUT_MAX_INSN 12
 
+/* ------------------------------------------------------------- symbols */
+
+/* A label, and where it turned out to be.
+ *
+ * The name is copied. Source lines live in the reader's buffer and are gone
+ * as soon as it refills, so a pointer into one is a pointer into the next
+ * line by the time a forward reference is resolved.
+ */
+typedef struct symblock symblock;
+
+struct sym {
+    const sym* next;
+
+    /* An offset into the name arena, not a pointer into it.
+     *
+     * The arena is realloc'd in blocks, and a pointer into it would have to be
+     * rebased on every growth -- for every symbol and every fixup. That rebase
+     * cannot be tested: glibc extends the block in place, so the pointer does
+     * not move, and deleting the rebase failed no check even with six hundred
+     * long labels. An offset does not care whether the block moved. */
+    int nameoff;
+    uint8_t len;
+
+    /* A name is interned on first sight, defined or not, so a reference to a
+     * label that has not appeared yet still gets an entry -- and the fixup
+     * points at the entry rather than carrying another copy of the name.
+     *
+     * Copying it per reference was the first shape and it does not fit: the
+     * labelled benchmark has 2,161 definitions and 4,318 references, and at
+     * 26 characters each that is 152 KB of text for 56 KB of distinct names.
+     * The Agon ran out of memory two thirds of the way through. Interning also
+     * removes the lookup at resolve time; the address is simply there. */
+    bool defined;
+    int addr;
+};
+
+/* Buckets keyed by first character, last character and length.
+ *
+ * Not a hash: a hash is a walk over the name, and the scan that found the
+ * token has already walked it. Measured over 25 real Agon programs -- 14,063
+ * labels and 30,629 resolved references -- this touches 11.8 characters per
+ * lookup against a Pearson hash's 17.5, because Pearson wins on probes and
+ * loses on having to read the name twice. The workings are in
+ * .internal/labels-plan.md.
+ *
+ * The first two characters would be the obvious key and are a bad one:
+ * assembly labels cluster hard on prefixes -- ASC_TO_NUMBER1..4 -- so a
+ * first-two-letters key leaves most buckets empty and runs chains of 67. It
+ * is the *last* character and the length that discriminate.
+ *
+ * 2,048 buckets at four bytes is 8 KB. 8,192 was measured slightly better,
+ * 10.8 characters against 11.8, and costs 32 KB; the smaller table is the
+ * starting point and the trade is recorded rather than assumed. */
+#define NSYMB 2048
+
+typedef struct {
+    sym* head;
+    uint8_t pad;        /* see bucketslot: a power of two is a shift */
+} symslot;
+
+_Static_assert((sizeof(symslot) & (sizeof(symslot) - 1)) == 0,
+               "symbol slot size is a power of two, so indexing is a shift");
+_Static_assert(sizeof(symslot) > sizeof(sym*),
+               "the pad is what makes the size a power of two");
+
+/* Two ways of keying it, and the measurement that chose between them.
+ *
+ * Build with -DDZ_SYMHASH=0 for the other one. Both index the same 2,048
+ * buckets, so the only difference is how the bucket is chosen and what
+ * choosing it costs.
+ *
+ * The plan said the structural key -- first character, last character, length
+ * -- because a hash is a walk over the name and the scan has already walked
+ * it, and over 25 real programs it touches 11.8 characters a lookup against
+ * Pearson's 17.5. Measured on the Agon, on seven sources of identical size,
+ * that reasoning does not survive:
+ *
+ *     source                       structural   Pearson
+ *     no labels at all                  1.60s     1.58s
+ *     spread names, definitions         1.82s     1.72s
+ *     spread names, backward refs       1.94s     1.96s
+ *     spread names, forward refs        2.00s     2.02s
+ *     four-character names              1.76s     1.60s
+ *     fifteen characters, word list     1.92s     1.72s
+ *     clustered names                   5.98s     1.84s
+ *
+ * Pearson is 1% worse on the two rows where the structural key is at its best
+ * -- reference-heavy sources whose names spread over all three of its inputs
+ * -- and better everywhere else, by 5 to 10% on ordinary names and by **69%**
+ * on the last row. That row is 699 labels in one bucket, reached by naming
+ * them `lbl_0001` upward, which is a convention rather than an attack.
+ *
+ * One percent against a factor of three is not a close decision. What the
+ * average missed is that the tail is reachable by accident: this file's own
+ * benchmark generator produced it on the first attempt.
+ *
+ * The comparison was run twice. The first Pearson table was `i * 167 + 13`,
+ * which is a permutation -- 167 is odd, so it visits every value -- and a poor
+ * hash, because a linear table leaves the rounds correlated: it used 234 of
+ * the 2,048 buckets against a shuffle's 602. It still won by three times,
+ * which says more about the key it replaced than about the table.
+ *
+ * The structural key is kept, callable and correct, because the argument for
+ * it is sound and only the distribution defeats it -- if names are ever known
+ * to be well spread it is the cheaper key. */
+#ifndef DZ_SYMHASH
+#define DZ_SYMHASH 1
+#endif
+
+#if DZ_SYMHASH
+
+/* A permutation of 0..255, which is what makes a Pearson hash a hash.
+ *
+ * It has to be a *shuffled* one. `i * 167 + 13` is a permutation too -- 167 is
+ * odd, so it visits every value -- and it is a poor hash, because a linear
+ * table leaves the rounds correlated: 700 labels of one stem used 234 of the
+ * 2,048 buckets with a worst chain of 8, against 602 and 3 for a shuffle. It
+ * still beat the key it replaced by three times, which says more about that
+ * key than about this table.
+ *
+ * Built rather than written out, so there is no 256-byte literal in the
+ * binary, and deterministic so both passes and every run agree. */
+static uint8_t pearson[256];
+
+static void build_pearson(void) {
+    for (int i = 0; i < 256; i++) {
+        pearson[i] = (uint8_t) i;
+    }
+    uint32_t seed = 12345;
+    for (int i = 255; i > 0; i--) {
+        seed = seed * 1103515245u + 12345u;
+        const int j = (int) ((seed >> 16) % (uint32_t) (i + 1));
+        const uint8_t t = pearson[i];
+        pearson[i] = pearson[j];
+        pearson[j] = t;
+    }
+}
+
+/* Two passes, composed into eleven bits by writing the bytes rather than
+ * shifting: a shift by eight is `call __ishl` on this chip, and the whole
+ * point of the comparison is what the key costs. */
+static inline int sym_bucket(const char* name, int len) {
+    uint8_t h1 = 0;
+    uint8_t h2 = 0;
+    for (int i = 0; i < len; i++) {
+        const uint8_t c = (uint8_t) name[i];
+        h1 = pearson[h1 ^ c];
+        h2 = pearson[(uint8_t) (h2 ^ c ^ 0x5A)];
+    }
+    union {
+        int v;
+        uint8_t b[sizeof(int)];
+    } u;
+    u.v = 0;
+    u.b[0] = h1;
+    u.b[1] = (uint8_t) (h2 & 7);
+
+    return u.v;
+}
+
+#else
+
+/* The first character, the last and the length. Not a hash: a hash is a walk
+ * over the name and the scan that found the token has already walked it.
+ *
+ * The index is `f * 64 + l * 2 + (len > 6)`, and written that way it was three
+ * library calls: `* 64` is `call __ishl`, `len > 6` on a signed int is
+ * `call pe, __setflag`, and the function itself was not inlined. Composed a
+ * byte at a time from two small tables it is neither -- the same trick the hex
+ * parser uses, for the same reason.
+ *
+ * f is five bits and l is five bits, so the low byte holds (f & 3) * 64 plus
+ * l * 2 plus the length bit, which is at most 192 + 62 + 1, and the high byte
+ * holds f >> 2. Both come from tables because a shift is a call. */
+static const uint8_t f_lo[32] = {
+    0, 64, 128, 192, 0, 64, 128, 192, 0, 64, 128, 192, 0, 64, 128, 192,
+    0, 64, 128, 192, 0, 64, 128, 192, 0, 64, 128, 192, 0, 64, 128, 192,
+};
+static const uint8_t f_hi[32] = {
+    0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3,
+    4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7,
+};
+
+__attribute__((always_inline)) static inline int sym_bucket(const char* name,
+                                                            int len) {
+    const unsigned f = (unsigned) (uint8_t) name[0] & 31u;
+    const unsigned l = (unsigned) (uint8_t) name[len - 1] & 31u;
+    union {
+        int v;
+        uint8_t b[sizeof(int)];
+    } u;
+    u.v = 0;
+    u.b[0] = (uint8_t) (f_lo[f] + l + l + ((unsigned) len > 6u ? 1u : 0u));
+    u.b[1] = f_hi[f];
+
+    return u.v;
+}
+
+#endif
+
+/* A reference to a label that was not defined yet.
+ *
+ * dzap makes one pass and never looks at a line twice, which is where its
+ * speed comes from, so a forward reference cannot be resolved where it is
+ * read. The output is held in memory in full, so it is patched at the end
+ * instead -- which keeps the single pass and makes the cost of labels a line
+ * item that can be measured on its own.
+ */
+typedef struct {
+    const sym* target;  /* interned, so no name and no lookup to do */
+    uint8_t width;      /* 1, 2 or 3 bytes, or 0 for a relative displacement */
+    int off;            /* where in the output it goes */
+    int next_addr;      /* the address after the instruction, for a relative */
+    int line;           /* to report against, long after the line is gone */
+} fixup;
+
 typedef struct _dz {
     buf_reader rd;
 
@@ -152,9 +376,166 @@ typedef struct _dz {
     uint8_t* lim;   /* the last address at which a whole instruction still fits */
     int cap;
 
+    symslot* syms;      /* NSYMB buckets */
+    char* names;        /* arena: every label's text, copied */
+    int names_used;
+    int names_cap;
+    symblock* blocks;   /* symbol nodes, in blocks that never move */
+    int syms_used;      /* used in the newest block */
+    fixup* fixups;
+    int fix_used;
+    int fix_cap;
+
     int line;
     const char* err;
 } dz;
+
+/* ------------------------------------------------- symbols, continued */
+
+/* Grown in blocks rather than one allocation per label. A label is a few
+ * bytes and there are thousands of them; malloc per label would cost more in
+ * bookkeeping than the labels take. */
+#define NAMES_STEP  (8 * 1024)
+#define SYMS_STEP   512
+#define FIX_STEP    512
+
+/* Symbols are allocated in blocks that are never moved.
+ *
+ * A growing array would be simpler to write and needs every bucket chain
+ * rebuilt whenever it moves -- and that rebuild cannot be tested: glibc
+ * extends a growing block in place, so the array does not move, and deleting
+ * the rebuild fails no check even with six hundred labels. Code that only runs
+ * under an allocator that behaves differently is code nothing here can hold
+ * to account.
+ *
+ * A block list has no such path. The chains are pointers and stay pointers,
+ * and the only cost is one allocation per 512 labels. Names are an array
+ * because they are addressed by offset, which does not care if it moves. */
+struct symblock {
+    symblock* next;
+    sym nodes[SYMS_STEP];
+};
+
+static bool sym_room(dz* z, int len) {
+    if (z->syms_used == SYMS_STEP) {
+        symblock* b = (symblock*) malloc(sizeof(symblock));
+        if (b == NULL) {
+            return false;
+        }
+        b->next = z->blocks;
+        z->blocks = b;
+        z->syms_used = 0;
+    }
+    if (z->names_used + len > z->names_cap) {
+        int want = z->names_cap + NAMES_STEP;
+        while (z->names_used + len > want) {
+            want += NAMES_STEP;
+        }
+        char* grown = (char*) realloc(z->names, (size_t) want);
+        if (grown == NULL) {
+            return false;
+        }
+        z->names = grown;
+        z->names_cap = want;
+    }
+
+    return true;
+}
+
+/* Case-sensitive, unlike a mnemonic: the reference refuses `jp foo` against a
+ * label written FOO. */
+static const sym* sym_find(const dz* z, const char* name, int len) {
+    for (const sym* sp = z->syms[sym_bucket(name, len)].head; sp != NULL;
+         sp = sp->next) {
+        if (sp->len != (uint8_t) len) {
+            continue;
+        }
+        const char* text = &z->names[sp->nameoff];
+        int i = 0;
+        while (i < len && text[i] == name[i]) {
+            i++;
+        }
+        if (i == len) {
+            return sp;
+        }
+    }
+
+    return NULL;
+}
+
+/* The entry for a name, made if there is not one. */
+static sym* sym_intern(dz* z, const char* name, int len) {
+    sym* found = (sym*) sym_find(z, name, len);
+    if (found != NULL) {
+        return found;
+    }
+    if (!sym_room(z, len)) {
+        z->err = "out of memory for labels";
+
+        return NULL;
+    }
+
+    const int off = z->names_used;
+    for (int i = 0; i < len; i++) {
+        z->names[off + i] = name[i];
+    }
+    z->names_used += len;
+
+    sym* sp = &z->blocks->nodes[z->syms_used++];
+    sp->nameoff = off;
+    sp->len = (uint8_t) len;
+    sp->defined = false;
+    sp->addr = 0;
+
+    const int b = sym_bucket(name, len);
+    sp->next = z->syms[b].head;
+    z->syms[b].head = sp;
+
+    return sp;
+}
+
+static bool sym_define(dz* z, const char* name, int len, int addr) {
+    sym* sp = sym_intern(z, name, len);
+    if (sp == NULL) {
+        return false;
+    }
+    if (sp->defined) {
+        z->err = "label defined twice";
+
+        return false;
+    }
+    sp->defined = true;
+    sp->addr = addr;
+
+    return true;
+}
+
+/* Remembers a reference to a label that is not defined yet. The name is
+ * copied for the same reason a definition's is: the line it came from is
+ * gone by the time this is resolved. */
+static bool fix_add(dz* z, const sym* target, uint8_t width, int off,
+                    int next_addr) {
+    if (z->fix_used == z->fix_cap) {
+        const int want = z->fix_cap + FIX_STEP;
+        fixup* grown = (fixup*) realloc(z->fixups, (size_t) want * sizeof(fixup));
+        if (grown == NULL) {
+            z->err = "out of memory for labels";
+
+            return false;
+        }
+        z->fixups = grown;
+        z->fix_cap = want;
+    }
+
+    fixup* f = &z->fixups[z->fix_used++];
+    f->target = target;
+    f->width = width;
+    f->off = off;
+    f->next_addr = next_addr;
+    f->line = z->line;
+
+    return true;
+}
 
 /* ---------------------------------------------------------------- output */
 
@@ -398,6 +779,13 @@ static inline const insninfo* bucket_at(char first, unsigned n) {
 }
 
 __attribute__((noinline)) static void build_tables(void) {
+#if DZ_SYMHASH
+    /* Here rather than in main, so that anything which sets the tables up gets
+     * all of them. The unit tests call build_tables and build_cclass directly
+     * and would have run with a table of zeros -- every name in one bucket,
+     * still correct and quietly quadratic. */
+    build_pearson();
+#endif
     if (tables_ready) {
         return;
     }
@@ -743,6 +1131,14 @@ static void build_cclass(void) {
     }
     cclass[(uint8_t) '_'] |= C_NAME;
 
+    /* A label may contain both, and an operand naming one has to scan the
+     * whole of it. `_` had C_NAME but not C_NUM, so the literal scan -- which
+     * is where a name that is not a register ends up -- stopped at the first
+     * underscore and the rest of the line looked like trailing text. Real
+     * labels are full of them. */
+    cclass[(uint8_t) '_'] |= C_NUM;
+    cclass[(uint8_t) '.'] |= C_NAME | C_NUM;
+
     /* A mnemonic runs over its suffix too, so the dot belongs to the same run
      * -- asking for it separately made the scan two tests per character. */
     for (int i = 0; i < 256; i++) {
@@ -760,6 +1156,9 @@ static void build_cclass(void) {
             cclass[i] |= C_ALPHA;
         }
     }
+    /* The dot is a name character but must not start one: `.5` is not a label
+     * and a mnemonic suffix is scanned as part of the mnemonic. */
+    cclass[(uint8_t) '.'] &= (uint8_t) ~C_ALPHA;
     cclass[(uint8_t) '$'] |= C_NUM;
     cclass[(uint8_t) '#'] |= C_NUM;
     cclass[(uint8_t) '%'] |= C_NUM;
@@ -812,6 +1211,7 @@ static const dop dop_none = {
     .mode = NOREQ,
     .indirect = false,
     .disp = 0,
+    .fwd = NULL,
     .has_imm = false,
     .imm = 0,
 };
@@ -1133,6 +1533,42 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
             }
             if (k == nn) {
                 v = acc;
+                got = true;
+            }
+        }
+        if (!got && nn > 0 && alpha_ch(ns[0])) {
+            /* Not a literal in any radix, so it is a label.
+             *
+             * Tried after the literal forms and not before them, because a
+             * hexadecimal constant written with a trailing h begins with a
+             * letter too -- `aabbcch` is a number and `aabbcc` is a name, and
+             * only the suffix tells them apart.
+             *
+             * And only where a name could start. `$42`, `#42` and `%1010` are
+             * literals the general parser handles, and they are not digits, so
+             * asking "not a digit" made all three into labels that did not
+             * exist.
+             *
+             * A label already defined is its address. One that is not is
+             * carried on the operand for the emitter to record, because where
+             * the bytes land is not known until the row is chosen. */
+            const sym* sp = sym_intern(z, ns, nn);
+            if (sp == NULL) {
+                return false;
+            }
+            if (sp->defined) {
+                v = sp->addr;
+                got = true;
+            } else if (neg) {
+                /* -label would have to negate an address that is not known
+                 * yet. The reference has expressions; dzap does not, and
+                 * refusing is better than emitting the address unnegated. */
+                z->err = "a label cannot be negated";
+
+                return false;
+            } else {
+                op->fwd = sp;
+                v = 0;
                 got = true;
             }
         }
@@ -1471,18 +1907,41 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
      * filter exists to enforce. */
     if (row->transformA == TR_REL || row->transformB == TR_REL) {
         const dop* rel = (row->transformA == TR_REL) ? a : b;
-        const int d = rel->imm - (DZ_ORG + (int) (o - z->out) + 1);
-        if (d < -128 || d > 127) {
-            z->err = "relative jump too far";
+        if (rel->fwd != NULL) {
+            /* Forward: the displacement is not known, so a zero goes down and
+             * the fixup carries the address it will be measured from. Whether
+             * it is in reach is decided when it is patched. */
+            if (!fix_add(z, rel->fwd, 0, (int) (o - z->out),
+                         DZ_ORG + (int) (o - z->out) + 1)) {
+                return false;
+            }
+            *o++ = 0;
+        } else {
+            const int d = rel->imm - (DZ_ORG + (int) (o - z->out) + 1);
+            if (d < -128 || d > 127) {
+                z->err = "relative jump too far";
 
-            return false;
+                return false;
+            }
+            *o++ = (uint8_t) d;
         }
-        *o++ = (uint8_t) d;
     } else {
         if (a->has_imm && (row->condA & (IMM_N | IMM_MMN))) {
+            if (a->fwd != NULL
+                && !fix_add(z, a->fwd,
+                            (row->condA & IMM_N) ? 1 : (DZ_ADL ? 3 : 2),
+                            (int) (o - z->out), 0)) {
+                return false;
+            }
             o = emit_imm(o, a, row->condA);
         }
         if (b->has_imm && (row->condB & (IMM_N | IMM_MMN))) {
+            if (b->fwd != NULL
+                && !fix_add(z, b->fwd,
+                            (row->condB & IMM_N) ? 1 : (DZ_ADL ? 3 : 2),
+                            (int) (o - z->out), 0)) {
+                return false;
+            }
             o = emit_imm(o, b, row->condB);
         }
     }
@@ -1504,7 +1963,19 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
  * every loop stops on it. The caller is told where parsing ended and steps
  * over the newline from there. */
 __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const char* e, const char** stop) {
-    while (is_space_ch(*p)) {
+    /* Bounded, and it has to be.
+     *
+     * Unbounded, this compiles to a loop rotated wrongly -- the pointer is
+     * pre-decremented and each turn tests one character past it, so the first
+     * is never examined and the scan stops one short. It is the same fault the
+     * num_ch scans carry a bound for, and it does not reduce: the loop was
+     * correct until labels were added around it, and nothing about labels
+     * touches it. The bound is what stops the rotation.
+     *
+     * Every line starts here, so this is worth re-checking in the generated
+     * assembly whenever the function changes. `dec iy` before the loop head is
+     * the tell. */
+    while (p < e && is_space_ch(*p)) {
         p++;
     }
     *stop = p;
@@ -1520,11 +1991,44 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
     while ((cclass[(uint8_t) *p] & C_MNEM) != 0) {
         p++;
     }
-    const int n = (int) (p - s);
+    int n = (int) (p - s);
     if (n == 0) {
         z->err = "expected an instruction";
 
         return false;
+    }
+
+    /* A label, if a colon follows the name.
+     *
+     * The reference takes a label at any indent, not only at column 0, so
+     * position decides nothing and the colon decides everything. That makes
+     * this one test on a line without a label, which is what most lines are.
+     *
+     * The line may continue: `foo: ld a,b` is a definition and an instruction,
+     * and so is `foo:` alone. */
+    if (*p == ':') {
+        if (!sym_define(z, s, n, DZ_ORG + (int) (z->o - z->out))) {
+            return false;
+        }
+        p++;
+        while (is_space_ch(*p)) {
+            p++;
+        }
+        *stop = p;
+        if (p >= e || *p == '\n' || *p == ';') {
+            return true;
+        }
+
+        s = p;
+        while ((cclass[(uint8_t) *p] & C_MNEM) != 0) {
+            p++;
+        }
+        n = (int) (p - s);
+        if (n == 0) {
+            z->err = "expected an instruction";
+
+            return false;
+        }
     }
 
     const insninfo* insn = mnemonic_of(s, n);
@@ -1563,6 +2067,54 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
     return emit_row(z, row, &a, &b);
 }
 
+/* Patches every forward reference, once the whole source has been read.
+ *
+ * This is what buys the single pass. dzap never looks at a line twice, so a
+ * reference to a label defined later cannot be resolved where it is read; the
+ * output is held in memory in full, so it is patched here instead. The cost of
+ * labels is then a line item -- this loop and the table behind it -- rather
+ * than a second pass over the source, which would be most of the program
+ * again.
+ *
+ * Little-endian, as everywhere else here. */
+static bool resolve_fixups(dz* z) {
+    for (int i = 0; i < z->fix_used; i++) {
+        const fixup* f = &z->fixups[i];
+        const sym* sp = f->target;
+        if (!sp->defined) {
+            /* Reported against the line that used it, which is long gone; the
+             * fixup carries the number for exactly this. */
+            z->line = f->line;
+            z->err = "unknown label";
+
+            return false;
+        }
+
+        uint8_t* at = z->out + f->off;
+        if (f->width == 0) {
+            const int d = sp->addr - f->next_addr;
+            if (d < -128 || d > 127) {
+                z->line = f->line;
+                z->err = "relative jump too far";
+
+                return false;
+            }
+            *at = (uint8_t) d;
+            continue;
+        }
+
+        at[0] = (uint8_t) sp->addr;
+        if (f->width > 1) {
+            at[1] = (uint8_t) (sp->addr >> 8);
+        }
+        if (f->width > 2) {
+            at[2] = (uint8_t) (sp->addr >> 16);
+        }
+    }
+
+    return true;
+}
+
 static bool run(dz* z, const char* path) {
     if (br_open(&z->rd, path, BUF_KB) == NULL) {
         z->err = "cannot open source";
@@ -1582,6 +2134,22 @@ static bool run(dz* z, const char* path) {
     }
     z->o = z->out;
     z->lim = z->out + z->cap - OUT_MAX_INSN;
+    z->syms = (symslot*) calloc(NSYMB, sizeof(symslot));
+    if (z->syms == NULL) {
+        z->err = "out of memory";
+
+        return false;
+    }
+    /* One block up front, so sym_define never has to ask whether there is
+     * one; it only ever asks whether the newest is full. */
+    z->blocks = (symblock*) malloc(sizeof(symblock));
+    if (z->blocks == NULL) {
+        z->err = "out of memory";
+
+        return false;
+    }
+    z->blocks->next = NULL;
+    z->syms_used = 0;
     z->line = 0;
 
     /* The cursor is a pointer, not an offset into the buffer.
@@ -1655,7 +2223,26 @@ static bool run(dz* z, const char* path) {
         p = stop + 1;
     }
 
-    return true;
+    return resolve_fixups(z);
+}
+
+/* Everything run() may have allocated.
+ *
+ * Written once because it was written three times: the two error paths and
+ * the success path each freed their own list, and the block list was added to
+ * one of them. The sanitiser found it; a machine with 512 KB and no leak
+ * checker would have found it later and less clearly. */
+static void dz_free(dz* z) {
+    free(z->out);
+    free(z->syms);
+    free(z->names);
+    free(z->fixups);
+    while (z->blocks != NULL) {
+        symblock* next = z->blocks->next;
+        free(z->blocks);
+        z->blocks = next;
+    }
+    br_destroy(&z->rd);
 }
 
 int main(int argc, char* argv[]) {
@@ -1682,8 +2269,7 @@ int main(int argc, char* argv[]) {
     if (!ok) {
         printf("%s line %d: %s\r\n", argv[1], z.line,
                z.err ? z.err : "out of memory for the output");
-        free(z.out);
-        br_destroy(&z.rd);
+        dz_free(&z);
 
         return 1;
     }
@@ -1691,8 +2277,7 @@ int main(int argc, char* argv[]) {
     const uint8_t fh = mos_fopen(argv[2], FA_WRITE | FA_CREATE_ALWAYS);
     if (fh == 0) {
         printf("Cannot write %s\r\n", argv[2]);
-        free(z.out);
-        br_destroy(&z.rd);
+        dz_free(&z);
 
         return 1;
     }
@@ -1708,8 +2293,7 @@ int main(int argc, char* argv[]) {
     printf("Done in %u.%02u seconds\r\n", (unsigned) (cs / 100),
            (unsigned) (cs % 100));
 
-    free(z.out);
-    br_destroy(&z.rd);
+    dz_free(&z);
 
     return 0;
 }

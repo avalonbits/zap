@@ -35,6 +35,22 @@
 #         them -- while still containing every form at least once. Says what
 #         the assembler costs on the kind of source people actually feed it.
 #
+# LABELS ARE INCLUDED, one definition and one reference every eight lines,
+# which is the rate counted over the two real programs: 11-15% of lines define
+# a label and 38-62% of instruction lines refer to one. Half the references
+# point backwards, so they resolve where they are read, and half forwards, so
+# they go through the fixup list -- a file of only one kind would price
+# whichever it happened to contain.
+#
+# The names vary in first character, last character and length. That mattered
+# enormously to the key labels used to have and much less to the Pearson hash
+# that replaced it, but a benchmark whose names are all one stem is measuring
+# a naming convention rather than an assembler either way.
+#
+# The instruction forms are interleaved rather than rewritten. Replacing the
+# operand of a `jp` with a label would have kept the line count and lost the
+# form: these files exist to contain every form, and an operand is part of one.
+#
 # NOT INCLUDED: jr and djnz, though not for want of correctness -- dzap now
 # assembles both byte-identically to the reference. A relative displacement
 # reaches 127 bytes forward and 128 back, and without labels there is no way to
@@ -46,7 +62,9 @@
 # about that much.
 #
 # Deterministic: no randomness, no dependence on the environment. Changing this
-# script invalidates every timing taken with it.
+# script invalidates every timing taken with it -- and adding labels did, so
+# nothing measured before 2026-09-06 is comparable with anything measured
+# after.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -76,6 +94,10 @@ out0:3 lea:3 lddr:3 in0:3 sra:2 ldi:2 in:2 rrd:1 rld:1 reti:1 out:1"
     done
 } | sed 's/[[:space:]]*$//' | sort -u | awk -v mode="$MODE" -v total="$TOTAL" -v w="$WEIGHTS" '
 BEGIN {
+    nlw = split("read|write|draw|move|scan|calc|emit|parse|check|reset|" \
+                "flush|store|load|swap|clip|tile|sprite|sound|timer|port|" \
+                "queue|stack|frame|pixel|glyph|board|piece|score|level|input",
+                lw, "|")
     nw = split(w, wa, /[ \n]+/)
     for (i = 1; i <= nw; i++) {
         if (wa[i] == "") continue
@@ -99,19 +121,17 @@ END {
         i = 0
         bytes = 0
         while (bytes < total) {
-            line = form[i % n]
-            print line
-            bytes += length(line) + 1
+            bytes += out(form[i % n])
             i += stride
         }
+        finish()
         exit 0
     }
 
     # real: every form once, then weighted by mnemonic.
     bytes = 0
     for (i = 0; i < n && bytes < total; i++) {
-        print form[i]
-        bytes += length(form[i]) + 1
+        bytes += out(form[i])
     }
 
     # Buckets of forms per mnemonic, and a cumulative weight table over the
@@ -140,10 +160,44 @@ END {
         lo = 0; hi = k - 1
         while (lo < hi) { mid = int((lo + hi) / 2); if (pos < edge[mid]) hi = mid; else lo = mid + 1 }
         m = mn[lo]
-        line = bucket[m, use[m]++ % cnt[m]]
-        print line
-        bytes += length(line) + 1
+        bytes += out(bucket[m, use[m]++ % cnt[m]])
     }
+    finish()
+}
+
+# Prints one instruction, and the label lines that go with it. Returns the
+# bytes printed, so both loops keep their budget.
+function out(line,   used) {
+    used = 0
+    if (ln % 8 == 0) {
+        lbl++
+        used += length(lname(lbl)) + 2
+        print lname(lbl) ":"
+    } else if (ln % 8 == 4) {
+        if (int(ln / 8) % 2 == 0 && lbl > 1) {
+            used += length(lname(lbl - 1)) + 6
+            print "  jp " lname(lbl - 1)
+        } else {
+            used += length(lname(lbl + 1)) + 8
+            print "  call " lname(lbl + 1)
+        }
+    }
+    ln++
+    print line
+    return used + length(line) + 1
+}
+
+# The last forward reference has to land on something.
+function finish() {
+    print lname(lbl + 1) ":"
+}
+
+function lname(k,   a, b) {
+    a = lw[(k % nlw) + 1]
+    b = lw[((k * 7 + 3) % nlw) + 1]
+    if (k % 3 == 0) return a "_" k "_" b
+    if (k % 3 == 1) return a "_" k "_" b "_end"
+    return b "_" k "_" a "_loop"
 }
 function gcd(a, b,  t) { while (b) { t = b; b = a % b; a = t } return a }
 '

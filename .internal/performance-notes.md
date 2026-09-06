@@ -845,3 +845,26 @@ place, so the block does not move and deleting the rebase fails no check even
 with six hundred long labels. Names are held as offsets and symbols in blocks
 that never move. Code that only runs under a different allocator is code
 nothing here can hold to account.
+
+
+## The ISA benchmarks now contain labels
+
+Changed 2026-09-06. They had none, so they could say what labels cost a source
+that does not use them and nothing else. One definition and one reference every
+eight lines -- the rate counted over the two real programs -- with the
+references split evenly between backward and forward: 969 and 971 on the
+generated isa_real.
+
+    isa_real   4.88s   262,170 bytes   343 cycles/byte   52.5 KiB/s
+    isa_even   4.98s   262,192 bytes   350 cycles/byte   51.4 KiB/s
+
+**Every timing before this is against different input.** The previous numbers
+-- 4.60s and 4.76s, on the same code -- were on files with no labels in them.
+The step from those to these is what labels cost this workload: **6.1% and
+4.6%**, which is the honest figure now that the benchmark exercises the
+feature.
+
+The forms were interleaved with the label lines rather than having their
+operands rewritten. Replacing the operand of a `jp` with a label would have
+kept the line count and lost the form, and containing every form is what these
+files are for; all 1,019 are still present.

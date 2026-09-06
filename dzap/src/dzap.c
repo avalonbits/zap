@@ -192,42 +192,6 @@ static inline void put(dz* z, uint8_t b) {
 
 #define NROW 322
 
-static int16_t bucket_head[NBUCKET];
-static int16_t bucket_next[512];
-static uint8_t isa_len[512];
-
-/* What each row demands of the two operands' modes, in one value.
- *
- * Selecting a row asked `(row->condA & MODECHECK) == modeA` and the same for
- * B: four loads and two masks per candidate row, to compare against something
- * fixed when the table was generated. Both sides are folded here into one
- * 16-bit value per row, so the test becomes a single compare -- and rows are
- * scanned three or four deep for every instruction in the source.
- *
- * Indexed by a row number assigned here, since the rows live in 114 separate
- * arrays and have no global index of their own. */
-/* One byte, not two.
- *
- * MODECHECK is four bits wide, so both operands' modes fit in a byte with room
- * to spare -- and a byte compare is native where a 16-bit one is the worst
- * width this chip has. This test runs for every candidate row, and `ld` alone
- * has 57 of them: "ld (ix+8), a" examines 43 before it matches. */
-
-/* The same register sets the table holds, narrowed to the machine's word. */
-/* Everything the row loop reads, in one record per row, walked by a pointer.
- *
- * Three separate problems led here. Holding the register sets as `uint24_t`
- * made `regset & reg` a call to __iand -- AND is an 8-bit instruction on this
- * chip -- and made indexing cost r * 3, a call to __imulu. Splitting them into
- * byte planes fixed both and was still slower (+8.5% on the row-heavy shape),
- * because eight separate arrays mean eight `ld hl, base; add hl, bc;
- * ld a, (hl)` sequences per row.
- *
- * One record indexed off iy is the shape that wins: every field is `ld a,
- * (iy+n)`, and advancing to the next row is a single lea. The fields stay
- * separate bytes rather than packed into a word -- packing two of them into a
- * uint16_t was tried and cost 18.8%, because ADL mode has no 16-bit truncation
- * and the compiler masks. Bytes are the native width for all of this. */
 typedef struct rowinfo rowinfo;
 
 struct rowinfo {
@@ -271,7 +235,64 @@ struct rowinfo {
 };
 
 static rowinfo rowtab[NROW];
-static int16_t row_base[512];
+
+/* One record per mnemonic, holding everything the hot path needs about it and
+ * reached only by pointer.
+ *
+ * The lookup used to hand back an index, and every use of that index was an
+ * array subscript: `isa_table[i].name` once per candidate examined,
+ * `isa_table[idx]` and `rowtab[row_base[idx]]` once the mnemonic was known.
+ * Each of those is the index times a struct size, and the eZ80's multiply is
+ * 8-bit, so each is a call to __imulu.
+ *
+ * Chaining the buckets through pointers and carrying the row block as a
+ * pointer leaves one subscript in the whole path -- the bucket head itself. */
+typedef struct insninfo insninfo;
+
+struct insninfo {
+    const insninfo* next;   /* next candidate in the same bucket */
+    const char* name;
+    const rowinfo* rows;
+    uint8_t len;
+    uint8_t count;
+};
+
+static insninfo insntab[512];
+static const insninfo* bucket_head[NBUCKET];
+
+/* What each row demands of the two operands' modes, in one value.
+ *
+ * Selecting a row asked `(row->condA & MODECHECK) == modeA` and the same for
+ * B: four loads and two masks per candidate row, to compare against something
+ * fixed when the table was generated. Both sides are folded here into one
+ * 16-bit value per row, so the test becomes a single compare -- and rows are
+ * scanned three or four deep for every instruction in the source.
+ *
+ * Indexed by a row number assigned here, since the rows live in 114 separate
+ * arrays and have no global index of their own. */
+/* One byte, not two.
+ *
+ * MODECHECK is four bits wide, so both operands' modes fit in a byte with room
+ * to spare -- and a byte compare is native where a 16-bit one is the worst
+ * width this chip has. This test runs for every candidate row, and `ld` alone
+ * has 57 of them: "ld (ix+8), a" examines 43 before it matches. */
+
+/* The same register sets the table holds, narrowed to the machine's word. */
+/* Everything the row loop reads, in one record per row, walked by a pointer.
+ *
+ * Three separate problems led here. Holding the register sets as `uint24_t`
+ * made `regset & reg` a call to __iand -- AND is an 8-bit instruction on this
+ * chip -- and made indexing cost r * 3, a call to __imulu. Splitting them into
+ * byte planes fixed both and was still slower (+8.5% on the row-heavy shape),
+ * because eight separate arrays mean eight `ld hl, base; add hl, bc;
+ * ld a, (hl)` sequences per row.
+ *
+ * One record indexed off iy is the shape that wins: every field is `ld a,
+ * (iy+n)`, and advancing to the next row is a single lea. The fields stay
+ * separate bytes rather than packed into a word -- packing two of them into a
+ * uint16_t was tried and cost 18.8%, because ADL mode has no 16-bit truncation
+ * and the compiler masks. Bytes are the native width for all of this. */
+
 
 static bool tables_ready = false;
 
@@ -321,7 +342,7 @@ __attribute__((noinline)) static void build_tables(void) {
     }
 
     for (int i = 0; i < NBUCKET; i++) {
-        bucket_head[i] = -1;
+        bucket_head[i] = NULL;
     }
     /* Backwards, so each bucket ends up in table order. */
     for (int i = isa_table_count - 1; i >= 0; i--) {
@@ -330,18 +351,22 @@ __attribute__((noinline)) static void build_tables(void) {
         while (name[k] != 0) {
             k++;
         }
-        isa_len[i] = (uint8_t) k;
+
+        insninfo* ins = &insntab[i];
+        ins->name = name;
+        ins->len = (uint8_t) k;
+        ins->count = isa_table[i].count;
 
         const int b = bucket_of(name[0], k);
-        bucket_next[i] = bucket_head[b];
-        bucket_head[b] = (int16_t) i;
+        ins->next = bucket_head[b];
+        bucket_head[b] = ins;
     }
 
     int r = 0;
     for (int i = 0; i < isa_table_count; i++) {
         const isa_insn* insn = &isa_table[i];
         const int base = r;
-        row_base[i] = (int16_t) base;
+        insntab[i].rows = &rowtab[base];
 
         bool any_cc = false;
         for (int j = 0; j < insn->count; j++) {
@@ -418,14 +443,15 @@ static inline bool same_ci(const char* a, const char* b, int n) {
  * tried here and was 1.3% slower: bucketing by letter and length already
  * leaves one or two candidates, so the compare loop it replaced was two or
  * three characters long, and building the packed key cost more than that. */
-static int mnemonic_of(const char* s, int n) {
-    for (int i = bucket_head[bucket_of(s[0], n)]; i >= 0; i = bucket_next[i]) {
-        if (isa_len[i] == n && same_ci(isa_table[i].name, s, n)) {
-            return i;
+static const insninfo* mnemonic_of(const char* s, int n) {
+    for (const insninfo* ins = bucket_head[bucket_of(s[0], n)]; ins != NULL;
+         ins = ins->next) {
+        if (ins->len == n && same_ci(ins->name, s, n)) {
+            return ins;
         }
     }
 
-    return -1;
+    return NULL;
 }
 
 /* ------------------------------------------------------- registers, flags */
@@ -833,11 +859,12 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
 
 
 
-__attribute__((noinline)) static const isa_row* match_row(int idx, const dop* a, const dop* b) {
-    const isa_insn* insn = &isa_table[idx];
+__attribute__((noinline)) static const isa_row* match_row(const insninfo* insn,
+                                                         const dop* a,
+                                                         const dop* b) {
     const uint8_t want = (uint8_t) (shl4[a->mode & 15] | (b->mode & 15));
     const uint8_t has_cc = (uint8_t) (a->cc != 0);
-    const rowinfo* ri = &rowtab[row_base[idx]];
+    const rowinfo* ri = insn->rows;
 
     /* Already split, by whoever recognised the register. */
     const uint8_t a0 = a->r0, a1 = a->r1, a2 = a->r2;
@@ -1088,8 +1115,8 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
         return false;
     }
 
-    const int idx = mnemonic_of(s, n);
-    if (idx < 0) {
+    const insninfo* insn = mnemonic_of(s, n);
+    if (insn == NULL) {
         z->err = "unknown instruction";
 
         return false;
@@ -1114,7 +1141,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
 
     *stop = p;
 
-    const isa_row* row = match_row(idx, &a, &b);
+    const isa_row* row = match_row(insn, &a, &b);
     if (row == NULL) {
         z->err = "no such instruction form";
 

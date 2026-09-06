@@ -1363,22 +1363,32 @@ static bool run(dz* z, const char* path) {
     z->pos = 0;
     z->line = 0;
 
+    /* The cursor is a pointer, not an offset into the buffer.
+     *
+     * Every line used to turn `bpos_` into a pointer to start, and the pointer
+     * back into `bpos_` to finish -- two loads and two adds on the way in, a
+     * subtract and a store on the way out, for a value only this loop uses.
+     * br_fill_lines never reads bpos_; it only resets it, so nothing needs the
+     * offset kept up to date in between. */
+    const char* p = z->rd.buf_;
+    const char* end = p;   /* empty, so the first pass fills */
+
     while (true) {
         buf_reader* r = &z->rd;
-        if (r->bpos_ >= r->bsz_) {
+        if (p >= end) {
             bool too_long = false;
             if (!br_fill_lines(r, &too_long)) {
                 break;
             }
+            p = r->buf_;
+            end = p + r->bsz_;
         }
 
         /* The buffer holds whole lines, so this one's newline is in it. */
-        const char* const base = r->buf_;
-        const char* const end = &base[r->bsz_];
-        const char* stop = &base[r->bpos_];
+        const char* stop = p;
 
         z->line++;
-        if (!assemble_line(z, &base[r->bpos_], end, &stop)) {
+        if (!assemble_line(z, p, end, &stop)) {
             return false;
         }
 
@@ -1403,10 +1413,11 @@ static bool run(dz* z, const char* path) {
         /* A line that was only a remark stops at the semicolon, so the rest
          * of it is walked here. This is the whole cost of a comment: one pass
          * over its bytes, looking for the newline and nothing else. */
-        while (*stop != '\n') {
-            stop++;
-        }
-        r->bpos_ = (uint24_t) ((stop < end ? stop + 1 : end) - base);
+        /* stop is on the newline: the test above returned for every
+         * other case, and the comment skip before it ends on one too.
+         * The loop that used to search for it from here could never
+         * take a step. */
+        p = (stop < end) ? stop + 1 : end;
     }
 
     return true;

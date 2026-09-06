@@ -653,6 +653,43 @@ int main(void) {
     check("a suffix in the middle is a label",
           emit("a0h_x:\n  jp a0h_x\n"), "C3 00 00 04");
 
+    /* A name ending in b is not binary unless what precedes it is. The test
+     * rejects on two characters before anything walks the name -- a number is
+     * a leading digit or a trailing h or b, because $, # and % are not
+     * mnemonic characters and cannot appear in a token that got this far --
+     * and these are the words that trip that shortcut. */
+    check("a name ending in b is a label", emit("grab:\n  jp grab\n"),
+          "C3 00 00 04");
+    check("another name ending in b", emit("club:\n  jp club\n"),
+          "C3 00 00 04");
+    check("a digit and a b is binary", emit("10b:\n  nop\n"), "ERR");
+
+    /* A leading digit does not make a number, which cost four of twenty
+     * probes before it was checked: 2 is not a binary digit, so `2b` is a
+     * name, and so are `1z`, `5g` and `123abc`. The reference takes all four
+     * as labels. Only the general parser can decide, and the two-character
+     * rejection above is what keeps it off the common path. */
+    check("a digit and a non-binary b is a label",
+          emit("2b:\n  jp 2b\n"), "C3 00 00 04");
+    check("a digit and a letter is a label",
+          emit("1z:\n  jp 1z\n"), "C3 00 00 04");
+    check("digits then letters is a label",
+          emit("123abc:\n  jp 123abc\n"), "C3 00 00 04");
+    check("0b with a non-binary digit is a label",
+          emit("0b12:\n  jp 0b12\n"), "C3 00 00 04");
+    check("0b alone is binary zero", emit("0b:\n  nop\n"), "ERR");
+
+    /* And they can be referenced, not only defined. The operand parser asked
+     * whether the token started with a letter, which got `$42`, `#42` and
+     * `%1010` right -- they are literals starting with neither -- and these
+     * wrong. It now asks whether any radix accepts the token, which is the
+     * same question the definition asks. */
+    check("a digit-leading label can be referenced",
+          emit("2b:\n  jp 2b\n"), "C3 00 00 04");
+    check("the radix prefixes are still literals",
+          emit("  ld a, $42\n  ld a, #42\n  ld a, %1010\n"),
+          "3E 42 3E 42 3E 0A");
+
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);
     }

@@ -980,7 +980,7 @@ static inline uint8_t ddfd_prefix(const dop* op) {
     return 0;
 }
 
-static void transform(emitted* out, dop* op, uint8_t type) {
+__attribute__((always_inline)) static inline void transform(emitted* out, dop* op, uint8_t type) {
     switch (type) {
         case TR_IR0:
             if (((op->r1 & RP1_XYL) | (op->r2 & RP2_XYL)) != 0) {

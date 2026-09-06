@@ -81,6 +81,14 @@ static const char* emit(const char* src) {
     return out;
 }
 
+static int range_bad;
+static void check_range(const char* what, bool ok) {
+    if (!ok && range_bad++ == 0) {
+        fprintf(stderr, "FAIL  %s\n", what);
+        failures++;
+    }
+}
+
 static void check(const char* what, const char* got, const char* want) {
     if (strcmp(got, want) == 0) {
         fprintf(stderr, "PASS  %-24s %s\n", what, got);
@@ -570,6 +578,48 @@ int main(void) {
                  ((600 * 4) >> 8) & 0xFF);
         check("six hundred long labels, growing every arena",
               strncmp(got, want, strlen(want)) == 0 ? want : got, want);
+    }
+
+    /* The symbol key distributes.
+     *
+     * Nothing above can see this. A bad key is still *correct* -- every name
+     * lands in some bucket and the chain finds it -- so zeroing the Pearson
+     * table, or dropping its second pass, fails no encoding check at all.
+     * Both were tried. What a bad key costs is time: 699 labels in one bucket
+     * took a benchmark from 1.88s to 5.98s.
+     *
+     * So the property to assert is the distribution, on the naming style that
+     * broke the key this replaced -- one stem, numbered, which shares a first
+     * character, a last character and a length. */
+    {
+        static char names[700][32];
+        static int seen[NSYMB];
+        int used = 0, worst = 0;
+        for (int i = 0; i < NSYMB; i++) {
+            seen[i] = 0;
+        }
+        for (int i = 0; i < 700; i++) {
+            snprintf(names[i], sizeof(names[i]), "lbl_routine_body_%04d", i);
+            const int b = sym_bucket(names[i], (int) strlen(names[i]));
+            check_range("bucket in range", b >= 0 && b < NSYMB);
+            if (seen[b]++ == 0) {
+                used++;
+            }
+            if (seen[b] > worst) {
+                worst = seen[b];
+            }
+        }
+#if DZ_SYMHASH
+        /* 700 names into 2,048 buckets: a good hash uses most of them and
+         * chains stay short. The structural key put all 700 in one. */
+        check("clustered names spread over many buckets",
+              used > 400 ? "many" : "few", "many");
+        check("clustered names leave chains short",
+              worst <= 6 ? "short" : "long", "short");
+#else
+        (void) used;
+        (void) worst;
+#endif
     }
 
     if (failures) {

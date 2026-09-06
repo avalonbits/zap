@@ -205,12 +205,140 @@ _Static_assert((sizeof(symslot) & (sizeof(symslot) - 1)) == 0,
 _Static_assert(sizeof(symslot) > sizeof(sym*),
                "the pad is what makes the size a power of two");
 
-static inline int sym_bucket(const char* name, int len) {
-    const unsigned f = (unsigned) (uint8_t) name[0] & 31;
-    const unsigned l = (unsigned) (uint8_t) name[len - 1] & 31;
+/* Two ways of keying it, and the measurement that chose between them.
+ *
+ * Build with -DDZ_SYMHASH=0 for the other one. Both index the same 2,048
+ * buckets, so the only difference is how the bucket is chosen and what
+ * choosing it costs.
+ *
+ * The plan said the structural key -- first character, last character, length
+ * -- because a hash is a walk over the name and the scan has already walked
+ * it, and over 25 real programs it touches 11.8 characters a lookup against
+ * Pearson's 17.5. Measured on the Agon, on seven sources of identical size,
+ * that reasoning does not survive:
+ *
+ *     source                       structural   Pearson
+ *     no labels at all                  1.60s     1.58s
+ *     spread names, definitions         1.82s     1.72s
+ *     spread names, backward refs       1.94s     1.96s
+ *     spread names, forward refs        2.00s     2.02s
+ *     four-character names              1.76s     1.60s
+ *     fifteen characters, word list     1.92s     1.72s
+ *     clustered names                   5.98s     1.84s
+ *
+ * Pearson is 1% worse on the two rows where the structural key is at its best
+ * -- reference-heavy sources whose names spread over all three of its inputs
+ * -- and better everywhere else, by 5 to 10% on ordinary names and by **69%**
+ * on the last row. That row is 699 labels in one bucket, reached by naming
+ * them `lbl_0001` upward, which is a convention rather than an attack.
+ *
+ * One percent against a factor of three is not a close decision. What the
+ * average missed is that the tail is reachable by accident: this file's own
+ * benchmark generator produced it on the first attempt.
+ *
+ * The comparison was run twice. The first Pearson table was `i * 167 + 13`,
+ * which is a permutation -- 167 is odd, so it visits every value -- and a poor
+ * hash, because a linear table leaves the rounds correlated: it used 234 of
+ * the 2,048 buckets against a shuffle's 602. It still won by three times,
+ * which says more about the key it replaced than about the table.
+ *
+ * The structural key is kept, callable and correct, because the argument for
+ * it is sound and only the distribution defeats it -- if names are ever known
+ * to be well spread it is the cheaper key. */
+#ifndef DZ_SYMHASH
+#define DZ_SYMHASH 1
+#endif
 
-    return (int) (((f * 32 + l) * 2) + (len > 6 ? 1 : 0));
+#if DZ_SYMHASH
+
+/* A permutation of 0..255, which is what makes a Pearson hash a hash.
+ *
+ * It has to be a *shuffled* one. `i * 167 + 13` is a permutation too -- 167 is
+ * odd, so it visits every value -- and it is a poor hash, because a linear
+ * table leaves the rounds correlated: 700 labels of one stem used 234 of the
+ * 2,048 buckets with a worst chain of 8, against 602 and 3 for a shuffle. It
+ * still beat the key it replaced by three times, which says more about that
+ * key than about this table.
+ *
+ * Built rather than written out, so there is no 256-byte literal in the
+ * binary, and deterministic so both passes and every run agree. */
+static uint8_t pearson[256];
+
+static void build_pearson(void) {
+    for (int i = 0; i < 256; i++) {
+        pearson[i] = (uint8_t) i;
+    }
+    uint32_t seed = 12345;
+    for (int i = 255; i > 0; i--) {
+        seed = seed * 1103515245u + 12345u;
+        const int j = (int) ((seed >> 16) % (uint32_t) (i + 1));
+        const uint8_t t = pearson[i];
+        pearson[i] = pearson[j];
+        pearson[j] = t;
+    }
 }
+
+/* Two passes, composed into eleven bits by writing the bytes rather than
+ * shifting: a shift by eight is `call __ishl` on this chip, and the whole
+ * point of the comparison is what the key costs. */
+static inline int sym_bucket(const char* name, int len) {
+    uint8_t h1 = 0;
+    uint8_t h2 = 0;
+    for (int i = 0; i < len; i++) {
+        const uint8_t c = (uint8_t) name[i];
+        h1 = pearson[h1 ^ c];
+        h2 = pearson[(uint8_t) (h2 ^ c ^ 0x5A)];
+    }
+    union {
+        int v;
+        uint8_t b[sizeof(int)];
+    } u;
+    u.v = 0;
+    u.b[0] = h1;
+    u.b[1] = (uint8_t) (h2 & 7);
+
+    return u.v;
+}
+
+#else
+
+/* The first character, the last and the length. Not a hash: a hash is a walk
+ * over the name and the scan that found the token has already walked it.
+ *
+ * The index is `f * 64 + l * 2 + (len > 6)`, and written that way it was three
+ * library calls: `* 64` is `call __ishl`, `len > 6` on a signed int is
+ * `call pe, __setflag`, and the function itself was not inlined. Composed a
+ * byte at a time from two small tables it is neither -- the same trick the hex
+ * parser uses, for the same reason.
+ *
+ * f is five bits and l is five bits, so the low byte holds (f & 3) * 64 plus
+ * l * 2 plus the length bit, which is at most 192 + 62 + 1, and the high byte
+ * holds f >> 2. Both come from tables because a shift is a call. */
+static const uint8_t f_lo[32] = {
+    0, 64, 128, 192, 0, 64, 128, 192, 0, 64, 128, 192, 0, 64, 128, 192,
+    0, 64, 128, 192, 0, 64, 128, 192, 0, 64, 128, 192, 0, 64, 128, 192,
+};
+static const uint8_t f_hi[32] = {
+    0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3,
+    4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7,
+};
+
+__attribute__((always_inline)) static inline int sym_bucket(const char* name,
+                                                            int len) {
+    const unsigned f = (unsigned) (uint8_t) name[0] & 31u;
+    const unsigned l = (unsigned) (uint8_t) name[len - 1] & 31u;
+    union {
+        int v;
+        uint8_t b[sizeof(int)];
+    } u;
+    u.v = 0;
+    u.b[0] = (uint8_t) (f_lo[f] + l + l + ((unsigned) len > 6u ? 1u : 0u));
+    u.b[1] = f_hi[f];
+
+    return u.v;
+}
+
+#endif
 
 /* A reference to a label that was not defined yet.
  *
@@ -651,6 +779,13 @@ static inline const insninfo* bucket_at(char first, unsigned n) {
 }
 
 __attribute__((noinline)) static void build_tables(void) {
+#if DZ_SYMHASH
+    /* Here rather than in main, so that anything which sets the tables up gets
+     * all of them. The unit tests call build_tables and build_cclass directly
+     * and would have run with a table of zeros -- every name in one bucket,
+     * still correct and quietly quadratic. */
+    build_pearson();
+#endif
     if (tables_ready) {
         return;
     }

@@ -57,6 +57,71 @@ Two rules follow:
 
 ---
 
+## 1a. The Main Hazard: C That Compiles to Calls, Not Instructions
+
+**This is the single most useful thing in this document.** On a 24-bit machine
+with an 8-bit ALU, no barrel shifter and no multiplier wider than `MLT`, a
+great deal of ordinary C has no instruction to compile to. The compiler emits a
+call to a library helper instead. Nothing in the source suggests it happened,
+the code reads as arithmetic, and on the host it *is* arithmetic — so it is
+invisible to a host profile and to review.
+
+Every large win in the dzap work was one of these, found by reading generated
+assembly rather than by thinking harder about the C.
+
+### The offenders
+
+| What you write | What you get | Why |
+|---|---|---|
+| `x << 3`, `x << 4`, `x >> 4` | `call __bshl` / `__bshru` | No barrel shifter: a shift is a loop over the bits |
+| `x << 8`, `x << 16` | `call __ishl` | Even byte boundaries — the compiler does **not** turn a *left* shift into a byte move |
+| `(uint8_t)(v >> 16)` where `v` is in a register | `call __ishru` | Only `>> 8` gets the byte trick (`ld a, h`); HL's upper byte is not addressable |
+| `a & b` on a 24-bit value | `call __iand` | `AND` is an 8-bit instruction |
+| `a \| b` on a 24-bit value | `call __ior` | Same |
+| `x != 0` on a 24-bit value | `call __lcmpzero` | Same |
+| `arr[i]` where `sizeof(*arr) != 1` | `call __imulu` | The subscript is `i * size`, and `MLT` is 8-bit |
+| `p += n` on a pointer to a struct | `call __imulu` | Same, and easy to miss — it looks like pointer arithmetic |
+| anything on `uint32_t`/`long` | `call __l*` | Twice the machine's width |
+| `x / y`, `x % y` | `call __idivu` / `__irems` | No divide instruction at all |
+
+### The fixes, in order of how often they apply
+
+1. **Precompute into a table.** `shl3[i & 7]` instead of `i << 3`: an indexed
+   load from ≤256 bytes is one instruction. Repeated addition does *not* work —
+   the compiler canonicalises `x+x+x+x` back into a shift.
+2. **Split wide values into bytes, at the point they are created.** A 24-bit
+   mask that is only ever masked or tested against zero should be three
+   `uint8_t`. Do the split where the value is born, not where it is used, or
+   every user pays it.
+3. **Keep constants constant.** A constant shift folds only while the value is
+   still a constant. After a `switch` joins, `bit >> 16` is a runtime shift and
+   therefore a call — sink the stores into the arms instead.
+4. **Hand out pointers that already exist.** Returning a pointer *from a data
+   structure* removes the subscript's multiply. But see the trap below.
+5. **Read bytes out of memory, not out of a local.** `(uint8_t)(op->imm >> 16)`
+   is an indexed load; hoist `op->imm` into a local first and it becomes a call.
+
+### The trap in fix 4
+
+"Hand out a pointer" does not mean "invent objects to point at". Returning
+pointers to twenty-eight `static const` descriptors removed a `__ishru` and
+still lost 0.4%, because the compiler hoisted their addresses into the frame
+prologue — `ld de, _rd_a; ld (ix - 17), de` — paid on every call, and the frame
+grew past a size that mattered. The same call removed by sinking the stores
+into the switch arms, creating nothing new, won 4.9%. **Ask where the pointer
+comes from.**
+
+### How to find them
+
+    ez80-none-elf-clang ... -S file.c -o file.s
+    grep -o 'call[ \t]*__[a-z0-9_]*' file.s | sort | uniq -c
+
+Anything other than `__frameset` is an operation the chip does not have. Do
+this before optimising anything, and again after — several of these appeared
+*because* of a change that looked like an improvement.
+
+---
+
 ## 2. Core Architecture Rules
 
 ### Do NOT Prefer Global/Static Over Stack Locals -- Stack Access Is Faster
@@ -205,6 +270,18 @@ work). Readings are deterministic to the centisecond.
 * **24-bit AND is a call.** `AND` is an 8-bit instruction, so `regset & reg` on
   a `uint24_t` compiles to `call __iand`, and indexing an array of them costs
   `r * 3`, a `call __imulu`. Part of the row-record figure above.
+* **A stored pointer beats a computed one -- but not a materialised one.**
+  Handing out a pointer that already exists in a data structure removes the
+  multiply a subscript needs, and was worth 20.5% on one lookup. Returning
+  pointers to many *distinct compile-time* objects is the opposite: with
+  twenty-eight of them in switch arms the compiler hoisted their addresses into
+  the frame prologue, and the change lost 0.4% despite also removing a call to
+  `__ishru`. The question to ask is where the pointer comes from, not whether
+  it is a pointer.
+* **The emulator is deterministic to about 0.25%.** Three interleaved repeats
+  of two binaries gave 8.24/8.26/8.24 against 8.28/8.28/8.28. Do not claim a
+  change under half a percent from a single run, and do not dismiss a
+  consistent 0.4% as noise.
 
 ### Contradicted by measurement
 * **"Data-driven beats branching" is too simple.** Replacing a chain of ~8

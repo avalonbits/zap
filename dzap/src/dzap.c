@@ -98,6 +98,12 @@ typedef struct _dop {
      * which cost two calls to __ishru even for `nop`, an instruction with no
      * register operands at all. */
     uint8_t r0, r1, r2;
+
+    /* Whether the three above are all zero, decided where they are set rather
+     * than re-derived. match_row wanted it for both operands on every
+     * instruction, which is six loads and four ORs to learn something the
+     * operand has known since it was built. */
+    uint8_t noreg;
     uint8_t reg_index;
     bool cc;
     uint8_t cc_index;
@@ -471,6 +477,7 @@ static const insninfo* mnemonic_of(const char* s, int n) {
         op->r0 = (uint8_t) (bits);               \
         op->r1 = (uint8_t) ((bits) >> 8);        \
         op->r2 = (uint8_t) ((bits) >> 16);       \
+        op->noreg = ((bits) == 0);               \
         op->reg_index = (idx);                   \
     } while (0)
 
@@ -664,7 +671,7 @@ static inline bool digit_ch(char c) {
  * lets the compiler move it in whatever way suits, and says once what "empty"
  * means instead of in three places that have to agree. */
 static const dop dop_none = {
-    0, 0, 0, 0, false, 0, NOREQ, false, false, 0, false, 0
+    0, 0, 0, 1, 0, false, 0, NOREQ, false, false, 0, false, 0
 };
 
 /* Scans here are mostly unbounded, and safe because the reader keeps a newline
@@ -1000,8 +1007,8 @@ static const isa_row* match_row(const insninfo* insn,
     /* Already split, by whoever recognised the register. */
     const uint8_t a0 = a->r0, a1 = a->r1, a2 = a->r2;
     const uint8_t b0 = b->r0, b1 = b->r1, b2 = b->r2;
-    const uint8_t anone = (uint8_t) ((a0 | a1 | a2) == 0);
-    const uint8_t bnone = (uint8_t) ((b0 | b1 | b2) == 0);
+    const uint8_t anone = a->noreg;
+    const uint8_t bnone = b->noreg;
 
     for (uint8_t i = 0; i < insn->count; ) {
         /* The cheapest discriminator first, and it is allowed to end the

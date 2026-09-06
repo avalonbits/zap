@@ -38,6 +38,7 @@ Three verdicts:
 | Row data in one record per row, walked by a pointer | **−10.1%** on pure, **−35.0%** on the row-heavy shape | **Portable.** zap's `match_row` runs the identical test and reads `regsetA`/`regsetB` as `uint32_t` straight out of the isa table. |
 | Register sets as separate byte planes | **+8.5% — reverted** | Recorded so it is not re-invented: it removes the right calls and replaces them with eight `ld hl, base; add hl, bc; ld a, (hl)` sequences per row. The same split *inside one record* is the row above. |
 | Register set split into byte planes in the operand, not in match_row | **−3.1%** on `nop`, −2.2% on the mix, −6.5% row-heavy | **Portable.** zap holds the same set as `uint32_t` and masks it in the same places. Every mask on it is a call to `__iand`; split, they are byte ANDs, and `emit_row` went from eleven library calls to none. |
+| Unbounded scans, with a sentinel newline past the buffer, except the two the compiler mishandles | **−5.1%** on `bit 3, (iy+4)`, −3.3% on `ld a, b`, −0.6% on the mix | **Portable, with a warning attached.** zap's lexer tests a bound on every character of every scan for the same reason, and the same sentinel would remove it. The warning is that two `num_ch` scans had to keep their bound: unbounded they compile to a loop that never tests its first character and stops one short, which no host test can see. Check the generated assembly for every scan converted, and test on hardware. |
 | Instructions looked up by pointer rather than by index | **−20.5%** on `nop`, **−13.0%** on the mix | **Portable, and the second largest win measured.** Every use of an index is a subscript, and a subscript is the index times a struct size, which is a call to `__imulu`. zap's `enc_instruction` takes the same index and pays the same multiplies. |
 | `transform` call skipped when the type is TR_NONE | **−5.4%** on `nop`, −2.5% on the mix | **Portable.** A load and a compare instead of a call, a dispatch and a return, on the commonest case. |
 | Operand parser split so the empty case skips the big prologue | **+2.0% — reverted** | Recorded so it is not re-invented. The premise was wrong: `assemble_line` already assigns `dop_none` directly when there is no comma, so the empty path is only reached by genuinely operandless instructions. The extra call lands on every other line. |
@@ -105,6 +106,7 @@ above are about *semantics*, and the sizes are always from the Agon.
       + rows indexed by operand mode                8.32s     585
       + byte planes, pointer lookup, TR_NONE       6.90s     485
       + one class load, register bytes in arms     6.70s     471
+      + unbounded scans past a sentinel             6.54s     460
 
 The last two lines are one session's six changes, each measured on its own
 against the same build of the same file. That round's baseline re-measured as
@@ -127,7 +129,7 @@ showed up here.
 On `ld (ix+8), a` alone, which scans 43 of ld's 57 rows and so shows row
 selection undiluted: 42.54s to 19.76s, **−53.6%**.
 
-**66.0% in total.** Roughly two thirds of it is portable or conditional; the
+**66.8% in total.** Roughly two thirds of it is portable or conditional; the
 rest is the simplification.
 
 ## What an instruction costs

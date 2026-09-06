@@ -18,9 +18,14 @@ static hash_table words;
 /* The reserved-word and mnemonic tables are immutable and shared by every
  * lexer, so they are built once. Rebuilding them per lex_init -- which is what
  * used to happen -- leaked both tables on every open. */
+static void build_cclass(void);
 static bool ht_ready = false;
 
 static void init_ht() {
+    /* Both tables are built together: every entry point that needs one needs
+     * the other, and splitting them left the class table empty on the path
+     * lex_init takes. */
+    build_cclass();
     if (ht_ready) {
         return;
     }
@@ -100,6 +105,7 @@ static void init_ht() {
 }
 
 void lex_prime(void) {
+    build_cclass();
     init_ht();
 }
 
@@ -130,22 +136,67 @@ void lex_destroy(lexer* lex) {
      * successful assembly ended in heap corruption. */
 }
 
-static bool is_space(char ch) {
-    return ch == ' ' || ch == '\t' || ch == '\r';
+/* What each byte can be, answered by one indexed load.
+ *
+ * Asked as comparisons these cost between two and six of them, and every
+ * character of the source is asked at least one: is_ascdig alone runs for
+ * every character of every identifier, and is_space between every pair of
+ * tokens. A 256-byte table answers all four questions at once, and the eZ80
+ * reaches a table of that size in a single instruction.
+ *
+ * The table is filled from the same expressions it replaces, at first use, so
+ * the definitions stay in one place and cannot drift from what the predicates
+ * used to say. */
+#define C_SPACE  0x01
+#define C_DIGIT  0x02
+#define C_HEX    0x04
+#define C_ASCDIG 0x08
+
+static uint8_t cclass[256];
+static bool cclass_ready = false;
+
+static void build_cclass(void) {
+    if (cclass_ready) {
+        return;
+    }
+    cclass_ready = true;
+
+    for (int i = 0; i < 256; i++) {
+        const char ch = (char) i;
+        uint8_t f = 0;
+
+        if (ch == ' ' || ch == '\t' || ch == '\r') {
+            f |= C_SPACE;
+        }
+        const bool digit = ch >= 48 && ch <= 57;
+        if (digit) {
+            f |= C_DIGIT;
+        }
+        if ((ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F') || digit) {
+            f |= C_HEX;
+        }
+        if ((ch >= 0x41 && ch <= 0x5A) || (ch >= 0x61 && ch <= 0x7A)
+            || ch == '_' || ch == '@' || digit) {
+            f |= C_ASCDIG;
+        }
+        cclass[i] = f;
+    }
 }
 
-static bool is_digit(char ch) {
-    return ch >= 48 && ch <= 57;
+static inline bool is_space(char ch) {
+    return (cclass[(uint8_t) ch] & C_SPACE) != 0;
 }
 
-static bool is_hex_digit(char ch) {
-    return (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F') || is_digit(ch);
+static inline bool is_digit(char ch) {
+    return (cclass[(uint8_t) ch] & C_DIGIT) != 0;
 }
 
-static bool is_ascdig(char ch) {
-    return (ch >= 0x41 && ch <= 0x5A)
-        || (ch >= 0x61 && ch <= 0x7A)
-        || ch == '_' || ch == '@' || is_digit(ch);
+static inline bool is_hex_digit(char ch) {
+    return (cclass[(uint8_t) ch] & C_HEX) != 0;
+}
+
+static inline bool is_ascdig(char ch) {
+    return (cclass[(uint8_t) ch] & C_ASCDIG) != 0;
 }
 
 #define OK_CHAR(ch) (ch != EOF && ch != ESUSP)

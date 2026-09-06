@@ -98,6 +98,12 @@ typedef struct _dop {
      * which cost two calls to __ishru even for `nop`, an instruction with no
      * register operands at all. */
     uint8_t r0, r1, r2;
+
+    /* Whether the three above are all zero, decided where they are set rather
+     * than re-derived. match_row wanted it for both operands on every
+     * instruction, which is six loads and four ORs to learn something the
+     * operand has known since it was built. */
+    uint8_t noreg;
     uint8_t reg_index;
     bool cc;
     uint8_t cc_index;
@@ -362,6 +368,24 @@ __attribute__((noinline)) static void build_tables(void) {
         bucket_head[b] = ins;
     }
 
+    /* mnemonic_of compares n characters and does not check the length, which
+     * is only safe while every name sharing a bucket has the same length --
+     * otherwise `cp` would match the first two characters of `cpi`, and the
+     * table is full of such prefixes. That holds because the bucket key
+     * includes the length and no mnemonic is long enough to reach the clamp.
+     * Both of those are somebody else's decision to change, so it is checked
+     * here rather than assumed, and the CLI test looks for this line. */
+    for (int b = 0; b < NBUCKET; b++) {
+        for (const insninfo* x = bucket_head[b]; x != NULL; x = x->next) {
+            for (const insninfo* y = x->next; y != NULL; y = y->next) {
+                if (x->len != y->len) {
+                    printf("isa table: %s and %s share a bucket\r\n",
+                           x->name, y->name);
+                }
+            }
+        }
+    }
+
     int r = 0;
     for (int i = 0; i < isa_table_count; i++) {
         const isa_insn* insn = &isa_table[i];
@@ -446,7 +470,12 @@ static inline bool same_ci(const char* a, const char* b, int n) {
 static const insninfo* mnemonic_of(const char* s, int n) {
     for (const insninfo* ins = bucket_head[bucket_of(s[0], n)]; ins != NULL;
          ins = ins->next) {
-        if (ins->len == n && same_ci(ins->name, s, n)) {
+        /* No length test. The bucket is keyed by first character *and*
+         * length, and the clamp at NLEN is never reached because the longest
+         * mnemonic is five characters -- checked when the table is built --
+         * so every candidate in this chain already has the length wanted. A
+         * token longer than the clamp lands in a bucket that holds nothing. */
+        if (same_ci(ins->name, s, n)) {
             return ins;
         }
     }
@@ -471,6 +500,7 @@ static const insninfo* mnemonic_of(const char* s, int n) {
         op->r0 = (uint8_t) (bits);               \
         op->r1 = (uint8_t) ((bits) >> 8);        \
         op->r2 = (uint8_t) ((bits) >> 16);       \
+        op->noreg = ((bits) == 0);               \
         op->reg_index = (idx);                   \
     } while (0)
 
@@ -664,7 +694,7 @@ static inline bool digit_ch(char c) {
  * lets the compiler move it in whatever way suits, and says once what "empty"
  * means instead of in three places that have to agree. */
 static const dop dop_none = {
-    0, 0, 0, 0, false, 0, NOREQ, false, false, 0, false, 0
+    0, 0, 0, 1, 0, false, 0, NOREQ, false, false, 0, false, 0
 };
 
 /* Scans here are mostly unbounded, and safe because the reader keeps a newline
@@ -990,7 +1020,7 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
 
 
 
-__attribute__((noinline)) static const isa_row* match_row(const insninfo* insn,
+static const isa_row* match_row(const insninfo* insn,
                                                          const dop* a,
                                                          const dop* b) {
     const uint8_t want = (uint8_t) (shl4[a->mode & 15] | (b->mode & 15));
@@ -1000,8 +1030,8 @@ __attribute__((noinline)) static const isa_row* match_row(const insninfo* insn,
     /* Already split, by whoever recognised the register. */
     const uint8_t a0 = a->r0, a1 = a->r1, a2 = a->r2;
     const uint8_t b0 = b->r0, b1 = b->r1, b2 = b->r2;
-    const uint8_t anone = (uint8_t) ((a0 | a1 | a2) == 0);
-    const uint8_t bnone = (uint8_t) ((b0 | b1 | b2) == 0);
+    const uint8_t anone = a->noreg;
+    const uint8_t bnone = b->noreg;
 
     for (uint8_t i = 0; i < insn->count; ) {
         /* The cheapest discriminator first, and it is allowed to end the

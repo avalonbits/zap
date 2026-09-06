@@ -66,6 +66,13 @@ cli_check "timing line matches the reference's format" \
 
 bad=$("$OUT/dzap" "$OUT/bad.s" "$OUT/bad.bin" 2>&1 | tr -d '\r' || true)
 cli_check "no timing on failure" "$(printf '%s' "$bad" | grep -c '^Done in ')" 0
+
+# mnemonic_of compares without checking the length, which is only safe while
+# every name in a bucket has the same length. build_tables says so if that ever
+# stops being true; nothing else would notice until an instruction assembled as
+# a different one.
+cli_check "no two mnemonics share a bucket" \
+    "$(printf '%s' "$out" | grep -c 'share a bucket')" 0
 cli_check "failure is reported"  "$(printf '%s' "$bad" | grep -c 'line 1:')" 1
 
 # The reference itself, on everything in test/cases. Unit tests pin the cases a

@@ -804,6 +804,102 @@ static const dop dop_none = {
     0, 0, 0, 1, 0, false, 0, NOREQ, false, false, 0, false, 0
 };
 
+/* A run of hexadecimal digits, assembled into a value.
+ *
+ * Assembled from the end, a byte at a time, rather than accumulated as
+ * `acc = (acc << 4) | digit`.
+ *
+ * There is no barrel shifter, and the compiler will not turn a left shift into
+ * a byte move even at a byte boundary: `<< 4` and `<< 8` are both
+ * `ld c, n; call __ishl`, a loop over the bits. That cost about 445 cycles per
+ * hex digit, which is why `ld hl, 0x123456` timed 2.9s slower than
+ * `ld a, 0x42` over thirty thousand lines.
+ *
+ * Working backwards, two digits make a byte with one table lookup for the high
+ * nibble, and the bytes go straight into the value's own storage. Nothing here
+ * shifts anything wider than a nibble.
+ *
+ * Three fixed steps rather than a loop with a running byte index. A value is
+ * at most three bytes, so the loop could only ever run three times, and it was
+ * paying for that: a counter to increment, a bound to test against it, and an
+ * indexed store into the union, which is address arithmetic on every byte.
+ *
+ * The digits are checked here too, rather than in a pass of their own. Each
+ * used to be looked up twice -- once by a loop asking whether the run was hex,
+ * and again here -- and that pass cost 811 cycles of this parse's 2,163, and
+ * 393 even for `ld a, 0x42`, where there are two digits. Most of it was the
+ * loop, not the work.
+ *
+ * hexval gives 0xFF for anything that is not a hex digit and a real nibble is
+ * 0x0F or less, so OR-ing the nibbles together and testing the high half at
+ * the end says whether any was rejected, with no branch per digit.
+ *
+ * Little-endian, which the eZ80 is and the host is. The emitter already writes
+ * the low byte first for the same reason. Digits past the third byte are
+ * dropped, which is what the old accumulator did too once it overflowed.
+ *
+ * Taking the run rather than the whole token is what lets `0x1234` and
+ * `1234h` share this. They used to be different code: the prefixed form came
+ * here and the suffixed form fell through to num_parse, which on the honest
+ * corpus is 46% of every immediate in isa_real. */
+static inline bool hex_digits(const char* d, int n, int* out) {
+    union {
+        int v;
+        uint8_t b[sizeof(int)];
+    } u;
+    u.v = 0;
+
+    uint8_t bad = 0;
+    int j = n;
+
+    if (j > 0) {
+        uint8_t c = hexval[(uint8_t) d[--j]];
+        bad |= c;
+        if (j > 0) {
+            const uint8_t hi = hexval[(uint8_t) d[--j]];
+            bad |= hi;
+            /* Masked: an invalid digit reaches this before `bad` is tested,
+             * and shl4 holds sixteen entries. */
+            c = (uint8_t) (c | shl4[hi & 15]);
+        }
+        u.b[0] = c;
+    }
+    if (j > 0) {
+        uint8_t c = hexval[(uint8_t) d[--j]];
+        bad |= c;
+        if (j > 0) {
+            const uint8_t hi = hexval[(uint8_t) d[--j]];
+            bad |= hi;
+            c = (uint8_t) (c | shl4[hi & 15]);
+        }
+        u.b[1] = c;
+    }
+    if (j > 0) {
+        uint8_t c = hexval[(uint8_t) d[--j]];
+        bad |= c;
+        if (j > 0) {
+            const uint8_t hi = hexval[(uint8_t) d[--j]];
+            bad |= hi;
+            c = (uint8_t) (c | shl4[hi & 15]);
+        }
+        u.b[2] = c;
+    }
+
+    /* Digits past the third byte are dropped from the value but must still be
+     * rejected if they are not hex, or a literal the reference refuses would
+     * assemble here. Only a literal of more than six digits reaches this. */
+    while (j > 0) {
+        bad |= hexval[(uint8_t) d[--j]];
+    }
+
+    if ((bad & 0xF0) != 0) {
+        return false;
+    }
+    *out = u.v;
+
+    return true;
+}
+
 /* Scans here are mostly unbounded, and safe because the reader keeps a newline
  * one byte past the last valid one.
  *
@@ -1004,100 +1100,14 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
         int v = 0;
         bool got = false;
         if (nn >= 3 && ns[0] == '0' && (ns[1] | 0x20) == 'x') {
-            {
-                /* Assembled from the end, a byte at a time, rather than
-                 * accumulated as `acc = (acc << 4) | digit`.
-                 *
-                 * There is no barrel shifter, and the compiler will not turn a
-                 * left shift into a byte move even at a byte boundary: `<< 4`
-                 * and `<< 8` are both `ld c, n; call __ishl`, a loop over the
-                 * bits. That cost about 445 cycles per hex digit, which is why
-                 * `ld hl, 0x123456` timed 2.9s slower than `ld a, 0x42` over
-                 * thirty thousand lines.
-                 *
-                 * Working backwards, two digits make a byte with one table
-                 * lookup for the high nibble, and the bytes go straight into
-                 * the value's own storage. Nothing here shifts anything wider
-                 * than a nibble.
-                 *
-                 * Little-endian, which the eZ80 is and the host is. The
-                 * emitter already writes the low byte first for the same
-                 * reason. Digits past the third byte are dropped, which is
-                 * what the old accumulator did too once it overflowed. */
-                union {
-                    int v;
-                    uint8_t b[sizeof(int)];
-                } u;
-                u.v = 0;
-
-                /* Three fixed steps rather than a loop with a running byte
-                 * index. A value is at most three bytes, so the loop could
-                 * only ever run three times, and it was paying for that: a
-                 * counter to increment, a bound to test against it, and an
-                 * indexed store into the union, which is address arithmetic
-                 * on every byte.
-                 *
-                 * The digits are checked here too, rather than in a pass of
-                 * their own. Each used to be looked up twice -- once by a loop
-                 * asking whether the run was hex, and again here -- and that
-                 * pass cost 811 cycles of this parse's 2,163, and 393 even for
-                 * `ld a, 0x42`, where there are two digits. Most of it was the
-                 * loop, not the work.
-                 *
-                 * hexval gives 0xFF for anything that is not a hex digit and a
-                 * real nibble is 0x0F or less, so OR-ing the nibbles together
-                 * and testing the high half at the end says whether any was
-                 * rejected, with no branch per digit. */
-                uint8_t bad = 0;
-                int j = nn;
-
-                if (j > 2) {
-                    uint8_t c = hexval[(uint8_t) ns[--j]];
-                    bad |= c;
-                    if (j > 2) {
-                        const uint8_t hi = hexval[(uint8_t) ns[--j]];
-                        bad |= hi;
-                        /* Masked: an invalid digit reaches this before `bad`
-                         * is tested, and shl4 holds sixteen entries. */
-                        c = (uint8_t) (c | shl4[hi & 15]);
-                    }
-                    u.b[0] = c;
-                }
-                if (j > 2) {
-                    uint8_t c = hexval[(uint8_t) ns[--j]];
-                    bad |= c;
-                    if (j > 2) {
-                        const uint8_t hi = hexval[(uint8_t) ns[--j]];
-                        bad |= hi;
-                        c = (uint8_t) (c | shl4[hi & 15]);
-                    }
-                    u.b[1] = c;
-                }
-                if (j > 2) {
-                    uint8_t c = hexval[(uint8_t) ns[--j]];
-                    bad |= c;
-                    if (j > 2) {
-                        const uint8_t hi = hexval[(uint8_t) ns[--j]];
-                        bad |= hi;
-                        c = (uint8_t) (c | shl4[hi & 15]);
-                    }
-                    u.b[2] = c;
-                }
-
-                /* Digits past the third byte are dropped from the value but
-                 * must still be rejected if they are not hex, or a literal the
-                 * reference refuses would assemble here. Only a literal of
-                 * more than six digits reaches this. */
-                while (j > 2) {
-                    bad |= hexval[(uint8_t) ns[--j]];
-                }
-
-                if ((bad & 0xF0) == 0) {
-                    v = u.v;
-                    got = true;
-                }
-            }
-        } else if (nn > 0 && digit_ch(ns[0])) {
+            got = hex_digits(ns + 2, nn - 2, &v);
+        } else if (nn >= 2 && (ns[nn - 1] | 0x20) == 'h') {
+            /* A trailing h, which is the form the reference's own corpus
+             * writes: `aabbcch`, and `0ffh`. It begins with a letter as often
+             * as not, so it arrives here only because the register path
+             * rewinds to it. */
+            got = hex_digits(ns, nn - 1, &v);
+                } else if (nn > 0 && digit_ch(ns[0])) {
             /* First digit outside the loop, for the reason given at the
              * displacement above: a one-digit literal then needs no multiply,
              * and `im 2`, `rst 0`, `bit 3` and the rest of the small decimals

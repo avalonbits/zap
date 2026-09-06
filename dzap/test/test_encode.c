@@ -327,6 +327,46 @@ int main(void) {
     check("a long token cannot index past the bucket table",
           emit("  _________\n"), "ERR");
 
+    /* The hexadecimal fast path, driven directly.
+     *
+     * It has a correct fallback: hex_digits rejects anything that is not a
+     * digit run, and num_parse then produces the right answer more slowly. So
+     * disabling the fast path entirely, or handing it the wrong slice of the
+     * token, changes no output and no check above can see it -- verified, all
+     * three fail zero. What the encodings do catch is a fast path that
+     * produces a *wrong* value: swapping two of the bytes fails 40 of them.
+     *
+     * These call it directly so that the path being taken at all is asserted
+     * somewhere, rather than left to the benchmark to notice.
+     *
+     * `0x1234` and `1234h` reach it as the same digit run, which is the point
+     * of it taking a run rather than a token. */
+    {
+        int v = 0;
+        char got[80];
+        const bool a = hex_digits("42", 2, &v);
+        const int v42 = v;
+        const bool b = hex_digits("123456", 6, &v);
+        const int v123456 = v;
+        const bool c = hex_digits("aabbcc", 6, &v);
+        const int vaabbcc = v;
+        v = 0x5A5A5A;
+        const bool d = hex_digits("12z4", 4, &v);   /* not hex: rejected */
+        snprintf(got, sizeof(got), "%d %06X %d %06X %d %06X %d %06X",
+                 a, v42, b, v123456, c, vaabbcc, d, v);
+        check("hex_digits assembles a run and rejects a bad one", got,
+              "1 000042 1 123456 1 AABBCC 0 5A5A5A");
+
+        /* Seven digits: the value keeps the low three bytes and the rest are
+         * dropped, but a bad digit among them still has to be rejected. */
+        const bool e = hex_digits("1234567", 7, &v);
+        const int v7 = v;
+        const bool f = hex_digits("z234567", 7, &v);
+        snprintf(got, sizeof(got), "%d %06X %d", e, v7, f);
+        check("hex_digits drops digits past three bytes but still checks them",
+              got, "1 234567 0");
+    }
+
     /* Growing the output buffer.
      *
      * realloc is allowed to move the block, so out_grow has to carry the

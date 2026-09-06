@@ -1117,6 +1117,23 @@ static inline uint8_t ddfd_prefix(const dop* op) {
     return 0;
 }
 
+/* The low byte of an immediate, read as a byte.
+ *
+ * `op->imm & 7` is a 24-bit AND, which is a call to __iand: imm is an int, so
+ * the value arrives in hl and the compiler masks it where it sits. Casting to
+ * uint8_t first does not help -- the cast is folded away, since masking three
+ * bits off a byte and off the whole value give the same answer. What has to
+ * change is the load. Reading the low byte through a uint8_t* makes it
+ * `ld a, (iy + n); and a, 7`, the byte operation it always was.
+ *
+ * transform is inlined at both operand sites and two of its cases mask an
+ * immediate, so this was four calls per instruction with an immediate.
+ *
+ * Little-endian, as the hex parser above already assumes. */
+static inline uint8_t imm_lo(const dop* op) {
+    return *(const uint8_t*) &op->imm;
+}
+
 __attribute__((always_inline)) static inline void transform(emitted* out, dop* op, uint8_t type) {
     switch (type) {
         case TR_IR0:
@@ -1134,7 +1151,7 @@ __attribute__((always_inline)) static inline void transform(emitted* out, dop* o
             break;
         case TR_Y:
             if (op->has_imm) {
-                out->opcode |= shl3[op->imm & 0x07];
+                out->opcode |= shl3[imm_lo(op) & 7];
             } else {
                 out->opcode |= shl3[op->reg_index & 7];
             }
@@ -1150,7 +1167,7 @@ __attribute__((always_inline)) static inline void transform(emitted* out, dop* o
             op->has_imm = false;
             break;
         case TR_BIT:
-            out->opcode |= shl3[op->imm & 0x07];
+            out->opcode |= shl3[imm_lo(op) & 7];
             op->has_imm = false;
             break;
         case TR_SELECT: {

@@ -1079,3 +1079,51 @@ the features still to be added back -- expressions, local labels -- will land.
 That is the next thing to take apart, and it wants pricing from the inside
 (literal accumulation, the register recogniser, the symbol lookup) rather than
 another whole-function duplication.
+
+## Inside parse_operand, priced (2026-09-06)
+
+Straight-line duplication this time, not a duplicated call: each part is a loop
+or a block, so nothing crosses a function boundary and nothing gets outlined.
+Verified by checking the generated code keeps one `_assemble_line` and a frame
+of 102 bytes in every variant. isa_real, 4.70s.
+
+    reg_of_text          +0.70s  14.9%   upper bound -- this one does outline
+    numeric_token        +0.40s   8.5%   over-called by the guard; ~4% real
+    sym_intern           +0.38s   8.1%
+    name scan            +0.26s   5.5%
+    operand clear        +0.24s   5.1%   two 19-byte ldir per line
+    literal scan         +0.24s   5.1%
+    space skip           +0.14s   3.0%
+
+`reg_of_text` is the outlier and the least trustworthy: for a token longer than
+three characters it is two length compares, so most of that 0.70s is the call
+it was turned into, not the switch.
+
+`sym_intern` at 8.1% is 1,930 cycles per lookup, which the generated code
+explains exactly: 28 instructions per character, spilling to the frame every
+turn, over names averaging seventeen characters. **But that is a property of
+the benchmark, not of Agon code.** Real Agon labels average 8.3 characters,
+measured over 8,034 distinct names in 538 files of the corpus. isa_real's
+generator makes them twice as long, so it roughly doubles what the symbol table
+appears to cost. Worth knowing before optimising against that number.
+
+### The symbol key, re-examined against the corpus
+
+Per file -- which is what an assembly run sees, about fifteen labels against
+2,048 buckets -- the expected probes for a successful lookup are **1.000 for
+every key tried**. The differences only appear with every label of every file
+in one table:
+
+    key                              corpus  perfile  worst  isa_real  uniform
+    two Pearson passes (shipped)      2.975    1.000  1.103     1.491    1.159
+    one pass + length in the top bits 3.632    1.000  1.476     1.676    1.229
+    two passes over first 4 + last 4  3.035    1.000  1.500    32.852    1.229
+    two passes over first 8           3.905    1.043 23.973     2.280  350.500
+
+One pass plus the length halves the per-character work and is fine on the
+corpus, but names of one length then reach only 256 of the 2,048 buckets, and
+uniform-length names are what generated code produces -- this repository's own
+isa_memory benchmark names every label in four characters. Sampling the token
+instead of bounding it survives the corpus and dies on isa_real, whose
+generated names share long stems: `sound_2_draw_loop` and `sound_9_draw_loop`
+agree on the first four characters and the last four. The shipped key stays.

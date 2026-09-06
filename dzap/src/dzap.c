@@ -1170,7 +1170,7 @@ _Static_assert((R_IXL | R_IYL)
                    == (((uint32_t) RP2_XYL << 16) | ((uint32_t) RP1_XYL << 8)),
                "IXL/IYL planes");
 
-static inline uint8_t ddfd_prefix(const dop* op) {
+__attribute__((always_inline)) static inline uint8_t ddfd_prefix(const dop* op) {
     if ((op->r1 & RP1_IX) != 0) {
         return 0xDD;
     }

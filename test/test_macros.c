@@ -264,6 +264,53 @@ int main(void) {
        "  macro zzz\n  nop\n  endmacro\n  ld a,b\n",
        "78");
 
+    /* A second expansion must not reuse the first one's scope.
+     *
+     * A macro expansion takes a fresh scope for its local labels and puts the
+     * old one back when it ends, so incrementing scope_ handed the same
+     * number out twice: the first expansion was right and every later one
+     * resolved its own forward @label to the earlier expansion's. In the puts
+     * macro that pattern is built from -- jump over an inline string -- the
+     * jump went backwards instead of over the string.
+     *
+     * Found in tomm-toms-agon-experiments/tetris in the full corpus, where it
+     * was a single wrong byte in 2,939 and a "relative jump too far" in the
+     * file next to it. */
+    is("a macro-local label per expansion",
+       "  macro over msg\n    jr @past\n  @str:\n    db msg\n    db 0\n"
+       "  @past:\n    ld hl,@str\n  endmacro\n"
+       "  over \"AB\"\n  over \"CDE\"\n  ret\n",
+       "18 03 41 42 00 21 02 00 04 18 04 43 44 45 00 21 0B 00 04 C9");
+
+    /* Three of them, because two could pass on an off-by-one that alternates. */
+    is("a macro-local label over three expansions",
+       "  macro over msg\n    jr @past\n  @str:\n    db msg\n    db 0\n"
+       "  @past:\n    ld hl,@str\n  endmacro\n"
+       "  over \"A\"\n  over \"B\"\n  over \"C\"\n",
+       "18 02 41 00 21 02 00 04 18 02 42 00 21 0A 00 04 "
+       "18 02 43 00 21 12 00 04");
+
+    /* An argument is the span of source it covers, not its tokens joined.
+     *
+     * A quote is its own token, so `"Running tests"` arrives as a quote, two
+     * names and a quote; joined end to end that is `"Runningtests"` and the
+     * space inside the string is gone. It was one wrong byte in 2,939 in
+     * tomm-toms-agon-experiments/tetris, and a program that printed
+     * `Runningtests`. Outside a macro the same db was always right, which is
+     * what made it hard to see. */
+    is("a space inside a string argument",
+       "  macro emit msg\n    db msg\n    db 0\n  endmacro\n  emit \"A B\"\n",
+       "41 20 42 00");
+    is("several spaces inside a string argument",
+       "  macro emit msg\n    db msg\n    db 0\n  endmacro\n  emit \"hi there you\"\n",
+       "68 69 20 74 68 65 72 65 20 79 6F 75 00");
+
+    /* Space around an argument is not part of it, so the expansion is the
+     * same however the call is spaced. */
+    is("spacing around the arguments does not reach the expansion",
+       "  macro pair p1, p2\n    db p1\n    db p2\n  endmacro\n  pair  1 ,  2 \n",
+       "01 02");
+
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);
     }

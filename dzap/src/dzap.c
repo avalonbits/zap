@@ -667,11 +667,22 @@ static const dop dop_none = {
     0, 0, 0, 0, false, 0, NOREQ, false, false, 0, false, 0
 };
 
+/* Scans here are mostly unbounded, and safe because the reader keeps a newline
+ * one byte past the last valid one.
+ *
+ * Every scan below stops at a newline -- none of the character classes it uses
+ * contains one -- so the sentinel ends any scan that would otherwise run off
+ * the buffer, without a bound being tested on every character. The pointer can
+ * reach the end of the content but never pass it, and reading through it there
+ * yields the sentinel, which is why the single tests lost their bounds too.
+ *
+ * The two num_ch scans are the exception and keep theirs; see each. `e` stays
+ * a parameter for them. */
 static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
     *op = dop_none;
 
     const char* p = *pp;
-    while (p < e && is_space_ch(*p)) {
+    while (is_space_ch(*p)) {
         p++;
     }
 
@@ -685,7 +696,7 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
      * The end of the operand list is still checked here rather than by
      * bounding the scan at the end of the line, because finding that end meant
      * a whole extra pass over the source. */
-    uint8_t cl = p < e ? cclass[(uint8_t) *p] : C_OPEND;
+    uint8_t cl = cclass[(uint8_t) *p];
 
     if ((cl & C_OPEND) != 0) {
         *pp = p;
@@ -697,16 +708,16 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
         op->indirect = true;
         op->mode |= INDIRECT;
         p++;
-        while (p < e && is_space_ch(*p)) {
+        while (is_space_ch(*p)) {
             p++;
         }
-        cl = p < e ? cclass[(uint8_t) *p] : C_OPEND;
+        cl = cclass[(uint8_t) *p];
     }
 
     /* A register or flag? */
     if ((cl & C_ALPHA) != 0) {
         const char* s = p;
-        while (p < e && name_ch(*p)) {
+        while (name_ch(*p)) {
             p++;
         }
         const int n = (int) (p - s);
@@ -724,16 +735,29 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
             }
 
             /* (ix+d) and (ix-d). */
-            while (p < e && is_space_ch(*p)) {
+            while (is_space_ch(*p)) {
                 p++;
             }
-            if (op->indirect && p < e && (*p == '+' || *p == '-')) {
+            if (op->indirect && (*p == '+' || *p == '-')) {
                 const bool neg = *p == '-';
                 p++;
-                while (p < e && is_space_ch(*p)) {
+                while (is_space_ch(*p)) {
                     p++;
                 }
                 const char* ds = p;
+                /* Bounded, unlike every other scan here, and deliberately.
+                 *
+                 * Unbounded, this compiles to a loop that is rotated wrongly:
+                 * the pointer is pre-decremented and each iteration tests one
+                 * character past it, so the first character is never examined
+                 * and the scan stops one short. `ld a, 0x42` parses as 0x4 and
+                 * leaves `2` behind. The bound is what stops the rotation.
+                 *
+                 * It does not reduce -- the same loop in isolation compiles
+                 * correctly -- and rewriting it to index from a base rather
+                 * than advance a pointer does not help; that was tried and
+                 * fails the same way. Full diagnosis on the `sentinel`
+                 * branch. */
                 while (p < e && num_ch(*p)) {
                     p++;
                 }
@@ -763,13 +787,13 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
                 }
                 op->has_disp = true;
                 op->disp = neg ? -d : d;
-                while (p < e && is_space_ch(*p)) {
+                while (is_space_ch(*p)) {
                     p++;
                 }
             }
 
             if (op->indirect) {
-                if (p >= e || *p != ')') {
+                if (*p != ')') {
                     z->err = "expected )";
 
                     return false;
@@ -790,9 +814,10 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
     /* A literal. */
     {
         const char* s = p;
-        if (p < e && (*p == '-' || *p == '+')) {
+        if (*p == '-' || *p == '+') {
             p++;
         }
+        /* Bounded, for the reason given at the displacement scan above. */
         while (p < e && num_ch(*p)) {
             p++;
         }
@@ -886,11 +911,11 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
         op->has_imm = true;
         op->mode |= IMM;
 
-        while (p < e && is_space_ch(*p)) {
+        while (is_space_ch(*p)) {
             p++;
         }
         if (op->indirect) {
-            if (p >= e || *p != ')') {
+            if (*p != ')') {
                 z->err = "expected )";
 
                 return false;
@@ -1148,7 +1173,7 @@ __attribute__((noinline)) static bool emit_row(dz* z, const isa_row* row, dop* a
  * every loop stops on it. The caller is told where parsing ended and steps
  * over the newline from there. */
 __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const char* e, const char** stop) {
-    while (p < e && is_space_ch(*p)) {
+    while (is_space_ch(*p)) {
         p++;
     }
     *stop = p;
@@ -1161,7 +1186,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
     }
 
     const char* s = p;
-    while (p < e && (cclass[(uint8_t) *p] & C_MNEM) != 0) {
+    while ((cclass[(uint8_t) *p] & C_MNEM) != 0) {
         p++;
     }
     const int n = (int) (p - s);
@@ -1183,10 +1208,10 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
     if (!parse_operand(z, &a, &p, e)) {
         return false;
     }
-    while (p < e && is_space_ch(*p)) {
+    while (is_space_ch(*p)) {
         p++;
     }
-    if (p < e && *p == ',') {
+    if (*p == ',') {
         p++;
         if (!parse_operand(z, &b, &p, e)) {
             return false;
@@ -1248,18 +1273,18 @@ static bool run(dz* z, const char* path) {
 
             /* Whatever ended the line is here or a step away: parsing stops at the
          * newline, and anything else between is trailing space or a remark. */
-        while (stop < end && *stop != '\n' && is_space_ch(*stop)) {
+        while (is_space_ch(*stop)) {
             stop++;
         }
-        if (stop < end && *stop == ';') {
+        if (*stop == ';') {
             /* A remark after the instruction. Its body is never looked at --
              * the search for the newline below walks it once and that is all
              * a comment ever costs. */
-            while (stop < end && *stop != '\n') {
+            while (*stop != '\n') {
                 stop++;
             }
         }
-        if (stop < end && *stop != '\n') {
+        if (*stop != '\n') {
             z->err = "unexpected text after the instruction";
 
             return false;
@@ -1267,7 +1292,7 @@ static bool run(dz* z, const char* path) {
         /* A line that was only a remark stops at the semicolon, so the rest
          * of it is walked here. This is the whole cost of a comment: one pass
          * over its bytes, looking for the newline and nothing else. */
-        while (stop < end && *stop != '\n') {
+        while (*stop != '\n') {
             stop++;
         }
         r->bpos_ = (uint24_t) ((stop < end ? stop + 1 : end) - base);

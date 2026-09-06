@@ -14,7 +14,15 @@ buf_reader* br_open(buf_reader* br, const char* fname, int bsz_kb) {
         return NULL;
     }
 
-    char* buf = (char*) malloc(bsz * sizeof(char));
+    /* One byte more than the buffer holds, for a newline written just past
+     * the last valid byte.
+     *
+     * Every scan over the buffer -- an identifier, a run of spaces, the body
+     * of a comment -- has to stop somewhere, and the bound was tested on every
+     * character: four instructions of the nine the loop compiles to. A newline
+     * sitting at bsz_ stops all of them without a test, because no scan
+     * crosses one. */
+    char* buf = (char*) malloc((bsz + 1) * sizeof(char));
     if (buf == NULL) {
         mos_fclose(fh);
         return NULL;
@@ -59,7 +67,7 @@ buf_reader* br_open(buf_reader* br, const char* fname, int bsz_kb) {
 }
 
 buf_reader* br_open_mem(buf_reader* br, const char* text, int len) {
-    char* buf = (char*) malloc((len > 0 ? len : 1) * sizeof(char));
+    char* buf = (char*) malloc(((len > 0 ? len : 1) + 1) * sizeof(char));
     if (buf == NULL) {
         return NULL;
     }
@@ -78,6 +86,10 @@ buf_reader* br_open_mem(buf_reader* br, const char* text, int len) {
     br->bpos_ = 0;
     br->mem_ = true;
     br->owned_ = true;
+
+    /* The same sentinel the refilling reader writes. This one never refills,
+     * so it is written once here. */
+    buf[len > 0 ? len : 0] = '\n';
 
     return br;
 }
@@ -213,7 +225,12 @@ bool br_fill_lines(buf_reader* br, bool* too_long) {
         return false;
     }
 
-    /* Carry the partial line the last read ended on. */
+    /* Carry the partial line the last read ended on.
+     *
+     * The two paths below that end a buffer without a trailing newline write a
+     * sentinel one past it, so scans need no bound. Both of those set bsz_ to
+     * raw_, which makes this carry empty -- the sentinel and the carry can
+     * never want the same byte. */
     const uint24_t carry = br->raw_ - br->bsz_;
     if (carry > 0) {
         memmove(br->buf_, &br->buf_[br->bsz_], (size_t) carry);
@@ -225,6 +242,7 @@ bool br_fill_lines(buf_reader* br, bool* too_long) {
 
     if (br->raw_ == 0) {
         br->bsz_ = 0;
+        br->buf_[0] = '\n';
 
         return false;
     }
@@ -236,6 +254,7 @@ bool br_fill_lines(buf_reader* br, bool* too_long) {
          * a read of zero missed this: a file whose final read returns its last
          * few bytes has no newline to find, and looked like a line too long. */
         br->bsz_ = br->raw_;
+        br->buf_[br->bsz_] = '\n';
 
         return true;
     }
@@ -243,6 +262,12 @@ bool br_fill_lines(buf_reader* br, bool* too_long) {
     for (uint24_t i = br->raw_; i > 0; i--) {
         if (br->buf_[i - 1] == '\n') {
             br->bsz_ = i;
+
+            /* No sentinel here, and it would be a bug to write one: what sits
+             * at bsz_ is the first character of the partial line this read
+             * ended on, which the next refill carries to the front of the
+             * buffer. None is needed either -- this buffer ends with a real
+             * newline at bsz_ - 1, so every scan inside it stops on that. */
 
             return true;
         }

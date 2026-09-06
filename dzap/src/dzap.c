@@ -990,7 +990,7 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
 
 
 
-__attribute__((noinline)) static const isa_row* match_row(const insninfo* insn,
+static const isa_row* match_row(const insninfo* insn,
                                                          const dop* a,
                                                          const dop* b) {
     const uint8_t want = (uint8_t) (shl4[a->mode & 15] | (b->mode & 15));

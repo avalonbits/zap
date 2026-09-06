@@ -206,15 +206,57 @@ static uint8_t isa_len[512];
  *
  * Indexed by a row number assigned here, since the rows live in 114 separate
  * arrays and have no global index of their own. */
-static uint16_t row_modes[NROW];
-static uint8_t row_ccok[NROW];
+/* One byte, not two.
+ *
+ * MODECHECK is four bits wide, so both operands' modes fit in a byte with room
+ * to spare -- and a byte compare is native where a 16-bit one is the worst
+ * width this chip has. This test runs for every candidate row, and `ld` alone
+ * has 57 of them: "ld (ix+8), a" examines 43 before it matches. */
 
 /* The same register sets the table holds, narrowed to the machine's word. */
-static uint24_t row_rega[NROW];
-static uint24_t row_regb[NROW];
+/* Everything the row loop reads, in one record per row, walked by a pointer.
+ *
+ * Three separate problems led here. Holding the register sets as `uint24_t`
+ * made `regset & reg` a call to __iand -- AND is an 8-bit instruction on this
+ * chip -- and made indexing cost r * 3, a call to __imulu. Splitting them into
+ * byte planes fixed both and was still slower (+8.5% on the row-heavy shape),
+ * because eight separate arrays mean eight `ld hl, base; add hl, bc;
+ * ld a, (hl)` sequences per row.
+ *
+ * One record indexed off iy is the shape that wins: every field is `ld a,
+ * (iy+n)`, and advancing to the next row is a single lea. The fields stay
+ * separate bytes rather than packed into a word -- packing two of them into a
+ * uint16_t was tried and cost 18.8%, because ADL mode has no 16-bit truncation
+ * and the compiler masks. Bytes are the native width for all of this. */
+typedef struct {
+    uint8_t modes;
+    uint8_t ccok;
+    uint8_t a0, a1, a2;
+    uint8_t b0, b1, b2;
+    uint8_t aempty, bempty;
+} rowinfo;
+
+static rowinfo rowtab[NROW];
 static int16_t row_base[512];
 
 static bool tables_ready = false;
+
+/* Shifting by a constant is a function call on this compiler.
+ *
+ * Only a shift by one becomes an instruction (`add a, a`); everything else --
+ * `<< 3`, `<< 4`, `>> 8` on a 24-bit value -- is `ld b, n` and a call to
+ * __bshl or __ishru. Writing the shift as repeated addition does not help,
+ * because it is canonicalised back into a shift. A table does: an indexed load
+ * from 256 bytes or fewer is one instruction, and these run for every operand
+ * of every instruction in the source.
+ *
+ * The one shift the compiler does handle is extracting a byte from a wider
+ * value when the result is cast to uint8_t -- `(uint8_t)(v >> 8)` is `ld a, h`
+ * -- so emit_imm is written that way instead of with a loop. */
+static const uint8_t shl3[8] = { 0, 8, 16, 24, 32, 40, 48, 56 };
+static const uint8_t shl4[16] = {
+    0, 16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240
+};
 
 static inline int letter_of(char c) {
     const char l = (char) (c | 0x20);
@@ -226,7 +268,7 @@ static inline int bucket_of(char first, int n) {
     return letter_of(first) * NLEN + (n < NLEN ? n : NLEN - 1);
 }
 
-static void build_tables(void) {
+__attribute__((noinline)) static void build_tables(void) {
     if (tables_ready) {
         return;
     }
@@ -254,12 +296,18 @@ static void build_tables(void) {
         row_base[i] = (int16_t) r;
         for (int j = 0; j < isa_table[i].count; j++) {
             const isa_row* row = &isa_table[i].rows[j];
-            row_modes[r] = (uint16_t)
-                (((uint16_t) (row->condA & MODECHECK) << 8)
-                 | (uint16_t) (row->condB & MODECHECK));
-            row_ccok[r] = (uint8_t) ((row->flags & F_CCOK) != 0);
-            row_rega[r] = (uint24_t) row->regsetA;
-            row_regb[r] = (uint24_t) row->regsetB;
+            rowinfo* ri = &rowtab[r];
+            ri->modes = (uint8_t)
+                (shl4[row->condA & MODECHECK] | (row->condB & MODECHECK));
+            ri->ccok = (uint8_t) ((row->flags & F_CCOK) != 0);
+            ri->a0 = (uint8_t) row->regsetA;
+            ri->a1 = (uint8_t) (row->regsetA >> 8);
+            ri->a2 = (uint8_t) (row->regsetA >> 16);
+            ri->b0 = (uint8_t) row->regsetB;
+            ri->b1 = (uint8_t) (row->regsetB >> 8);
+            ri->b2 = (uint8_t) (row->regsetB >> 16);
+            ri->aempty = (uint8_t) (row->regsetA == 0);
+            ri->bempty = (uint8_t) (row->regsetB == 0);
             r++;
         }
     }
@@ -646,17 +694,28 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
 
 /* ------------------------------------------------------------- selecting */
 
-static inline uint8_t reg_match(uint24_t regset, uint24_t reg) {
-    return (uint8_t) (((regset & reg) != 0) | ((regset | reg) == 0));
-}
 
-static const isa_row* match_row(int idx, const dop* a, const dop* b) {
+
+__attribute__((noinline)) static const isa_row* match_row(int idx, const dop* a, const dop* b) {
     const isa_insn* insn = &isa_table[idx];
-    const uint16_t want = (uint16_t) (((uint16_t) a->mode << 8) | b->mode);
+    const uint8_t want = (uint8_t) (shl4[a->mode & 15] | (b->mode & 15));
     const uint8_t has_cc = (uint8_t) (a->cc != 0);
-    int r = row_base[idx];
+    const rowinfo* ri = &rowtab[row_base[idx]];
 
-    for (uint8_t i = 0; i < insn->count; i++, r++) {
+    /* Split once per instruction, not once per row. Read straight out of the
+     * operand rather than through a local: a byte of a value already in a
+     * register costs a shift, a byte of one still in memory is an indexed
+     * load. */
+    const uint8_t a0 = (uint8_t) a->reg;
+    const uint8_t a1 = (uint8_t) (a->reg >> 8);
+    const uint8_t a2 = (uint8_t) (a->reg >> 16);
+    const uint8_t b0 = (uint8_t) b->reg;
+    const uint8_t b1 = (uint8_t) (b->reg >> 8);
+    const uint8_t b2 = (uint8_t) (b->reg >> 16);
+    const uint8_t anone = (uint8_t) (a->reg == 0);
+    const uint8_t bnone = (uint8_t) (b->reg == 0);
+
+    for (uint8_t i = 0; i < insn->count; i++, ri++) {
         /* The cheapest discriminator first, and it is allowed to end the
          * candidate outright.
          *
@@ -672,14 +731,19 @@ static const isa_row* match_row(int idx, const dop* a, const dop* b) {
          * A row that takes a condition code can still match with a mode that
          * does not, which is why the second half of the old expression has to
          * be part of the rejection rather than after it. */
-        const uint8_t ccok = row_ccok[r];
-        if (row_modes[r] != want && !(ccok & has_cc)) {
+        const uint8_t ccok = ri->ccok;
+        if (ri->modes != want && !(ccok & has_cc)) {
             continue;
         }
 
         const isa_row* row = &insn->rows[i];
-        const uint8_t rega = (uint8_t) (reg_match(row_rega[r], a->reg) | ccok);
-        const uint8_t regb = reg_match(row_regb[r], b->reg);
+        const uint8_t ga = (uint8_t) ((ri->a0 & a0) | (ri->a1 & a1)
+                                      | (ri->a2 & a2));
+        const uint8_t gb = (uint8_t) ((ri->b0 & b0) | (ri->b1 & b1)
+                                      | (ri->b2 & b2));
+        const uint8_t rega =
+            (uint8_t) ((ga != 0) | (ri->aempty & anone) | ccok);
+        const uint8_t regb = (uint8_t) ((gb != 0) | (ri->bempty & bnone));
 
         if (rega & regb) {
             if ((row->cpu & CPU_EZ80) == 0) {
@@ -727,23 +791,23 @@ static void transform(emitted* out, dop* op, uint8_t type) {
             break;
         case TR_Y:
             if (op->has_imm) {
-                out->opcode |= (uint8_t) ((op->imm & 0x07) << 3);
+                out->opcode |= shl3[op->imm & 0x07];
             } else {
-                out->opcode |= (uint8_t) (op->reg_index << 3);
+                out->opcode |= shl3[op->reg_index & 7];
             }
             break;
         case TR_P:
-            out->opcode |= (uint8_t) (op->reg_index << 4);
+            out->opcode |= shl4[op->reg_index & 15];
             break;
         case TR_CC:
-            out->opcode |= (uint8_t) (op->cc_index << 3);
+            out->opcode |= shl3[op->cc_index & 7];
             break;
         case TR_N:
             out->opcode |= (uint8_t) op->imm;
             op->has_imm = false;
             break;
         case TR_BIT:
-            out->opcode |= (uint8_t) ((op->imm & 0x07) << 3);
+            out->opcode |= shl3[op->imm & 0x07];
             op->has_imm = false;
             break;
         case TR_SELECT: {
@@ -753,7 +817,7 @@ static void transform(emitted* out, dop* op, uint8_t type) {
             } else if (op->imm == 2) {
                 y = 3;
             }
-            out->opcode |= (uint8_t) (y << 3);
+            out->opcode |= shl3[y & 7];
             op->has_imm = false;
             break;
         }
@@ -765,12 +829,23 @@ static void transform(emitted* out, dop* op, uint8_t type) {
 static void emit_imm(dz* z, const dop* op, uint8_t cond) {
     const int width = (cond & IMM_N) ? 1 : (DZ_ADL ? 3 : 2);
 
-    for (int i = 0; i < width; i++) {
-        put(z, (uint8_t) ((op->imm >> (i * 8)) & 0xFF));
+    /* Written out rather than looped, and reading op->imm afresh each time
+     * rather than through a local. The loop's `>> (i * 8)` is a variable shift
+     * and cost a call to __ishru per byte. A constant shift cast to uint8_t is
+     * better but not free: from a local the compiler still calls __ishru for
+     * `>> 16`, because the value is in a stack slot it has already loaded as a
+     * whole. Left as a field read it is an indexed load of the one byte
+     * wanted -- `ld a, (iy+n)` -- for all three. */
+    put(z, (uint8_t) op->imm);
+    if (width > 1) {
+        put(z, (uint8_t) (op->imm >> 8));
+    }
+    if (width > 2) {
+        put(z, (uint8_t) (op->imm >> 16));
     }
 }
 
-static bool emit_row(dz* z, const isa_row* row, dop* a, dop* b) {
+__attribute__((noinline)) static bool emit_row(dz* z, const isa_row* row, dop* a, dop* b) {
     if (!out_reserve(z, OUT_MAX_INSN)) {
         return false;
     }
@@ -834,7 +909,7 @@ static bool emit_row(dz* z, const isa_row* row, dop* a, dop* b) {
  * anyway: it is not a space, not a name character and not part of a number, so
  * every loop stops on it. The caller is told where parsing ended and steps
  * over the newline from there. */
-static bool assemble_line(dz* z, const char* p, const char* e, const char** stop) {
+__attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const char* e, const char** stop) {
     while (p < e && is_space_ch(*p)) {
         p++;
     }

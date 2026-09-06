@@ -32,6 +32,44 @@ Three verdicts:
 | Output reserved once per instruction, not bounds-checked per byte | part of −2.2% | **Portable, and half-built already.** zap has `pr_reserve`; it is `pr_wbyte` still testing on every byte that would change. |
 | **Row rejected on the cheap test before the expensive one** | **−23.2%** | **Portable, and the largest win measured.** zap's `match_row` has the identical structure and the same two expensive terms. See the note below: it contradicts the branchless guidance, which needs qualifying rather than discarding. |
 | Short mnemonics packed into a word and compared in one operation | **+1.3% — reverted** | **Not portable, and not wanted.** Bucketing by letter and length already leaves one or two candidates, so the compare loop it replaced was two or three characters and building the packed key cost more. Recorded so it is not re-invented. |
+| Constant shifts folded into lookup tables (`<< 3`, `<< 4`) | **−1.6%** | **Portable.** The eZ80 has no barrel shifter, so a shift that is not a whole number of bytes is a loop — `ld b, n; call __bshl`. zap folds operand indices into opcodes with the same `<< 3` and `<< 4`. |
+| Immediate bytes read from the field rather than a local | **−1.5%** | **Portable.** zap's emitter writes the same one, two or three bytes and has the same choice about where to read them from. |
+| Hot functions kept out of `main`, so every frame fits ix's range | **−7.8%** on pure, **−28.3%** on the row-heavy shape | **Portable, and zap has it worse.** See the section below. |
+| Row data in one record per row, walked by a pointer | **−10.1%** on pure, **−35.0%** on the row-heavy shape | **Portable.** zap's `match_row` runs the identical test and reads `regsetA`/`regsetB` as `uint32_t` straight out of the isa table. |
+| Register sets as separate byte planes | **+8.5% — reverted** | Recorded so it is not re-invented: it removes the right calls and replaces them with eight `ld hl, base; add hl, bc; ld a, (hl)` sequences per row. The same split *inside one record* is the row above. |
+
+## The frame-pointer cliff, and what zap has
+
+`ix` displacement is a signed byte. A function whose frame is larger than 128
+bytes cannot reach most of its own locals with `ld a, (ix-9)`, so the compiler
+emits `ld bc, -139; lea hl, ix + 0; add hl, bc; ld hl, (hl)` instead — five
+instructions where there was one, on every access.
+
+dzap fell off it by accident. `run`, `assemble_line`, `match_row` and
+`emit_row` were all inlined into `main`, whose frame reached 149 bytes and
+whose hot loop paid the detour 23 times. Marking those four `noinline` split
+one 149-byte frame into four of 60, 62, 19 and 20, removed every escape, and
+made the whole program *smaller* — 2557 instructions against 2634, despite the
+calls and returns it added. It was worth 28.3% on the shape that scans the most
+rows.
+
+**zap is in the same state and further into it.** Compiled the same way:
+
+    src/encode.c    106 escape sequences,   1 function over 128 bytes
+    src/parser.c    191 escape sequences,   6 functions over 128 bytes
+    src/operand.c     0
+    src/lexer.c       0
+
+That is not an inlining accident — those functions are simply large — so the
+fix is not the same `noinline`, but the cost is identical and it lands on the
+two hottest files in the program. Splitting the big frames, or moving the
+locals a hot loop touches into a small helper, is the shape of it.
+
+The same compile shows the other half. encode.c calls `__land` ten times and
+`__lcmpzero` twelve; parser.c calls `__imulu` eleven. The `l` prefix is the
+32-bit helper: that is `reg_match` testing `uint32_t` register sets, the exact
+code the row-record change above rewrote in bytes.
+
 
 ## Standing note
 
@@ -52,6 +90,22 @@ above are about *semantics*, and the sizes are always from the Agon.
       + narrowed accumulators, reserve per insn   13.98s     983
       + cheap-test early-out in row selection     10.74s     756
       (round 7 tried and reverted -- see below)
+      + shift tables, emit_imm, frames, row record 8.92s     627
+
+The last line is one session's four changes, each measured on its own against
+the same build of the same file. That round's baseline re-measured as 11.10s
+rather than the 10.74s recorded above — about 3% of run-to-run drift between
+days — so its four steps are quoted against 11.10s and against each other,
+never against a number from another day:
+
+    baseline                                     11.10s
+      + constant shifts as lookup tables         10.92s   −1.6%
+      + emit_imm reading the field               10.76s   −1.5%
+      + hot functions out of main                 9.92s   −7.8%
+      + row data in one record                    8.92s  −10.1%
+
+and on `ld (ix+8), a` alone, which scans 43 of ld's 57 rows and so shows row
+selection undiluted: 42.54s to 19.82s, **−53.4%**.
 
 Roughly two thirds of the 45.5% so far is portable or conditional; the rest is
 the simplification.

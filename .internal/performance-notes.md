@@ -868,3 +868,34 @@ The forms were interleaved with the label lines rather than having their
 operands rewritten. Replacing the operand of a `jp` with a label would have
 kept the line count and lost the form, and containing every form is what these
 files are for; all 1,019 are still present.
+
+
+## The degenerate case, and what it says about the fixup design
+
+`gen_isa.sh degenerate` is the worst shape a one-pass assembler with a fixup
+list can be given: the first half of the file refers to L1..LN five times over
+and the second half defines LN..L1, so
+
+* **every reference is forward** -- none can be resolved where it is read
+* **the fixup list reaches its largest and stays there** until the source runs
+  out: 2,340 entries, none discharged early
+* **the distance between a use and its definition is as long as the file
+  allows** -- L1 is referenced 10,943 lines before it is defined
+
+468 labels, five uses each, definitions in the exact reverse of first-use
+order. All four properties checked rather than intended. Assembles
+byte-identically to ez80asm.
+
+    isa_real         4.88s   343 cycles/byte
+    isa_degenerate   4.94s   347 cycles/byte     +1.2%
+
+**1.2%**, which is the fixup design holding up. Recording a forward reference
+costs 793 cycles and patching it later costs the same whether the definition is
+one line away or eleven thousand, because the fixup carries the output offset
+and the symbol and neither is searched for again. Interning is what makes the
+patch a dereference rather than a lookup.
+
+What the file is for is the *shape* of the cost rather than the size of it. If
+resolution ever stops being linear in the number of fixups -- a search per
+patch, a rebuild per growth -- this is where it shows first, and 1.2% is the
+number to watch it against.

@@ -899,3 +899,54 @@ What the file is for is the *shape* of the cost rather than the size of it. If
 resolution ever stops being linear in the number of fixups -- a search per
 patch, a rebuild per growth -- this is where it shows first, and 1.2% is the
 number to watch it against.
+
+## Memory, which had not been measured since labels arrived
+
+`test/bench/memprofile.sh`, on the Agon, over 262 KB of source:
+
+    isa_real          peak 166,931 bytes      isa_degenerate   137,221
+      source reader         16,385              source reader   16,385
+      output buffer         65,542              output buffer   65,537
+      symbol buckets         8,192              symbol buckets   8,192
+      symbol blocks         22,540              symbol blocks    5,635
+      label names           40,960              label names      8,192
+      fixups                13,312              fixups          33,280
+
+**Labels are 85 KB of the 167 KB peak, 51% of it.** The feature that costs 6%
+of the time costs half the memory, which is the sort of thing that stays
+invisible while only one of the two is measured.
+
+**Worst for time is not worst for memory.** isa_degenerate is the worst case
+for the fixup list -- 33 KB against 13 -- and uses *less* memory overall,
+because it has 468 distinct labels against isa_real's 1,941 and the names and
+symbol blocks scale with that. A memory-degenerate source is one with many
+distinct labels, not many references, and there is not one yet.
+
+### What it scales to
+
+Everything but the reader grows with the source. At isa_real's label density:
+
+    a  256 KB source peaks near 167 KB   fits
+    a  512 KB source peaks near 317 KB   fits, with MOS to pay for as well
+    a 1024 KB source peaks near 619 KB   does not fit
+
+The output buffer alone is `source / 4` and is the single largest item at 65 KB.
+zap's own note records the same shape: big.asm's 158 KB peak was 81% output
+buffer.
+
+### Measure it on the Agon, not the host
+
+Host figures are roughly twice the truth and not by a constant. A pointer is
+eight bytes there and three on the eZ80, so a symbol bucket is 16 bytes against
+4 and a fixup 24 against 13. The host said 196 KB where the Agon says 167 KB.
+
+Two things the plumbing needed, both worth not rediscovering:
+
+* **The allocator renames have to be object-like.** `-Dmalloc(n)=...` is
+  expanded inside stdlib.h's own declaration of malloc and the header stops
+  compiling. That is also why attribution is a `z_site` string the caller sets
+  rather than `__FILE__` and `__LINE__`.
+* **The Makefile needed an EXTRA_CFLAGS hook.** Setting CFLAGS on the command
+  line replaces what agondev's makefile put there, and the build fails in ways
+  that look like the measurement simply not working -- an empty report rather
+  than an error.

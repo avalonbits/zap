@@ -309,3 +309,87 @@ obvious next target; the sentinel was an attempt at it.
 splitting `parse_operand` so the empty case skips its prologue (+2.0% -- the
 caller already assigns `dop_none` directly when there is no comma, so the
 early-out is rarer than it looks).
+
+
+## The parse_operand entry stage, and why the merge is not in
+
+The entry -- the call, the frame, clearing the operand, finding where it starts
+-- was the largest single piece left of `parse_operand`. It was priced directly,
+by adding a third call per instruction on a source that takes the empty path:
+**about 430 cycles**, on both `nop` and `ld a, b`. Two calls per instruction, so
+merging them into one "parse the operand list" function should be worth one of
+those.
+
+It was built three ways and all seven shapes measured.
+
+| shape | main | merged, inlined | merged, out of line |
+|---|---|---|---|
+| `ld a, 0x42` | 9.66s | **9.10s (−5.8%)** | |
+| `nop` | 5.44s | **5.14s (−5.5%)** | 5.58s (+2.6%) |
+| `ld hl, 0x123456` | 11.96s | **11.36s (−5.0%)** | |
+| `bit 3, (iy+4)` | 11.08s | **10.86s (−2.0%)** | |
+| 256 KiB mix | 6.54s | **6.44s (−1.5%)** | |
+| `ld (ix+8), a` | 14.32s | 14.70s (+2.7%) | |
+| `ld a, b` | 6.98s | 7.22s (+3.4%) | 7.62s (+9.2%) |
+
+Keeping it out of line is worse than either -- the whole win depends on the
+compiler then inlining the merged function into `assemble_line`, which it does,
+taking that frame from 56 bytes to 83. Still short of the 128 where ix
+displacement stops reaching, so that is not the problem.
+
+**Not taken, despite the mix improving.** The two regressions are exactly the
+shapes whose second operand is a register; every shape with an immediate or no
+second operand wins. Register-to-register is the commonest form in real code,
+and `ld a, b` was confirmed at 7.22s on two separate runs.
+
+The deciding point is that the mix cannot arbitrate this. `p256.s` uses **31 of
+the ISA's 114 mnemonics** and 40 of its 322 rows: no `call`, `jp`, `jr` or
+`djnz`, so condition-code rows are barely exercised at all; no block
+instructions beyond `ldir`; none of `lea`, `pea`, `in0`, `out0`, `tst`. Its
+1.5% gain is an average over a sample that happens to over-weight the shapes
+this change helps. Banking that against a 3.4% loss on the commonest real form
+is not a trade worth making on this evidence.
+
+**Built that benchmark, and it reversed the verdict.** `gen_isa.sh` produces
+two 256 KiB sources holding all 1,083 forms -- one giving every form equal
+weight, one weighted like the real programs in test/corpus. On both, the merge
+is *slower*:
+
+    isa_even   main 7.02s   merged 7.08s   +0.9%
+    isa_real   main 6.60s   merged 6.68s   +1.2%
+
+Three interleaved repeats of isa_real read 6.60 and 6.68 every time, so that is
+real. The 1.5% gain on p256 was the forty-form sample over-weighting the shapes
+the change helps. **Rejected outright**, not merely deferred.
+
+**Why the register shapes regress, and why the obvious fix is worse.** In the
+original, `op` is a parameter: loaded once into iy, every field store a cheap
+`(iy+n)`. Merged, `op` alternates between the two operands and becomes
+loop-carried -- `ld iy, (ix + 9)` falls from 49 sites to 19 and address
+arithmetic rises from 55 to 61. The register path does the most field stores of
+any path, which is exactly why it is the one that slows down.
+
+Parsing into a fixed local and copying out once should undo that, and it does
+undo the *symptom*: `lea` sites fall back to 57. It is catastrophic anyway.
+
+    isa_real   main 6.60s   merge+tmp 8.00s   +21%
+    isa_even   main 7.02s   merge+tmp 8.68s   +24%
+    ld a, b    main 6.98s   merge+tmp 9.70s   +39%
+
+Two struct copies per instruction should be about 50 cycles by the earlier LDIR
+measurement, and this costs thirty times that, so the copies are not what is
+expensive -- something about the shape defeats the compiler more broadly. Not
+worth chasing further: the entry stage resists this whole line of attack, and
+three variants have now been measured against it.
+
+**Where that leaves the entry stage.** Its ~430 cycles are real and are the
+largest single piece of `parse_operand`, but they are not recoverable by
+restructuring the call. Anything that removes the call changes what the
+compiler inlines and how the operand pointer is addressed, and every version
+tried has paid more for that than the call cost. A different angle is needed --
+not another arrangement of the same two calls.
+
+A methodological note worth keeping: **pricing a call by adding one does not
+predict what removing one saves.** The 430 cycles were real and reproducible on
+two shapes, and the merge still cost time on two others, because removing the
+call also changed what the compiler inlined and how the register path came out.

@@ -1151,6 +1151,29 @@ __attribute__((noinline)) static bool emit_row(dz* z, const isa_row* row, dop* a
         put(z, out.opcode);
     }
 
+    /* A relative displacement is measured from the instruction after this
+     * one, so it is the last thing written and needs no width decision.
+     *
+     * It was not written at all before: the row's TR_REL transform had no case
+     * here, so the operand kept its immediate and was emitted as an ordinary
+     * one-byte value -- the target address truncated. `jr 0x040000` assembled
+     * to 18 00 where the reference gives 18 fe. Nothing caught it because no
+     * benchmark or case file held a relative jump, and the corpus forms that
+     * did were filtered out of opcodes.s for failing the byte comparison the
+     * filter exists to enforce. */
+    if (row->transformA == TR_REL || row->transformB == TR_REL) {
+        const dop* rel = (row->transformA == TR_REL) ? a : b;
+        const int d = rel->imm - (DZ_ORG + z->pos + 1);
+        if (d < -128 || d > 127) {
+            z->err = "relative jump too far";
+
+            return false;
+        }
+        put(z, (uint8_t) d);
+
+        return true;
+    }
+
     if (a->has_imm && (row->condA & (IMM_N | IMM_MMN))) {
         emit_imm(z, a, row->condA);
     }

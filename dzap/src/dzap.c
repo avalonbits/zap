@@ -368,6 +368,24 @@ __attribute__((noinline)) static void build_tables(void) {
         bucket_head[b] = ins;
     }
 
+    /* mnemonic_of compares n characters and does not check the length, which
+     * is only safe while every name sharing a bucket has the same length --
+     * otherwise `cp` would match the first two characters of `cpi`, and the
+     * table is full of such prefixes. That holds because the bucket key
+     * includes the length and no mnemonic is long enough to reach the clamp.
+     * Both of those are somebody else's decision to change, so it is checked
+     * here rather than assumed, and the CLI test looks for this line. */
+    for (int b = 0; b < NBUCKET; b++) {
+        for (const insninfo* x = bucket_head[b]; x != NULL; x = x->next) {
+            for (const insninfo* y = x->next; y != NULL; y = y->next) {
+                if (x->len != y->len) {
+                    printf("isa table: %s and %s share a bucket\r\n",
+                           x->name, y->name);
+                }
+            }
+        }
+    }
+
     int r = 0;
     for (int i = 0; i < isa_table_count; i++) {
         const isa_insn* insn = &isa_table[i];
@@ -452,7 +470,12 @@ static inline bool same_ci(const char* a, const char* b, int n) {
 static const insninfo* mnemonic_of(const char* s, int n) {
     for (const insninfo* ins = bucket_head[bucket_of(s[0], n)]; ins != NULL;
          ins = ins->next) {
-        if (ins->len == n && same_ci(ins->name, s, n)) {
+        /* No length test. The bucket is keyed by first character *and*
+         * length, and the clamp at NLEN is never reached because the longest
+         * mnemonic is five characters -- checked when the table is built --
+         * so every candidate in this chain already has the length wanted. A
+         * token longer than the clamp lands in a bucket that holds nothing. */
+        if (same_ci(ins->name, s, n)) {
             return ins;
         }
     }

@@ -764,9 +764,16 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
                 /* A displacement is one signed byte by the time it is
                  * written, so it is accumulated in the machine's word rather
                  * than the evaluator's 32-bit one. */
+                /* The first digit is taken outside the loop, so a
+                 * one-digit displacement needs no multiply at all -- and
+                 * almost every displacement is one digit. `d * 10` is a call
+                 * to __imulu, because the eZ80's multiply is 8-bit and this is
+                 * an int; leaving it in the loop meant paying that call even
+                 * for `(ix+8)`, where the accumulator is still zero. */
                 int d = 0;
                 if (digit_ch(*ds)) {
-                    const char* q = ds;
+                    const char* q = ds + 1;
+                    d = *ds - '0';
                     while (q < p && digit_ch(*q)) {
                         d = d * 10 + (*q - '0');
                         q++;
@@ -885,8 +892,12 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
                 got = true;
             }
         } else if (nn > 0 && digit_ch(ns[0])) {
-            int acc = 0;
-            int k = 0;
+            /* First digit outside the loop, for the reason given at the
+             * displacement above: a one-digit literal then needs no multiply,
+             * and `im 2`, `rst 0`, `bit 3` and the rest of the small decimals
+             * are exactly that. */
+            int acc = ns[0] - '0';
+            int k = 1;
             for (; k < nn; k++) {
                 if (!digit_ch(ns[k])) {
                     break;

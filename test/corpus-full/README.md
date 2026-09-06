@@ -69,6 +69,50 @@ be drawn from:
     53,235  lennart-benschop-agon-utilities/nano.asm
     45,654  rickshoe2-AgonLight-Assembly-Programming/eZapple.asm
 
-Still to do, in the order the original note set out: confirm ez80asm assembles
-them, confirm zap agrees byte for byte, then pin a representative subset so
-timings stay comparable across months.
+## Step one: what ez80asm makes of it
+
+`assemble.sh` runs the reference over every **entry point** -- a file nothing
+else in its project includes, assembled from its own directory. Most of the
+corpus is includes and fragments that were never meant to assemble alone, and
+sweeping every file would produce a pile of failures that say nothing.
+
+    223 entry points, 32 assemble (14%)
+
+That number is not a defect in the corpus, in ez80asm, or in the sweep. **Most
+Agon assembly in the wild is written for Zilog ZDS II, not for ez80asm**, and
+the two are different dialects:
+
+* `XREF`, `SEGMENT`, `DEFINE` are ZDS directives ez80asm does not have. They are
+  what stops `breakintoprogram/agon-bbc-basic-adl` and `AgonConsole8/agon-mos`
+  -- the copy of BBC BASIC in `test/corpus` is a port, not the upstream source.
+* **ez80asm requires a colon**: `FOO: EQU 5` assembles and `FOO EQU 5` does not,
+  which is ZDS's spelling and appears in 15 of the 36 projects that define
+  equates at all. 21 use the colon form.
+* Some projects include Zilog headers (`ez80f92.inc`) they do not ship.
+
+Anything the reference rejects is out of scope, by the rule the original note
+set: zap is not trying to be better than ez80asm, it is trying to agree with
+it. So the ZDS half of the corpus is not a target, and saying so is the useful
+result of this step.
+
+**This does not affect the label figures above.** Naming style does not depend
+on which assembler a file targets, so all 25 programs count for that.
+
+## Benchmark candidates that actually assemble
+
+| output | source |
+|---|---|
+| 31,520 | `nihirash-Agon-rokky/src/rokky.asm` (already in `test/corpus`) |
+| **30,464** | **`sijnstra-agon-projects/TinyBASIC/TinyBASIC.asm`** |
+| 6,560 | `lennart-benschop-agon-utilities/nano.asm` |
+| 4,317 | `jblang-z80demos/plasma.asm` |
+| 2,939 | `tomm-toms-agon-experiments/tetris/main.asm` |
+| 2,556 | `sijnstra-agon-projects/calc24/calc24.asm` |
+
+**TinyBASIC is the one worth adding**: a real program, single file, 1,878 lines
+and 227 labels, assembling to 30 KB -- comparable in output to rokky and
+independent of it. Everything larger in the corpus is ZDS.
+
+Still to do: confirm zap agrees byte for byte on the 32 that assemble -- expect
+failures, that is the point -- and then pin a subset so timings stay comparable
+across months.

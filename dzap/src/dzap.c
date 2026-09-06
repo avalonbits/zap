@@ -1044,8 +1044,16 @@ __attribute__((noinline)) static bool emit_row(dz* z, const isa_row* row, dop* a
                       ? p2 : p1;
     }
 
-    transform(&out, a, row->transformA);
-    transform(&out, b, row->transformB);
+    /* Tested rather than called. transform is a real function with a switch
+     * in it, and TR_NONE is the commonest case by a wide margin -- every
+     * instruction whose operands do not fold into the opcode. A load and a
+     * compare replaces a call, a dispatch and a return. */
+    if (row->transformA != TR_NONE) {
+        transform(&out, a, row->transformA);
+    }
+    if (row->transformB != TR_NONE) {
+        transform(&out, b, row->transformB);
+    }
 
     const bool dd_before_opcode =
         (out.prefix1 == 0xDD || out.prefix1 == 0xFD) && out.prefix2 == 0xCB

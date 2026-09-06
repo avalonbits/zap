@@ -228,13 +228,47 @@ static uint8_t isa_len[512];
  * separate bytes rather than packed into a word -- packing two of them into a
  * uint16_t was tried and cost 18.8%, because ADL mode has no 16-bit truncation
  * and the compiler masks. Bytes are the native width for all of this. */
-typedef struct {
+typedef struct rowinfo rowinfo;
+
+struct rowinfo {
     uint8_t modes;
     uint8_t ccok;
     uint8_t a0, a1, a2;
     uint8_t b0, b1, b2;
     uint8_t aempty, bempty;
-} rowinfo;
+
+    /* How far to the next row with a different mode.
+     *
+     * The rows of an instruction are sorted by mode, so rows that share one
+     * are contiguous and a mode that is not wanted is stepped over in a single
+     * hop instead of a row at a time. `ld` has 57 rows and 7 distinct modes,
+     * and `ld (ix+8), a` used to reach the forty-third of them.
+     *
+     * Sorting is safe because the mode test is an equality: rows outside the
+     * wanted group can never match, and a stable sort leaves the rows inside
+     * it in their original order, so the first match is still the same row.
+     * The exception is F_CCOK, which lets a row match with a mode that does
+     * not -- those four instructions are left unsorted with every skip at 1.
+     *
+     * The row is held as a pointer rather than an index because the sort moves
+     * it away from its position in the instruction's own table, and because
+     * `&insn->rows[i]` is a multiply, which is a call. */
+    uint8_t skip;
+
+    /* Where to jump to, as a pointer rather than a stride.
+     *
+     * `ri += skip` looks like the obvious way to write it and costs a call to
+     * __imulu, because the stride is a variable times the size of this struct
+     * and the eZ80's multiply is 8-bit. Holding the destination costs three
+     * bytes per row and makes the jump a plain load. The count is still needed
+     * to know when the instruction's rows run out, which is what skip is for.
+     *
+     * The row is held as a pointer for the same reason -- the sort moves it
+     * away from its position in the instruction's own table, and
+     * `&insn->rows[i]` is a multiply. */
+    const rowinfo* next;
+    const isa_row* row;
+};
 
 static rowinfo rowtab[NROW];
 static int16_t row_base[512];
@@ -305,9 +339,19 @@ __attribute__((noinline)) static void build_tables(void) {
 
     int r = 0;
     for (int i = 0; i < isa_table_count; i++) {
-        row_base[i] = (int16_t) r;
-        for (int j = 0; j < isa_table[i].count; j++) {
-            const isa_row* row = &isa_table[i].rows[j];
+        const isa_insn* insn = &isa_table[i];
+        const int base = r;
+        row_base[i] = (int16_t) base;
+
+        bool any_cc = false;
+        for (int j = 0; j < insn->count; j++) {
+            if ((insn->rows[j].flags & F_CCOK) != 0) {
+                any_cc = true;
+            }
+        }
+
+        for (int j = 0; j < insn->count; j++) {
+            const isa_row* row = &insn->rows[j];
             rowinfo* ri = &rowtab[r];
             ri->modes = (uint8_t)
                 (shl4[row->condA & MODECHECK] | (row->condB & MODECHECK));
@@ -320,7 +364,42 @@ __attribute__((noinline)) static void build_tables(void) {
             ri->b2 = (uint8_t) (row->regsetB >> 16);
             ri->aempty = (uint8_t) (row->regsetA == 0);
             ri->bempty = (uint8_t) (row->regsetB == 0);
+            ri->skip = 1;
+            ri->next = ri + 1;
+            ri->row = row;
             r++;
+        }
+
+        if (any_cc) {
+            /* A row that takes a condition code can match with a mode that
+             * does not, so it must be reached whatever the operands were.
+             * There are four such rows in the whole table and none of their
+             * instructions has more than four rows, so they scan linearly. */
+            continue;
+        }
+
+        /* Insertion sort, which is stable: rows sharing a mode keep the order
+         * the table gave them, and the first match is unchanged. */
+        for (int j = base + 1; j < r; j++) {
+            const rowinfo tmp = rowtab[j];
+            int k = j;
+            while (k > base && rowtab[k - 1].modes > tmp.modes) {
+                rowtab[k] = rowtab[k - 1];
+                k--;
+            }
+            rowtab[k] = tmp;
+        }
+
+        for (int j = base; j < r; ) {
+            int e = j;
+            while (e < r && rowtab[e].modes == rowtab[j].modes) {
+                e++;
+            }
+            for (int k = j; k < e; k++) {
+                rowtab[k].skip = (uint8_t) (e - k);
+                rowtab[k].next = &rowtab[e];
+            }
+            j = e;
         }
     }
 }
@@ -771,7 +850,7 @@ __attribute__((noinline)) static const isa_row* match_row(int idx, const dop* a,
     const uint8_t anone = (uint8_t) (a->reg == 0);
     const uint8_t bnone = (uint8_t) (b->reg == 0);
 
-    for (uint8_t i = 0; i < insn->count; i++, ri++) {
+    for (uint8_t i = 0; i < insn->count; ) {
         /* The cheapest discriminator first, and it is allowed to end the
          * candidate outright.
          *
@@ -789,10 +868,14 @@ __attribute__((noinline)) static const isa_row* match_row(int idx, const dop* a,
          * be part of the rejection rather than after it. */
         const uint8_t ccok = ri->ccok;
         if (ri->modes != want && !(ccok & has_cc)) {
+            /* Past the whole group sharing this mode, not just this row. */
+            i = (uint8_t) (i + ri->skip);
+            ri = ri->next;
+
             continue;
         }
 
-        const isa_row* row = &insn->rows[i];
+        const isa_row* row = ri->row;
         const uint8_t ga = (uint8_t) ((ri->a0 & a0) | (ri->a1 & a1)
                                       | (ri->a2 & a2));
         const uint8_t gb = (uint8_t) ((ri->b0 & b0) | (ri->b1 & b1)
@@ -808,6 +891,9 @@ __attribute__((noinline)) static const isa_row* match_row(int idx, const dop* a,
 
             return row;
         }
+
+        i++;
+        ri++;
     }
 
     return NULL;

@@ -543,6 +543,12 @@ static bool reg_of_text(const char* s, int n, uint24_t* bit, uint8_t* index,
 #define C_NUM   0x08
 #define C_MNEM  0x10
 
+/* A name character that is not a digit -- what a register or flag has to start
+ * with. Its own bit because the test used to be `name_ch(c) && !digit_ch(c)`,
+ * which loads the same class byte twice and masks it twice, on every operand
+ * in the source. */
+#define C_ALPHA 0x20
+
 static uint8_t cclass[256];
 
 /* Nibble value of a hex digit, 0xFF for anything else. Used both to test a
@@ -584,6 +590,11 @@ static void build_cclass(void) {
         }
     }
     cclass[(uint8_t) '.'] |= C_MNEM;
+    for (int i = 0; i < 256; i++) {
+        if ((cclass[i] & C_NAME) != 0 && (cclass[i] & C_DIGIT) == 0) {
+            cclass[i] |= C_ALPHA;
+        }
+    }
     cclass[(uint8_t) '$'] |= C_NUM;
     cclass[(uint8_t) '#'] |= C_NUM;
     cclass[(uint8_t) '%'] |= C_NUM;
@@ -599,6 +610,10 @@ static inline bool name_ch(char c) {
 
 static inline bool num_ch(char c) {
     return (cclass[(uint8_t) c] & C_NUM) != 0;
+}
+
+static inline bool alpha_ch(char c) {
+    return (cclass[(uint8_t) c] & C_ALPHA) != 0;
 }
 
 static inline bool digit_ch(char c) {
@@ -650,7 +665,7 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
     }
 
     /* A register or flag? */
-    if (p < e && name_ch(*p) && !digit_ch(*p)) {
+    if (p < e && alpha_ch(*p)) {
         const char* s = p;
         while (p < e && name_ch(*p)) {
             p++;

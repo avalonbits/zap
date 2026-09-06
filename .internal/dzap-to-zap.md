@@ -169,15 +169,40 @@ width and output length rather than row selection.
 
 ## What each shape costs now
 
-| instruction | operands | cyc/insn | over the floor | rows |
-|---|---|---|---|---|
-| `nop` | none | 3,428 | — | 1 |
-| `ld a, b` | reg, reg | 5,063 | +1,634 | 5 |
-| `ld a, 0x42` | reg, imm8 | 6,218 | +2,789 | 2 |
-| `bit 3, (iy+4)` | imm, (iy+d) | 7,299 | +3,871 | 2 |
-| `ld hl, 0x123456` | reg, imm24 | 7,447 | +4,018 | 1 |
-| `ld (ix+8), a` | (ix+d), reg | 9,425 | +5,997 | 43 |
-| the 40-shape mix | varied | 5,472 | +2,044 | |
+Measured together on one build, so the columns are comparable. "First" is the
+earliest measurement of that shape in this work.
+
+| instruction | cyc/insn | first | change | cyc/byte | over the floor |
+|---|---|---|---|---|---|
+| `nop` | 3,293 | 5,075 | −35.1% | 549 | — |
+| `ld a, b` | 4,043 | 6,992 | −42.2% | 404 | +750 |
+| `ld a, 0x42` | 5,591 | 7,987 | −30.0% | 430 | +2,298 |
+| `bit 3, (iy+4)` | 6,058 | 9,265 | −34.6% | 379 | +2,765 |
+| `ld hl, 0x123456` | 6,414 | 9,769 | −34.3% | 356 | +3,121 |
+| `ld (ix+8), a` | 8,307 | 25,596 | **−67.5%** | 554 | +5,014 |
+
+| benchmark | cyc/insn | cyc/byte | first cyc/byte |
+|---|---|---|---|
+| p256, forty forms | 4,886 | 433 | 1,387 |
+| `isa_even`, all 1,083 forms | 5,266 | 463 | 493 |
+| `isa_real`, real weighting | 5,208 | **435** | 464 |
+
+Three things worth reading off it.
+
+**The spread has collapsed.** The dearest shape was 5.0 times the floor and is
+now 2.5. Almost all of that is `ld (ix+8), a`, from indexing the rows by
+operand mode and then from the displacement's multiply by zero.
+
+**Cycles per byte runs opposite to cycles per instruction.**
+`ld hl, 0x123456` is the second dearest instruction and the cheapest per byte,
+because a long instruction spreads the fixed cost over more source. Only a
+mixed file gives an honest per-byte figure.
+
+**Quote `isa_real`, not p256.** p256's 433 looks better and is not comparable
+to anything: it holds forty hand-picked forms, several of them the ones
+optimised hardest, and its apparent 68.8% improvement over the session is
+partly that. `isa_real` holds all 1,083 forms weighted like real source and is
+the file that caught the operand merge looking good when it was not.
 
 `ld a, b` divides up like this, by the same stop-after-each-stage method:
 

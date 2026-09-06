@@ -781,8 +781,49 @@ way.
 That is a much sharper number than the plan's projection -- it estimated a
 worst chain of 36 against Pearson's 17 and expected the average to carry the
 decision. Met in practice the tail is not 2x, it is 26x, and it is reachable by
-a naming convention rather than by malice: `lbl_0001` upward does it. **The
-hash trade is worth revisiting with this number rather than the average.**
+a naming convention rather than by malice: `lbl_0001` upward does it.
+
+### So the two keys were measured against each other, and the plan was wrong
+
+Seven sources, identical size and line count, both keys into the same 2,048
+buckets:
+
+    source                       structural   Pearson
+    no labels at all                  1.60s     1.58s
+    spread names, definitions         1.82s     1.72s
+    spread names, backward refs       1.94s     1.96s
+    spread names, forward refs        2.00s     2.02s
+    four-character names              1.76s     1.60s
+    fifteen characters, word list     1.92s     1.72s
+    clustered names                   5.98s     1.84s
+
+**Pearson is 1% worse on the two rows the structural key is best at and better
+everywhere else** -- 5 to 10% on ordinary names, 69% on the clustered one. One
+percent against a factor of three is not a close decision, and dzap now uses
+Pearson. Both keys stay behind `DZ_SYMHASH`.
+
+The structural key was given its best shot first. It was neither inlined nor
+call-free -- `call __ishl` for the multiply, `call pe, __setflag` for a signed
+length test -- and fixing both moved it by nothing. **The key computation was
+never the cost.** The chain walk and the insert are, which is why the argument
+that won the plan ("a hash is a walk, and the scan has already walked it")
+priced the wrong thing.
+
+Three things the comparison turned up, all invisible to a correctness test
+because a bad hash is still correct:
+
+* **A linear permutation is a poor Pearson table.** `i * 167 + 13` visits every
+  value and leaves the rounds correlated: 234 of 2,048 buckets against a
+  shuffle's 602. The first comparison ran with it and Pearson still won by
+  three times.
+* **Building the table in main was wrong.** The unit tests call `build_tables`
+  and `build_cclass` directly, so they ran with a table of zeros -- every name
+  in one bucket, correct and quietly quadratic. It belongs where the other
+  tables are built.
+* **Zeroing the table, dropping the second pass and moving the build all fail
+  zero encoding checks.** What is testable is the distribution, and that is now
+  asserted directly: 700 clustered names must reach more than 400 buckets with
+  no chain longer than 6.
 
 ### Two bugs the feature brought, both target-only or nearly
 

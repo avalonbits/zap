@@ -168,11 +168,6 @@ static bool out_reserve(dz* z, int n) {
     return true;
 }
 
-/* Only valid after out_reserve has been asked for enough. */
-static inline void put(dz* z, uint8_t b) {
-    z->out[z->pos++] = b;
-}
-
 /* ------------------------------------------------------------- mnemonics */
 
 /* Mnemonics bucketed by first letter.
@@ -1186,7 +1181,7 @@ __attribute__((always_inline)) static inline void transform(emitted* out, dop* o
     }
 }
 
-static void emit_imm(dz* z, const dop* op, uint8_t cond) {
+static uint8_t* emit_imm(uint8_t* o, const dop* op, uint8_t cond) {
     const int width = (cond & IMM_N) ? 1 : (DZ_ADL ? 3 : 2);
 
     /* Written out rather than looped, and reading op->imm afresh each time
@@ -1196,19 +1191,30 @@ static void emit_imm(dz* z, const dop* op, uint8_t cond) {
      * `>> 16`, because the value is in a stack slot it has already loaded as a
      * whole. Left as a field read it is an indexed load of the one byte
      * wanted -- `ld a, (iy+n)` -- for all three. */
-    put(z, (uint8_t) op->imm);
+    *o++ = (uint8_t) op->imm;
     if (width > 1) {
-        put(z, (uint8_t) (op->imm >> 8));
+        *o++ = (uint8_t) (op->imm >> 8);
     }
     if (width > 2) {
-        put(z, (uint8_t) (op->imm >> 16));
+        *o++ = (uint8_t) (op->imm >> 16);
     }
+
+    return o;
 }
 
 __attribute__((noinline)) static bool emit_row(dz* z, const isa_row* row, dop* a, dop* b) {
     if (!out_reserve(z, OUT_MAX_INSN)) {
         return false;
     }
+
+    /* One cursor for the whole instruction rather than z->out[z->pos++] per
+     * byte. put() reloaded both the output base and the position, added them,
+     * stored the byte and stored the position back, for every byte written --
+     * twenty-three loads of those two fields in this function alone. The
+     * reservation above is what makes a bare cursor safe: room for the
+     * longest form is already there, so nothing between here and the
+     * write-back can move the buffer. */
+    uint8_t* o = z->out + z->pos;
 
     emitted out;
     out.prefix1 = 0;
@@ -1238,22 +1244,22 @@ __attribute__((noinline)) static bool emit_row(dz* z, const isa_row* row, dop* a
         && (row->flags & (F_DISPA | F_DISPB));
 
     if (out.prefix1 != 0) {
-        put(z, out.prefix1);
+        *o++ = out.prefix1;
     }
     if (out.prefix2 != 0) {
-        put(z, out.prefix2);
+        *o++ = out.prefix2;
     }
     if (!dd_before_opcode) {
-        put(z, out.opcode);
+        *o++ = out.opcode;
     }
     if (row->flags & F_DISPA) {
-        put(z, (uint8_t) (a->disp & 0xFF));
+        *o++ = (uint8_t) (a->disp & 0xFF);
     }
     if (row->flags & F_DISPB) {
-        put(z, (uint8_t) (b->disp & 0xFF));
+        *o++ = (uint8_t) (b->disp & 0xFF);
     }
     if (dd_before_opcode) {
-        put(z, out.opcode);
+        *o++ = out.opcode;
     }
 
     /* A relative displacement is measured from the instruction after this
@@ -1268,23 +1274,23 @@ __attribute__((noinline)) static bool emit_row(dz* z, const isa_row* row, dop* a
      * filter exists to enforce. */
     if (row->transformA == TR_REL || row->transformB == TR_REL) {
         const dop* rel = (row->transformA == TR_REL) ? a : b;
-        const int d = rel->imm - (DZ_ORG + z->pos + 1);
+        const int d = rel->imm - (DZ_ORG + (int) (o - z->out) + 1);
         if (d < -128 || d > 127) {
             z->err = "relative jump too far";
 
             return false;
         }
-        put(z, (uint8_t) d);
-
-        return true;
+        *o++ = (uint8_t) d;
+    } else {
+        if (a->has_imm && (row->condA & (IMM_N | IMM_MMN))) {
+            o = emit_imm(o, a, row->condA);
+        }
+        if (b->has_imm && (row->condB & (IMM_N | IMM_MMN))) {
+            o = emit_imm(o, b, row->condB);
+        }
     }
 
-    if (a->has_imm && (row->condA & (IMM_N | IMM_MMN))) {
-        emit_imm(z, a, row->condA);
-    }
-    if (b->has_imm && (row->condB & (IMM_N | IMM_MMN))) {
-        emit_imm(z, b, row->condB);
-    }
+    z->pos = (int) (o - z->out);
 
     return true;
 }

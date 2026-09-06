@@ -740,6 +740,50 @@ symbol table. Kept as `gen_labels.sh <bytes> same` so it can be watched. A hash
 would not care; the key was chosen because it touches 11.8 characters per
 lookup against Pearson's 17.5 *on average*, and this is what the average hides.
 
+### Where the label cost actually is
+
+Four sources of **identical size and line count** -- 262,191 bytes, 5,580 lines
+-- differing only in label content, so a difference between two of them is the
+labels and nothing else. Names chosen so the first character, the last and the
+length all vary independently, which is the case the symbol key is good at.
+
+    no labels at all                 1.60s
+    + 699 definitions                1.80s   +0.20   5,274 cycles a definition
+    + 1,394 backward references      1.94s   +0.14   1,851 cycles a reference
+    + 1,394 forward references       2.00s   +0.20   2,644 cycles a reference
+    the fixup machinery alone                +0.06     793 cycles a fixup
+
+**It is the definitions, not the lookups and certainly not the fixups.** A
+definition costs about three times a lookup and nearly seven times a fixup.
+The one-pass design is vindicated: recording a forward reference and patching
+it at the end is 793 cycles, which is nothing next to the rest.
+
+A definition is a lookup plus an insert -- the name copied into the arena, the
+node filled in, the bucket pushed -- and the insert is where the time goes.
+Shortening what a definition copies is the obvious place to look next.
+
+### But the key's distribution dominates all three
+
+The same 699 definitions, same file size, same line count, only the *names*
+changed:
+
+    names spread over first, last and length      1.80s
+    fifteen characters, first and last from a
+      thirty-word list                            1.90s
+    four characters, one leading letter           1.76s
+    twenty-six characters, all `q...z`            6.06s
+
+The last is 699 labels in **one bucket**, because the key is the first
+character, the last and the length, and all three are constant. It is 26 times
+the per-definition cost of the spread case, on a file that differs in no other
+way.
+
+That is a much sharper number than the plan's projection -- it estimated a
+worst chain of 36 against Pearson's 17 and expected the average to carry the
+decision. Met in practice the tail is not 2x, it is 26x, and it is reachable by
+a naming convention rather than by malice: `lbl_0001` upward does it. **The
+hash trade is worth revisiting with this number rather than the average.**
+
 ### Two bugs the feature brought, both target-only or nearly
 
 * **`_` was a name character but not a number character**, so the literal scan

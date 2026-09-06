@@ -168,11 +168,6 @@ static bool out_reserve(dz* z, int n) {
     return true;
 }
 
-/* Only valid after out_reserve has been asked for enough. */
-static inline void put(dz* z, uint8_t b) {
-    z->out[z->pos++] = b;
-}
-
 /* ------------------------------------------------------------- mnemonics */
 
 /* Mnemonics bucketed by first letter.
@@ -198,49 +193,53 @@ static inline void put(dz* z, uint8_t b) {
 
 #define NROW 322
 
+/* Mode groups across the whole table. 114 mnemonics, no mnemonic having more
+ * than seven, and the four that are not grouped at all contributing none.
+ * build_tables says so if the table outgrows it. */
+#define NGRP 170
+
 typedef struct rowinfo rowinfo;
 
 struct rowinfo {
+    /* Only the rows of the four ungrouped mnemonics are ever tested on this;
+     * a grouped row reached through its group already agrees. */
     uint8_t modes;
+
     uint8_t ccok;
     uint8_t a0, a1, a2;
     uint8_t b0, b1, b2;
     uint8_t aempty, bempty;
 
-    /* How far to the next row with a different mode.
-     *
-     * The rows of an instruction are sorted by mode, so rows that share one
-     * are contiguous and a mode that is not wanted is stepped over in a single
-     * hop instead of a row at a time. `ld` has 57 rows and 7 distinct modes,
-     * and `ld (ix+8), a` used to reach the forty-third of them.
-     *
-     * Sorting is safe because the mode test is an equality: rows outside the
-     * wanted group can never match, and a stable sort leaves the rows inside
-     * it in their original order, so the first match is still the same row.
-     * The exception is F_CCOK, which lets a row match with a mode that does
-     * not -- those four instructions are left unsorted with every skip at 1.
-     *
-     * The row is held as a pointer rather than an index because the sort moves
+    /* The row is held as a pointer rather than an index because the sort moves
      * it away from its position in the instruction's own table, and because
      * `&insn->rows[i]` is a multiply, which is a call. */
-    uint8_t skip;
-
-    /* Where to jump to, as a pointer rather than a stride.
-     *
-     * `ri += skip` looks like the obvious way to write it and costs a call to
-     * __imulu, because the stride is a variable times the size of this struct
-     * and the eZ80's multiply is 8-bit. Holding the destination costs three
-     * bytes per row and makes the jump a plain load. The count is still needed
-     * to know when the instruction's rows run out, which is what skip is for.
-     *
-     * The row is held as a pointer for the same reason -- the sort moves it
-     * away from its position in the instruction's own table, and
-     * `&insn->rows[i]` is a multiply. */
-    const rowinfo* next;
     const isa_row* row;
 };
 
 static rowinfo rowtab[NROW];
+
+/* The rows of one mnemonic that share an operand mode.
+ *
+ * The rows used to be walked as a single list with a skip count, so rejecting
+ * a mode cost a whole turn of the loop -- the counter test, moving the row
+ * pointer into iy, loading ccok and the mode, then loading the skip and the
+ * next pointer. Twenty instructions to learn that a group was the wrong shape.
+ *
+ * Lifting the modes out into their own table makes that a compare and a five
+ * byte step, and the rows in the group no longer carry a mode test at all:
+ * being in the group is the answer. The whole table is 170 of these.
+ *
+ * Sorting the rows by mode is what makes a group contiguous, and it is safe
+ * because the mode test is an equality: rows outside the group can never
+ * match, and a stable sort leaves the rows inside it in the order the table
+ * gave them, so the first match is still the same row. */
+typedef struct {
+    uint8_t modes;
+    uint8_t count;
+    const rowinfo* rows;
+} grpinfo;
+
+static grpinfo grptab[NGRP];
 
 /* One record per mnemonic, holding everything the hot path needs about it and
  * reached only by pointer.
@@ -258,6 +257,13 @@ typedef struct insninfo insninfo;
 struct insninfo {
     const insninfo* next;   /* next candidate in the same bucket */
     const char* name;
+
+    /* The mode groups, and how many. Zero groups means the mnemonic is one of
+     * the four whose rows are not grouped, and rows/count are the list to
+     * scan instead. */
+    const grpinfo* groups;
+    uint8_t ngroups;
+
     const rowinfo* rows;
     uint8_t len;
     uint8_t count;
@@ -387,10 +393,13 @@ __attribute__((noinline)) static void build_tables(void) {
     }
 
     int r = 0;
+    int g = 0;
     for (int i = 0; i < isa_table_count; i++) {
         const isa_insn* insn = &isa_table[i];
         const int base = r;
+        const int gbase = g;
         insntab[i].rows = &rowtab[base];
+        insntab[i].groups = &grptab[gbase];
 
         bool any_cc = false;
         for (int j = 0; j < insn->count; j++) {
@@ -413,8 +422,6 @@ __attribute__((noinline)) static void build_tables(void) {
             ri->b2 = (uint8_t) (row->regsetB >> 16);
             ri->aempty = (uint8_t) (row->regsetA == 0);
             ri->bempty = (uint8_t) (row->regsetB == 0);
-            ri->skip = 1;
-            ri->next = ri + 1;
             ri->row = row;
             r++;
         }
@@ -422,8 +429,11 @@ __attribute__((noinline)) static void build_tables(void) {
         if (any_cc) {
             /* A row that takes a condition code can match with a mode that
              * does not, so it must be reached whatever the operands were.
-             * There are four such rows in the whole table and none of their
-             * instructions has more than four rows, so they scan linearly. */
+             * call, jp, jr and ret are the four, ten rows between them, and
+             * they keep the mode test on each row and scan linearly. Leaving
+             * them ungrouped is what lets every other mnemonic drop the test. */
+            insntab[i].ngroups = 0;
+
             continue;
         }
 
@@ -439,17 +449,29 @@ __attribute__((noinline)) static void build_tables(void) {
             rowtab[k] = tmp;
         }
 
+        insntab[i].groups = &grptab[g];
         for (int j = base; j < r; ) {
             int e = j;
             while (e < r && rowtab[e].modes == rowtab[j].modes) {
                 e++;
             }
-            for (int k = j; k < e; k++) {
-                rowtab[k].skip = (uint8_t) (e - k);
-                rowtab[k].next = &rowtab[e];
+            if (g < NGRP) {
+                grptab[g].modes = rowtab[j].modes;
+                grptab[g].count = (uint8_t) (e - j);
+                grptab[g].rows = &rowtab[j];
             }
+            g++;
             j = e;
         }
+        insntab[i].ngroups = (uint8_t) (g - gbase);
+    }
+
+    /* Same reasoning as the bucket check above: a table that grows past this
+     * would silently lose the groups that did not fit, and every mnemonic
+     * after the overflow would stop matching. The CLI test looks for this
+     * line. */
+    if (g > NGRP) {
+        printf("isa table: %d mode groups, NGRP is %d\r\n", g, NGRP);
     }
 }
 
@@ -1020,12 +1042,68 @@ static bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
 
 
 
+/* The four ungrouped mnemonics: call, jp, jr and ret.
+ *
+ * Ten rows between them, each carrying its own mode test, because a row that
+ * takes a condition code has to be reached whatever mode the operands were
+ * parsed as. Kept out of line so that the register test appears once in the
+ * hot path rather than twice. */
+__attribute__((noinline)) static const isa_row* match_row_cc(
+    const insninfo* insn, const dop* a, const dop* b, uint8_t want) {
+    const uint8_t has_cc = (uint8_t) (a->cc != 0);
+    const uint8_t a0 = a->r0, a1 = a->r1, a2 = a->r2;
+    const uint8_t b0 = b->r0, b1 = b->r1, b2 = b->r2;
+    const uint8_t anone = a->noreg;
+    const uint8_t bnone = b->noreg;
+    const rowinfo* ri = insn->rows;
+
+    for (uint8_t n = insn->count; n != 0; n--, ri++) {
+        const uint8_t ccok = ri->ccok;
+        if (ri->modes != want && !(ccok & has_cc)) {
+            continue;
+        }
+        if ((uint8_t) ((ri->a0 & a0) | (ri->a1 & a1) | (ri->a2 & a2)
+                       | (ri->aempty & anone) | ccok) != 0
+            && (uint8_t) ((ri->b0 & b0) | (ri->b1 & b1) | (ri->b2 & b2)
+                          | (ri->bempty & bnone)) != 0) {
+            const isa_row* row = ri->row;
+            if ((row->cpu & CPU_EZ80) == 0) {
+                return NULL;
+            }
+
+            return row;
+        }
+    }
+
+    return NULL;
+}
+
 static const isa_row* match_row(const insninfo* insn,
                                                          const dop* a,
                                                          const dop* b) {
     const uint8_t want = (uint8_t) (shl4[a->mode & 15] | (b->mode & 15));
-    const uint8_t has_cc = (uint8_t) (a->cc != 0);
-    const rowinfo* ri = insn->rows;
+
+    /* Find the group, then scan it. Two loops rather than one, because the
+     * two questions have nothing in common: which shape of operands the row
+     * wants, and which registers.
+     *
+     * Asked as one loop, rejecting a group cost a whole turn of it -- the
+     * counter test, moving the row pointer into iy, loading the mode and the
+     * ccok flag, then the skip count and the next pointer, twenty instructions
+     * to step over rows that could not match. The group table is five bytes a
+     * row and rejecting one is a compare and a step. */
+    uint8_t n = insn->ngroups;
+    if (n == 0) {
+        return match_row_cc(insn, a, b, want);
+    }
+
+    const grpinfo* g = insn->groups;
+    while (g->modes != want) {
+        if (--n == 0) {
+            return NULL;
+        }
+        g++;
+    }
 
     /* Already split, by whoever recognised the register. */
     const uint8_t a0 = a->r0, a1 = a->r1, a2 = a->r2;
@@ -1033,50 +1111,36 @@ static const isa_row* match_row(const insninfo* insn,
     const uint8_t anone = a->noreg;
     const uint8_t bnone = b->noreg;
 
-    for (uint8_t i = 0; i < insn->count; ) {
-        /* The cheapest discriminator first, and it is allowed to end the
-         * candidate outright.
-         *
-         * Every term used to be evaluated for every row so the whole test
-         * could be one branch -- which is the right shape when the terms cost
-         * the same. They do not: the mode test is one compare of a precomputed
-         * value, and reg_match is the most expensive line in the program, run
-         * twice. Three or four rows are scanned per instruction and all but one
-         * are rejected, so paying the expensive half only for rows that
-         * survive the cheap half is worth the branch, even on a chip that does
-         * not predict them. Measured, not assumed.
-         *
-         * A row that takes a condition code can still match with a mode that
-         * does not, which is why the second half of the old expression has to
-         * be part of the rejection rather than after it. */
-        const uint8_t ccok = ri->ccok;
-        if (ri->modes != want && !(ccok & has_cc)) {
-            /* Past the whole group sharing this mode, not just this row. */
-            i = (uint8_t) (i + ri->skip);
-            ri = ri->next;
-
-            continue;
-        }
-
-        const isa_row* row = ri->row;
-        const uint8_t ga = (uint8_t) ((ri->a0 & a0) | (ri->a1 & a1)
-                                      | (ri->a2 & a2));
-        const uint8_t gb = (uint8_t) ((ri->b0 & b0) | (ri->b1 & b1)
-                                      | (ri->b2 & b2));
-        const uint8_t rega =
-            (uint8_t) ((ga != 0) | (ri->aempty & anone) | ccok);
-        const uint8_t regb = (uint8_t) ((gb != 0) | (ri->bempty & bnone));
-
-        if (rega & regb) {
+    /* A first, on its own, and B only if A survives.
+     *
+     * These were two 0/1 values ANDed together, which reads well and compiles
+     * badly: each `(g != 0)` is a compare and a branch to pick between two
+     * constants, and both sides were computed before either was looked at.
+     * Nothing here needs a 0/1 -- the question is whether the operand shares a
+     * bit with what the row accepts, so the bits are tested where they are,
+     * and B is reached only by the rows A did not already reject.
+     *
+     * This is the line to spend care on. Counted over isa_real, 3.40 rows per
+     * instruction reach the register test: the rows an instruction wastes
+     * time on are mostly rows of the right shape with the wrong registers,
+     * not rows of the wrong shape. Of those, A alone rejects 2.00, so B is not
+     * computed at all for three rejections in five.
+     *
+     * No mode test here, and no ccok either. Being in the group is the answer,
+     * and a mnemonic with a ccok row anywhere in it has no groups at all. */
+    const rowinfo* ri = g->rows;
+    for (uint8_t k = g->count; k != 0; k--, ri++) {
+        if ((uint8_t) ((ri->a0 & a0) | (ri->a1 & a1) | (ri->a2 & a2)
+                       | (ri->aempty & anone)) != 0
+            && (uint8_t) ((ri->b0 & b0) | (ri->b1 & b1) | (ri->b2 & b2)
+                          | (ri->bempty & bnone)) != 0) {
+            const isa_row* row = ri->row;
             if ((row->cpu & CPU_EZ80) == 0) {
                 return NULL;
             }
 
             return row;
         }
-
-        i++;
-        ri++;
     }
 
     return NULL;
@@ -1117,6 +1181,23 @@ static inline uint8_t ddfd_prefix(const dop* op) {
     return 0;
 }
 
+/* The low byte of an immediate, read as a byte.
+ *
+ * `op->imm & 7` is a 24-bit AND, which is a call to __iand: imm is an int, so
+ * the value arrives in hl and the compiler masks it where it sits. Casting to
+ * uint8_t first does not help -- the cast is folded away, since masking three
+ * bits off a byte and off the whole value give the same answer. What has to
+ * change is the load. Reading the low byte through a uint8_t* makes it
+ * `ld a, (iy + n); and a, 7`, the byte operation it always was.
+ *
+ * transform is inlined at both operand sites and two of its cases mask an
+ * immediate, so this was four calls per instruction with an immediate.
+ *
+ * Little-endian, as the hex parser above already assumes. */
+static inline uint8_t imm_lo(const dop* op) {
+    return *(const uint8_t*) &op->imm;
+}
+
 __attribute__((always_inline)) static inline void transform(emitted* out, dop* op, uint8_t type) {
     switch (type) {
         case TR_IR0:
@@ -1134,7 +1215,7 @@ __attribute__((always_inline)) static inline void transform(emitted* out, dop* o
             break;
         case TR_Y:
             if (op->has_imm) {
-                out->opcode |= shl3[op->imm & 0x07];
+                out->opcode |= shl3[imm_lo(op) & 7];
             } else {
                 out->opcode |= shl3[op->reg_index & 7];
             }
@@ -1150,7 +1231,7 @@ __attribute__((always_inline)) static inline void transform(emitted* out, dop* o
             op->has_imm = false;
             break;
         case TR_BIT:
-            out->opcode |= shl3[op->imm & 0x07];
+            out->opcode |= shl3[imm_lo(op) & 7];
             op->has_imm = false;
             break;
         case TR_SELECT: {
@@ -1169,7 +1250,7 @@ __attribute__((always_inline)) static inline void transform(emitted* out, dop* o
     }
 }
 
-static void emit_imm(dz* z, const dop* op, uint8_t cond) {
+static uint8_t* emit_imm(uint8_t* o, const dop* op, uint8_t cond) {
     const int width = (cond & IMM_N) ? 1 : (DZ_ADL ? 3 : 2);
 
     /* Written out rather than looped, and reading op->imm afresh each time
@@ -1179,19 +1260,30 @@ static void emit_imm(dz* z, const dop* op, uint8_t cond) {
      * `>> 16`, because the value is in a stack slot it has already loaded as a
      * whole. Left as a field read it is an indexed load of the one byte
      * wanted -- `ld a, (iy+n)` -- for all three. */
-    put(z, (uint8_t) op->imm);
+    *o++ = (uint8_t) op->imm;
     if (width > 1) {
-        put(z, (uint8_t) (op->imm >> 8));
+        *o++ = (uint8_t) (op->imm >> 8);
     }
     if (width > 2) {
-        put(z, (uint8_t) (op->imm >> 16));
+        *o++ = (uint8_t) (op->imm >> 16);
     }
+
+    return o;
 }
 
 __attribute__((noinline)) static bool emit_row(dz* z, const isa_row* row, dop* a, dop* b) {
     if (!out_reserve(z, OUT_MAX_INSN)) {
         return false;
     }
+
+    /* One cursor for the whole instruction rather than z->out[z->pos++] per
+     * byte. put() reloaded both the output base and the position, added them,
+     * stored the byte and stored the position back, for every byte written --
+     * twenty-three loads of those two fields in this function alone. The
+     * reservation above is what makes a bare cursor safe: room for the
+     * longest form is already there, so nothing between here and the
+     * write-back can move the buffer. */
+    uint8_t* o = z->out + z->pos;
 
     emitted out;
     out.prefix1 = 0;
@@ -1221,22 +1313,22 @@ __attribute__((noinline)) static bool emit_row(dz* z, const isa_row* row, dop* a
         && (row->flags & (F_DISPA | F_DISPB));
 
     if (out.prefix1 != 0) {
-        put(z, out.prefix1);
+        *o++ = out.prefix1;
     }
     if (out.prefix2 != 0) {
-        put(z, out.prefix2);
+        *o++ = out.prefix2;
     }
     if (!dd_before_opcode) {
-        put(z, out.opcode);
+        *o++ = out.opcode;
     }
     if (row->flags & F_DISPA) {
-        put(z, (uint8_t) (a->disp & 0xFF));
+        *o++ = (uint8_t) (a->disp & 0xFF);
     }
     if (row->flags & F_DISPB) {
-        put(z, (uint8_t) (b->disp & 0xFF));
+        *o++ = (uint8_t) (b->disp & 0xFF);
     }
     if (dd_before_opcode) {
-        put(z, out.opcode);
+        *o++ = out.opcode;
     }
 
     /* A relative displacement is measured from the instruction after this
@@ -1251,23 +1343,23 @@ __attribute__((noinline)) static bool emit_row(dz* z, const isa_row* row, dop* a
      * filter exists to enforce. */
     if (row->transformA == TR_REL || row->transformB == TR_REL) {
         const dop* rel = (row->transformA == TR_REL) ? a : b;
-        const int d = rel->imm - (DZ_ORG + z->pos + 1);
+        const int d = rel->imm - (DZ_ORG + (int) (o - z->out) + 1);
         if (d < -128 || d > 127) {
             z->err = "relative jump too far";
 
             return false;
         }
-        put(z, (uint8_t) d);
-
-        return true;
+        *o++ = (uint8_t) d;
+    } else {
+        if (a->has_imm && (row->condA & (IMM_N | IMM_MMN))) {
+            o = emit_imm(o, a, row->condA);
+        }
+        if (b->has_imm && (row->condB & (IMM_N | IMM_MMN))) {
+            o = emit_imm(o, b, row->condB);
+        }
     }
 
-    if (a->has_imm && (row->condA & (IMM_N | IMM_MMN))) {
-        emit_imm(z, a, row->condA);
-    }
-    if (b->has_imm && (row->condB & (IMM_N | IMM_MMN))) {
-        emit_imm(z, b, row->condB);
-    }
+    z->pos = (int) (o - z->out);
 
     return true;
 }

@@ -169,6 +169,40 @@ instruction-dense benchmark** -- on a chip with no branch predictor.
 
 The distinction is whether the branch avoids computation. If it does, take it.
 
+### One index register is the budget inside a loop -- *measured*
+
+`ix` is the frame pointer and `iy` is everything else, so a loop that walks a
+struct has exactly one register to hold the pointer it is walking. Any
+expression that needs a *second* computed address inside that loop evicts the
+first one to the frame and reloads it, once per use.
+
+dzap's row test read three adjacent bytes of a row and ANDed each against the
+matching byte of the operand. The three bytes are the three planes of a
+register mask, only one of which can be set -- so an obvious improvement is to
+store which plane, and read just that one: `(&ri->a0)[plane]`. Three loads and
+three ANDs become one load and one AND.
+
+It cost **6.2%**. The variable index has to be added to the row pointer, which
+means the row pointer has to be in `hl` to take an `add`, which means it is not
+in `iy` any more, so every other field of the row -- and the row pointer itself
+on the way round the loop -- goes through the frame:
+
+```
+ld  iy, (ix - 42)     ; reload the row pointer
+ld  bc, (ix - 48)     ; the plane index
+add iy, bc
+ld  a, (iy + 2)
+ld  iy, (ix - 42)     ; and put it back for the next field
+```
+
+Three loads and three ANDs, each `ld a, (iy+n); and a, (ix+m)`, is two
+instructions per plane with no address arithmetic at all. Fewer operations lost
+to more addressing.
+
+**The rule:** inside a loop over a structure, prefer constant offsets from one
+index register over any computed address, even when the computed address
+replaces several constant ones. Count the reloads, not the operations.
+
 ---
 
 ## 3. Advanced Memory & Mathematical Optimizations

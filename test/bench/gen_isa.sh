@@ -92,20 +92,29 @@
 # about that much.
 #
 # Deterministic: no randomness, no dependence on the environment. Changing this
-# script invalidates every timing taken with it, and it has changed twice.
-# Adding labels was the first; adding local labels to `even` and `real` is the
-# second, and the scope cycle it introduced moved the line count of isa_real
-# from 19,399 to 22,068. Nothing measured against an earlier version of this
-# file is comparable with anything measured against this one -- the baselines
-# below are the ones that count.
+# script invalidates every timing taken with it, and it has now changed three
+# times: labels, then local labels, then anonymous ones. isa_real has gone from
+# 19,399 lines to 22,068 to 22,458 across them. Nothing measured against an
+# earlier version of this file is comparable with anything measured against
+# this one -- the baselines below are the ones that count.
 #
-#   isa_real         4.84s   340 cycles/byte   22,068 lines
-#   isa_even         4.98s   350               22,429
-#   isa_degenerate   4.88s   343               20,328
+#   isa_real         4.94s   347 cycles/byte   22,457 lines
+#   isa_even         5.08s   357               22,841
+#   isa_degenerate   4.90s   345               20,328
 #
-# `degenerate` and `memory` build their own sources and are untouched by this
-# -- degenerate assembles to the same md5 as before -- so their numbers moved
-# only because the assembler did, by the 2.7% local labels cost.
+# `degenerate` and `memory` build their own sources and are untouched by any of
+# it -- degenerate assembles to the same md5 as it did two changes ago -- so
+# its figure has moved only because the assembler did.
+#
+# What isa_real now holds, per 22,457 lines:
+#
+#   global      536 definitions,  2,068 references
+#   local     1,605 definitions,  1,070 references
+#   anonymous   268 definitions,    801 references
+#
+# 28.3% of the file is a label line. That is denser than real code and is meant
+# to be: these two sources exist to price the label machinery, and the corpus
+# programs that use it are covered by test/corpus.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -312,6 +321,20 @@ END {
 # of one. Three locals per scope is above the corpus median of two and well
 # under its worst of twenty. (No apostrophes in these comments: the whole
 # program is inside a single-quoted shell string.)
+#
+# Every other scope carries anonymous labels as well, which are not scope-bound
+# and so need no such care:
+#
+#     2   forward anonymous reference    @f
+#     3   forward anonymous reference    @f, sharing the pending symbol
+#     6   anonymous definition           @@, which resolves both of them
+#    10   backward anonymous reference   @b, the one at 6
+#
+# One definition and three references per 64 lines, against six local
+# definitions and four local references over the same span. The corpus has 171
+# anonymous definitions against roughly 800 local ones, so this is heavier on
+# them than real code is -- deliberately, because a benchmark that contains
+# almost none of a thing cannot track what it costs.
 function out(line,   used, k) {
     used = 0
     k = ln % 32
@@ -342,6 +365,27 @@ function out(line,   used, k) {
     } else if (k == 28) {
         used += length(lname(lbl + 1)) + 8
         print "  call " lname(lbl + 1)
+    } else if (int(ln / 32) % 2 == 1) {
+        # Anonymous labels, in every other scope. They are not scope-bound --
+        # @f reaches the next @@ anywhere below and @b the last one anywhere
+        # above -- so unlike the locals these need no care about where the
+        # scope ends, only that one @@ follows the last @f in the file.
+        if (k == 2) {
+            used += 8
+            print "  jp @f"
+        } else if (k == 3) {
+            # A second forward reference before the same @@, because every @f
+            # since the last one shares a single pending symbol and resolving
+            # them together is the part worth exercising.
+            used += 10
+            print "  call @f"
+        } else if (k == 6) {
+            used += 4
+            print "@@:"
+        } else if (k == 10) {
+            used += 8
+            print "  jp @b"
+        }
     }
     ln++
     print line
@@ -355,6 +399,11 @@ function out(line,   used, k) {
 # only if this scope had not already reached the line that defines it, because
 # a second definition in one scope is an error.
 function finish(   k) {
+    # An anonymous one first, unconditionally: a forward reference to one is
+    # cheap to leave outstanding and impossible to redefine, so emitting one
+    # that nothing needs costs a line and emitting none where one is needed
+    # fails the file.
+    print "@@:"
     k = ln % 32
     if (k > 0) {
         if (k <= 8)  print "@loop:"

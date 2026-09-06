@@ -706,3 +706,57 @@ plainly after three earlier ones won 5.1%, 3.8% and 3.1%.
 
 The rule that fits all seven: inline a *small* body on a *hot* path, and
 measure anything else.
+
+## Labels: the first feature priced
+
+Added 2026-09-06. dzap now has label definitions, references, forward
+references and the errors the reference gives. `$` and `foo+2` are expressions
+and are not in it.
+
+    isa_real     4.52s -> 4.56s     +0.9%    (no labels in the source)
+    isa_even     4.70s -> 4.70s      0%
+
+    labels.s     6.62s   262,177 bytes   465 cycles/byte
+    nolabels.s   3.40s   181,197 bytes   346 cycles/byte
+
+**0.9% where labels are not used, about a third more per byte where they are.**
+The first number is the design working: a label is the colon and not the
+column, so a line without one pays a single test on the first token.
+
+**One pass, patched at the end.** A forward reference cannot be resolved where
+it is read, so the bytes go down as zero and a fixup list patches them when the
+source runs out. A second pass would have cost most of the program again and
+would have hidden what labels are worth.
+
+### What the naming style costs, which is more than expected
+
+The first version of the benchmark numbered one stem -- `lbl_routine_body_0001`
+and up. Those share a first character, a length, and a last character drawn
+from ten digits, and the symbol key is exactly those three, so **2,161 labels
+went into ten buckets and the file took 20.82s instead of 6.62s**.
+
+That is the tail the plan warned about, met in the first hour of having a
+symbol table. Kept as `gen_labels.sh <bytes> same` so it can be watched. A hash
+would not care; the key was chosen because it touches 11.8 characters per
+lookup against Pearson's 17.5 *on average*, and this is what the average hides.
+
+### Two bugs the feature brought, both target-only or nearly
+
+* **`_` was a name character but not a number character**, so the literal scan
+  -- where a name that is not a register ends up -- stopped at the first
+  underscore. Real labels are full of them.
+* **The leading space skip had to be bounded.** Unbounded it compiled to a loop
+  rotated wrongly: pre-decremented, testing one character past the pointer, so
+  the first was never examined. Same fault the `num_ch` scans already carry a
+  bound for. It appeared only when labels were added around it, nothing about
+  labels touches it, and it broke **every line on the Agon while the host build
+  was perfect**. `dec iy` before the loop head is the tell.
+
+### And two rebases removed rather than tested
+
+Names were pointers into a realloc'd arena and symbols were an array, so both
+needed rebasing on growth -- and neither rebase can be tested: glibc extends in
+place, so the block does not move and deleting the rebase fails no check even
+with six hundred long labels. Names are held as offsets and symbols in blocks
+that never move. Code that only runs under a different allocator is code
+nothing here can hold to account.

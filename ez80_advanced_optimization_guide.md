@@ -114,7 +114,24 @@ The distinction is whether the branch avoids computation. If it does, take it.
 
 ### Replace Bit-Shifting with Byte-Swapping
 * **The Problem:** The eZ80 lacks a barrel shifter. Shifting a 24-bit integer by an arbitrary amount requires looping a 1-bit shift instruction multiple times. Writing `uint24_t x = y >> 8;` forces an explicit 8-iteration shift loop.
-* **The Fix:** Align your bitwise shifts to multiples of 8 bits whenever possible. The compiler can optimize a shift or mask of exactly 8 or 16 bits into a zero-cost operation, such as omitting a byte-read or reading the upper register byte (`HLU` or `H`) directly.
+* **The Fix:** Align your bitwise shifts to multiples of 8 bits whenever possible, and where you cannot, use a lookup table.
+
+**Measured, on agondev's clang at `-Oz`.** Every shift by a constant that is not a byte boundary is a call -- `(v & 7) << 3` compiles to `ld b, 3; call __bshl`. Writing it as repeated addition does not help: `((x+x)+x)+x` is canonicalised straight back into a shift, and so is `* 8`. A lookup table is the way out, because an indexed load from 256 bytes or fewer is one instruction:
+
+```c
+static const uint8_t shl3[8] = { 0, 8, 16, 24, 32, 40, 48, 56 };
+opcode |= shl3[index & 7];          /* not opcode |= index << 3 */
+```
+
+Byte boundaries are cheaper but not uniformly free, and the difference is *where the value lives*:
+
+| expression | value in a register | value still in memory |
+|---|---|---|
+| `(uint8_t) v` | `ld a, l` | `ld a, (iy+n)` |
+| `(uint8_t)(v >> 8)` | `ld a, h` | `ld a, (iy+n+1)` |
+| `(uint8_t)(v >> 16)` | `ld c, 16; call __ishru` | `ld a, (iy+n+2)` |
+
+HL's upper byte is not directly addressable, so the compiler has the byte trick at `>> 8` and loses it at `>> 16`. The practical consequence is the opposite of the usual advice: **do not hoist a value into a local to take bytes out of it.** Reading the struct field afresh for each byte is what makes all three an indexed load. This was worth 1.5% of dzap's whole run time on one function.
 
 ### Exploit Block Memory Instructions (`LDIR` / `CPIR`)
 * **The Strategy:** Do not write manual `for` loops to copy arrays or clear memory buffers. Always rely on standard C library string and memory utilities: `memcpy()`, `memmove()`, and `memset()`.
@@ -127,6 +144,22 @@ The distinction is whether the branch avoids computation. If it does, take it.
 ### Inline Small, Critical Functions
 * **The Problem:** Function calls introduce a heavy penalty because the CPU must push the 24-bit program counter onto the stack, jump, and pop it back off upon returning.
 * **The Fix:** Use the `inline` or `static inline` keyword for small, frequently called helper functions (such as pixel plotting, bit masking, or mathematical macros) inside inner loops. This eliminates the `CALL` and `RET` overhead entirely by embedding the code directly into the instruction flow.
+* **The limit:** only while the resulting frame stays under 128 bytes. See below.
+
+### Keep Every Stack Frame Under 128 Bytes
+* **The Problem:** `ix` displacement is a **signed byte**. A function whose frame exceeds 128 bytes cannot reach most of its own locals with `ld a, (ix-9)`, and the compiler falls back to computing the address:
+
+```
+    ld   bc, -139
+    lea  hl, ix + 0
+    add  hl, bc
+    ld   hl, (hl)      ; five instructions where there was one
+```
+
+  This is paid on **every access** to every local past the boundary, and nothing in the source suggests it is happening.
+* **The Fix:** Split the function, or move the locals an inner loop touches into a small helper. Counter-intuitively this can make the program *smaller*: in dzap, splitting one 149-byte frame into four of 60, 62, 19 and 20 removed 23 escape sequences and cut 77 instructions from the binary, despite adding four call/return pairs. It was worth **7.8%** overall and **28.3%** on the hottest loop.
+* **How to check:** compile to assembly and count. `grep -c 'lea.*hl, ix + 0'` finds the escapes; `grep -o 'ld.*hl, -[0-9]*'` after each `__frameset` gives the frame sizes.
+* **Where this bites hardest:** aggressive inlining. The four functions above were not written large -- they were separate, and the compiler folded them all into `main`. `-Oz` will happily inline a whole program into one frame and then pay five instructions for every local in it.
 
 ---
 
@@ -153,6 +186,25 @@ work). Readings are deterministic to the centisecond.
 * **Allocation is cheap; touching memory is not.** Replacing a 39.7 KB fixed
   array with per-item allocation was free, and cost 95% of the struct's size.
   Trading an allocation for a smaller footprint is a good trade here.
+* **Constant shifts that are not byte boundaries are calls.** `<< 3` and `<< 4`
+  replaced by 8- and 16-entry lookup tables: **-1.6%**. Repeated addition is
+  not a workaround; the compiler canonicalises it back into a shift.
+* **Byte extraction is free from memory, not from a register.**
+  `(uint8_t)(v >> 16)` is one indexed load when `v` is a struct field and a
+  call to `__ishru` when it has been hoisted into a local: **-1.5%** for not
+  hoisting.
+* **Frames over 128 bytes cost five instructions per local access.** Splitting
+  one 149-byte frame into four small ones: **-7.8%** overall, **-28.3%** on
+  the loop that paid it most, and 77 fewer instructions in the binary.
+* **One record per row beats parallel arrays, for a loop that reads several
+  fields of the same row.** Eight `uint8_t` arrays indexed by `r` were
+  **+8.5%**; the same eight bytes in one struct walked by a pointer were
+  **-10.1%** overall and **-35.0%** on the row-heavy case. Indexed addressing
+  off `iy` amortises the base-pointer arithmetic that each separate array
+  repeats.
+* **24-bit AND is a call.** `AND` is an 8-bit instruction, so `regset & reg` on
+  a `uint24_t` compiles to `call __iand`, and indexing an array of them costs
+  `r * 3`, a `call __imulu`. Part of the row-record figure above.
 
 ### Contradicted by measurement
 * **"Data-driven beats branching" is too simple.** Replacing a chain of ~8

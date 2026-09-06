@@ -1,5 +1,10 @@
 #include "parser.h"
 
+/* How much the output buffer grows by once it is past this size. Below it the
+ * buffer still doubles, because the early steps are cheap and a small program
+ * should reach its size in a few of them. */
+#define OUT_STEP (64 * 1024)
+
 #include <agon/mos.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -441,12 +446,24 @@ static bool pr_reserve(parser* p, int need) {
         return true;
     }
 
+    /* Grown in steps, not doubled.
+     *
+     * Doubling needs the old block and the new one alive at the same time, so
+     * reaching 256 KB asks a 512 KB machine for 384 KB on top of the symbol
+     * table and the fixup stack. That is what "output too large" was: half a
+     * megabyte of straight instructions failed at line 64,729 with 93 KB
+     * written and room to spare, purely because of how the next block was
+     * asked for. A step costs more reallocations on a large output and asks
+     * for far less at each one.
+     *
+     * The step is generous enough that a real program pays a handful of them:
+     * BBC BASIC emits 20,883 bytes, which is one. */
     int want = p->sz_;
     while (want < need) {
         if (want > (1 << 22)) {
             return false;  /* 4MB is past anything an Agon can load */
         }
-        want *= 2;
+        want += want < OUT_STEP ? want : OUT_STEP;
     }
 
     uint8_t* grown = (uint8_t*) realloc(p->buf_, (size_t) want * sizeof(uint8_t));

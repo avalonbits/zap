@@ -67,7 +67,8 @@ static const char* emit(const char* src) {
     if (!ok) {
         n = snprintf(out, sizeof(out), "ERR");
     } else {
-        for (int i = 0; i < z.pos && n < (int) sizeof(out) - 4; i++) {
+        const int len = (int) (z.o - z.out);
+        for (int i = 0; i < len && n < (int) sizeof(out) - 4; i++) {
             n += snprintf(&out[n], sizeof(out) - (size_t) n, "%s%02X",
                           i ? " " : "", z.out[i]);
         }
@@ -278,6 +279,44 @@ int main(void) {
     check("no trailing newline", emit("  nop\n  ld a, b"), "00 78");
     check("empty source", emit(""), "");
     check("blank lines only", emit("\n\n   \n"), "");
+
+    /* Growing the output buffer.
+     *
+     * realloc is allowed to move the block, so out_grow has to carry the
+     * cursor and the limit across with it. Nothing else here reaches that
+     * code: the buffer starts at 16 KB or a quarter of the source, whichever
+     * is larger, and the biggest case file emits 8,771 bytes. A rebase that
+     * was simply forgotten would lose every byte written so far and no test
+     * above would notice.
+     *
+     * Driven directly rather than through a source large enough to force it,
+     * which would be a 50 KB case file to exercise four lines. */
+    {
+        dz z;
+        memset(&z, 0, sizeof(z));
+        z.cap = OUT_MIN;
+        z.out = (uint8_t*) malloc((size_t) z.cap);
+        z.o = z.out;
+        z.lim = z.out + z.cap - OUT_MAX_INSN;
+        for (int i = 0; i < 100; i++) {
+            *z.o++ = (uint8_t) i;
+        }
+
+        const bool grew = out_grow(&z);
+        char got[64];
+        snprintf(got, sizeof(got), "%d %d %d %d", grew ? 1 : 0,
+                 (int) (z.o - z.out), (int) (z.lim - z.out),
+                 z.out[99] == 99 && z.out[0] == 0);
+        char want[64];
+        snprintf(want, sizeof(want), "1 100 %d 1", OUT_MIN + OUT_STEP - OUT_MAX_INSN);
+        check("out_grow carries the cursor and the limit", got, want);
+
+        /* And that the rebased limit still leaves room for a whole
+         * instruction, which is the property the reserve relies on. */
+        check("a grown buffer has room for the longest form",
+              (z.lim + OUT_MAX_INSN == z.out + z.cap) ? "yes" : "no", "yes");
+        free(z.out);
+    }
 
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);

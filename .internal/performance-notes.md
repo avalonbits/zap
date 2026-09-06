@@ -479,3 +479,44 @@ byte and said: read line 14%, classify mnemonic 6%, `mnemonic_of` 15%, parse
 operands 28%, `match_row` 27%, `emit_row` 10%. Both of the last two have since
 been cut, so the operand parse is now the largest thing left by some margin,
 and it is the stage with the most closed avenues -- see the section above.
+
+## Where the cycles are now, measured stage by stage
+
+Taken twice on `isa_real`, once at 4.80s and again at 4.52s after the last two
+inlines, by building six variants of `assemble_line` from one source with a
+compile-time `STAGE` and timing each. Every variant, **including the full one**,
+ends with the same scan-to-newline tail, so no difference between two of them
+contains it; the tail costs 0.10s and is taken off the reader's share. The
+stages sum to the total exactly, which is the check that the method holds.
+
+    isa_real  4.52s = 3,810 cycles/instruction, 318 cycles/byte, 56.6 KiB/s
+
+    stage                       seconds  cycles/ins   share   at 4.80s
+    read the line + dispatch       0.64         540   14.2%      0.66
+    scan the mnemonic              0.24         202    5.3%      0.22
+    mnemonic_of                    0.84         708   18.6%      0.84
+    parse both operands            1.06         894   23.5%      1.06
+    match_row                      0.62         523   13.7%      1.08
+    emit_row                       1.12         944   24.8%      0.94
+
+**Read the split between adjacent stages with care.** The totals are exact but
+the attribution is not, because a variant that omits a stage also has a smaller
+frame and a different register allocation, so the growth lands on whichever
+delta introduces it. That is why `emit_row` appears to have grown from 0.94 to
+1.12 in a round that only moved it inline: the 82-to-94 byte frame growth is
+charged to the delta that causes it. `match_row` falling 1.08 to 0.62 is real
+-- it is this round's work -- but part of the drop is `match_row_cc` being
+inlined and its cost moving.
+
+**What has not moved at all is `mnemonic_of`: 0.84s in both measurements**, now
+18.6%. It is the stage that has resisted two rounds of attention. A better hash
+was tried and lost 5.7%; packing short names into a word and comparing them in
+one operation lost 1.3%. Bucketing by first letter and length already leaves one
+or two candidates, so what is left is not the comparison but the getting there.
+
+**The four remaining calls per line are gone.** `parse_operand`, `emit_row` and
+`match_row_cc` were all inlined this round for 5.1%, 3.8% and 2.2%, and nothing
+in the hot path is out of line any more. `assemble_line`'s frame is **94 bytes**
+against the 128 that `ix`'s signed displacement allows -- that is the budget,
+and it is the number to re-read before adding anything to the function or to
+`dop`.

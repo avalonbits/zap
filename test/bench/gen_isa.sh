@@ -117,13 +117,14 @@
 # anything measured against this one -- the baselines below are the ones that
 # count.
 #
-#   isa_real         5.15s   363 cycles/byte   21,806 lines
-#   isa_even         5.29s   373               22,117
-#   isa_degenerate   4.92s   346               22,530
-#   isa_memory       5.48s   385               28,040
+#   isa_real         5.46s   384 cycles/byte   21,806 lines
+#   isa_even         5.56s   391               22,117
+#   isa_degenerate   4.86s   342               22,530
+#   isa_memory       5.32s   374               28,040
 #
-# isa_degenerate and isa_memory build their own bodies and take none of this;
-# their figures are unchanged and move only when the assembler does.
+# isa_degenerate and isa_memory build their own bodies and take none of this,
+# so their figures move only when the assembler does -- which it has, hence 385
+# to 374 on the second of them.
 #
 # Two of the earlier changes are worth understanding before reading those
 # numbers, because both moved them in the direction nobody expects.
@@ -136,10 +137,28 @@
 #
 # The fifth change did the same thing in reverse and then some. A macro
 # invocation is nine characters of source that expand into two or three
-# assembled lines, and a conditional block is five lines of source of which
-# half the time none is assembled at all; both buy more work per byte than the
-# instruction they displace. The line count fell 8% and the cycles-per-byte
-# rose 6%.
+# assembled lines; both it and a conditional block buy more work per byte than
+# the instruction they displace. The line count fell 8% and the cycles per byte
+# rose from 356 to 384.
+#
+# Where that 28 went, measured by generating the same file with one feature
+# left out at a time:
+#
+#   conditional assembly   free, inside the resolution of the measurement
+#   ASSUME                 the same
+#   macros                 0.46s of 5.46, all of it
+#
+# Which is not the feature being slow so much as the feature being work: an
+# invocation assembles two more lines than the nine characters it occupies
+# would otherwise have bought. It did start out slow -- 6.48s when the macros
+# first went in, against 5.46 now -- and what came out of it is written up in
+# .internal/performance-notes.md.
+#
+# The three of them together are why isa_real no longer reads under 350. The
+# same file with the macros taken out reads 353. That is the honest position:
+# the target was set against a file that did not exercise these paths, and a
+# benchmark that leaves an expensive feature out to keep its number down is
+# measuring the wrong thing.
 #
 # What isa_real now holds, per 21,806 lines:
 #

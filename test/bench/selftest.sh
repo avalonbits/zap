@@ -175,6 +175,80 @@ else
     status=1
 fi
 
+# Macros, conditional assembly and ASSUME, at rates in the same band as
+# everything else here: three to four times what the corpus has, because a
+# benchmark with almost none of a thing in it cannot track what that thing
+# costs. The corpus, over its 186,050 lines excluding z88dk, has one IF every
+# 196 lines, one ASSUME every 707 and one macro invocation every 198.
+#
+# Macro *definitions* are the exception and are left at about the corpus rate,
+# because each one also lengthens the list every invocation walks and inflating
+# the count would price a lookup no real program performs.
+nlines=$(printf '%s\n' "$isareal" | grep -c . || true)
+rate() {
+    # lines matching $2, as one per N lines, checked against the band $3..$4
+    local what="$1" pat="$2" lo="$3" hi="$4"
+    local n per
+    n=$(printf '%s\n' "$isareal" | grep -cE "$pat" || true)
+    if [ "$n" -eq 0 ]; then
+        echo "FAIL  isa_real contains $what: none"
+        status=1
+
+        return
+    fi
+    per=$((nlines / n))
+    if [ "$per" -ge "$lo" ] && [ "$per" -le "$hi" ]; then
+        echo "PASS  isa_real has $what every $per lines ($n of them)"
+    else
+        echo "FAIL  isa_real has $what every $per lines, want $lo..$hi ($n of them)"
+        status=1
+    fi
+}
+rate "an IF"             '^[[:space:]]+IF '                        30  70
+rate "an ENDIF"          '^[[:space:]]+ENDIF'                      30  70
+rate "an ELSE"           '^[[:space:]]+ELSE'                      150 300
+rate "an ASSUME"         '^[[:space:]]+ASSUME ADL'                150 300
+rate "a macro invocation" '^[[:space:]]+(msave|mrest|mload|msum|mtri|mwait|mg[0-9]+)( |$)' \
+                                                                   35  75
+rate "a macro definition" '^[[:space:]]+MACRO '                  1200 2600
+
+# Both arms of ASSUME. A file that only ever asserts the mode it is already in
+# never reaches the code that changes one.
+# Counted rather than asked with grep -q: -q stops at the first match, the
+# printf feeding it dies of SIGPIPE, and `pipefail` reads that as the check
+# having failed. The existing -q checks here are all ones that expect to find
+# nothing, which is why none of them has tripped over it.
+noff=$(printf '%s\n' "$isareal" | grep -cE '^[[:space:]]+ASSUME ADL = 0' || true)
+non=$(printf '%s\n' "$isareal" | grep -cE '^[[:space:]]+ASSUME ADL = 1' || true)
+if [ "$noff" -gt 0 ] && [ "$non" -gt 0 ]; then
+    echo "PASS  isa_real switches ADL off and back on"
+else
+    echo "FAIL  isa_real switches ADL off and back on"
+    status=1
+fi
+
+# A macro body with a local label in it, which is the case that needs the
+# expansion to have a scope of its own.
+nspin=$(printf '%s\n' "$isareal" | grep -cE '^@spin:' || true)
+if [ "$nspin" -gt 0 ]; then
+    echo "PASS  isa_real has a macro body with a local label"
+else
+    echo "FAIL  isa_real has a macro body with a local label"
+    status=1
+fi
+
+# Every conditional block is closed. The byte budget can run out between the IF
+# and the ENDIF, and a file that ends inside a block does not assemble at all --
+# every label below the IF is inside it.
+nif=$(printf '%s\n' "$isareal" | grep -cE '^[[:space:]]+IF ' || true)
+nend=$(printf '%s\n' "$isareal" | grep -cE '^[[:space:]]+ENDIF' || true)
+if [ "$nif" -eq "$nend" ]; then
+    echo "PASS  isa_real closes every conditional block ($nif of them)"
+else
+    echo "FAIL  isa_real closes every conditional block: $nif IF against $nend ENDIF"
+    status=1
+fi
+
 # And the two it must NOT contain: INCLUDE and INCBIN have a source of their
 # own, because their cost is file opening rather than assembling.
 if ! printf '%s\n' "$isareal" | grep -qE 'INCLUDE|INCBIN'; then

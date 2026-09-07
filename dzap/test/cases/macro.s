@@ -118,3 +118,16 @@ nest:
   ENDMACRO
   outermost
   jp @deep
+
+; A global label defers the end of its scope to the next local, and an
+; expansion in between must not spend it. The body counts its own line numbers,
+; so the deferral inside it never matches; before it was saved across the call,
+; the local in the body ended the caller's scope in the caller's name, and the
+; local below reported "label defined twice" against the scope above.
+first:
+@twice:
+  nop
+second:
+  withlocal
+@twice:
+  nop

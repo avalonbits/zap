@@ -3523,6 +3523,7 @@ typedef struct {
     int locs_used;
     int locnames_used;
     int lfix_used;
+    int scope_line;
     uint8_t gen;
 } locsave;
 
@@ -3543,6 +3544,14 @@ static bool scope_push(dz* z, locsave* sv) {
     sv->locnames_used = z->locnames_used;
     sv->lfix_used = z->lfix_used;
     sv->gen = z->gen;
+    /* The scope end a global label left pending belongs to the caller. Left
+     * standing, the first local in the body would notice it -- the body counts
+     * its own line numbers, so the comparison that defers it never matches --
+     * and end the expansion's scope in the caller's name, clearing the flag.
+     * The caller's next local then would not open a scope at all, and the one
+     * above it would still hold whatever the previous scope defined. */
+    sv->scope_line = z->scope_line;
+    z->scope_line = 0;
 
     /* An empty scope, current: every bucket belongs to this one and holds
      * nothing. */
@@ -3593,6 +3602,7 @@ static bool scope_pop(dz* z, locsave* sv) {
     z->locs_used = sv->locs_used;
     z->locnames_used = sv->locnames_used;
     z->lfix_used = sv->lfix_used;
+    z->scope_line = sv->scope_line;
     z->gen = sv->gen;
 
     return ok;

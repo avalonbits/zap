@@ -182,6 +182,7 @@ char br_fill_peek(buf_reader* br) {
     br->bsz_ = 0;
             return EOF;
         }
+        br->fread_ += frsz;
         br->bpos_ = 0;
         br->raw_ = frsz;
         br->bsz_ = frsz;
@@ -237,6 +238,12 @@ bool br_fill_lines(buf_reader* br, bool* too_long) {
     }
 
     const uint24_t frsz = mos_fread(br->fh_, &br->buf_[carry], br->cap_ - carry);
+    /* How far into the file the handle now is, which is what br_resume seeks
+     * back to. It was only ever set to zero, so a suspended reader resumed at
+     * the start of its file and read it again from the top -- which nothing
+     * noticed until INCLUDE suspended a file mid-way and then carried on with
+     * it. */
+    br->fread_ += frsz;
     br->raw_ = carry + frsz;
     br->bpos_ = 0;
 
@@ -307,6 +314,7 @@ int br_block(buf_reader* br, const char** out) {
 
                 return 0;
             }
+            br->fread_ += frsz;
             br->bpos_ = 0;
             br->raw_ = frsz;
             br->bsz_ = frsz;

@@ -2608,3 +2608,94 @@ label-length test was picking up `eq17:` from the EQU generator and read the
 mean as 6.59 rather than 8.37.
 
 All five sources still assemble byte-identically between dzap and the reference.
+
+## The directive path, priced and then fixed (2026-09-07)
+
+isa_real read 401 cycles a byte once the benchmarks learned the directives, and
+the target is 350. This is where the first 23 of that came from, and it started
+by measuring rather than guessing.
+
+### One shape per directive
+
+256 KiB of each, the way `measuring.md` says to isolate one:
+
+    nop                                    390 cycles/byte   2,340 per line
+    ld a, 42                               349               4,034
+    DB 42                                  889               7,610
+    DB a, b, c, d                        1,121              24,890
+    DW 0x1234, 0x5678                      440               8,800
+    DL 0x123456                            444               6,216
+    ALIGN 4                                645
+
+**`DB 42` cost two and a half times `ld a, 42`** -- an instruction that does a
+mnemonic lookup and a row match on top of parsing the same number. Four values
+on a line cost 24,890 cycles, about 5,000 each.
+
+The reason is one line of history. An operand has had a literal fast path since
+early on -- `0x…` and plain decimal read without `num_parse` -- and `emit_data`
+went straight to `expr_value` for every item, plus a `fwd_reset` of six globals
+before each one.
+
+### The same fast path, in the directive
+
+Digit-leading run, then the operand parser's three cases: `0x` and hex digits, a
+trailing `h`, or decimal with the first digit outside the loop so a one-digit
+value needs no multiply. `hex_digits` was already out of line, so a second
+caller costs it nothing.
+
+What matters is what it *refuses*. The character that ended the run has to end
+the item -- a `,`, a newline, a remark or the end of the line. `DB 1+2` goes to
+the evaluator, and so does `0b1010`, whose run starts with a digit and whose
+decimal loop stops on the `b`.
+
+    DB 42                    889 -> 401   -55%
+    DB a, b, c, d          1,121 -> 370   -67%
+    DW 0x1234, 0x5678        440 -> 321   -27%
+    isa_real                 401 -> 378   -5.7%
+
+`DB 42` is now 3,433 cycles a line against the `nop` floor of 2,340 and
+`ld a, 42`'s 4,034 -- which is the right shape, since a byte of data is less
+work than an instruction. Before, it was nearly twice an instruction.
+
+### And a correctness bug the shapes found first
+
+A file of nothing but `DS 4` assembled to 149,800 bytes here and **zero** in the
+reference. `DS` and `ALIGN` reserve space rather than emit it, and the reference
+only materialises that space when something is written after it:
+
+    DB 1 / DS 4              01              not 01 FF FF FF FF
+    DB 1 / ALIGN 8           01
+    DB 1 / DS 4 / DS 4       01              one run, not two
+    DB 1 / DS 4 / DB 2 / DS 4    01 FF FF FF FF 02
+    DB 1 / ORG 0x040008      01 FF FF FF FF FF FF FF   -- ORG is not the same
+
+That is a byte-for-byte difference on input the reference accepts, which is the
+one thing this project does not allow. Fixed by tracking where the trailing run
+of reserved bytes ends and how long it is -- only `emit_fill` touches those two
+fields, so nothing on the path an instruction takes has to know they exist --
+and dropping the run once, after the fixups. `ORG` clears the marker, because it
+pads rather than reserves.
+
+**A benchmark shape found a correctness bug that fourteen hand-written cases had
+not.** The hand-written ones all had something after the directive.
+
+### Three shapes that would not run at all
+
+`DB "string"`, `DS` and `EQU` at 256 KiB each hit the harness's 600-second
+timeout -- the guest never reached the exit, so it is a crash or a hang and not
+a slow assembly. All three work at a quarter the size (2,000 to 8,000 lines) and
+all three are instant on the host, so there is no algorithmic blow-up; it is
+something about size on a 512 KB machine. `equ.s` at 256 KiB is 14,616 symbols,
+about 278 KB of nodes and names.
+
+Open, and recorded here rather than left in a scrollback. It is the first sign
+that dzap has an input size it fails on, and the failure is silent.
+
+### Checked
+
+509 host checks. All five benchmark sources still assemble byte-identically to
+the reference. 27 forms of DB, DW and DL checked against it by hand -- including
+every shape the fast path has to hand back -- and 14 more for the trailing-fill
+rule. Five mechanisms verified to bite: the fast path not checking what follows
+the run, a partial decimal run accepted, the trailing run written out, two runs
+not merging, and ORG's padding counted as reserved.

@@ -609,6 +609,22 @@ typedef struct _dz {
     const char* path;
     uint8_t depth;
 
+    /* The run of reserved bytes the output currently ends with, if it ends
+     * with one.
+     *
+     * `DS` and `ALIGN` reserve space rather than emit it, and the reference
+     * only ever materialises that space when something is written after it: a
+     * file ending in `DS 4` is four bytes shorter there, and `ALIGN` at the end
+     * emits nothing at all. `ORG` is not the same and does pad -- all three
+     * measured.
+     *
+     * Kept as where the run ends and how long it is, rather than as a flag on
+     * every write. Only `emit_fill` touches these, so nothing on the path an
+     * instruction takes has to know they exist, and the trailing run is
+     * dropped once, at the end. */
+    int fill_end;
+    int fill_len;
+
     /* Where `path` points when an include fails.
      *
      * The name of an included file lives in the frame of the include that
@@ -3434,16 +3450,79 @@ static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
                 return false;
             }
         } else {
-            fwd_reset(NULL);
-            uint8_t fwdmask = 0;
             int value = 0;
-            if (!expr_value(z, &value, &p, e, &fwdmask)) {
-                return false;
+
+            /* A plain literal, read here rather than through the evaluator.
+             *
+             * `DB 42` measured **889 cycles per byte against `ld a, 42`'s
+             * 349** -- two and a half times an instruction that does a
+             * mnemonic lookup and a row match on top of the same number --
+             * because an operand has had this fast path since early on and a
+             * directive went straight to `expr_value` for every item. A list
+             * of four costs it four times.
+             *
+             * The same two forms the operand parser takes, and the same
+             * reasons: `0x` and hex digits, or decimal with the first digit
+             * outside the loop so that a one-digit value needs no multiply --
+             * `d * 10` is a call to __imulu here.
+             *
+             * Only if what ends the run also ends the item. `DB 1+2` has to go
+             * through the evaluator, and deciding that costs one class lookup
+             * on a character already in hand. */
+            const char* q = p;
+            bool got = false;
+            if (digit_ch(*q)) {
+                while (q < e && num_ch(*q)) {
+                    q++;
+                }
+                const int nn = (int) (q - p);
+
+                /* What ends the run has to end the item too. `DB 1+2` is the
+                 * evaluator's, and one look at the character the scan stopped
+                 * on says so. */
+                const char* r = q;
+                while (is_space_ch(*r)) {
+                    r++;
+                }
+                if (*r == ',' || *r == '\n' || *r == ';' || r >= e) {
+                    if (nn >= 3 && p[0] == '0' && (p[1] | 0x20) == 'x') {
+                        got = hex_digits(p + 2, nn - 2, &value);
+                    } else if (nn >= 2 && (p[nn - 1] | 0x20) == 'h') {
+                        got = hex_digits(p, nn - 1, &value);
+                    } else {
+                        /* First digit outside the loop, as the operand parser
+                         * does it: a one-digit value then needs no multiply,
+                         * and `d * 10` is a call to __imulu here. */
+                        int acc = p[0] - '0';
+                        int k = 1;
+                        for (; k < nn; k++) {
+                            if (!digit_ch(p[k])) {
+                                break;
+                            }
+                            acc = acc * 10 + (p[k] - '0');
+                        }
+                        if (k == nn) {
+                            value = acc;
+                            got = true;
+                        }
+                    }
+                }
+            }
+
+            if (got) {
+                p = q;
+            } else {
+                q = p;
+                fwd_reset(NULL);
+                uint8_t fwdmask = 0;
+                if (!expr_value(z, &value, &p, e, &fwdmask)) {
+                    return false;
+                }
             }
             if (!out_reserve_n(z, width)) {
                 return false;
             }
-            if (expr_fwd != NULL) {
+            if (!got && expr_fwd != NULL) {
                 const sym* target = NULL;
                 const sym* sub = NULL;
                 bool subneg = false;
@@ -3490,11 +3569,18 @@ static bool emit_fill(dz* z, int n) {
     if (!out_reserve_n(z, n)) {
         return false;
     }
+
+    /* A run that starts where the last one ended is the same run. `DS 4` twice
+     * at the end of a file is eight bytes to drop, not four. */
+    const int at = (int) (z->o - z->out);
+    z->fill_len = (at == z->fill_end) ? z->fill_len + n : n;
+
     uint8_t* o = z->o;
     while (n-- != 0) {
         *o++ = 0xFF;
     }
     z->o = o;
+    z->fill_end = (int) (z->o - z->out);
 
     return true;
 }
@@ -3782,6 +3868,10 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
             if (!emit_fill(z, value - here)) {
                 return false;
             }
+            /* Padding to an address is not reserving space: the reference
+             * writes it out even at the end of a file, where it drops a DS.
+             * Forgetting the run is what says so. */
+            z->fill_len = 0;
         }
         z->org_set = true;
         *stop = p;
@@ -4510,7 +4600,23 @@ __attribute__((noinline)) static bool run(dz* z, const char* path) {
         return false;
     }
 
-    return resolve_fixups(z);
+    if (!resolve_fixups(z)) {
+        return false;
+    }
+
+    /* Space that was reserved and never written over is not output. `DS 4` at
+     * the end of a file is four bytes shorter in the reference, and `ALIGN 8`
+     * at the end is nothing at all -- both measured. Dropped here, once,
+     * rather than by testing on every write.
+     *
+     * After the fixups, not before: a forward reference is patched by offset,
+     * and shortening the output first would move nothing but would leave the
+     * question of whether it could. */
+    if (z->fill_len != 0 && (int) (z->o - z->out) == z->fill_end) {
+        z->o -= z->fill_len;
+    }
+
+    return true;
 }
 
 /* Everything run() may have allocated.

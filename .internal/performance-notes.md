@@ -1,10 +1,68 @@
-# Where zap stands, and what is left
+# Where the assemblers stand, and what is left
 
-Notes to self, 2026-09-05. Everything here is measured, not estimated, unless
-it says otherwise. Timings are on fab-agon-emulator 1.2.4 without `-u`, which
+Notes to self, started 2026-09-05 about zap and continued about dzap, which is
+where the work moved. Everything here is measured, not estimated, unless it
+says otherwise. Timings are on fab-agon-emulator 1.2.4 without `-u`, which
 decouples the guest clock from guest work and makes every number meaningless.
 
-## Where we are
+**Two assemblers appear below and their numbers are not comparable.** dzap is
+the one being developed; the `Where zap stands` section is the older program,
+kept because the memory findings in it still apply and because it is the only
+thing that has been run against big.asm and BBC BASIC.
+
+## dzap against the reference, on both machines (2026-09-06)
+
+The comparison the project exists to make, on the three 256 KiB sources, with
+**every output byte-identical between the two assemblers**. Without that the
+rest of the table would be a race between programs doing different work.
+
+**On the Agon**, each assembler's own `Done in` line:
+
+| source | dzap | ez80asm | ez80asm `-m` | dzap is | dzap |
+|---|---|---|---|---|---|
+| isa_real | **4.74s** | 34.44s | 36.54s | **7.27x** | 54.0 KiB/s |
+| isa_even | **4.88s** | 35.12s | 37.22s | **7.20x** | 52.5 KiB/s |
+| pure | **4.46s** | 30.86s | 32.96s | **6.92x** | 57.4 KiB/s |
+
+**On the host**, x86-64, best of 25 runs on the wall clock -- both assemblers
+report their own time to 10ms and at these sizes that is 0.00 and 0.01, so
+their own timers are no use here:
+
+| source | dzap | ez80asm | dzap is |
+|---|---|---|---|
+| isa_real | 3.15 ms | 7.62 ms | 2.42x |
+| isa_even | 3.11 ms | 7.65 ms | 2.46x |
+| pure | 2.47 ms | 5.46 ms | 2.21x |
+
+### The host understates the gap by three times
+
+2.4x there, 7.3x here. This is the sharpest case yet of the rule further down
+this file -- host profiles mis-size target gains -- and it runs the same way:
+on a machine with a cache and a barrel shifter, a second pass over the source
+and 32-bit arithmetic cost almost nothing; on a cacheless eZ80 with three-byte
+pointers they cost everything. **Do not quote a host ratio as if it were the
+answer, in either direction.**
+
+### Two things about the method
+
+`-m` was run both ways rather than assumed. bench.sh applies it above 256 KiB
+of source and these files are 262,177 bytes, thirty-three over the line -- but
+the reference completes without it at this size and the flag costs it about 6%.
+The no-flag column is the fair one, because nobody reaches for `-m` until they
+have to, and timing a program against a flag its user would not have passed
+flatters the other one.
+
+The two assemblers do not read quite the same bytes. ez80asm gets thirty-two
+more: a `.assume adl=1` and an `.org 0x040000` that dzap does not need because
+it has no directives and assumes both. The bodies are identical, checked rather
+than asserted.
+
+`pure` has no labels at all, so it prices instruction decoding with the symbol
+table out of the picture. dzap's margin there is 6.92x against 7.27x on
+isa_real, which says the advantage is *larger* on label-heavy source -- one pass
+and an in-memory table against two passes and a temporary file.
+
+## Where zap stands (the older assembler, 2026-09-05)
 
 | | zap | ez80asm |
 |---|---|---|
@@ -1016,9 +1074,10 @@ Both on the Agon, on isa_memory -- 262 KB, 9,347 labels:
     dzap        6.06s
     ez80asm    40.84s
 
-**6.7x**, same 44,563 bytes out. That is the only head-to-head figure taken so
-far; the others in these notes are dzap against itself. zap, by contrast, was
-roughly level with the reference.
+**6.7x**, same 44,563 bytes out. It was the first head-to-head figure; the three
+sources at the top of this file were measured later and land at 6.9x to 7.3x,
+so this one was not a fluke of the memory-degenerate shape. zap, by contrast,
+was roughly level with the reference.
 
 ### The density neither of them can do
 

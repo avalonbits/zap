@@ -795,12 +795,19 @@ static const sym* sym_at(const dz* z, int b, const char* name, int len) {
         if (sp->len != (uint8_t) len) {
             continue;
         }
-        const char* text = sp->name;
-        int i = 0;
-        while (i < len && text[i] == name[i]) {
-            i++;
+        /* The pointer walk, which the local lookup has always used and this
+         * one measured worse at -- when the name had to be computed as
+         * `&z->names[sp->nameoff]` and three live pointers would not fit where
+         * two and an index did. The name is a pointer in the node now, so the
+         * third one is free. */
+        const char* t = sp->name;
+        const char* q = name;
+        const char* const qend = name + len;
+        while (q != qend && *t == *q) {
+            t++;
+            q++;
         }
-        if (i == len) {
+        if (q == qend) {
             return sp;
         }
     }
@@ -2726,6 +2733,37 @@ static bool expr_value(dz* z, int* out, const char** pp, const char* e,
  *
  * The two num_ch scans are the exception and keep theirs; see each. `e` stays
  * a parameter for them. */
+/* Where a truncated stage sinks what it computed, so the compiler cannot
+ * delete the work whose result nothing reads. Declared here because both the
+ * line-level and the operand-level cuts write to it, and parse_operand comes
+ * first in the file. */
+#if defined(TRUNC) || defined(PTRUNC)
+static volatile int trunc_sink;
+#endif
+
+/* The same trick one level down: -DPTRUNC=n stops parse_operand part way, and
+ * is built with -DTRUNC=5 so that assemble_line stops after the operands.
+ *
+ *   1  the operand is cleared and its first character classified
+ *   2  + the register path, where one starts with a letter
+ *   3  + the literal or the expression, which is the whole of it
+ *
+ * A truncated operand is left as the empty template, which is why this only
+ * makes sense with the row selection switched off: match_row would be reading
+ * an operand nobody filled in. */
+#ifdef PTRUNC
+#define PTRUNC_AT(n)                         \
+    do {                                     \
+        if ((PTRUNC) <= (n)) {               \
+            trunc_sink = (int) (op->mode);   \
+            *pp = p;                         \
+            return true;                     \
+        }                                    \
+    } while (0)
+#else
+#define PTRUNC_AT(n) do { } while (0)
+#endif
+
 __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
     *op = dop_none;
 
@@ -2760,6 +2798,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
         }
         cl = cclass[(uint8_t) *p];
     }
+    PTRUNC_AT(1);
 
     /* A register or flag? */
     const char* known_end = NULL;
@@ -2904,6 +2943,8 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
         }
         p = s;
     }
+
+    PTRUNC_AT(2);
 
     /* A literal, or an expression. */
     {
@@ -4368,7 +4409,6 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
  * wandered off for 469 seconds before anything noticed.
  */
 #ifdef TRUNC
-static volatile int trunc_sink;
 #define TRUNC_AT(n, v)                       \
     do {                                     \
         trunc_sink = (int) (v);              \

@@ -2842,3 +2842,79 @@ in the way the directive evaluator was: the operand path has had many rounds,
 `match_row` has had four, and what remains of the directive path is strings and
 items that name a symbol, both of which have to do the work they do. The next
 6% is a search rather than a lever, and this table is where to start it.
+
+## The search for the last 6%, and what it found (2026-09-07)
+
+isa_real at 373 and the target 350. The truncation table said where to look;
+this is what looking found.
+
+### The operand path, one level down
+
+`-DPTRUNC=n` cuts `parse_operand` the way `-DTRUNC=n` cuts the line, and is
+built with `-DTRUNC=5` so the row selection is off -- a truncated operand is
+left as the empty template and `match_row` must not see it.
+
+    on top of stage 4 at 207                     cumulative   delta   share
+    the operand is cleared and classified              217      10    2.5%
+    + the register path                                257      40   10.2%
+    + the literal or the expression                    318      61   15.5%
+
+**The literal-or-expression half is the largest single item in the assembler**,
+and it is where every label reference lands as well as every immediate.
+
+### What the symbol table costs, priced with the flags that exist for it
+
+Each `DUP_` flag adds one extra execution of one thing, and the output stays
+byte-identical, so the difference is that thing:
+
+    the chain compare        DUP_SYMCHAIN    16 cycles/byte   4.3%
+    the Pearson hash         DUP_HASH        12               3.2%
+    a global intern          DUP_INTERN       5               1.3%
+    a local intern           DUP_LOCINTERN    4               1.1%
+    numeric_token            DUP_NUMTOK       2               0.5%
+
+### One of the four shapes changed its mind
+
+`dzap-to-zap.md` records four shapes of the chain compare measured against each
+other, with the index form winning: the pointer walk generated 24 instructions
+against 16, because three live pointers would not fit where two and an index
+did.
+
+That measurement was taken when the name had to be computed as
+`&z->names[sp->nameoff]`. Names are pointers in the node now, so the third
+pointer is free -- and the shape that lost then wins now:
+
+    isa_real     373 -> 373     no change
+    isa_memory   381 -> 377     -1.0%
+    sym_intern   190 -> 179 instructions
+
+Small, and only where symbols dominate, which is exactly where it should be. It
+is kept for a second reason: `loc_intern` has always used this shape, so the two
+lookups are now one idiom rather than two that disagree.
+
+**A rejected alternative is only rejected against the code that was there.**
+This one had been recorded as settled, and a change three commits away made it
+wrong.
+
+### Where the 6% is not
+
+    the literal or expression in an operand                61   15.5%
+    the directive path                                     55   14.0%
+    the label definition                                   55   14.0%
+    emit_row                                               43   10.9%
+    the register path in an operand                        40   10.2%
+    reading the line at all                                41   10.4%
+    mnemonic_of                                            37    9.4%
+    match_row                                              28    7.1%
+    scanning the mnemonic run                              19    4.8%
+    clearing and classifying an operand                    10    2.5%
+
+isa_real is 373 and 350 wants 6.2% more. There is no line in that table with an
+obvious waste in it any more -- the symbol chain and hash together are 7.5% and
+are near their floor, the operand path has had many rounds, `match_row` four,
+and the directive path was rewritten this afternoon. Reading a line and finding
+it is not blank costs 10.4% and is close to what the machine can do.
+
+The honest reading is that 350 is not one change away. It is available, but as
+several 1-2% findings of the kind above, and the way to find them is the table
+rather than a hunch.

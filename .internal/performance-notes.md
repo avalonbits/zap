@@ -3100,15 +3100,12 @@ there is no per-site way to overrule it here.**
       + the fixup is recorded                354     7   2.0%
 
 290 cycles a line to walk a chain of one candidate and compare two characters
-is too much, and reading the assembly said why:
-
-    call pe, __setflag
-
-**`same_ci`'s loop bound was two signed ints.** They cannot be compared in one
-subtract, so the compiler emits a call to repair the flags on overflow -- inside
-the loop that compares a mnemonic, on every line of the source. `dz` had this
-exact fault when the output was an offset and a capacity, it is written up in
-these notes, and it was still sitting in three more loops.
+is too much. Making `same_ci`'s loop bound unsigned fixed it, and the
+explanation given here at the time -- that two signed ints cost a
+`call pe, __setflag` to repair the flags on overflow -- **is wrong**. See the
+section below: that call is conditional and almost never taken. The measurement
+stands; the reason for it does not, and what the unsigned bound actually buys is
+a better-compiled loop body.
 
     isa_real         354 -> 349   -1.4%
     isa_even         363 -> 356   -1.9%
@@ -3133,9 +3130,8 @@ and for the same reason. Worse, indexing the array as bytes is wrong on the
 host, where a pointer is eight bytes and the slot is not four -- the sanitiser
 caught a misaligned load immediately. Left alone.
 
-**Nine `__setflag` calls remain**, and twelve is now a ceiling the test suite
-enforces rather than a floor anyone has reached. Each is a signed compare
-somewhere on the line path.
+**Twelve `__setflag` calls remain** in `assemble_line`, and the section below
+is about what happened when they were chased.
 
 ### Testing a change with no answer of its own
 
@@ -3148,3 +3144,49 @@ eZ80 and counts the flag repairs left in `assemble_line`, failing if there are
 more than twelve. It skips rather than fails without the cross compiler, the way
 the reference comparison skips without ez80asm. Verified by putting `same_ci`
 back to `int`, which takes it to fourteen.
+
+## Counting `__setflag` is not costing it (2026-09-07)
+
+Twelve `call pe, __setflag` were left in `assemble_line` after the unsigned loop
+bound, each one a signed comparison of a token length against a small constant
+-- `nn >= 3`, `nn >= 2`, `nn > 0`. Lengths are never negative, so comparing them
+as unsigned removes the repair without changing a byte of behaviour.
+
+It works, in the sense that the calls go away:
+
+    assemble_line          12 -> 4
+    the whole program      48 -> 35
+    instructions        9,456 -> 9,403
+
+And it is **slower**:
+
+    isa_real         349 -> 350
+    isa_even         356 -> 357
+    isa_degenerate   339 -> 340
+    isa_memory       371 -> 373
+
+All four, the same direction, one to two cycles a byte, which is outside what
+these runs vary by. Reverted.
+
+### Why
+
+`call pe, __setflag` is a **conditional** call. It is taken only when the
+parity/overflow flag is set, and comparing a token length against 3 never
+overflows. What each one costs is the fetch of a three-byte instruction and a
+branch not taken -- not a call, not eleven instructions, not what the number of
+them suggests. Removing eight of them removes twenty-odd bytes of fetch and
+replaces the comparisons with unsigned ones that happen to compile slightly
+worse around them.
+
+**The count is not the cost, and a static count of anything is not a
+measurement.** This file has a rule about that -- one change, one number, on the
+Agon -- and reading `__setflag` off a disassembly and calling it expensive is
+precisely the failure it exists to prevent. It also means the explanation
+attached to the change *above* is wrong: the unsigned bound in `same_ci` is
+worth 1.4%, and not for the reason given there. What it actually buys is a loop
+body the compiler does better with; the disappearing call was a coincidence that
+looked like a cause.
+
+The codegen check in `test/run.sh` stays, with its comment corrected. It is a
+detector for a change that has no other signature -- identical bytes, identical
+output, every host check passing either way -- and not a number to optimise.

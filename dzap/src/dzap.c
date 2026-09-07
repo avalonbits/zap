@@ -1107,9 +1107,17 @@ static bool fix_add(dz* z, const sym* target, const sym* sub, int addend,
 
 /* ---------------------------------------------------------------- output */
 
-static bool out_grow(dz* z) {
+/* `need` is how many bytes the caller is about to write beyond the twelve an
+ * instruction is allowed. A directive can ask for a whole string or a `DS` of
+ * thousands, and growing 32 KB at a time until it fits would be a loop and a
+ * realloc per step. */
+static bool out_grow(dz* z, int need) {
         Z_SITE("output buffer");
-    const int want = z->cap + OUT_STEP;
+    int want = z->cap + OUT_STEP;
+    const int least = (int) (z->o - z->out) + need + OUT_MAX_INSN;
+    if (want < least) {
+        want = least;
+    }
     uint8_t* grown = (uint8_t*) realloc(z->out, (size_t) want);
     if (grown == NULL) {
         return false;
@@ -1132,7 +1140,18 @@ static bool out_reserve(dz* z) {
         return true;
     }
 
-    return out_grow(z);
+    return out_grow(z, 0);
+}
+
+/* Room for `n` bytes, for the directives, which are the only things that write
+ * more than an instruction's worth at once. Also one `if`, because out_grow
+ * takes the amount and asks for it all in one go. */
+static bool out_reserve_n(dz* z, int n) {
+    if (z->o + n <= z->lim) {
+        return true;
+    }
+
+    return out_grow(z, n);
 }
 
 /* ------------------------------------------------------------- mnemonics */
@@ -2198,10 +2217,15 @@ static void fwd_negate(uint8_t mask) {
  * on, so the ordering is decided here rather than by the order they were
  * written in. Two negatives is the one two-symbol shape that cannot be
  * represented, because the fixup always adds its first symbol. */
-static bool fwd_finish(dz* z, dop* op) {
-    if (expr_fwd == NULL) {
-        return true;
-    }
+/* always_inline, and it has to be. `fwd_finish` runs on every expression
+ * operand in the file, and giving this a second caller in the directives was
+ * enough for the compiler to outline it -- a call with three out-parameters on
+ * every forward reference. Fourth time this file has met that. */
+__attribute__((always_inline))
+static inline bool fwd_result(dz* z, const sym** target, const sym** sub,
+                              bool* subneg) {
+    *sub = NULL;
+    *subneg = false;
     if (expr_fwd_bad) {
         z->err = "a label here must be defined already";
 
@@ -2213,18 +2237,18 @@ static bool fwd_finish(dz* z, dop* op) {
 
             return false;
         }
-        op->fwd = expr_fwd;
+        *target = expr_fwd;
 
         return true;
     }
     if (!expr_fwd_neg) {
-        op->fwd = expr_fwd;
-        op->fwd2 = expr_fwd2;
-        op->fwd2_neg = expr_fwd2_neg;
+        *target = expr_fwd;
+        *sub = expr_fwd2;
+        *subneg = expr_fwd2_neg;
     } else if (!expr_fwd2_neg) {
-        op->fwd = expr_fwd2;
-        op->fwd2 = expr_fwd;
-        op->fwd2_neg = true;
+        *target = expr_fwd2;
+        *sub = expr_fwd;
+        *subneg = true;
     } else {
         /* Both subtracted. A fixup adds its first symbol, so there is nowhere
          * for `-a - b` to go. */
@@ -2232,6 +2256,29 @@ static bool fwd_finish(dz* z, dop* op) {
 
         return false;
     }
+
+    return true;
+}
+
+/* The same answer written onto an operand.
+ *
+ * The data directives want the ordering too and have no operand to write it
+ * onto, which is why it is a function of its own rather than the tail of this
+ * one. */
+static bool fwd_finish(dz* z, dop* op) {
+    if (expr_fwd == NULL) {
+        return true;
+    }
+
+    const sym* target = NULL;
+    const sym* sub = NULL;
+    bool subneg = false;
+    if (!fwd_result(z, &target, &sub, &subneg)) {
+        return false;
+    }
+    op->fwd = target;
+    op->fwd2 = sub;
+    op->fwd2_neg = subneg;
 
     return true;
 }
@@ -3131,6 +3178,341 @@ static bool equ_line(dz* z, const char* name, int nlen, const char* p,
     return true;
 }
 
+/* Another buffer of whole lines, or not.
+ *
+ * Out of line, and the `bool` it needs is the reason. The reader reports an
+ * over-long line through an out-parameter, and holding that across the call
+ * inside `run` took its frame from 13 bytes to 16 -- in the function that
+ * holds the line loop. Here it costs nothing, because this is entered once per
+ * 16 KB of source. A failure is told from an end of file by `z->err`, which
+ * exists either way.
+ *
+ * The check itself is new. The reader has always said when one line does not
+ * fit its buffer and the loop has always ignored it, ending the assembly
+ * *successfully* and writing whatever came before -- unreachable until a
+ * directive could put 16 KB on one line, and wrong the whole time regardless. */
+__attribute__((noinline))
+static bool line_fill(dz* z, buf_reader* r) {
+    bool too_long = false;
+    if (br_fill_lines(r, &too_long)) {
+        return true;
+    }
+    if (too_long) {
+        /* z->line counts the lines already assembled, so this names the one
+         * before the offending line. That is still where to start looking. */
+        z->line++;
+        z->err = "line too long";
+    }
+
+    return false;
+}
+
+/* ---------------------------------------------------------- directives */
+
+/* Which directive a token is, or none.
+ *
+ * Reached only when mnemonic_of has already failed, so an ordinary instruction
+ * line never runs a character of it. That is why it is spelled out as compares
+ * rather than bucketed the way mnemonics are: on the path it is on, twelve
+ * names and a switch on length cost nothing worth measuring, and the table it
+ * would otherwise need would be paid for in memory by every program.
+ *
+ * The reference takes a leading dot on all of them -- `.DB`, `.ALIGN` -- and
+ * every spelling below was checked against it. `WORD`, `DWORD`, `DEFL`, `DC`,
+ * `TEXT` and `DB8` are *not* directives there, however plausible they look. */
+#define DIR_NONE  0
+#define DIR_DB    1   /* one byte per value, and strings */
+#define DIR_DW    2   /* two */
+#define DIR_DL    3   /* three; the eZ80 word */
+#define DIR_DS    4   /* reserve, filled with 0xFF */
+#define DIR_ALIGN 5
+
+/* Case-insensitive against a lower-case literal of known length. Deliberately
+ * not `same_ci`: that one is inlined into mnemonic_of and stays that way only
+ * while nothing cold calls it, which is a lesson this file has now learned
+ * three times. */
+static bool dir_is(const char* s, const char* want, int n) {
+    for (int i = 0; i < n; i++) {
+        if ((s[i] | 0x20) != want[i]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static uint8_t directive_of(const char* s, int n) {
+    if (*s == '.') {
+        s++;
+        n--;
+    }
+    switch (n) {
+        case 2:
+            if (dir_is(s, "db", 2)) return DIR_DB;
+            if (dir_is(s, "dw", 2)) return DIR_DW;
+            if (dir_is(s, "dl", 2)) return DIR_DL;
+            if (dir_is(s, "ds", 2)) return DIR_DS;
+            break;
+        case 4:
+            if (dir_is(s, "defb", 4)) return DIR_DB;
+            if (dir_is(s, "byte", 4)) return DIR_DB;
+            if (dir_is(s, "defw", 4)) return DIR_DW;
+            if (dir_is(s, "dw24", 4)) return DIR_DL;
+            if (dir_is(s, "defs", 4)) return DIR_DS;
+            if (dir_is(s, "blkb", 4)) return DIR_DS;
+            break;
+        case 5:
+            if (dir_is(s, "ascii", 5)) return DIR_DB;
+            if (dir_is(s, "align", 5)) return DIR_ALIGN;
+            break;
+        default:
+            break;
+    }
+
+    return DIR_NONE;
+}
+
+/* One escape, after the backslash. Returns -1 for the ones the reference calls
+ * "Illegal escape code in string" -- which is everything not listed, including
+ * `\0` and `\x41`, both of which C programmers expect and neither of which the
+ * reference takes. */
+static int str_escape(char c) {
+    switch (c) {
+        case 'n':  return 0x0A;
+        case 't':  return 0x09;
+        case 'r':  return 0x0D;
+        case 'a':  return 0x07;
+        case 'b':  return 0x08;
+        case 'f':  return 0x0C;
+        case 'v':  return 0x0B;
+        case 'e':  return 0x1B;
+        case '\\': return 0x5C;
+        case '"':  return 0x22;
+        case '\'': return 0x27;
+        default:   return -1;
+    }
+}
+
+/* A double-quoted string, written out as bytes.
+ *
+ * Reserved in one go before anything is written: the length is known once the
+ * closing quote is found, and escapes only ever shrink it. */
+static bool emit_string(dz* z, const char** pp, const char* e) {
+    const char* p = *pp + 1;                      /* past the opening quote */
+    const char* q = p;
+    while (q < e && *q != '"' && *q != '\n') {
+        q += (*q == '\\' && q + 1 < e) ? 2 : 1;
+    }
+    if (q >= e || *q != '"') {
+        z->err = "string not terminated";
+
+        return false;
+    }
+    if (!out_reserve_n(z, (int) (q - p))) {
+        return false;
+    }
+
+    uint8_t* o = z->o;
+    while (p < q) {
+        if (*p == '\\') {
+            const int v = str_escape(p[1]);
+            if (v < 0) {
+                z->err = "bad escape in string";
+
+                return false;
+            }
+            *o++ = (uint8_t) v;
+            p += 2;
+        } else {
+            *o++ = (uint8_t) *p++;
+        }
+    }
+    z->o = o;
+    *pp = q + 1;
+
+    return true;
+}
+
+/* `DB`, `DW` and `DL`: a comma-separated list of values, and for DB of strings
+ * too.
+ *
+ * A value that names a label still ahead becomes a fixup of the directive's
+ * width, which is the same machinery an instruction's immediate uses and the
+ * reason widths of one, two and three were already there. */
+static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
+    const char* p = *pp;
+    for (;;) {
+        while (is_space_ch(*p)) {
+            p++;
+        }
+        if (*p == '"') {
+            if (width != 1) {
+                /* The reference says "String type not allowed", and means it:
+                 * a string is bytes and DW would have to invent a padding
+                 * rule. */
+                z->err = "a string needs DB";
+
+                return false;
+            }
+            if (!emit_string(z, &p, e)) {
+                return false;
+            }
+        } else {
+            fwd_reset(NULL);
+            uint8_t fwdmask = 0;
+            int value = 0;
+            if (!expr_value(z, &value, &p, e, &fwdmask)) {
+                return false;
+            }
+            if (!out_reserve_n(z, width)) {
+                return false;
+            }
+            if (expr_fwd != NULL) {
+                const sym* target = NULL;
+                const sym* sub = NULL;
+                bool subneg = false;
+                if (!fwd_result(z, &target, &sub, &subneg)) {
+                    return false;
+                }
+                if (!fix_add(z, target, sub, value,
+                             (uint8_t) (width | (subneg ? FIX_SUB2 : 0)),
+                             (int) (z->o - z->out))) {
+                    return false;
+                }
+                value = 0;
+            }
+            uint8_t* o = z->o;
+            *o++ = (uint8_t) value;
+            if (width > 1) {
+                *o++ = (uint8_t) (value >> 8);
+            }
+            if (width > 2) {
+                *o++ = (uint8_t) (value >> 16);
+            }
+            z->o = o;
+        }
+
+        while (is_space_ch(*p)) {
+            p++;
+        }
+        if (*p != ',') {
+            break;
+        }
+        p++;
+    }
+    *pp = p;
+
+    return true;
+}
+
+/* Fills `n` bytes with 0xFF, which is what `DS` reserves and what `ALIGN` pads
+ * with. Not zero -- that was measured, and it is what an erased ROM reads as. */
+static bool emit_fill(dz* z, int n) {
+    if (n <= 0) {
+        return true;
+    }
+    if (!out_reserve_n(z, n)) {
+        return false;
+    }
+    uint8_t* o = z->o;
+    while (n-- != 0) {
+        *o++ = 0xFF;
+    }
+    z->o = o;
+
+    return true;
+}
+
+/* A directive line, or a report that this was not one.
+ *
+ * Out of line and reached only where the mnemonic lookup failed, so an
+ * instruction pays nothing for any of it -- not a test, not a table, not a
+ * character. The whole feature sits on the error path of something that used to
+ * do nothing but set a message. */
+__attribute__((noinline))
+static bool directive_line(dz* z, const char* s, int n, const char* p,
+                           const char* e, const char** stop) {
+    const uint8_t kind = directive_of(s, n);
+    if (kind == DIR_NONE) {
+        z->err = "unknown instruction";
+
+        return false;
+    }
+
+    if (kind <= DIR_DL) {
+        if (!emit_data(z, kind, &p, e)) {
+            return false;
+        }
+        *stop = p;
+
+        return true;
+    }
+
+    /* DS and ALIGN both take one value that has to be known now -- the
+     * reference refuses a label still ahead of either, having no way to reserve
+     * an amount it does not know yet. */
+    while (is_space_ch(*p)) {
+        p++;
+    }
+    fwd_reset(NULL);
+    uint8_t fwdmask = 0;
+    int value = 0;
+    if (!expr_value(z, &value, &p, e, &fwdmask)) {
+        return false;
+    }
+    if (expr_fwd != NULL) {
+        z->err = "a label here must be defined already";
+
+        return false;
+    }
+
+    if (kind == DIR_DS) {
+        /* Refused rather than reproduced. The reference reads the count as
+         * unsigned, so `DS -1` there is sixteen megabytes of 0xFF and a
+         * successful assembly; on a 512 KB machine that is a way to lose the
+         * program rather than a feature, and there is no byte sequence worth
+         * agreeing with. Same position as division by zero. */
+        if (value < 0) {
+            z->err = "ds needs a positive number";
+
+            return false;
+        }
+        if (!emit_fill(z, value)) {
+            return false;
+        }
+        /* `DS 3,1,2` is three bytes in the reference: the arguments after the
+         * count are taken and ignored. Skipped rather than parsed, since
+         * nothing reads them. */
+        while (p < e && *p != '\n' && *p != ';') {
+            p++;
+        }
+        *stop = p;
+
+        return true;
+    }
+
+    if (value <= 0) {
+        z->err = "align needs a positive number";
+
+        return false;
+    }
+    if ((value & (value - 1)) != 0) {
+        z->err = "align needs a power of two";
+
+        return false;
+    }
+    /* Pad to the next multiple. `-addr & (n - 1)` is the distance to it, and
+     * the AND is a call to __iand on a 24-bit value -- once per ALIGN, which
+     * is a price a directive can pay. */
+    const int addr = DZ_ORG + (int) (z->o - z->out);
+    if (!emit_fill(z, (-addr) & (value - 1))) {
+        return false;
+    }
+    *stop = p;
+
+    return true;
+}
+
 /* ------------------------------------------------------------- selecting */
 
 
@@ -3626,9 +4008,11 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
 
     const insninfo* insn = mnemonic_of(s, n);
     if (insn == NULL) {
-        z->err = "unknown instruction";
-
-        return false;
+        /* A directive, or nothing this understands. Asked here and nowhere
+         * earlier, so an instruction line never tests for one: `DB` and its
+         * dozen relatives live entirely on the path that used to do nothing
+         * but set "unknown instruction". */
+        return directive_line(z, s, n, p, e, stop);
     }
 
     dop a;
@@ -3734,8 +4118,11 @@ __attribute__((noinline)) static bool run(dz* z, const char* path) {
     while (true) {
         buf_reader* r = &z->rd;
         if (p >= end) {
-            bool too_long = false;
-            if (!br_fill_lines(r, &too_long)) {
+            if (!line_fill(z, r)) {
+                if (z->err != NULL) {
+                    return false;
+                }
+
                 break;
             }
             p = r->buf_;

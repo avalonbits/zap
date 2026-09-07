@@ -987,15 +987,54 @@ int main(void) {
     check("an operator with nothing after", emit("  ld hl, 1+\n"), "ERR");
     check("an unclosed bracket", emit("  ld hl, [1+2\n"), "ERR");
 
-    /* The boundary of what is built. A forward reference on its own is still a
-     * fixup and still works; one inside an expression needs the fixup to carry
-     * the rest of the sum, which is the next stage. Refused with a message
-     * rather than guessed at -- the reference assembles it, so this is a
-     * divergence and has to be a loud one. */
+    /* A forward reference with a constant added to it. The fixup carries a
+     * symbol and an addend, so `later + 4` is one of each and settles when the
+     * label arrives. Every one of these was checked against the reference. */
     check("a forward label alone still works",
           emit("  ld hl, later\nlater:\n  nop\n"), "21 04 00 04 00");
-    check("a forward label in an expression is refused",
-          emit("  ld hl, later+1\nlater:\n  nop\n"), "ERR");
+    check("a forward label plus a constant",
+          emit("  ld hl, later+1\nlater:\n  nop\n"), "21 05 00 04 00");
+    check("a forward label minus a constant",
+          emit("  ld hl, later-1\nlater:\n  nop\n"), "21 03 00 04 00");
+    check("a constant plus a forward label",
+          emit("  ld hl, 4+later\nlater:\n  nop\n"), "21 08 00 04 00");
+    check("the constants fold first",
+          emit("  ld hl, later+1-1\nlater:\n  nop\n"), "21 04 00 04 00");
+    check("a bracketed forward label",
+          emit("  ld hl, [later]+1\nlater:\n  nop\n"), "21 05 00 04 00");
+    check("a forward label in a byte immediate",
+          emit("  ld a, later+1\nlater:\n  nop\n"), "3E 03 00");
+    check("a forward label in a relative jump",
+          emit("  jr later+1\nlater:\n  nop\n  nop\n"), "18 01 00 00");
+    /* One forward and one already defined: the known one folds into the
+     * addend, which is how `end - start` works when only `end` is ahead. */
+    check("a forward label minus a known one",
+          emit("st:\n  ld hl, later-st\nlater:\n  nop\n"), "21 04 00 00 00");
+
+    /* `*` binding tighter is what decides whether this is representable, so
+     * the same text is fine in one mode and refused in the other: by default
+     * the multiplication joins two constants, and in -ez80 it multiplies the
+     * label. */
+    check("a product beside a forward label",
+          emit("  ld hl, later+2*3\nlater:\n  nop\n"), "21 0A 00 04 00");
+    check("and the same text is refused in -ez80",
+          emit_ez80("  ld hl, later+2*3\nlater:\n  nop\n"), "ERR");
+
+    /* What a symbol and an addend still cannot say. The reference assembles
+     * all of these -- it has a second pass -- so each is a divergence, and a
+     * loud one rather than a wrong address. */
+    check("a forward label subtracted from something",
+          emit("  ld hl, 1-later\nlater:\n  nop\n"), "ERR");
+    check("a negated forward label",
+          emit("  ld hl, -later\nlater:\n  nop\n"), "ERR");
+    check("a complemented forward label",
+          emit("  ld hl, ~later\nlater:\n  nop\n"), "ERR");
+    check("a multiplied forward label",
+          emit("  ld hl, later*2\nlater:\n  nop\n"), "ERR");
+    check("a masked forward label",
+          emit("  ld hl, later&0xFF\nlater:\n  nop\n"), "ERR");
+    check("two forward labels at once",
+          emit("  ld hl, a1+a2\na1:\n  nop\na2:\n  nop\n"), "ERR");
 
     /* Anonymous labels: `@@`, written any number of times and reached by
      * position rather than by name -- `@b`/`@p` for the one above, `@f`/`@n`

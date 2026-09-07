@@ -1588,6 +1588,64 @@ frame. That is a real refactor -- the pointer threads through `assemble_line`,
 say what addressing is worth here: looking instructions up by pointer rather
 than by index was **-20.5%**.
 
+## Expressions, stage two (2026-09-06)
+
+A forward reference with a constant added to it: `later + 4`, which is what most
+real expressions over a label look like. Coverage goes from 35.7% of the
+corpus's expressions to **73.8%**.
+
+### What the fixup can and cannot say
+
+The fixup gains an `int addend`, so it holds a symbol and a constant and can
+represent `sym + k` and nothing else. That fixes what is allowed: the symbol may
+appear **once**, may not be negated or complemented, and may only be joined to
+the rest by `+`, or by `-` with the symbol on the left. Everything else is
+refused with a message -- the reference assembles it, having a second pass, so
+each refusal is a divergence and has to be loud rather than a wrong address:
+
+    later + 1      later - 1      4 + later      later - start      yes
+    1 - later      -later         ~later         later * 2          no
+    later & 0xFF   a1 + a2                                          no
+
+The tracking is a file-scope symbol pointer and a "no longer linear" flag rather
+than a wider return type, because widening it would widen every signature in the
+evaluator including the recursive one.
+
+**The check is per operator, not per expression.** `later + 2*3` is fine by
+default -- the multiplication joins two constants -- and refused under `-ez80`,
+where the same text means `(later + 2) * 3` and the label really is multiplied.
+Asking "is there a forward reference anywhere" instead of "do this operator's
+operands carry it" got that wrong, and the fuzzer found it.
+
+### The fixup is now sixteen bytes, and that was free
+
+Thirteen bytes plus three for the addend is sixteen, a power of two, so
+`&list[i]` stops being `call __imulu` -- the eZ80's multiply is 8-bit and the
+subscript on a thirteen-byte record was a library call, twice in `fix_add`. Both
+are gone.
+
+    isa_real         4.76s -> 4.80s   +0.8%   335 -> 337 cycles/byte
+    isa_even         4.88s -> 4.92s   +0.8%   343 -> 346
+    isa_degenerate   4.70s -> 4.76s   +1.3%   330 -> 335
+    isa_memory       5.50s -> 5.54s   +0.7%   387 -> 390
+
+Memory is the other side of it. The array is 23% wider:
+
+    isa_real        1,536 fixups   19,968 -> 24,576 bytes   +4.6 KB
+    isa_degenerate  2,560 fixups   33,280 -> 40,960 bytes   +7.7 KB
+
+On a 512 KB machine against a peak that was already 167 KB, that is affordable,
+and it is worth saying out loud rather than discovering later: **the degenerate
+benchmark exists to make the fixup list as large as it can be, and it is the one
+this costs most.**
+
+### Checked
+
+900 random forward-reference expressions against the reference: 694 agreed byte
+for byte, 206 refused by design, **0 wrong**. Plus the earlier label and
+expression fuzzers unchanged (4,200 programs, 0 mismatches), the expr.s case
+file, and all four ISA benchmarks still byte-identical to the reference.
+
 ### Parentheses, which are the next thing and not this
 
 `zds2ez80`'s brief asks for `(...)` grouping as well, and it is worth more than

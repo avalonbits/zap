@@ -58,3 +58,16 @@ mid:
   bit [1+2], a
   ld (mid+1), a
   jp mid+0
+
+; Forward references with a constant. The fixup carries a symbol and an addend,
+; so a label that has not appeared yet can still have something added to it --
+; which is what most real expressions over a label look like.
+  jp fwd+3
+  ld hl, fwd-1
+  ld hl, 4+fwd
+  ld a, fwd+1
+  ld hl, [fwd]+2
+  ld hl, fwd+1-1
+  ld hl, fwd-start
+fwd:
+  nop

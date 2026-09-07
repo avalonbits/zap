@@ -2221,3 +2221,116 @@ work itself, which the truncation decomposition in `measuring.md` is the tool
 for. The register pressure is real and it is not addressable by moving bytes
 around; it shows up as a tax on *adding* code -- EQU paid it three times in one
 afternoon -- rather than as something that can be reclaimed.
+
+## The data directives (2026-09-07)
+
+`DB`, `DW`, `DL`, `DS` and `ALIGN`, with every spelling the reference takes: a
+leading dot on all of them, plus `DEFB`/`BYTE`/`ASCII`, `DEFW`, `DW24`,
+`DEFS`/`BLKB`. A program that cannot put a table in its own output is not an
+assembler yet.
+
+### Measured off the reference, not assumed
+
+    DB/db/.DB/DEFB/BYTE/ASCII   one byte per value, and strings
+    DW/DEFW/.DW                 two, little endian
+    DL/DW24/.DL                 three -- DL is 24-bit here, not 32
+    DS/DEFS/BLKB                reserve, filled with 0xFF
+    ALIGN n                     pad with 0xFF; n a positive power of two
+
+    WORD  DWORD  DEFL  DC  TEXT  DB8       not directives, however plausible
+
+Three of those were only learnable by asking. **`DS` fills with 0xFF, not
+zero** -- and the fill byte a second argument names is *taken and ignored*, so
+`DS 4, 0` is still four 0xFF. **ALIGN pads with 0xFF too**, and refuses a
+non-power-of-two with "Argument is not a power of 2". And **`DL` is three
+bytes**, not four; `DL32` is not a spelling at all.
+
+Strings take C's escapes minus the two a C programmer would reach for first:
+`\n \t \r \a \b \f \v \e \\ \" \'` are legal, and **`\0` and `\x41` are
+"Illegal escape code in string"**.
+
+### Where it goes: the error path of something that did nothing
+
+A directive appears where a mnemonic would, on a line that may have no label, so
+unlike EQU it cannot hide behind the colon. But it does not need to be looked
+for either: `mnemonic_of` already returns NULL for every one of them, and that
+branch used to do nothing but set "unknown instruction".
+
+    const insninfo* insn = mnemonic_of(s, n);
+    if (insn == NULL) {
+        return directive_line(z, s, n, p, e, stop);
+    }
+
+**An instruction line pays nothing at all** -- not a test, not a table lookup,
+not a character. `assemble_line` came out 28 instructions *smaller*, because a
+tail call replaced the error block. Recognition inside `directive_line` is
+twelve names and a switch on length, spelled out rather than bucketed, because
+on the path it is on nothing there is worth measuring and a table would be paid
+for in memory by every program.
+
+### And then it cost 1.2% anyway
+
+    isa_real   343 -> 347    isa_degenerate  347 -> 352
+    isa_even   353 -> 357    isa_memory      385 -> 390
+
+None of which executes a line of the new code. Two causes, both on the hot path
+and both invisible in the feature itself:
+
+**`fwd_result` was outlined.** The directives need the same "which forward
+symbol is added and which is subtracted" ordering that operands need, so it came
+out of `fwd_finish` into a function of its own -- and one cold second caller was
+enough for the compiler to stop inlining it. `fwd_finish` runs on every
+expression operand in the file, so that is a call with three out-parameters on
+every forward reference. **Fourth time this fault has appeared here**, after
+`same_ci`, the argument parser and `sym_define`.
+
+**A `bool` grew the line loop's frame.** The reader reports an over-long line
+through an out-parameter, and holding that across the call inside `run` took its
+frame from 13 bytes to 16 -- in the function that holds the loop over every line
+in the source. Moved into a `line_fill` helper of its own, where it is entered
+once per 16 KB and costs nothing.
+
+    fix                          real  even  degen  memory
+    baseline                      343   353    347     385
+    directives, first cut         347   357    352     390
+    + always_inline fwd_result
+      + too_long out of run       344   353    349     385
+
+### What it costs
+
+    isa_real         4.88s -> 4.90s   +0.3%   343 -> 344 cycles/byte
+    isa_even         5.02s             0.0%   353 -> 353
+    isa_degenerate   4.96s            +0.6%   347 -> 349
+    isa_memory       5.48s             0.0%   385 -> 385
+
+A directive-heavy source of the same size -- tables, strings, `DS`, and a label
+every eight lines -- runs at **581 cycles/byte**, which is the first number for
+that shape and has no earlier one to compare with.
+
+### A bug the feature made reachable
+
+`br_fill_lines` has always reported a line that does not fit the reader's 16 KB
+buffer, and the line loop has always ignored it: `if (!br_fill_lines(...)) break;`
+treated "this line is too long" and "the file has ended" as the same answer, so
+an over-long line ended the assembly **successfully**, wrote whatever came
+before it, and said nothing. Nothing could put 16 KB on one line until `DB`
+could, and it was wrong the whole time regardless. Now reported.
+
+### Three deliberate divergences
+
+* **`DS -1`**: the reference reads the count as unsigned, so this is sixteen
+  megabytes of 0xFF and a successful assembly. On a 512 KB machine that is a way
+  to lose the program. Refused -- same position as division by zero, where there
+  is no byte sequence worth agreeing with.
+* **`DB "a" "b"`**: the reference takes the first string and drops the rest of
+  the line without a word. Refused.
+* **A string over about 1,000 characters**: the reference errors and this does
+  not, up to the reader's buffer. That one only widens what assembles.
+
+### Checked
+
+451 host checks. `test/cases/data.s` is 174 bytes covering every spelling, every
+escape, forward references at all three widths, locals and anonymous labels
+naming data, and `$` -- compared against the reference byte for byte. 44 forms
+checked by hand against it, 43 agreeing and the 44th being `DS -1`. Six
+mechanisms verified to bite by breaking the line each covers.

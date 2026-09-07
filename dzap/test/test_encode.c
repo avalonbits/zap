@@ -562,7 +562,7 @@ int main(void) {
             *z.o++ = (uint8_t) i;
         }
 
-        const bool grew = out_grow(&z);
+        const bool grew = out_grow(&z, 0);
         char got[64];
         snprintf(got, sizeof(got), "%d %d %d %d", grew ? 1 : 0,
                  (int) (z.o - z.out), (int) (z.lim - z.out),
@@ -1214,6 +1214,77 @@ int main(void) {
      * -- so this only widens what assembles. */
     check("a parenthesised value",
           emit("X: EQU (5+1)*2\n  ld a, X\n"), "3E 0C");
+
+    /* The data directives. What the reference accepts is in test/cases/data.s
+     * and compared against it byte for byte; here are the refusals a case file
+     * cannot express, and the three places this deliberately differs. */
+    check("a byte", emit("  DB 1\n"), "01");
+    check("a list of bytes", emit("  DB 1,2,3\n"), "01 02 03");
+    check("a string", emit("  DB \"hi\",0\n"), "68 69 00");
+    check("two bytes", emit("  DW 0x1234\n"), "34 12");
+    check("three bytes", emit("  DL 0x123456\n"), "56 34 12");
+    /* Reserved space is filled with 0xFF, not zero -- measured, and it is what
+     * an erased ROM reads as. */
+    check("reserved space is 0xFF",
+          emit("  DS 4\n  DB 1\n"), "FF FF FF FF 01");
+    check("alignment pads with 0xFF",
+          emit("  DB 1\n  ALIGN 4\n  DB 2\n"), "01 FF FF FF 02");
+    check("a value not known yet, one byte wide",
+          emit("  DB ahead\nahead: DB 9\n"), "01 09");
+    check("a value not known yet, three bytes wide",
+          emit("  DL ahead\nahead: DB 9\n"), "03 00 04 09");
+
+    check("a directive with no value", emit("  DB\n"), "ERR");
+    check("a trailing comma", emit("  DB 1,\n"), "ERR");
+    check("two values with no comma", emit("  DB 1 2\n"), "ERR");
+    check("a string where bytes are not wide enough",
+          emit("  DW \"hi\"\n"), "ERR");
+    check("an escape the reference has no name for",
+          emit("  DB \"x\\qy\"\n"), "ERR");
+    /* \0 and \x41 among them: both are what a C programmer reaches for and
+     * neither is legal there. */
+    check("a null escape", emit("  DB \"x\\0y\"\n"), "ERR");
+    check("a hex escape", emit("  DB \"x\\x41y\"\n"), "ERR");
+    check("a string with no closing quote", emit("  DB \"abc\n"), "ERR");
+    check("alignment to something that is not a power of two",
+          emit("  ALIGN 3\n"), "ERR");
+    check("alignment to zero", emit("  ALIGN 0\n"), "ERR");
+    check("alignment to a negative", emit("  ALIGN -4\n"), "ERR");
+    check("a label ahead as a count", emit("  DS n\nn: EQU 4\n"), "ERR");
+    check("a label ahead as an alignment", emit("  ALIGN n\nn: EQU 4\n"), "ERR");
+    /* Names that look like directives and are not. Each was checked against
+     * the reference, which calls them invalid mnemonics. */
+    check("WORD is not a directive", emit("  WORD 1\n"), "ERR");
+    check("DWORD is not one either", emit("  DWORD 1\n"), "ERR");
+    check("nor DEFL", emit("  DEFL 1\n"), "ERR");
+    check("nor DC", emit("  DC 1\n"), "ERR");
+
+    /* Three deliberate divergences, all of them on input the reference takes
+     * and gets wrong or silently drops. */
+    /* `DS -1` reads the count as unsigned there, so it is sixteen megabytes of
+     * 0xFF and a successful assembly. On a 512 KB machine that loses the
+     * program rather than assembling it, and there is no byte sequence worth
+     * agreeing with. Same position as division by zero. */
+    check("a negative count", emit("  DS -1\n"), "ERR");
+    /* The reference takes the first string and drops the rest of the line
+     * without a word: `DB "a" "b"` is one byte there. Refusing is louder. */
+    check("two strings with no comma", emit("  DB \"a\" \"b\"\n"), "ERR");
+
+    /* A line longer than the reader's 16 KB buffer. The reader has always said
+     * so and the line loop has always ignored it, ending the assembly
+     * *successfully* and writing whatever came before -- unreachable until a
+     * directive could put 16 KB on one line, and wrong the whole time. */
+    {
+        static char longline[24000];
+        char* w = longline;
+        w += sprintf(w, "  DB \"");
+        for (int i = 0; i < 20000; i++) {
+            *w++ = 'a';
+        }
+        w += sprintf(w, "\"\n");
+        *w = 0;
+        check("a line longer than the reader's buffer", emit(longline), "ERR");
+    }
 
     /* Nesting is bounded, and was not before: a bracket recurses through
      * expr_term and expr_value, and expr_value starts a fresh precedence climb

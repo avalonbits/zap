@@ -2409,3 +2409,100 @@ agreeing, including the three that decide the relocate-or-pad rule. Six
 mechanisms verified to bite, and three of those breaks are the three address
 sites: putting `DZ_ORG` back in the label path, the backward relative or the
 forward one each fails a different set of checks.
+
+## INCLUDE and INCBIN (2026-09-07)
+
+Two directives that look like a pair and are not. INCBIN is a blob write;
+INCLUDE is the only thing in the assembler that re-enters the line loop.
+
+### INCBIN needs no machinery at all
+
+Open, ask for the size, `out_reserve_n`, read straight to the cursor, close. No
+reader, no lines, nothing to save and nothing to restore -- it is `emit_fill`
+with a file in place of the 0xFF, and the read goes to the output rather than
+through a staging buffer, since the size is known before a byte moves.
+
+### INCLUDE: recursion, not a stack
+
+Three things are per-file: the `buf_reader`, `z->line`, and the path an error
+names. Two ways to arrange that:
+
+* **A stack of readers in `dz`**, one loop, popped when a file ends. That puts
+  "is there a parent file to go back to" in the hottest code in the assembler,
+  asked on every refill, to answer a question only an INCLUDE can ask.
+* **Recursion.** The loop becomes `run_lines(z)`, and an include saves the
+  reader it displaces in its own frame, opens the child, calls `run_lines`
+  again and restores. `p` and `end` are locals, so nothing else has to be kept.
+
+The second, and **not one line of the loop changed** to allow it. Depth is
+capped at 8: each level costs a frame for `include_file`, one for `run_lines`
+and one for `assemble_line`, and that last is 111 bytes on a machine with no
+memory protection.
+
+Two details this machine forces. **MOS has few file handles**, so the parent is
+`br_suspend`ed while the child runs and `br_resume`d after. And **the file name
+has to outlive the line it came from** -- `br_resume` reopens by name, and the
+child's own refills write over the buffer the name was pointing into -- so it is
+copied into `include_file`'s frame, which lives exactly as long as the reader
+that holds it.
+
+### br_suspend and br_resume had never worked
+
+`br_resume` seeks back to `br->fread_`, and **`fread_` was only ever assigned
+zero**. Three read sites in `buf_reader.c` advanced the file and none of them
+advanced the counter, so a resumed reader started its file again from the top.
+Nothing had noticed, because nothing had ever suspended a reader mid-file and
+carried on with it. The symptom is not an error: the parent re-reads its own
+first line, which includes the child again, forever.
+
+The other half of the same bug was mine: `include_file` took its copy of the
+reader **before** suspending it, so the copy carried the old handle back over
+the zero -- and `br_resume` reads a non-zero handle as "not suspended" and
+refuses. Suspend first, copy second.
+
+### Paths are opened exactly as written
+
+Measured, because every assembler decides it differently: an INCLUDE inside
+`sub/a.inc` naming `b.inc` gets `./b.inc` in the reference, not `sub/b.inc`. So
+there is no path rewriting here either -- the name goes to `br_open` as it was
+typed.
+
+### What it costs
+
+    isa_real         4.86s -> 4.88s   +0.3%   342 -> 343 cycles/byte
+    isa_even         5.00s -> 5.02s   +0.3%   352 -> 353
+    isa_degenerate   4.92s -> 4.94s   +0.3%   346 -> 347
+    isa_memory       5.46s -> 5.50s   +0.8%   384 -> 387
+
+**The isa_memory figure is not explained.** No function on any hot path changed
+a single instruction -- `assemble_line`, `sym_intern`, `loc_intern` and the
+expression code are byte for byte what they were, and the only differences are
+`run` splitting into `run` plus `run_lines` and the new cold functions. The
+first guess was the two new `dz` fields pushing the symbol buckets along, so
+they were moved to the cold end of the struct: **the measurement did not change
+at all**, 343/353/347/387 either way. They stayed at the end because a field
+written once per file belongs there, not because it bought anything. Recorded
+as unexplained rather than dressed up.
+
+### Checked
+
+486 host checks, and zap's own 621 still pass -- `buf_reader.c` is shared, and
+the `fread_` fix changes it for both. `test/cases/include.s` covers an include,
+one two deep, the same file twice, a label defined inside one and used outside,
+a forward reference the other way, an EQU from an include, an INCBIN inside an
+INCLUDE, and both spellings of each -- compared against the reference byte for
+byte. 29 forms checked by hand against it, all agreeing.
+
+Six mechanisms verified to bite, two of which had to be redesigned to be
+testable at all:
+
+* the depth limit, checked with a **chain of nine files** rather than a file
+  that includes itself -- self-inclusion runs out of file handles and errors
+  whether the limit exists or not, so it cannot tell you the limit works;
+* the opening-quote check, caught only by `INCLUDE name.inc"` -- with a quote
+  at the end and none at the start, since every other malformed name is already
+  caught by the *closing* quote check.
+
+And one that bites by hanging rather than failing: breaking `fread_` puts the
+parent into the infinite re-read described above. Left as it is, because the
+test is right and the failure mode is the bug.

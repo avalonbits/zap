@@ -588,6 +588,22 @@ typedef struct _dz {
      * and `err` out of range, and `line` is written on every line of the
      * source. That cost 1.3% -- more than the whole feature -- for a table
      * this program touches only where a label is. */
+
+    /* The file being read and how deep the includes go. `path` is what an
+     * error message names, so it follows the reader down and back up; `depth`
+     * is what stops a file that includes itself from taking the stack out.
+     * Both are written once per file entered and read once per file left.
+     *
+     * Down here on principle rather than on evidence. They started beside
+     * `org`, four bytes pushing every field after them along including the
+     * symbol buckets, which looked like the explanation for INCLUDE costing
+     * 0.8% on isa_memory. Moving them here changed the measurement by exactly
+     * nothing -- 343/353/347/387 either way. They stay because a field written
+     * once per *file* belongs with the cold ones, not because it was worth
+     * anything. */
+    const char* path;
+    uint8_t depth;
+
     locslot locs[NLOCB];
     locblock* locfirst;     /* kept, to rewind to */
     locblock* loccur;
@@ -3245,6 +3261,20 @@ static bool line_fill(dz* z, buf_reader* r) {
 #define DIR_DS    4   /* reserve, filled with 0xFF */
 #define DIR_ALIGN 5
 #define DIR_ORG   6
+#define DIR_INCLUDE 7
+#define DIR_INCBIN  8
+
+/* Defined with the line loop, far below. An include re-enters it, and the
+ * dispatch that does so is here. */
+static bool run_lines(dz* z);
+
+/* How deep INCLUDE may go, and how much buffer a file below the first gets.
+ *
+ * The top-level file keeps BUF_KB, because that is what sets the longest line
+ * a source may have. An included file gets less: four kilobytes is still far
+ * more than any real line, and eight of them is 32 KB rather than 128. */
+#define INCLUDE_MAXDEPTH 8
+#define INCLUDE_BUF_KB   4
 
 /* Case-insensitive against a lower-case literal of known length. Deliberately
  * not `same_ci`: that one is inlined into mnemonic_of and stays that way only
@@ -3286,6 +3316,12 @@ static uint8_t directive_of(const char* s, int n) {
         case 5:
             if (dir_is(s, "ascii", 5)) return DIR_DB;
             if (dir_is(s, "align", 5)) return DIR_ALIGN;
+            break;
+        case 6:
+            if (dir_is(s, "incbin", 6)) return DIR_INCBIN;
+            break;
+        case 7:
+            if (dir_is(s, "include", 7)) return DIR_INCLUDE;
             break;
         default:
             break;
@@ -3445,6 +3481,174 @@ static bool emit_fill(dz* z, int n) {
     return true;
 }
 
+/* The quoted file name a file directive takes, copied somewhere it will
+ * outlive the line it came from.
+ *
+ * The copy is not tidiness. `br_open` keeps the name, and `br_resume` reopens
+ * by it when an include returns -- so a pointer into the reader's buffer would
+ * be a pointer into whatever the *included* file refilled over it. The
+ * destination is a local in the caller's frame, which lives exactly as long as
+ * the reader that holds it.
+ *
+ * Double quotes only: the reference calls `INCLUDE 'x.inc'` and `INCLUDE x.inc`
+ * both a "String format error", so a bare word is not a file name there. */
+static bool file_name(dz* z, const char** pp, const char* e,
+                      char* out, int cap) {
+    const char* p = *pp;
+    while (is_space_ch(*p)) {
+        p++;
+    }
+    if (*p != '"') {
+        z->err = "expected a quoted file name";
+
+        return false;
+    }
+    p++;
+
+    int n = 0;
+    while (p < e && *p != '"' && *p != '\n') {
+        if (n + 1 >= cap) {
+            z->err = "file name too long";
+
+            return false;
+        }
+        out[n++] = *p++;
+    }
+    if (*p != '"') {
+        z->err = "string not terminated";
+
+        return false;
+    }
+    if (n == 0) {
+        z->err = "expected a file name";
+
+        return false;
+    }
+    out[n] = 0;
+    *pp = p + 1;
+
+    return true;
+}
+
+/* `INCBIN "file"`: the file's bytes, straight into the output.
+ *
+ * No reader, no lines, nothing to save and nothing to restore -- it is
+ * emit_fill with a file in place of the 0xFF. The size is known before a byte
+ * is read, so the room is asked for once and the read goes directly to the
+ * cursor rather than through a staging buffer. */
+static bool incbin_file(dz* z, const char* name) {
+    const uint8_t fh = mos_fopen(name, FA_READ);
+    if (fh == 0) {
+        z->err = "cannot open the file";
+
+        return false;
+    }
+    FIL* fil = mos_getfil(fh);
+    if (fil == NULL) {
+        mos_fclose(fh);
+        z->err = "cannot open the file";
+
+        return false;
+    }
+    const int n = (int) fil->obj.objsize;
+    if (n < 0 || !out_reserve_n(z, n)) {
+        mos_fclose(fh);
+        z->err = "out of memory";
+
+        return false;
+    }
+    if (n > 0) {
+        const unsigned got = mos_fread(fh, (char*) z->o, (unsigned) n);
+        if ((int) got != n) {
+            mos_fclose(fh);
+            z->err = "cannot read the file";
+
+            return false;
+        }
+        z->o += n;
+    }
+    mos_fclose(fh);
+
+    return true;
+}
+
+/* `INCLUDE "file"`: the file's lines, assembled here.
+ *
+ * The reader lives in `dz` so that the line loop reaches it without an
+ * indirection, so an include has to save the one it displaces. That is done
+ * here, in this function's own frame, which lives exactly as long as the
+ * included file does -- including `name`, whose storage the caller owns for
+ * the same reason.
+ *
+ * The parent's file handle is closed while the child runs and reopened after.
+ * MOS has few of them, and `br_suspend`/`br_resume` were built for this: resume
+ * seeks back to where the reader had read to, so the parent carries on mid-file
+ * without noticing.
+ *
+ * Paths are opened exactly as written, which is what the reference does: an
+ * INCLUDE inside `sub/a.inc` naming `b.inc` gets `./b.inc` there and not
+ * `sub/b.inc`. Measured, because it is the sort of thing every assembler
+ * decides differently. */
+__attribute__((noinline))
+static bool include_file(dz* z, const char* name) {
+    if (z->depth >= INCLUDE_MAXDEPTH) {
+        /* A file that includes itself, most likely. Each level costs a frame
+         * for this, one for the line loop and one for assemble_line, which is
+         * 111 bytes on its own; the machine has no memory protection and would
+         * simply stop. */
+        z->err = "includes nested too deeply";
+
+        return false;
+    }
+
+    const char* const saved_path = z->path;
+    const int saved_line = z->line;
+
+    /* Suspended *before* the copy is taken, and that order is the whole of it.
+     * br_suspend closes the handle and zeroes `fh_`, and br_resume refuses a
+     * reader whose `fh_` is not zero -- it reads that as "not suspended". A
+     * copy made first carries the old handle back over the zero, so the resume
+     * is refused and the handle it names has already been closed. */
+    if (!br_suspend(&z->rd)) {
+        z->err = "cannot set the file aside";
+
+        return false;
+    }
+    const buf_reader saved = z->rd;
+    Z_SITE("include reader");
+    if (br_open(&z->rd, name, INCLUDE_BUF_KB) == NULL) {
+        z->rd = saved;
+        br_resume(&z->rd);
+        z->err = "cannot open the file";
+
+        return false;
+    }
+    z->path = name;
+    z->line = 0;
+    z->depth++;
+
+    const bool ok = run_lines(z);
+
+    /* The child's buffer goes back whether it worked or not; on the way out of
+     * a failure the message has already been kept, and z->path still names the
+     * file it happened in, which is what the report wants. */
+    br_destroy(&z->rd);
+    z->depth--;
+    z->rd = saved;
+    if (!ok) {
+        return false;
+    }
+    if (!br_resume(&z->rd)) {
+        z->err = "cannot reopen the file";
+
+        return false;
+    }
+    z->path = saved_path;
+    z->line = saved_line;
+
+    return true;
+}
+
 /* A directive line, or a report that this was not one.
  *
  * Out of line and reached only where the mnemonic lookup failed, so an
@@ -3459,6 +3663,20 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
         z->err = "unknown instruction";
 
         return false;
+    }
+
+    if (kind >= DIR_INCLUDE) {
+        /* A file name rather than a value, and the only argument that is not
+         * an expression. `name` lives in this frame for as long as the file it
+         * opens does -- see include_file. */
+        char name[80];
+        if (!file_name(z, &p, e, name, (int) sizeof(name))) {
+            return false;
+        }
+        *stop = p;
+
+        return kind == DIR_INCBIN ? incbin_file(z, name)
+                                  : include_file(z, name);
     }
 
     if (kind <= DIR_DL) {
@@ -4113,49 +4331,19 @@ static bool resolve_fixups(dz* z) {
     return true;
 }
 
-__attribute__((noinline)) static bool run(dz* z, const char* path) {
-    Z_SITE("source reader");
-    if (br_open(&z->rd, path, BUF_KB) == NULL) {
-        z->err = "cannot open source";
-
-        return false;
-    }
-
-    z->cap = (int) (z->rd.fsz_ >> OUT_SHIFT);
-    if (z->cap < OUT_MIN) {
-        z->cap = OUT_MIN;
-    }
-    Z_SITE("output buffer");
-    z->out = (uint8_t*) malloc((size_t) z->cap);
-    if (z->out == NULL) {
-        z->err = "out of memory";
-
-        return false;
-    }
-    z->o = z->out;
-    z->org = DZ_ORG;
-    z->org_set = false;
-    z->lim = z->out + z->cap - OUT_MAX_INSN;
-    Z_SITE("symbol buckets");
-    z->syms = (symslot*) calloc(NSYMB, sizeof(symslot));
-    if (z->syms == NULL) {
-        z->err = "out of memory";
-
-        return false;
-    }
-    /* One block up front, so sym_define never has to ask whether there is
-     * one; it only ever asks whether the newest is full. */
-    Z_SITE("symbol blocks");
-    z->blocks = (symblock*) malloc(sizeof(symblock));
-    if (z->blocks == NULL) {
-        z->err = "out of memory";
-
-        return false;
-    }
-    z->blocks->next = NULL;
-    z->syms_used = 0;
-    z->line = 0;
-
+/* The loop over one file's lines.
+ *
+ * A function of its own because INCLUDE re-enters it: an included file runs
+ * this same loop over its own reader and returns here when it ends. `p` and
+ * `end` are locals, so the only thing an include has to save is the reader,
+ * which it does in its own frame.
+ *
+ * Not one line of the loop changed to make that work, and that was the whole
+ * point of doing it this way. The alternative -- a stack of readers in `dz`,
+ * popped when a file ends -- puts a test for "is there a parent file" in the
+ * hottest code in the assembler, to answer a question only an INCLUDE can ask.
+ */
+__attribute__((noinline)) static bool run_lines(dz* z) {
     /* The cursor is a pointer, not an offset into the buffer.
      *
      * Every line used to turn `bpos_` into a pointer to start, and the pointer
@@ -4228,6 +4416,59 @@ __attribute__((noinline)) static bool run(dz* z, const char* path) {
          * which that satisfies just as `end` did. The compare it replaces was
          * a 24-bit one, on every line. */
         p = stop + 1;
+    }
+
+
+    return true;
+}
+
+__attribute__((noinline)) static bool run(dz* z, const char* path) {
+    Z_SITE("source reader");
+    if (br_open(&z->rd, path, BUF_KB) == NULL) {
+        z->err = "cannot open source";
+
+        return false;
+    }
+
+    z->cap = (int) (z->rd.fsz_ >> OUT_SHIFT);
+    if (z->cap < OUT_MIN) {
+        z->cap = OUT_MIN;
+    }
+    Z_SITE("output buffer");
+    z->out = (uint8_t*) malloc((size_t) z->cap);
+    if (z->out == NULL) {
+        z->err = "out of memory";
+
+        return false;
+    }
+    z->o = z->out;
+    z->org = DZ_ORG;
+    z->org_set = false;
+    z->lim = z->out + z->cap - OUT_MAX_INSN;
+    Z_SITE("symbol buckets");
+    z->syms = (symslot*) calloc(NSYMB, sizeof(symslot));
+    if (z->syms == NULL) {
+        z->err = "out of memory";
+
+        return false;
+    }
+    /* One block up front, so sym_define never has to ask whether there is
+     * one; it only ever asks whether the newest is full. */
+    Z_SITE("symbol blocks");
+    z->blocks = (symblock*) malloc(sizeof(symblock));
+    if (z->blocks == NULL) {
+        z->err = "out of memory";
+
+        return false;
+    }
+    z->blocks->next = NULL;
+    z->syms_used = 0;
+    z->line = 0;
+    z->path = path;
+    z->depth = 0;
+
+    if (!run_lines(z)) {
+        return false;
     }
 
     /* The last scope ends with the source, and settles the same way any other
@@ -4345,7 +4586,9 @@ int main(int argc, char* argv[]) {
     const clock_t end = clock();
 
     if (!ok) {
-        printf("%s line %d: %s\r\n", in, z.line,
+        /* z.path, not `in`: an error inside an included file has to name
+         * that file, and the line number is already that file's. */
+        printf("%s line %d: %s\r\n", z.path != NULL ? z.path : in, z.line,
                z.err ? z.err : "out of memory for the output");
         dz_free(&z);
 

@@ -1328,6 +1328,77 @@ int main(void) {
     check("an ORG with no address", emit("  ORG\n"), "ERR");
     check("an ORG with two arguments", emit("  ORG 0x050000, 1\n"), "ERR");
 
+    /* INCLUDE and INCBIN. The fixtures live in test/cases/inc and are the same
+     * ones test/cases/include.s uses, so they are checked against the
+     * reference as well as here. Paths are relative to where the assembler
+     * runs, which is what the reference does -- an INCLUDE inside sub/a.inc
+     * naming b.inc gets ./b.inc there, not sub/b.inc, and that was measured.
+     *
+     * The harness runs from the dzap directory, which is why these read the
+     * way they do. */
+    check("an included file's bytes",
+          emit("  INCLUDE \"test/cases/inc/bytes2.inc\"\n"), "22");
+    check("an include two deep",
+          emit("  INCLUDE \"test/cases/inc/nested.inc\"\n"), "21 22 23");
+    /* The same file twice: the reader has to close and reopen cleanly, and the
+     * parent has to carry on from where it was both times. */
+    check("the same file included twice",
+          emit("  INCLUDE \"test/cases/inc/bytes2.inc\"\n"
+               "  INCLUDE \"test/cases/inc/bytes2.inc\"\n"), "22 22");
+    /* The line after an include is the one that catches a parent reader
+     * resumed at the wrong place -- it re-reads its own first line forever.
+     * That is what a `fread_` never advanced past zero did. */
+    check("the parent carries on after an include",
+          emit("  DB 9\n  INCLUDE \"test/cases/inc/bytes2.inc\"\n  DB 8\n"),
+          "09 22 08");
+    check("a label defined inside an include",
+          emit("  INCLUDE \"test/cases/inc/bytes.inc\"\n  ld hl, inner\n"),
+          "11 12 13 14 21 03 00 04");
+    check("the program counter after an include",
+          emit("  INCLUDE \"test/cases/inc/bytes2.inc\"\n  ld hl, $\n"),
+          "22 21 01 00 04");
+
+    check("a file that is not there",
+          emit("  INCLUDE \"test/cases/inc/nosuch.inc\"\n"), "ERR");
+    check("no file name at all", emit("  INCLUDE\n"), "ERR");
+    /* Double quotes only: the reference calls both of these a string format
+     * error, so a bare word is not a file name there. */
+    check("a name in single quotes",
+          emit("  INCLUDE 'test/cases/inc/bytes2.inc'\n"), "ERR");
+    check("a name with no quotes",
+          emit("  INCLUDE test/cases/inc/bytes2.inc\n"), "ERR");
+    /* The one that only the *opening* quote check catches: without it this
+     * reads the name up to the quote at the end and opens a real file. The
+     * reference calls it a string format error. */
+    check("a name quoted only at the end",
+          emit("  INCLUDE test/cases/inc/bytes2.inc\"\n"), "ERR");
+    check("a name with no closing quote",
+          emit("  INCLUDE \"test/cases/inc/bytes2.inc\n"), "ERR");
+    check("an empty name", emit("  INCLUDE \"\"\n"), "ERR");
+    /* The depth limit, checked with a chain rather than a file that includes
+     * itself: self-inclusion runs out of file handles and errors either way,
+     * so it cannot tell whether the limit is doing anything. Each level costs
+     * three frames, one of them assemble_line's 111 bytes, on a machine with
+     * no memory protection -- so the limit is what stands between a runaway
+     * include and a reboot. */
+    check("eight files deep is allowed",
+          emit("  INCLUDE \"test/cases/inc/chain2.inc\"\n"),
+          "32 33 34 35 36 37 38 39");
+    check("nine is not",
+          emit("  INCLUDE \"test/cases/inc/chain1.inc\"\n"), "ERR");
+
+    check("raw bytes from a file",
+          emit("  INCBIN \"test/cases/inc/blob.bin\"\n"), "42 4C 4F 42");
+    check("raw bytes between other bytes",
+          emit("  DB 1\n  INCBIN \"test/cases/inc/blob.bin\"\n  DB 2\n"),
+          "01 42 4C 4F 42 02");
+    check("a label on an INCBIN",
+          emit("lbl:\n  INCBIN \"test/cases/inc/blob.bin\"\n  ld hl, lbl\n"),
+          "42 4C 4F 42 21 00 00 04");
+    check("an INCBIN that is not there",
+          emit("  INCBIN \"test/cases/inc/nosuch.bin\"\n"), "ERR");
+    check("an INCBIN with no name", emit("  INCBIN\n"), "ERR");
+
     /* Nesting is bounded, and was not before: a bracket recurses through
      * expr_term and expr_value, and expr_value starts a fresh precedence climb
      * at depth zero, so the climb's own limit never saw it. Five thousand deep

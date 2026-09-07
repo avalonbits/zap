@@ -1405,10 +1405,12 @@ the fixup. 26.1%, and the classic use is computing a length.
 
 ### Cost
 
-    isa_real         4.74s -> 4.86s   +2.5%   333 -> 342 cycles/byte
-    isa_even         4.88s -> 4.98s   +2.0%   343 -> 350
-    isa_degenerate   4.70s -> 4.82s   +2.6%   330 -> 339
-    isa_memory       5.54s -> 5.60s   +1.1%   390 -> 394
+    isa_real         4.74s -> 5.16s   +8.9%   333 -> 363 cycles/byte
+    isa_even         4.88s -> 5.38s   +10.2%  343 -> 378
+    isa_degenerate   4.70s -> 5.18s   +10.2%  330 -> 364
+    isa_memory       5.54s -> 6.02s   +8.7%   390 -> 423
+
+of which the evaluator is 2.5% and the rest is the unexplained cliff below.
 
 on sources containing no expressions at all, against local labels' 2.7%. The
 hook is five instructions -- `ld hl, _exop; add hl, bc; ld a, (hl); or a, a;
@@ -1418,8 +1420,111 @@ disturbing assemble_line's register allocation, which is the same wall the
 mnemonic chain and the symbol chain compare are stuck behind. The operator table
 is its own 256 bytes because cclass has no bit left; all eight are taken.
 
+### Two modes, and three assemblers that disagree
+
+The default gives operators the ordinary precedence; `-ez80` gives them none,
+which is what the reference does. It is the first place dzap knowingly computes
+a different number from ez80asm on input ez80asm accepts, and it is a flag
+rather than a choice so that dropping in stays possible.
+
+Three assemblers, three answers, all measured rather than assumed -- ez80asm 2.2
+from its bytes, ZDS II 5.3.5 from its listing:
+
+    expression    normal   ZDS   ez80asm
+    1+2*3            7       7      9
+    4&3*2            4       4      0
+    1|6&4            5       4      4
+    6^3&2            4       0      0
+    1<<2+3          32       7      7
+    0xF0|1<<2      244     964    964
+    2*3+4*5         26      26     50
+
+**ez80asm has no precedence at all.** **ZDS has two levels** -- `*` and `/`
+above, and `+ - << >> & | ^` all equal and folding left to right. Neither is the
+ordinary ordering, and the first attempt at this followed ZDS, which was wrong
+for the same reason following ez80asm would be: it copies one assembler's quirk
+to escape another's. dzap does what every language does, and a ZDS program that
+leans on ZDS's ordering needs brackets adding -- which is a converter's job, and
+zds2ez80 has both the corpus and the ZDS oracle to do it with.
+
+So the switch is narrow in intent and wide in effect: `-ez80` is exactly
+"evaluate left to right", and every expression mixing two levels changes.
+
+### Where the default differs from ZDS on purpose
+
+ZDS applies a unary operator to the whole rest of its precedence level, not to
+the next term:
+
+    12/-6/2       ZDS -4     12/(-6/2)
+    716/-36/-7    ZDS 143    716/(-(36/-7))
+
+dzap binds unary tightest, as C, ez80asm and every other assembler do, giving -1
+and 2. Found by fuzzing 400 expressions against ZDS -- one mismatch, this one --
+and the shape occurs nowhere in the Agon corpus. ZDS also accepts stacked
+unaries (`~~255`); ez80asm takes one and errors on a second, and so does dzap.
+
 ### Checked
 
-Byte-identical to the reference on 1,200 randomly generated expressions, on the
-new expr.s case file, and on all four ISA benchmarks and pure, which contain no
-expressions and must therefore be unchanged -- they are.
+    default vs the ordinary ordering    8 hand cases, and the ZDS fuzz above
+    -ez80  vs ez80asm 2.2           1,200 random expressions, 0 mismatches
+
+plus the expr.s case file and all four ISA benchmarks in both modes -- they hold
+no expressions, so both modes and the reference must agree on them, and do. The
+evaluator is entered exactly zero times on isa_real, isa_even and pure, which is
+what makes the cost below a code-size effect rather than work being done.
+
+### What the two modes cost, and a 5% nobody has explained
+
+    flat fold, committed          34,235 bytes   isa_real 4.86s
+    + tables and the flag         34,428         isa_real 5.12s
+    + the precedence climb        34,869         isa_real 5.16s
+
+The climb itself is worth 0.04s. **The other 0.26s -- 5.3% -- arrives with 193
+bytes of code that never runs**, and four candidate causes were tested and
+refuted:
+
+  * *the evaluator running*: `expr_climb` is entered **0** times on isa_real,
+    isa_even and pure, counted directly;
+  * *argument parsing inline in `main`*: `run` is inlined into `main`, so `main`
+    holds the line loop, and the option handling put 221 instructions in front
+    of it. Moving it out with `noinline` brings `_main` from 1002 instructions
+    back to 838 and measures **5.18s against 5.12s** -- slightly worse;
+  * *the heap moving*: 200 bytes of ballast in BSS shifts every allocation and
+    changes the timing by **nothing at all**, 4.86s either way;
+  * *the recursion*: flattening `expr_climb` back to a loop, keeping everything
+    else, still measures 5.12s.
+
+The operand path is byte-for-byte identical in source between the fast build and
+the slow one -- one line differs, the call, and it is never reached.
+`assemble_line` is *smaller* in the slow build, 3,375 instructions against
+3,417. So the compiler re-allocated unchanged hot code because of pressure from
+elsewhere in the translation unit, which is the same wall the mnemonic chain and
+the symbol chain compare sit behind, reached from its worst side: **code that is
+merely present is charged for.**
+
+Not explained, and worth its own session. What it is not, is any of the four
+things above.
+
+### Parentheses, which are the next thing and not this
+
+`zds2ez80`'s brief asks for `(...)` grouping as well, and it is worth more than
+precedence: of the 11 assembly-only ZDS projects in the corpus, 3 assemble today
+and **8 are blocked on parentheses and nothing else**. Precedence fixes 6 wrong
+constants in the 3 that already build.
+
+The obstacle is that parentheses already mean indirection, and dzap decides that
+in the operand parser before any expression is seen. The rule that separates
+them is positional:
+
+  * `(` that does not start the operand is grouping -- `ld b, 2*(54+2)`;
+  * `(` that starts it and whose match ends the operand is indirection --
+    `ld a, (var)`, `ld a, (ix+8)`;
+  * `(` that starts it and whose match does *not* end the operand is grouping --
+    `add a, (RTABLE-DTABLE)/2`, which is real corpus code.
+
+The third case is what costs: deciding it needs a scan to the matching
+parenthesis before the operand's shape is known, on every operand that starts
+with one -- and `(hl)` and `(ix+d)` are among the commonest operands there are.
+The register path recognises those first, so the scan is only needed when `(`
+is followed by something that is not a register, which is the version to build
+and price.

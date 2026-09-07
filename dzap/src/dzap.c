@@ -1292,6 +1292,43 @@ static const uint8_t shl4[16] = {
  * one, so `1<4` is an error rather than a comparison. */
 static uint8_t exop[256];
 
+/* Binding power per operator, and the switch that makes dzap a drop-in for the
+ * reference instead of an assembler that is right.
+ *
+ * The reference evaluates strictly left to right with no precedence at all:
+ * `1+2*3` is 9 there, `2+3*4` is 20, `2*3+4*5` is 50. That is not a reading of
+ * the source -- it is what the binary does, checked one expression at a time.
+ * Every other assembler, and every reader, gives those 7, 14 and 26.
+ *
+ * So there are two tables and one algorithm. `-ez80` gives every operator the
+ * same binding power, and a precedence climb where everything binds equally
+ * *is* a left-to-right fold -- the compatible answer falls out of the same code
+ * rather than needing its own.
+ *
+ * The default is the ordinary ordering -- C's, which is also every other
+ * language's and what a reader of `mask & flag << 2` expects. It is not ZDS's
+ * either: ZDS II 5.3.5, measured from its own listing, has only two levels,
+ *
+ *     1|6&4     4      (1|6)&4     where normal precedence gives 5
+ *     6^3&2     0      (6^3)&2     and 4
+ *     1<<2+1    5      (1<<2)+1    and 8
+ *     4&3*2     4      4&(3*2)     agreeing here
+ *
+ * so `* /` bind tighter and `+ - << >> & | ^` are one level folding left to
+ * right. Following that would be copying a second assembler's quirk to escape
+ * the first one's. A ZDS program that relies on it needs brackets adding, and
+ * that is a converter's job -- zds2ez80 has the corpus and the ZDS oracle to
+ * do it with, and dzap should be the assembler both of them can agree with
+ * rather than a third dialect.
+ *
+ * Higher binds tighter. */
+static uint8_t exprec[256];
+
+/* Set once, from the command line, and read in the operator loop. A file-scope
+ * flag rather than a field on dz, because dz is reached through a pointer on
+ * every line and this is read only where an expression has an operator in it. */
+static bool compat_ez80 = false;
+
 static uint8_t letter_base[256];
 
 static inline int bucket_of(char first, int n) {
@@ -1758,6 +1795,27 @@ static void build_cclass(void) {
             exop[(uint8_t) o[i]] = 1;
         }
     }
+    for (int i = 0; i < 256; i++) {
+        exprec[i] = 0;
+    }
+    if (compat_ez80) {
+        /* One level, so the climb below folds left to right and agrees with
+         * the reference. */
+        const char* o = "+-*/<>&|^";
+        for (int i = 0; o[i] != 0; i++) {
+            exprec[(uint8_t) o[i]] = 1;
+        }
+    } else {
+        exprec[(uint8_t) '*'] = 6;
+        exprec[(uint8_t) '/'] = 6;
+        exprec[(uint8_t) '+'] = 5;
+        exprec[(uint8_t) '-'] = 5;
+        exprec[(uint8_t) '<'] = 4;   /* << */
+        exprec[(uint8_t) '>'] = 4;   /* >> */
+        exprec[(uint8_t) '&'] = 3;
+        exprec[(uint8_t) '^'] = 2;
+        exprec[(uint8_t) '|'] = 1;
+    }
 
     cclass[(uint8_t) '$'] |= C_NUM;
     cclass[(uint8_t) '#'] |= C_NUM;
@@ -1973,7 +2031,15 @@ static bool numeric_token(const char* s, int n) {
  * and assemble_line has no registers to spare for the other twenty-eight. */
 
 static bool expr_value(dz* z, int* out, const char** pp, const char* e);
-static bool expr_tail(dz* z, int* total, const char** pp, const char* e);
+static bool expr_climb(dz* z, int* total, const char** pp, const char* e,
+                       uint8_t minprec, int depth);
+
+/* Bracket nesting and precedence levels both recurse, so both are bounded.
+ * The reference has no limit and a deep enough file takes the stack out from
+ * under it; on a machine with 512 KB and no memory protection that is a reboot
+ * rather than a message. Seven precedence levels and this much nesting is more
+ * than any real source and cheaper than finding out. */
+#define EXPR_MAXDEPTH 32
 
 /* A bare token inside an expression: a number in any radix the reference takes,
  * or a label that is already defined.
@@ -2129,16 +2195,31 @@ static bool expr_term(dz* z, int* out, const char** pp, const char* e) {
     return true;
 }
 
-/* Operator, term, fold into the total; again until what follows is not an
- * operator. No precedence and no stack, because the reference has neither. */
-static bool expr_tail(dz* z, int* total, const char** pp, const char* e) {
+/* Operator, right-hand side, fold into the total; again until what follows
+ * binds less tightly than this level.
+ *
+ * A precedence climb, and in `-ez80` mode every operator has the same binding
+ * power -- which makes the recursive call below return after a single term and
+ * turns the climb into the reference's left-to-right fold. One algorithm, two
+ * tables; the compatible answer is not a second code path to keep in step. */
+static bool expr_climb(dz* z, int* total, const char** pp, const char* e,
+                       uint8_t minprec, int depth) {
     const char* p = *pp;
+    if (depth > EXPR_MAXDEPTH) {
+        z->err = "expression nested too deeply";
+
+        return false;
+    }
     for (;;) {
         while (is_space_ch(*p)) {
             p++;
         }
         const char c = *p;
         if (exop[(uint8_t) c] == 0) {
+            break;
+        }
+        const uint8_t prec = exprec[(uint8_t) c];
+        if (prec < minprec) {
             break;
         }
         p++;
@@ -2153,8 +2234,13 @@ static bool expr_tail(dz* z, int* total, const char** pp, const char* e) {
             p++;
         }
 
+        /* Left associative, so the right-hand side takes only operators that
+         * bind *more* tightly than this one. */
         int t = 0;
         if (!expr_term(z, &t, &p, e)) {
+            return false;
+        }
+        if (!expr_climb(z, &t, &p, e, (uint8_t) (prec + 1), depth + 1)) {
             return false;
         }
         switch (c) {
@@ -2185,15 +2271,18 @@ static bool expr_tail(dz* z, int* total, const char** pp, const char* e) {
     return true;
 }
 
-/* A whole expression: a term, then operator-and-term until something that is
- * not an operator. */
+/* A whole expression: a term, then everything that binds to it. */
 static bool expr_value(dz* z, int* out, const char** pp, const char* e) {
     int total = 0;
     if (!expr_term(z, &total, pp, e)) {
         return false;
     }
+    if (!expr_climb(z, &total, pp, e, 1, 0)) {
+        return false;
+    }
+    *out = total;
 
-    return expr_tail(z, &total, pp, e) ? (*out = total, true) : false;
+    return true;
 }
 
 /* Scans here are mostly unbounded, and safe because the reader keeps a newline
@@ -2590,7 +2679,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
                     return false;
                 }
                 p = q;
-                if (!expr_tail(z, &total, &p, e)) {
+                if (!expr_climb(z, &total, &p, e, 1, 0)) {
                     return false;
                 }
             }
@@ -3292,13 +3381,54 @@ static void dz_free(dz* z) {
     br_destroy(&z->rd);
 }
 
-int main(int argc, char* argv[]) {
-    if (argc < 3) {
-        printf("Usage: dzap <source> <output>\r\n");
+/* One flag, taken from anywhere on the line so that `dzap -ez80 a.s a.bin` and
+ * `dzap a.s a.bin -ez80` both work; the reference accepts its own options
+ * either side of the filenames and this is meant to drop in.
+ *
+ * OUT OF LINE, AND NOT FOR TIDINESS. `run` is inlined into main, so main holds
+ * the loop over the source lines -- and two hundred instructions of argument
+ * handling in front of it moved that loop's register allocation enough to cost
+ * **5.3%** on isa_real, on a build where the option is not even given. It is
+ * the same wall the mnemonic chain and the symbol chain compare sit behind,
+ * reached from the other side: not code that runs, code that is merely
+ * *there*. */
+__attribute__((noinline)) static bool parse_args(int argc, char* argv[],
+                                                 const char** in,
+                                                 const char** out) {
+    *in = NULL;
+    *out = NULL;
+    for (int i = 1; i < argc; i++) {
+        if (argv[i][0] == '-') {
+            if (same_ci("-ez80", argv[i], 5) && argv[i][5] == 0) {
+                compat_ez80 = true;
+            } else {
+                printf("Unknown option %s\r\n", argv[i]);
 
+                return false;
+            }
+        } else if (*in == NULL) {
+            *in = argv[i];
+        } else if (*out == NULL) {
+            *out = argv[i];
+        }
+    }
+    if (*in == NULL || *out == NULL) {
+        printf("Usage: dzap [-ez80] <source> <output>\r\n");
+
+        return false;
+    }
+
+    return true;
+}
+
+int main(int argc, char* argv[]) {
+    const char* in;
+    const char* out;
+    if (!parse_args(argc, argv, &in, &out)) {
         return 1;
     }
 
+    /* After the flag is read: the operator table it builds depends on it. */
     build_tables();
     build_cclass();
 
@@ -3308,22 +3438,22 @@ int main(int argc, char* argv[]) {
     dz z;
     memset(&z, 0, sizeof(z));
 
-    printf("Assembling %s\r\n", argv[1]);
+    printf("Assembling %s\r\n", in);
     const clock_t begin = clock();
-    const bool ok = run(&z, argv[1]);
+    const bool ok = run(&z, in);
     const clock_t end = clock();
 
     if (!ok) {
-        printf("%s line %d: %s\r\n", argv[1], z.line,
+        printf("%s line %d: %s\r\n", in, z.line,
                z.err ? z.err : "out of memory for the output");
         dz_free(&z);
 
         return 1;
     }
 
-    const uint8_t fh = mos_fopen(argv[2], FA_WRITE | FA_CREATE_ALWAYS);
+    const uint8_t fh = mos_fopen(out, FA_WRITE | FA_CREATE_ALWAYS);
     if (fh == 0) {
-        printf("Cannot write %s\r\n", argv[2]);
+        printf("Cannot write %s\r\n", out);
         dz_free(&z);
 
         return 1;
@@ -3334,7 +3464,7 @@ int main(int argc, char* argv[]) {
     }
     mos_fclose(fh);
 
-    printf("Wrote %s, %d bytes\r\n", argv[2], written);
+    printf("Wrote %s, %d bytes\r\n", out, written);
 
 #ifdef ZMALLOC
     z_report();

@@ -37,6 +37,12 @@
 
 static int failures = 0;
 
+/* The same, in the mode that matches the reference: no operator precedence at
+ * all, so `1+2*3` is 9. Set before emit because build_cclass builds the
+ * precedence table from it, and cleared after so the flag cannot leak into the
+ * next check. */
+static const char* emit_ez80(const char* src);
+
 /* Assembles one source and returns its bytes as "3E 42", or "ERR". */
 static const char* emit(const char* src) {
     static char out[1024];
@@ -120,6 +126,14 @@ static int local_blocks(const char* src) {
     dz_free(&z);
 
     return ok ? n : -1;
+}
+
+static const char* emit_ez80(const char* src) {
+    compat_ez80 = true;
+    const char* r = emit(src);
+    compat_ez80 = false;
+
+    return r;
 }
 
 static int range_bad;
@@ -858,8 +872,63 @@ int main(void) {
      * Expected bytes generated from the reference, like every other row here.
      */
     check("addition", emit("  ld hl, 1+2\n"), "21 03 00 00");
-    check("no precedence, left to right",
-          emit("  ld hl, 1+2*3\n"), "21 09 00 00");
+
+    /* The two modes, and the only thing that separates them.
+     *
+     * dzap gives operators the precedence a reader expects. The reference
+     * gives them none at all -- it keeps a running total and folds each term
+     * in as it arrives -- so the two disagree on any expression whose
+     * operators do not already bind left to right. `-ez80` is that behaviour
+     * and nothing else.
+     *
+     * Every line here was checked against the reference binary before it was
+     * written down; the second column is what ez80asm 2.2 actually prints. */
+    check("times binds tighter than plus",
+          emit("  ld hl, 1+2*3\n"), "21 07 00 00");
+    check("and in -ez80 it does not",
+          emit_ez80("  ld hl, 1+2*3\n"), "21 09 00 00");
+    check("plus then times",
+          emit("  ld hl, 2+3*4\n"), "21 0E 00 00");
+    check("plus then times, -ez80",
+          emit_ez80("  ld hl, 2+3*4\n"), "21 14 00 00");
+    check("minus then times",
+          emit("  ld hl, 10-2*3\n"), "21 04 00 00");
+    check("minus then times, -ez80",
+          emit_ez80("  ld hl, 10-2*3\n"), "21 18 00 00");
+    check("two products added",
+          emit("  ld hl, 2*3+4*5\n"), "21 1A 00 00");
+    check("two products added, -ez80",
+          emit_ez80("  ld hl, 2*3+4*5\n"), "21 32 00 00");
+    /* The whole ordering, not just multiplication. ZDS is a third answer
+     * again -- it has two levels and gives 7, 4 and 0 for the first three of
+     * these -- and dzap follows neither assembler's quirk. A ZDS program that
+     * leans on its ordering needs brackets adding, which is a converter's job.
+     */
+    check("plus binds tighter than shift",
+          emit("  ld hl, 1<<2+3\n"), "21 20 00 00");
+    check("plus binds tighter than shift, -ez80",
+          emit_ez80("  ld hl, 1<<2+3\n"), "21 07 00 00");
+    check("and binds tighter than or", emit("  ld hl, 1|6&4\n"), "21 05 00 00");
+    check("and binds tighter than or, -ez80",
+          emit_ez80("  ld hl, 1|6&4\n"), "21 04 00 00");
+    check("and binds tighter than xor",
+          emit("  ld hl, 6^3&2\n"), "21 04 00 00");
+    check("and binds tighter than xor, -ez80",
+          emit_ez80("  ld hl, 6^3&2\n"), "21 00 00 00");
+    check("shift binds tighter than or",
+          emit("  ld hl, 0xF0|1<<2\n"), "21 F4 00 00");
+    check("shift binds tighter than or, -ez80",
+          emit_ez80("  ld hl, 0xF0|1<<2\n"), "21 C4 03 00");
+    check("times binds tighter than and",
+          emit("  ld hl, 4&3*2\n"), "21 04 00 00");
+    check("times binds tighter than and, -ez80",
+          emit_ez80("  ld hl, 4&3*2\n"), "21 00 00 00");
+    /* Left associative in both, which is where they agree again. */
+    check("division is left associative",
+          emit("  ld hl, 100/5/2\n"), "21 0A 00 00");
+    check("division is left associative, -ez80",
+          emit_ez80("  ld hl, 100/5/2\n"), "21 0A 00 00");
+
     check("and the other way round",
           emit("  ld hl, 2*3+1\n"), "21 07 00 00");
     check("brackets group", emit("  ld hl, 1+[2*3]\n"), "21 07 00 00");
@@ -894,8 +963,19 @@ int main(void) {
           emit("st:\n  nop\nen:\n  ld hl, en-st\n"), "00 21 01 00 00");
     check("a length, then scaled",
           emit("st:\n  nop\nen:\n  ld hl, [en-st]*4\n"), "00 21 04 00 00");
-    check("left to right with a label",
-          emit("st:\n  nop\n  ld hl, st+2*3\n"), "00 21 06 00 0C");
+    /* The constant the reference gets wrong in BBC BASIC: `STAVAR+15*4` with
+     * STAVAR at 0x400 is 1084 in ZDS and 4156 in ez80asm, and nothing rejects
+     * it. Six occurrences over four files, every one a wrong number in a
+     * working program. */
+    check("the BBC BASIC constant",
+          emit("  ld hl, 0x400+15*4\n"), "21 3C 04 00");
+    check("the BBC BASIC constant, -ez80",
+          emit_ez80("  ld hl, 0x400+15*4\n"), "21 3C 10 00");
+
+    check("a label with precedence",
+          emit("st:\n  nop\n  ld hl, st+2*3\n"), "00 21 06 00 04");
+    check("a label left to right, -ez80",
+          emit_ez80("st:\n  nop\n  ld hl, st+2*3\n"), "00 21 06 00 0C");
     check("a local label in an expression",
           emit("one:\n@lp:\n  nop\n  ld hl, @lp+1\n"), "00 21 01 00 04");
     check("an anonymous label in an expression",

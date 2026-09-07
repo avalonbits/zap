@@ -3232,7 +3232,7 @@ static bool resolve_fixups(dz* z) {
     return true;
 }
 
-static bool run(dz* z, const char* path) {
+__attribute__((noinline)) static bool run(dz* z, const char* path) {
     Z_SITE("source reader");
     if (br_open(&z->rd, path, BUF_KB) == NULL) {
         z->err = "cannot open source";

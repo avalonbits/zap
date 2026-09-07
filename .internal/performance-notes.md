@@ -3297,3 +3297,69 @@ for byte. 24 forms checked by hand, and five mechanisms verified to bite. The
 nesting refusal needed a case whose difference survives to the output: without
 it an inner `IF` reopens a closed branch and `IF 0 / IF 1 / db 1 / ENDIF /
 db 9` assembles to `01 09` instead of failing.
+
+## Macros (2026-09-07)
+
+`MACRO name [params]`, a body, `ENDMACRO`, and then the name used as an
+instruction. The last of the three features the corpus was blocked on, and the
+corpus goes from 74 of 131 to **81**.
+
+### Substitution is textual, and that was measured
+
+With `x` bound to `1+1`, the reference assembles
+
+    db 10-x   as ten     -- `10-1+1` read left to right, not eight
+    db 2*x    as three   -- `2*1+1`, not four
+
+so the argument goes in as it was written and binds where it lands. It is by
+*whole identifier* rather than by raw text: a parameter `x` leaves `xy` alone.
+A parameter standing alone inside a string is replaced, which falls out of the
+same rule.
+
+Argument counts must match exactly -- "0 provided, 1 expected" -- macros do not
+nest, and one must be defined before it is used.
+
+### An expansion is an include from memory
+
+`buf_reader` has had `br_open_mem` and a comment saying *"macro expansion needs
+it"* since before there were macros. So an expansion is the include path: build
+the substituted text, set the parent reader aside, open a reader over the
+memory, re-enter `run_lines`, restore. Bounded by the same depth limit for the
+same reason.
+
+Two things had to be learned by the file failing to assemble:
+
+* **The line loop could not read a memory reader at all.** It starts with an
+  empty window and expects the first pass to refill, and `br_fill_lines`
+  returns *false* for a memory reader -- "the whole content is already there" --
+  which the loop reads as end of file. Every expansion assembled to nothing,
+  quietly. The window now starts full when the reader is memory-backed.
+* **`br_suspend` refuses a memory reader**, because there is no handle to close
+  and nothing to seek back to. A macro that invokes another, or an `INCLUDE`
+  inside an expansion, displaces one -- so both paths now suspend only a reader
+  over a file.
+
+Each expansion is its own scope for local labels, which the reference also
+does: a body defining `@a` may be invoked twice without a redefinition, and
+`@a` cannot be named after the expansion ends.
+
+### What it costs
+
+    isa_real         352 -> 356   +1.1%
+    isa_even         359 -> 363   +1.1%
+    isa_degenerate   339 -> 342   +0.9%
+    isa_memory       371 -> 374   +0.8%
+
+The lookup is on the path where the mnemonic table and the directives have both
+already failed, so nothing that is either pays for it. What every line pays is
+the `line_mode` test, which now answers three questions instead of two --
+assemble, skip a switched-off branch, or copy into a body being defined -- in
+one field and one branch.
+
+### Checked
+
+588 host checks. `test/cases/macro.s` is 36 bytes covering every spelling,
+arguments of several shapes, textual substitution both ways round, a label on
+the invocation, a macro invoking another, and a body with a local label expanded
+twice -- compared against the reference byte for byte. 26 forms checked by hand,
+all agreeing, and six mechanisms verified to bite.

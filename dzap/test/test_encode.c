@@ -1646,6 +1646,59 @@ int main(void) {
     check("and it is by default",
           emit("  IF 1 == nosuchname\n  db 1\n  ENDIF\n"), "ERR");
 
+    /* Macros. What the reference accepts is in test/cases/macro.s; here are
+     * the refusals and the substitution rule, which was measured.
+     *
+     * An expansion is read the way an included file is: a reader over memory,
+     * the parent set aside, the same line loop re-entered. */
+    check("a macro with no arguments",
+          emit("  MACRO m\n  nop\n  ENDMACRO\n  m\n"), "00");
+    check("invoked twice",
+          emit("  MACRO m\n  nop\n  ENDMACRO\n  m\n  m\n"), "00 00");
+    check("an argument",
+          emit("  MACRO m x\n  ld a, x\n  ENDMACRO\n  m 5\n"), "3E 05");
+    check("two arguments",
+          emit("  MACRO m x,y\n  ld a, x\n  ld b, y\n  ENDMACRO\n  m 5,6\n"),
+          "3E 05 06 06");
+    /* Textual, not by value. With x bound to `1+1` the reference assembles
+     * `10-x` as ten -- `10-1+1` read left to right -- and not as eight. */
+    check("substitution is textual",
+          emit_ez80("  MACRO m x\n  db 10-x\n  ENDMACRO\n  m 1+1\n"), "0A");
+    check("and textual again",
+          emit_ez80("  MACRO m x\n  db 2*x\n  ENDMACRO\n  m 1+1\n"), "03");
+    /* And by whole identifier: the parameter is `x` and `xy` is another name. */
+    check("a longer name is left alone",
+          emit("  MACRO m x\n  db xy\n  ENDMACRO\nxy: EQU 7\n  m 5\n"), "07");
+    check("a parameter alone inside a string is substituted",
+          emit("  MACRO m x\n  db \"x\"\n  ENDMACRO\n  m 5\n"), "35");
+    check("an argument that is not a value",
+          emit("  MACRO m x\n  ld a, x\n  ENDMACRO\n  m (hl)\n"), "7E");
+    check("a label on the invocation",
+          emit("  MACRO m\n  nop\n  ENDMACRO\nlbl:  m\n  ld hl, lbl\n"),
+          "00 21 00 00 04");
+    check("a macro invoking another",
+          emit("  MACRO m\n  n\n  ENDMACRO\n  MACRO n\n  nop\n  ENDMACRO\n"
+               "  m\n"), "00");
+    /* Every expansion is its own scope for local labels, so the same name
+     * twice is not a redefinition and each `jp` finds its own. */
+    check("a local label in a body, expanded twice",
+          emit("  MACRO m\n@loc:\n  nop\n  jp @loc\n  ENDMACRO\n  m\n  m\n"),
+          "00 C3 00 00 04 00 C3 05 00 04");
+    check("and it cannot be named afterwards",
+          emit("g:\n  MACRO m\n@a:\n  nop\n  ENDMACRO\n  m\n  jp @a\n"), "ERR");
+
+    check("macros do not nest",
+          emit("  MACRO m\n  MACRO n\n  nop\n  ENDMACRO\n  ENDMACRO\n"), "ERR");
+    check("ENDMACRO with no MACRO", emit("  ENDMACRO\n"), "ERR");
+    check("a MACRO that is never closed", emit("  MACRO m\n  nop\n"), "ERR");
+    check("a MACRO with no name", emit("  MACRO\n  nop\n  ENDMACRO\n"), "ERR");
+    check("an argument not supplied",
+          emit("  MACRO m x\n  db x\n  ENDMACRO\n  m\n"), "ERR");
+    check("too many arguments",
+          emit("  MACRO m x\n  db x\n  ENDMACRO\n  m 1, 2\n"), "ERR");
+    check("invoked before it is defined",
+          emit("  m\n  MACRO m\n  nop\n  ENDMACRO\n"), "ERR");
+
     /* Nesting is bounded, and was not before: a bracket recurses through
      * expr_term and expr_value, and expr_value starts a fresh precedence climb
      * at depth zero, so the climb's own limit never saw it. Five thousand deep

@@ -2094,6 +2094,25 @@ static bool numeric_token(const char* s, int n) {
  * Out of line, and deliberately: it is reached by one operand in twenty-nine,
  * and assemble_line has no registers to spare for the other twenty-eight. */
 
+/* Bracket nesting and precedence levels both recurse, so both are bounded.
+ * The reference has no limit and a deep enough file takes the stack out from
+ * under it; on a machine with 512 KB and no memory protection that is a reboot
+ * rather than a message. Seven precedence levels and this much nesting is more
+ * than any real source and cheaper than finding out. */
+#define EXPR_MAXDEPTH 32
+
+/* Nesting is counted here rather than passed down, because a bracket recurses
+ * through expr_term and expr_value and both of those run on every term. A
+ * parameter neither of them otherwise wants would be paid for by every operand
+ * in the file; a byte in memory is paid for by the brackets alone.
+ *
+ * It also has to be counted somewhere. `depth` below bounds the precedence
+ * climb and only that: a bracket goes expr_term -> expr_value -> expr_climb,
+ * and expr_value starts a fresh climb at depth zero, so nesting was unbounded
+ * despite the paragraph above claiming otherwise. 5,000 deep is fine on a host
+ * with an eight-megabyte stack, which is why no test caught it. */
+static uint8_t expr_depth;
+
 /* The forward references an expression is carrying, and whether they are still
  * in a shape a fixup can hold.
  *
@@ -2205,6 +2224,7 @@ static bool fwd_finish(dz* z, dop* op) {
 }
 
 static void fwd_reset(const sym* seed) {
+    expr_depth = 0;
     expr_fwd = seed;
     expr_fwd2 = NULL;
     expr_fwd_neg = false;
@@ -2216,13 +2236,6 @@ static bool expr_value(dz* z, int* out, const char** pp, const char* e,
                        uint8_t* fwdmask);
 static bool expr_climb(dz* z, int* total, const char** pp, const char* e,
                        uint8_t minprec, int depth, uint8_t* fwdmask);
-
-/* Bracket nesting and precedence levels both recurse, so both are bounded.
- * The reference has no limit and a deep enough file takes the stack out from
- * under it; on a machine with 512 KB and no memory protection that is a reboot
- * rather than a message. Seven precedence levels and this much nesting is more
- * than any real source and cheaper than finding out. */
-#define EXPR_MAXDEPTH 32
 
 /* A bare token inside an expression: a number in any radix the reference takes,
  * or a label that is already defined.
@@ -2336,17 +2349,29 @@ static bool expr_term(dz* z, int* out, const char** pp, const char* e,
 
     const uint8_t fwd_before = fwd_live();
     int v = 0;
-    if (*p == '[') {
+    if (*p == '[' || *p == '(') {
+        /* Both group, and they are the same code because they mean the same
+         * thing. A parenthesis reaching here has already been decided not to
+         * be indirection -- see the positional rule in parse_operand -- so
+         * inside an expression there is nothing left for it to be. */
+        const bool square = *p == '[';
+        if (expr_depth >= EXPR_MAXDEPTH) {
+            z->err = "expression nested too deeply";
+
+            return false;
+        }
+        expr_depth++;
         p++;
         uint8_t inner = 0;
         if (!expr_value(z, &v, &p, e, &inner)) {
             return false;
         }
+        expr_depth--;
         while (is_space_ch(*p)) {
             p++;
         }
-        if (*p != ']') {
-            z->err = "expected ]";
+        if (*p != (square ? ']' : ')')) {
+            z->err = square ? "expected ]" : "expected )";
 
             return false;
         }
@@ -2941,6 +2966,38 @@ have_value:
                 return false;
             }
             p++;
+
+            /* The positional rule, and the whole of what makes `(` mean two
+             * things.
+             *
+             * A parenthesis that opens the operand and whose match closes it
+             * is indirection -- `ld a, (var)`. One whose match does *not*
+             * close it was grouping all along, and this is where that becomes
+             * knowable: `add a, (RTABLE-DTABLE)/2` is real corpus code, and up
+             * to the `/` it is indistinguishable from `ld a, (var)`.
+             *
+             * So the operand is parsed as indirection first and reinterpreted
+             * here, rather than scanned ahead to its matching parenthesis
+             * before its shape is known. The scan would cost every `(hl)` and
+             * `(ix+d)` in the file; this costs one table lookup on the operands
+             * that reached the general parse with a parenthesis on the front,
+             * which the register path has already taken the common ones out of.
+             *
+             * Re-reading the operand from the start is what the rewind is:
+             * `*pp` still holds where it began, because nothing writes it
+             * until the end. */
+            while (is_space_ch(*p)) {
+                p++;
+            }
+            if (exop[(uint8_t) *p] != 0) {
+                op->indirect = false;
+                op->mode &= (uint8_t) ~INDIRECT;
+                op->fwd = NULL;
+                op->fwd2 = NULL;
+                s = *pp;
+
+                goto full_expression;
+            }
         }
         *pp = p;
     }

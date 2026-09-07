@@ -1776,3 +1776,114 @@ five mechanisms was verified to bite by breaking the line it covers:
     the second slot never taken           5
     a negated label refused, not deferred 1, plus the reference comparison
     the relative measured from `off`      4
+
+## Parentheses (2026-09-06)
+
+`(...)` as grouping, which `zds2ez80`'s brief asks for and rates above
+precedence: of the 11 assembly-only ZDS projects in the corpus, 3 assemble today
+and **8 are blocked on parentheses and nothing else**.
+
+### The reference cannot referee this
+
+ez80asm has no parentheses at all. Not partial support -- `EQU (A+B)` is
+"Unknown identifier '(A'", `EQU 1+(2)` is "Unknown identifier '(2)'", and
+`EQU 100 / (5)` is a SIGFPE that takes the process out. So the oracle here is
+ZDS II, read out of its `.lst` listing, and the reference's role is only to
+confirm that nothing it *does* accept has changed.
+
+That also settles the compatibility question: every parenthesised program the
+reference rejects, so accepting them widens what assembles and cannot change an
+answer the reference would have given. Unlike precedence, this one costs nothing
+in agreement.
+
+### Positional, and decided by rewinding rather than looking ahead
+
+Parentheses already meant indirection. The rule that separates the two is
+positional:
+
+  * a `(` that does not open the operand groups -- `ld b, 2*(54+2)`;
+  * one that opens it and whose match closes it is indirection -- `ld a, (var)`,
+    `ld a, (ix+8)`;
+  * one that opens it and whose match does *not* close it groups --
+    `add a, (RTABLE-DTABLE)/2`, which is real corpus code.
+
+The third case is the one that costs, because up to the `/` it is
+indistinguishable from the second. The obvious implementation scans ahead to the
+matching parenthesis before deciding, and that scan lands on every `(hl)` and
+`(ix+d)` in the file.
+
+So it does not scan. The operand is parsed as indirection, and the moment its
+closing `)` is consumed the character after it is looked at: an operator there
+means the parenthesis was grouping all along, and the operand is re-read from
+the start as an expression. `*pp` still holds where it began -- nothing writes
+it until the end -- so the rewind costs no state. The register path takes `(hl)`
+and `(ix+d)` out before this point, so what is left paying one table lookup is
+the operands that reached the general parse with a parenthesis on the front.
+
+Reinterpreting can only turn a previous *error* into a value: an operand list is
+separated by `,` and ended by `;` or the newline, none of which are operator
+characters, so nothing that parsed before takes the rewind.
+
+### dzap accepts more than ZDS, and agrees wherever ZDS accepts
+
+ZDS's own disambiguation is not positional but form-driven, which shows up as
+two rows of its listing:
+
+    ld hl, (10+2)*(20+1)+1     ERROR (501) Illegal operand 2
+    add a, (0x30-0x10)/2       C6 10
+
+`ld hl, (nn)` is a real instruction, so ZDS commits to indirection and the rest
+of the line is garbage; `add a, (nn)` is not, so the same shape falls through to
+an expression. The positional rule takes both, and gives 253 for the first --
+which is what ZDS itself computes for that text in an `EQU`, where indirection
+is not on the table. So dzap accepts a superset, and on the intersection the two
+agree byte for byte.
+
+`((10))` is indirection under both, because the outer parenthesis's match still
+closes the operand.
+
+### The nesting limit was a comment, not a limit
+
+`EXPR_MAXDEPTH` bounds `expr_climb`'s recursion, and the comment above it claims
+it bounds bracket nesting too. It did not: a bracket recurses
+`expr_term -> expr_value -> expr_climb`, and `expr_value` starts a fresh climb at
+depth zero. `[` nested 5,000 deep assembled fine, which is what an
+eight-megabyte host stack buys; on a 512 KB machine with no memory protection it
+is a reboot rather than a message.
+
+Counted in a file-scope byte rather than a parameter, because a parameter that
+only brackets want would be paid for by every term in the file.
+
+### It is free
+
+    isa_real         4.72s -> 4.72s   332 -> 332 cycles/byte
+    isa_even         4.84s -> 4.84s   340 -> 340
+    isa_degenerate   4.66s -> 4.66s   328 -> 328
+    isa_memory       5.48s -> 5.48s   385 -> 385
+
+Two rounds of base, new, base, new on all four, with the same generated sources
+and no rebuild between; every number repeated except isa_memory's second pass at
+5.46s, which is one tick of the emulator's resolution. Output byte-identical to
+the reference throughout. The binary grew 177 bytes.
+
+Nothing in the benchmarks has a parenthesis that is not indirection, so the
+grouping code never runs; what does run on every indirect non-register operand
+is the space skip and the one `exop` lookup after the `)`, and it does not
+surface.
+
+### Checked
+
+500 random expressions over `+ - * /`, unary minus and parentheses to three
+levels, assembled by ZDS and by dzap and compared byte for byte: **500 agree, 0
+mismatch**. The operator set is deliberate -- ZDS and C precedence agree
+wherever only `+ - * /` are involved, and differ wherever a bitwise or shift
+operator meets an arithmetic one, so a fuzzer over the full set would be
+measuring the precedence decision already taken in stage one rather than this.
+
+Host suite at 399 checks, with the ten expected values from the brief's ZDS table
+among them. Four mechanisms verified to bite by breaking the line each covers:
+
+    expr_term no longer accepts `(`     12 checks fail
+    the positional rewind removed        5
+    nesting unbounded again              2
+    the closer not matched to its opener 1

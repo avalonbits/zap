@@ -1078,6 +1078,106 @@ int main(void) {
     check("the subtracted label is never defined",
           emit("  ld hl, f2-nosuch\nf2:\n  nop\n"), "ERR");
 
+    /* Parentheses, which already meant indirection and now also group.
+     *
+     * The reference has neither -- `EQU 1+(2)` is "Unknown identifier" and
+     * `EQU 100/(5)` takes it out with SIGFPE -- so it cannot referee this and
+     * the expected values are ZDS's, read out of its listing. Every one of
+     * these that ZDS accepts, it agrees with byte for byte.
+     *
+     * Which of the two a `(` is, is positional: one that opens the operand and
+     * whose match closes it is indirection, and anything else groups. */
+    check("a group away from the start of the operand",
+          emit("  ld b, 2*(54+2)\n"), "06 70");
+    check("a group as a divisor",
+          emit("  ld hl, 18432000/(16*500000)\n"), "21 02 00 00");
+    check("a character literal inside a group",
+          emit("  cp ('*'-0x7F)&0xFF\n"), "FE AB");
+    check("a group in the middle of a masked sum",
+          emit("  ld a, 0+('<'-4)&0x0F\n"), "3E 08");
+    check("a negated group",
+          emit("  ld hl, -(10-20)\n"), "21 0A 00 00");
+    /* The case the rule exists for. Up to the `/` this is indistinguishable
+     * from `ld a, (var)`, and it is real corpus code -- BBC BASIC's
+     * `ADD A,(RTABLE-DTABLE)/2`. */
+    check("a group that opens the operand but does not close it",
+          emit("  add a, (0x30-0x10)/2\n"), "C6 10");
+    check("two groups multiplied",
+          emit("  ld hl, (10+2)*(20+1)+1\n"), "21 FD 00 00");
+    check("a group that opens the operand, then a divide",
+          emit("  ld hl, (10+20)/3\n"), "21 0A 00 00");
+
+    /* Indirection is untouched, which is the half that must not move. */
+    check("an indirect load is still indirect",
+          emit("  ld a, (0x1234)\n"), "3A 34 12 00");
+    check("an indirect register is still indirect",
+          emit("  ld b, (hl)\n"), "46");
+    check("an indexed load is still indexed",
+          emit("  ld a, (ix+8)\n"), "DD 7E 08");
+    check("an indirect store is still indirect",
+          emit("  ld (0x1234), a\n"), "32 34 12 00");
+    check("a port in parentheses is still a port",
+          emit("  out0 (128), a\n"), "ED 39 80");
+    /* A doubled parenthesis still closes the operand, so it is indirection
+     * through a group. ZDS reads it the same way. */
+    check("a group inside an indirection",
+          emit("  ld hl, ((10))\n"), "2A 0A 00 00");
+
+    /* Forward references pass through a group unchanged, and the rule decides
+     * these two the same way it decides constants. */
+    check("two forward labels in a group that closes the operand",
+          emit(str2("  ld hl, (f2-f1)\n", two)), "2A 03 00 00 00 00 00 00");
+    check("two forward labels in a group that does not",
+          emit(str2("  ld hl, (f2-f1)+1\n", two)), "21 04 00 00 00 00 00 00");
+
+    /* A group binds under `-ez80` too. The reference rejects every
+     * parenthesis, so accepting them only widens what assembles and cannot
+     * change an answer it would have given. */
+    check("a group still groups in -ez80",
+          emit_ez80("  ld hl, 4-(1+1)\n"), "21 02 00 00");
+    check("and without it the fold is left to right",
+          emit_ez80("  ld hl, 4-1+1\n"), "21 04 00 00");
+
+    check("an unclosed group",
+          emit("  ld hl, (1+2\n"), "ERR");
+    check("an unclosed group away from the start",
+          emit("  ld hl, 1+(2\n"), "ERR");
+    check("a square bracket closed with a parenthesis",
+          emit("  ld hl, [1+2)\n"), "ERR");
+
+    /* Nesting is bounded, and was not before: a bracket recurses through
+     * expr_term and expr_value, and expr_value starts a fresh precedence climb
+     * at depth zero, so the climb's own limit never saw it. Five thousand deep
+     * is fine on a host with an eight-megabyte stack and is a reboot on a
+     * machine with 512 KB and no memory protection, which is why this is
+     * checked at a depth no host would notice. */
+    static char deep[16384];
+    for (int open = 0; open < 2; open++) {
+        const char lb = open ? '[' : '(';
+        const char rb = open ? ']' : ')';
+        for (int n = 0; n < 2; n++) {
+            const int levels = n ? 4000 : 8;
+            char* w = deep;
+            /* `0+` so the group cannot be read as indirection
+             * -- a parenthesis that opens the operand and whose
+             * match closes it is `ld hl, (1)`, which is right
+             * and is not what this is measuring. */
+            w += sprintf(w, "  ld hl, 0+");
+            for (int i = 0; i < levels; i++) {
+                *w++ = lb;
+            }
+            *w++ = '1';
+            for (int i = 0; i < levels; i++) {
+                *w++ = rb;
+            }
+            *w++ = '\n';
+            *w = 0;
+            check(n ? "nesting past the limit is refused"
+                    : "nesting inside the limit is not",
+                  emit(deep), n ? "ERR" : "21 01 00 00");
+        }
+    }
+
     /* Anonymous labels: `@@`, written any number of times and reached by
      * position rather than by name -- `@b`/`@p` for the one above, `@f`/`@n`
      * for the one below. Expected bytes generated from the reference, like

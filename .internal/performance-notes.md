@@ -3363,3 +3363,101 @@ arguments of several shapes, textual substitution both ways round, a label on
 the invocation, a macro invoking another, and a body with a local label expanded
 twice -- compared against the reference byte for byte. 26 forms checked by hand,
 all agreeing, and six mechanisms verified to bite.
+
+## Macros, measured on the Agon for the first time
+
+Nothing had run a macro on the target until isa_real grew some. Two of the
+three faults below only exist there, and the third only showed up because the
+benchmark invoked the feature 426 times instead of the seven that
+`test/cases/macro.s` does.
+
+### The compiler gets a backward one-byte read wrong at -Oz
+
+Stripping the space after a macro argument was written the obvious way:
+
+    while (ae > as && is_space_ch(ae[-1])) ae--;
+
+and it comes out as
+
+    ld      hl, (hl)        ; ae
+    dec     hl              ; ae - 1, stored back before any test
+    ...
+    ld      e, (iy - 1)     ; reads ae - 2
+
+The decrement is committed before the test and the byte examined is `ae[-2]`.
+A one-character argument therefore saw the space in front of it, trimmed itself
+out of existence, and expanded to nothing: `mload 5` became `ld a,` and "no
+such instruction form", while `mload 65` was fine because the byte one further
+back was still part of the argument.
+
+Nothing on the host reproduces it, at any optimisation level, under ASan or
+UBSan. It was found by bisecting the benchmark down to a five-line source and
+then reading the generated code, and confirmed by computing the same value
+forwards alongside it on the target:
+
+    m1 5      back=0 fwd=1        <- disagree
+    m1 65     back=2 fwd=2
+
+Carrying the end forward while scanning avoids the backward index entirely and
+is one pass rather than two. The pattern `x[-1]` appears nowhere else in dzap.
+
+### The count is not the cost, again: 12,300 cycles to save 64 pointers
+
+An expansion needs a local scope of its own and needs the caller's back
+afterwards. The first version copied all 64 buckets out and in around it, 256
+bytes each way. That is not a block move on this machine:
+
+    sv->slots[b] = z->locs[b]   over 64 buckets      25,800 cycles
+    clearing them the same way                        7,200
+    memcpy of the same 256 bytes, twice               1,300
+
+An indexed struct assignment in a loop costs 200 cycles for four bytes. memcpy
+costs 2.5 cycles a byte. Both of those are worth knowing separately from this
+case.
+
+The version that ships uses neither. A scope ends by advancing a generation
+stamp -- every bucket then belongs to an older generation and reads as empty --
+so entering one is an increment, and the only thing the stamp cannot undo is a
+bucket the body *wrote*, of which there are as many as the body has distinct
+local names. Those are noted as they happen and put back. 770 cycles.
+
+### Where an expansion's time goes, after all that
+
+Measured by building files of 10,000 invocations and varying one thing:
+
+    body of 1 nop                    5.26s
+    body of 2 nops                   7.06s      +1.80s
+    body of 4 nops                  10.66s      +1.80s each
+    2 lines, 0 parameters           10.48s
+    2 lines, 1 parameter            11.68s      +1.20s
+    2 lines, 2 parameters           13.54s      +1.86s
+
+So: about 4,200 cycles of fixed overhead an invocation, 3,300 for each line of
+the body -- against 2,200 for the same line in a file -- and 2,600 for each
+parameter, which is the case-folding compare against every parameter name once
+per identifier in the body.
+
+Two things that looked like they should matter and did not:
+
+  - **Giving the file handle up.** An INCLUDE suspends its parent, because MOS
+    has few handles and the file being opened needs one. An expansion opens no
+    file, so the close, open and seek were pure loss -- and worth only 0.08s of
+    the 1.48s the macros were costing. Removed anyway; the open walks a FAT
+    directory and there was nothing to buy with it.
+  - **`__imulu` from subscripting the argument arrays.** Three bytes wide, so
+    every `argp[k]` was a library multiply. Two per identifier in the body, and
+    worth 300 cycles of the 2,600 a parameter costs.
+
+### What the benchmark says now
+
+    isa_real   356 -> 384 cycles/byte      isa_even   363 -> 391
+
+with the features in the file at three to four times the corpus rate. Taking
+the macros back out of the same file reads 353, and conditional assembly and
+ASSUME are both free inside the resolution of the measurement. So the whole of
+the difference is macros, and about a third of that is the expansion overhead
+above; the rest is the two extra lines an invocation actually assembles.
+
+Under 350 is not reachable on this file without either making an expansion cost
+about nothing or thinning the macros out, and thinning them out would be going
+back to measuring a feature at zero cost because the benchmark avoids it.

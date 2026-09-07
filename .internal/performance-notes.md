@@ -1405,12 +1405,14 @@ the fixup. 26.1%, and the classic use is computing a length.
 
 ### Cost
 
-    isa_real         4.74s -> 5.16s   +8.9%   333 -> 363 cycles/byte
-    isa_even         4.88s -> 5.38s   +10.2%  343 -> 378
-    isa_degenerate   4.70s -> 5.18s   +10.2%  330 -> 364
-    isa_memory       5.54s -> 6.02s   +8.7%   390 -> 423
+    isa_real         4.64s -> 4.76s   +2.6%   326 -> 335 cycles/byte
+    isa_even         4.78s -> 4.88s   +2.1%   336 -> 343
+    isa_degenerate   4.60s -> 4.72s   +2.6%   323 -> 332
+    isa_memory       5.44s -> 5.52s   +1.5%   382 -> 388
 
-of which the evaluator is 2.5% and the rest is the unexplained cliff below.
+measured with `run` out of line on both sides, so the comparison is like for
+like. It read as 8.9% before two accidents of code placement were found and
+fixed; see below.
 
 on sources containing no expressions at all, against local labels' 2.7%. The
 hook is five instructions -- `ld hl, _exop; add hl, bc; ld a, (hl); or a, a;
@@ -1529,6 +1531,51 @@ That is half the cliff back. The other half is still unaccounted for, but the
 mechanism is now known rather than guessed: **a hot loop sharing a function with
 anything else is one edit away from losing a register**, and the fix is to give
 it a function.
+
+### And the rest: one cold caller de-inlined the hot compare
+
+The other half was not a mystery either, once bisected properly. With `run`
+outlined throughout so the comparison is like for like:
+
+    before expressions                        4.64s
+    + the evaluator (stage 1)                 4.76s   +2.6%
+    + the precedence table and the flag       4.76s   nothing at all
+    + the argument parsing                    5.02s   +5.5%
+    the whole feature                         5.02s
+
+The argument parser is the entire remaining cost, and it runs **once**, at
+startup, on an `argv` string. What it did was call `same_ci`.
+
+`same_ci` is the mnemonic compare. It is `static inline` and was being inlined
+into `mnemonic_of`, which runs on every line of the source. One cold caller was
+enough for the compiler to decide it should be a real function instead -- and
+then the hot compare became a call per candidate, about **31,700 of them** on
+isa_real. Confirmed in the generated code: `_same_ci` does not exist as a symbol
+in the stage-1 build and exists with two call sites in the build that parses
+arguments.
+
+Spelling the flag comparison out by hand puts it back:
+
+    isa_real         5.02s -> 4.76s
+    isa_even         5.22s -> 4.88s
+    isa_degenerate   5.04s -> 4.72s
+    isa_memory       5.86s -> 5.52s
+
+So **the whole expression feature -- evaluator, precedence, `-ez80`, brackets,
+`$`, character literals -- costs 2.6%**, and every part of the 8.2% beyond that
+was two accidents of code placement.
+
+**`static inline` is a request, not an instruction.** A helper that must stay
+inlined in a hot path cannot be called from a cold one, and nothing in the
+source says so. The two ways this bit in one change:
+
+  * `run` inlined into `main`, so the line loop shared a register file with the
+    argument handling and a 400-byte frame -- fixed with `noinline` on `run`;
+  * `same_ci` called from `main`, so it stopped being inlined anywhere -- fixed
+    by not calling it.
+
+Both were invisible in the source and obvious in the generated assembly, and
+neither would have been found by reading the diff.
 
 ### The next lever, measured but not taken
 

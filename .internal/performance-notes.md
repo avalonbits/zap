@@ -1502,8 +1502,44 @@ elsewhere in the translation unit, which is the same wall the mnemonic chain and
 the symbol chain compare sit behind, reached from its worst side: **code that is
 merely present is charged for.**
 
-Not explained, and worth its own session. What it is not, is any of the four
-things above.
+### Found: the line loop lost a register
+
+Diffing the generated `main` between the fast build and the slow one, in the
+160 instructions around the call to `assemble_line`, shows the slow one spilling
+`bc` to the frame and back on every line -- `ld (ix - 3), bc` ... `ld bc,
+(ix - 3)` -- and pushing `af` besides. The loop did not change; it ran out of
+registers.
+
+`run` is `static` and was being inlined into `main`, so the loop over the source
+lines lived in the same function as the argument handling, the banner, the file
+write and a **400-byte frame** -- `dz z` is a local there. Everything added to
+main's prologue competed with the loop for the register file, which is why 193
+bytes of cold code could cost 5.3% and why moving the argument parser out on its
+own did not help: the frame and the rest of main were still there.
+
+`__attribute__((noinline))` on `run` gives the loop a function of its own,
+221 instructions long, with its own allocation:
+
+    isa_real         5.16s -> 5.02s   -2.7%
+    isa_even         5.38s -> 5.22s   -3.0%
+    isa_degenerate   5.18s -> 5.02s   -3.1%
+    isa_memory       6.02s -> 5.84s   -3.0%
+
+That is half the cliff back. The other half is still unaccounted for, but the
+mechanism is now known rather than guessed: **a hot loop sharing a function with
+anything else is one edit away from losing a register**, and the fix is to give
+it a function.
+
+### The next lever, measured but not taken
+
+`assemble_line` reloads its `dz*` parameter from the frame **60 times** --
+`ld iy, (ix + 6)` before each group of `z->` accesses. There is exactly one `dz`
+in the program and it is alive for the whole run, so it could be a file-scope
+object reached by absolute address instead of a parameter reached through the
+frame. That is a real refactor -- the pointer threads through `assemble_line`,
+`parse_operand`, `emit_row` and the symbol functions -- and the notes elsewhere
+say what addressing is worth here: looking instructions up by pointer rather
+than by index was **-20.5%**.
 
 ### Parentheses, which are the next thing and not this
 

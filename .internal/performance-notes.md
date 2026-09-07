@@ -3190,3 +3190,49 @@ looked like a cause.
 The codegen check in `test/run.sh` stays, with its comment corrected. It is a
 detector for a change that has no other signature -- identical bytes, identical
 output, every host check passing either way -- and not a number to optimise.
+
+## ASSUME ADL (2026-09-07)
+
+`ASSUME ADL=0` is Z80 mode and makes an address-sized immediate two bytes;
+`ADL=1` is the eZ80's own and makes it three. Every spelling the reference
+takes -- with or without the leading dot, either case, spaces around the equals
+-- and a file may switch as often as it likes, the width following wherever the
+mode is at that line.
+
+The value is read as a number and not as a character: the reference takes
+`adl=01` and `adl=0x1` and means one by both, and calls anything that is not
+zero or one an "Invalid ADL mode".
+
+**It is the biggest single unblocker in the reference's corpus.** `.assume
+adl=1` is line 1 of every file in Opcodes and most of Addressing, so one
+directive took those categories from 17 of 32 to 26 of 32 and the whole corpus
+from **58 of 131 to 68**.
+
+### What it costs, and one attempt to make it cheaper
+
+The mode was a compile-time `true`, so `(cond & IMM_N) ? 1 : (DZ_ADL ? 3 : 2)`
+folded to a constant. As a field it is a load and a select on every immediate.
+
+    isa_real         349 -> 352   +0.9%
+    isa_even         356 -> 359   +0.8%
+    isa_degenerate   339 -> 340   +0.3%
+    isa_memory       371 -> 371
+
+That is the second time a compile-time constant has become a field this week and
+it did not go the way `ORG` did. There the constant was 0x040000, which does not
+fit an instruction, so the field was *cheaper*; here it is `3`, which does, so
+the field is dearer. **Whether a constant is free depends on the constant.**
+
+Storing the width itself rather than the mode -- `z->immw` of three or two, so
+the select disappears -- was tried and is **2.6% worse still**, 352 to 361 on
+isa_real and worse on all four. Not investigated further: the flag version is
+what shipped and the width version is recorded so it is not retried.
+
+### Checked
+
+544 host checks. `test/cases/adl.s` covers both modes, every spelling, switching
+back and forth, labels and `$` under each, and a forward reference that keeps
+the width it was written with -- compared against the reference byte for byte.
+18 forms checked against it by hand, all agreeing. Four mechanisms verified to
+bite: the directive unrecognised, the mode parsed but not applied, the emitter
+ignoring it, and any number accepted as a mode.

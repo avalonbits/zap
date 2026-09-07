@@ -1545,6 +1545,41 @@ int main(void) {
         unlink(path);
     }
 
+    /* ASSUME ADL, which decides whether an address-sized immediate is three
+     * bytes or two. What the reference accepts is in test/cases/adl.s and
+     * compared against it; here are the refusals and the two places the
+     * distinction shows.
+     *
+     * The mode used to be a compile-time constant, on the grounds that
+     * choosing it is a directive and directives were what this program existed
+     * to not have. */
+    check("the default mode is the eZ80's",
+          emit("  ld hl, 0x1234\n"), "21 34 12 00");
+    check("ADL=0 makes an address two bytes",
+          emit("  .assume adl=0\n  ld hl, 0x1234\n"), "21 34 12");
+    check("and a byte immediate does not move",
+          emit("  .assume adl=0\n  ld a, 5\n"), "3E 05");
+    check("a file may switch back",
+          emit("  .assume adl=0\n  ld hl, 1\n  .assume adl=1\n  ld hl, 1\n"),
+          "21 01 00 21 01 00 00");
+    /* A forward reference records the width it had where it was written. */
+    check("a forward reference keeps the width it was written with",
+          emit("  .assume adl=0\n  ld hl, ahead\n  .assume adl=1\nahead:\n"
+               "  nop\n"), "21 03 00 00");
+    check("every spelling", emit("  ASSUME ADL=0\n  ld hl, 1\n"), "21 01 00");
+    check("spaces around the equals",
+          emit("  assume adl = 0\n  ld hl, 1\n"), "21 01 00");
+    /* The value is a number, not a character: the reference takes `adl=01`. */
+    check("a value with a leading zero",
+          emit("  .assume adl=01\n  ld hl, 1\n"), "21 01 00 00");
+
+    check("a mode that is not 0 or 1", emit("  .assume adl=2\n"), "ERR");
+    check("no value at all", emit("  .assume adl\n"), "ERR");
+    check("an equals with nothing after it", emit("  .assume adl=\n"), "ERR");
+    check("assuming something else", emit("  .assume foo=1\n"), "ERR");
+    check("a name that starts with adl", emit("  .assume adlx=1\n"), "ERR");
+    check("no equals", emit("  .assume adl 1\n"), "ERR");
+
     /* Nesting is bounded, and was not before: a bracket recurses through
      * expr_term and expr_value, and expr_value starts a fresh precedence climb
      * at depth zero, so the climb's own limit never saw it. Five thousand deep

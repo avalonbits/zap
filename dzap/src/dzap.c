@@ -3381,6 +3381,21 @@ static void dz_free(dz* z) {
     br_destroy(&z->rd);
 }
 
+/* `-ez80`, spelled out rather than compared with same_ci.
+ *
+ * same_ci is the mnemonic compare and is wanted inlined into mnemonic_of, which
+ * runs on every line of the source. Calling it from here -- once, at startup,
+ * on an argument -- was enough for the compiler to stop inlining it and emit it
+ * out of line, so the hot compare became a call per candidate: about 31,700 of
+ * them on isa_real, and **5.5% of runtime**. The measurement that found it is
+ * in the notes; the lesson is that a `static inline` helper is inlined at the
+ * compiler's discretion, and one cold caller can take that away from every hot
+ * one. */
+static bool is_ez80_opt(const char* a) {
+    return a[0] == '-' && (a[1] | 0x20) == 'e' && (a[2] | 0x20) == 'z'
+           && a[3] == '8' && a[4] == '0' && a[5] == 0;
+}
+
 /* One flag, taken from anywhere on the line so that `dzap -ez80 a.s a.bin` and
  * `dzap a.s a.bin -ez80` both work; the reference accepts its own options
  * either side of the filenames and this is meant to drop in.
@@ -3399,7 +3414,7 @@ __attribute__((noinline)) static bool parse_args(int argc, char* argv[],
     *out = NULL;
     for (int i = 1; i < argc; i++) {
         if (argv[i][0] == '-') {
-            if (same_ci("-ez80", argv[i], 5) && argv[i][5] == 0) {
+            if (is_ez80_opt(argv[i])) {
                 compat_ez80 = true;
             } else {
                 printf("Unknown option %s\r\n", argv[i]);

@@ -1580,6 +1580,72 @@ int main(void) {
     check("a name that starts with adl", emit("  .assume adlx=1\n"), "ERR");
     check("no equals", emit("  .assume adl 1\n"), "ERR");
 
+    /* Conditional assembly. What the reference accepts is in
+     * test/cases/cond.s; here are the refusals and the one place the two modes
+     * differ.
+     *
+     * Nesting is not supported -- "Nested conditionals not supported" there --
+     * which is what makes this a flag and not a stack. */
+    check("a branch that is taken",
+          emit("  IF 1\n  db 1\n  ENDIF\n  db 9\n"), "01 09");
+    check("a branch that is not",
+          emit("  IF 0\n  db 1\n  ENDIF\n  db 9\n"), "09");
+    check("the other arm", emit("  IF 0\n  db 1\n  ELSE\n  db 2\n  ENDIF\n"),
+          "02");
+    /* ELSE toggles, and toggles again: the reference assembles the first and
+     * third arms of this. */
+    check("two ELSEs toggle twice",
+          emit("  IF 1\n  db 1\n  ELSE\n  db 2\n  ELSE\n  db 3\n  ENDIF\n"),
+          "01 03");
+    check("any non-zero value is true",
+          emit("  IF -1\n  db 1\n  ENDIF\n"), "01");
+    /* Nothing in a switched-off branch happens -- not a label, not an EQU, not
+     * an ORG, and a name that is never defined is never looked up. */
+    check("a label in a branch that is off is not defined",
+          emit("  IF 0\nlbl:\n  db 1\n  ENDIF\n  ld hl, lbl\n"), "ERR");
+    check("nor is a value named there",
+          emit("  IF 0\nx: EQU 5\n  ENDIF\n  db x\n"), "ERR");
+    check("and a name ahead is not looked up",
+          emit("  IF 0\n  db ahead\n  ENDIF\nahead: db 9\n"), "09");
+
+    check("conditionals do not nest",
+          emit("  IF 1\n  IF 1\n  db 1\n  ENDIF\n  ENDIF\n"), "ERR");
+    check("not even inside a branch that is off",
+          emit("  IF 0\n  IF 1\n  ENDIF\n  ENDIF\n"), "ERR");
+    /* The one that says the refusal is doing something. Without it the inner
+     * IF overwrites the flag, switches the branch back on inside a branch that
+     * is off, and the file assembles to `01 09` instead of failing. */
+    check("an inner IF would otherwise reopen a closed branch",
+          emit("  IF 0\n  IF 1\n  db 1\n  ENDIF\n  db 9\n"), "ERR");
+    check("ENDIF with no IF", emit("  ENDIF\n"), "ERR");
+    check("ELSE with no IF", emit("  ELSE\n"), "ERR");
+    check("an IF that is never closed", emit("  IF 1\n  db 1\n"), "ERR");
+    check("an IF with no condition", emit("  IF\n  db 1\n  ENDIF\n"), "ERR");
+    check("a name ahead in the condition",
+          emit("  IF ahead\n  db 1\n  ENDIF\nahead: EQU 1\n"), "ERR");
+
+    /* And the divergence. The reference does not compare: it evaluates the
+     * left side and throws the rest of the line away, so `IF 0 == 0` is false
+     * there and `IF 1 == 2` is true, and `IF 1 == nosuchname` assembles
+     * because the name is never looked at. All four measured.
+     *
+     * That is a bug and a quiet one -- `IF version == 2` means `IF version` --
+     * but it decides which bytes come out, so -ez80 reproduces it and the
+     * default means what it says. The same position as operator precedence,
+     * and the second time it has been needed. */
+    check("== compares by default",
+          emit("  IF 0 == 0\n  db 1\n  ENDIF\n  db 9\n"), "01 09");
+    check("and is thrown away in -ez80",
+          emit_ez80("  IF 0 == 0\n  db 1\n  ENDIF\n  db 9\n"), "09");
+    check("a comparison that fails, by default",
+          emit("  IF 1 == 2\n  db 1\n  ENDIF\n  db 9\n"), "09");
+    check("the same one is true in -ez80",
+          emit_ez80("  IF 1 == 2\n  db 1\n  ENDIF\n  db 9\n"), "01 09");
+    check("the right side is not even read in -ez80",
+          emit_ez80("  IF 1 == nosuchname\n  db 1\n  ENDIF\n"), "01");
+    check("and it is by default",
+          emit("  IF 1 == nosuchname\n  db 1\n  ENDIF\n"), "ERR");
+
     /* Nesting is bounded, and was not before: a bracket recurses through
      * expr_term and expr_value, and expr_value starts a fresh precedence climb
      * at depth zero, so the climb's own limit never saw it. Five thousand deep

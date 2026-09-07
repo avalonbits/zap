@@ -192,10 +192,16 @@ else
         -nostdinc -isystem "$HOME/agondev/include" -target ez80-none-elf \
         -DAGONDEV -Oz -I"$ROOT/src" -Isrc -S -o "$OUT/dzap.s" src/dzap.c \
         > /dev/null 2>&1; then
-        # The flag repairs left in the line assembler. Each is eleven
-        # instructions and a call, on a path that runs per line or per digit;
-        # they came down from 14 when three loop counters went unsigned, and
-        # this is what stops them coming back.
+        # The flag repairs left in the line assembler, as a detector for a
+        # change that has no other signature -- not as a cost.
+        #
+        # `call pe, __setflag` is a *conditional* call, taken only when the
+        # overflow flag is set, which comparing a token length against a small
+        # constant never does. Removing eight of them measured 0.3% SLOWER, so
+        # the count says nothing about speed and this number must not be
+        # optimised for. What it does do is notice if the unsigned loop bound
+        # in same_ci -- which measured 1.4% faster, for reasons that are not
+        # this call -- is ever put back.
         nset=$(awk '/^_assemble_line:$/ { go = 1; next }
                     go && /^_[a-z_0-9]+:$/ { exit }
                     go && /call[ \t]+pe, __setflag/ { n++ }

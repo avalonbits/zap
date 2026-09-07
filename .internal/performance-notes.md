@@ -3036,3 +3036,53 @@ binary, a character and an expression -- and that the proportions are about the
 corpus's, hexadecimal between 55 and 80 per cent and expressions between 10 and
 30. Four ways of getting the mix wrong were tried and each fails a check. All
 five sources still assemble byte-identically to the reference.
+
+## emit_row's writing half, and a multiply that will not go (2026-09-07)
+
+`-DETRUNC` split the emitter one cut further:
+
+    room is reserved                                   ~0
+    + prefixes, transforms, the opcode                  0     0%
+    + the prefix, opcode and displacement bytes        20   5.6%
+    + the immediate or the relative, and its fixup     11   3.1%
+
+### The six tests that place four bytes
+
+Writing the instruction is six conditionals, and one of them --
+`dd_before_opcode`, whether the opcode goes *after* the displacement -- is only
+ever true for `bit n, (ix+d)` and its relatives: DD or FD, then CB, then a
+displacement. It was computed on every instruction and tested twice.
+
+`prefix1` is zero whenever there is no index register, so one load answers the
+whole question. The ordinary shape -- no index prefix, no displacement -- now
+writes `prefix2` if there is one and then the opcode, and the six-test chain is
+only entered by the forms that need it.
+
+    isa_real         356 -> 354   -0.6%
+    isa_even         363 -> 363
+    isa_degenerate   347 -> 346   -0.3%
+
+### `acc * 10` cannot be made into adds
+
+All four `__imulu` calls left in `assemble_line` are `acc * 10`, one in every
+decimal accumulator: the displacement, the operand immediate, and the two
+inlined copies of `lit_value`. A 24-bit add is one instruction here, so ten is
+five of them -- double, double, double, add the double back -- and the first
+digit is already taken outside every one of those loops, so this would only be
+paid by multi-digit values.
+
+**It cannot be written.** The compiler recognises `v * 8 + v * 2` and puts the
+multiply back, because at `-Oz` a call to `__imulu` is *smaller* than five adds
+and `-Oz` is what this is built with. An empty asm with the intermediate as an
+in-out operand is the usual way to make a value opaque, and the eZ80 backend
+cannot compile one:
+
+    fatal error: error in backend: unable to legalize instruction:
+    %1640:_(s24) = G_ANYEXT %1641:g24 (in function: assemble_line)
+
+So the four calls stay. Recorded because the reasoning is sound, the arithmetic
+is right, and it still does not work -- and because the next person will count
+the `__imulu`s and reach for exactly this.
+
+**The size-for-speed trade `-Oz` is making is not always the one wanted, and
+there is no per-site way to overrule it here.**

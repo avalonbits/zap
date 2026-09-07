@@ -4302,7 +4302,8 @@ static uint8_t* emit_imm(uint8_t* o, const dop* op, uint8_t cond) {
  *
  *   1  room is reserved for the instruction
  *   2  + the prefixes are chosen and the operands folded into the opcode
- *   3  + the bytes are written and the fixups recorded
+ *   3  + the prefix, opcode and displacement bytes are written
+ *   4  + the immediate or the relative, and the fixup it may need
  *
  * The output is wrong in the first two, which is the point, and `z->o` does not
  * advance -- safe here only because these two sources contain no relative jump
@@ -4360,28 +4361,47 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
 
     ETRUNC_AT(2);
 
-    const bool dd_before_opcode =
-        (out.prefix1 == 0xDD || out.prefix1 == 0xFD) && out.prefix2 == 0xCB
-        && (row->flags & (F_DISPA | F_DISPB));
+    /* The ordinary shape first: no index prefix and no displacement, which is
+     * every instruction that is not an `(ix+d)` form.
+     *
+     * The chain below is six tests to place at most four bytes, and one of
+     * them -- whether the opcode goes after the displacement rather than
+     * before it -- is only ever true for `bit n, (ix+d)` and its relatives:
+     * DD or FD, then CB, then a displacement. Computing that on every
+     * instruction, and testing it twice, is what this skips. `prefix1` is zero
+     * whenever there is no index register, so one load answers it. */
+    const uint8_t dflags = (uint8_t) (row->flags & (F_DISPA | F_DISPB));
+    if (out.prefix1 == 0 && dflags == 0) {
+        if (out.prefix2 != 0) {
+            *o++ = out.prefix2;
+        }
+        *o++ = out.opcode;
+    } else {
+        const bool dd_before_opcode =
+            (out.prefix1 == 0xDD || out.prefix1 == 0xFD) && out.prefix2 == 0xCB
+            && dflags != 0;
 
-    if (out.prefix1 != 0) {
-        *o++ = out.prefix1;
+        if (out.prefix1 != 0) {
+            *o++ = out.prefix1;
+        }
+        if (out.prefix2 != 0) {
+            *o++ = out.prefix2;
+        }
+        if (!dd_before_opcode) {
+            *o++ = out.opcode;
+        }
+        if (dflags & F_DISPA) {
+            *o++ = (uint8_t) (a->disp & 0xFF);
+        }
+        if (dflags & F_DISPB) {
+            *o++ = (uint8_t) (b->disp & 0xFF);
+        }
+        if (dd_before_opcode) {
+            *o++ = out.opcode;
+        }
     }
-    if (out.prefix2 != 0) {
-        *o++ = out.prefix2;
-    }
-    if (!dd_before_opcode) {
-        *o++ = out.opcode;
-    }
-    if (row->flags & F_DISPA) {
-        *o++ = (uint8_t) (a->disp & 0xFF);
-    }
-    if (row->flags & F_DISPB) {
-        *o++ = (uint8_t) (b->disp & 0xFF);
-    }
-    if (dd_before_opcode) {
-        *o++ = out.opcode;
-    }
+
+    ETRUNC_AT(3);
 
     /* A relative displacement is measured from the instruction after this
      * one, so it is the last thing written and needs no width decision.

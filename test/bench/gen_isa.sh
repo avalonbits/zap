@@ -77,6 +77,9 @@
 # that replaced it, but a benchmark whose names are all one stem is measuring
 # a naming convention rather than an assembler either way.
 #
+# They are also the *length* the corpus would have given them, which they were
+# not until the fourth revision of this file. See lname.
+#
 # The instruction forms are interleaved rather than rewritten. Replacing the
 # operand of a `jp` with a label would have kept the line count and lost the
 # form: these files exist to contain every form, and an operand is part of one.
@@ -92,29 +95,39 @@
 # about that much.
 #
 # Deterministic: no randomness, no dependence on the environment. Changing this
-# script invalidates every timing taken with it, and it has now changed three
-# times: labels, then local labels, then anonymous ones. isa_real has gone from
-# 19,399 lines to 22,068 to 22,458 across them. Nothing measured against an
-# earlier version of this file is comparable with anything measured against
-# this one -- the baselines below are the ones that count.
+# script invalidates every timing taken with it, and it has now changed four
+# times: labels, then local labels, then anonymous ones, then the length of a
+# label name. isa_real has gone from 19,399 lines to 22,068 to 22,458 to
+# 23,749 across them. Nothing measured against an earlier version of this file
+# is comparable with anything measured against this one -- the baselines below
+# are the ones that count.
 #
-#   isa_real         4.94s   347 cycles/byte   22,457 lines
-#   isa_even         5.08s   357               22,841
-#   isa_degenerate   4.90s   345               20,328
+#   isa_real         4.86s   342 cycles/byte   23,749 lines
+#   isa_even         5.00s   352               24,169
+#   isa_degenerate   4.92s   346               22,530
+#   isa_memory       5.48s   385               28,040
 #
-# `degenerate` and `memory` build their own sources and are untouched by any of
-# it -- degenerate assembles to the same md5 as it did two changes ago -- so
-# its figure has moved only because the assembler did.
+# The fourth change is worth understanding before reading those numbers, because
+# it moved them in the direction nobody expects. Shortening the names made the
+# per-byte figures **worse** -- isa_real from 332 to 342 cycles per byte -- and
+# the per-line figures better, 210 to 205 microseconds a line. Both are true and
+# neither is a regression: the file is sized in bytes, so 5.8% shorter label
+# text means 5.8% more lines inside the same 256 KiB, and a line costs more than
+# the characters of a name do. The label text got cheaper; there is just more
+# source in the file now.
 #
-# What isa_real now holds, per 22,457 lines:
+# isa_memory builds its own names and is untouched by it -- it assembles to the
+# same md5 as before -- so its figure has moved only because the assembler has.
 #
-#   global      536 definitions,  2,068 references
-#   local     1,605 definitions,  1,070 references
-#   anonymous   268 definitions,    801 references
+# What isa_real now holds, per 23,749 lines:
 #
-# 28.3% of the file is a label line. That is denser than real code and is meant
-# to be: these two sources exist to price the label machinery, and the corpus
-# programs that use it are covered by test/corpus.
+#   global      567 definitions,  1,130 references
+#   local     1,698 definitions,  1,130 references
+#   anonymous   284 definitions,    849 references
+#
+# 23.8% of its lines define or name a label. That is denser than real code and
+# is meant to be: these two sources exist to price the label machinery, and the
+# corpus programs that use it are covered by test/corpus.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -144,10 +157,58 @@ out0:3 lea:3 lddr:3 in0:3 sra:2 ldi:2 in:2 rrd:1 rld:1 reti:1 out:1"
     done
 } | sed 's/[[:space:]]*$//' | sort -u | awk -v mode="$MODE" -v total="$TOTAL" -v w="$WEIGHTS" '
 BEGIN {
+    # Label names, sized like the corpus rather than like a generator.
+    #
+    # Every entry is a length, and the 200 of them are the length distribution
+    # of the 20,865 global labels defined across the Agon corpus, rounded to
+    # 200 slots and shuffled once so that consecutive labels vary. Mean 8.39
+    # against the corpus mean of 8.45, median 7 against 7, and the same spread: 10%
+    # at four characters or fewer, 10% at fourteen or more.
+    #
+    # The corpus here is ~/agon-corpus **without z88dk**, which is a Z80 C
+    # library rather than an Agon program and supplies 39,922 of the 60,787
+    # labels in the tree. Its names are C symbols put through a mangler --
+    # `cm48_sdccixp_ulonglong2ds_callee` -- and including it moves the mean
+    # from 8.5 to 11.5 on the strength of one vendored dependency.
+    nll = split("6 6 14 6 18 12 19 15 8 3 6 7 9 24 16 9 5 11 9 13 " \
+                "6 6 9 11 4 5 16 9 5 7 5 3 6 7 9 2 5 6 4 6 " \
+                "5 7 12 8 6 10 5 12 2 6 15 6 6 4 4 8 6 18 17 4 " \
+                "3 8 10 7 16 2 6 6 6 9 5 6 9 6 15 21 12 5 7 13 " \
+                "9 6 4 2 5 5 6 2 6 5 6 3 4 8 10 11 4 6 14 6 " \
+                "6 8 14 11 6 5 9 9 6 10 13 10 6 7 4 13 7 4 16 6 " \
+                "10 3 6 10 6 6 7 13 5 6 6 8 10 9 12 14 5 8 5 9 " \
+                "11 11 6 6 5 7 6 12 6 8 8 14 9 11 19 10 17 12 15 7 " \
+                "6 10 13 7 10 4 11 4 10 17 7 6 15 14 12 20 14 7 7 7 " \
+                "8 11 2 9 10 5 6 6 7 9 6 6 4 13 5 8 9 7 3 13",
+                llen, " ")
+    # Where each entry sits among the others of its own length, so that a name
+    # can be built from its index alone without the generator having to have
+    # emitted the ones before it.
+    for (i = 1; i <= nll; i++) {
+        lrank[i] = lcnt[llen[i]] + 0
+        lcnt[llen[i]]++
+    }
+
+    # Words to cut name fragments out of, joined by underscores and then
+    # doubled so that a fragment starting anywhere in the first copy can run to
+    # any length without falling off the end. Fragments always begin at a word,
+    # so a name reads as one -- `draw_move_sca` rather than a slice of the
+    # middle of something.
     nlw = split("read|write|draw|move|scan|calc|emit|parse|check|reset|" \
                 "flush|store|load|swap|clip|tile|sprite|sound|timer|port|" \
                 "queue|stack|frame|pixel|glyph|board|piece|score|level|input",
                 lw, "|")
+    lpool = ""
+    for (i = 1; i <= nlw; i++) {
+        lstart[i] = length(lpool)
+        lpool = lpool lw[i] "_"
+    }
+    lpool = lpool lpool
+    # Nineteen letters with no a..f and no h among them, so a name made only of
+    # these cannot also be read as a hexadecimal literal with a trailing h.
+    # That ambiguity is real -- see mname below, which met it first.
+    lalpha = "gijklmnopqrstuvwxyz"
+    nalpha = length(lalpha)
     nw = split(w, wa, /[ \n]+/)
     for (i = 1; i <= nw; i++) {
         if (wa[i] == "") continue
@@ -434,12 +495,47 @@ function mname(k,   d, g, r, i2, out2) {
     return substr(g, (k % 20) + 1, 1) out2
 }
 
-function lname(k,   a, b) {
-    a = lw[(k % nlw) + 1]
-    b = lw[((k * 7 + 3) % nlw) + 1]
-    if (k % 3 == 0) return a "_" k "_" b
-    if (k % 3 == 1) return a "_" k "_" b "_end"
-    return b "_" k "_" a "_loop"
+# A label of the length the corpus would have given it, unique, and a name
+# rather than a number.
+#
+# It used to be two words and the index -- `board_145_level_end` -- which
+# averaged 17.1 characters against the corpus mean of 8.5 and never produced one
+# shorter than eleven. Every label is hashed once and compared at least once,
+# so the benchmark was doing 2x the per-label character work of real code, and
+# anything it said about the symbol table was inflated by about that much. It
+# had already bent two conclusions; see .internal/dzap-to-zap.md.
+#
+# Length comes from the table above. Uniqueness comes from `s`, the rank a
+# label holds among the ones of its own length, spelled in decimal and put at the end:
+# the fragment in front of it is letters only, so where the digits begin is
+# never in doubt and two different ranks cannot spell the same name.
+#
+# A length too short to hold both a fragment and a rank -- two characters, with
+# a rank of ten or more -- is spelled in base nineteen instead. Those end in a
+# letter and the others end in a digit, so the two cannot collide either.
+function lname(k,   j, L, s, d, want, r, out) {
+    j = (k - 1) % nll
+    L = llen[j + 1]
+    s = int((k - 1) / nll) * lcnt[L] + lrank[j + 1]
+    d = s ""
+    want = L - length(d)
+    if (want >= 1) {
+        # The stride matters. `j` alone walks the word list one step per
+        # label, so neighbouring labels came out sharing long prefixes --
+        # `parse_check_rese0` right after `calc_emit_pars0` -- and a shared
+        # prefix is exactly what the name compare charges for. Real code does
+        # that sometimes; a generator should not do it every time.
+        r = (j * 13 + s * 7) % nlw
+        return substr(lpool, lstart[r + 1] + 1, want) d
+    }
+    out = ""
+    r = s
+    while (length(out) < L) {
+        out = substr(lalpha, (r % nalpha) + 1, 1) out
+        r = int(r / nalpha)
+    }
+
+    return out
 }
 function gcd(a, b,  t) { while (b) { t = b; b = a % b; a = t } return a }
 '

@@ -69,4 +69,60 @@ case "$msg" in
     *) echo "FAIL  the error is reported: got '$msg'"; status=1 ;;
 esac
 
+# gen_isa.sh's label names, which are a benchmark input and so are checked here
+# rather than in dzap's suite.
+#
+# The names decide what the symbol table appears to cost, and they were wrong
+# for three revisions of that script: two words and an index, mean 17.1
+# characters, never shorter than eleven, against the Agon corpus's mean of 8.5
+# and median of 7. Every symbol-table figure taken over those files reads about
+# twice what it should.
+labels=$(test/bench/gen_isa.sh real | grep -oE '^[A-Za-z_.][A-Za-z0-9_.]*:' \
+             | sed 's/:$//')
+nlabels=$(printf '%s\n' "$labels" | wc -l)
+
+# Unique, which is what makes the file assemble at all: a second definition of
+# a name is an error, and the generator has no way to notice it produced one.
+ndistinct=$(printf '%s\n' "$labels" | sort -u | wc -l)
+if [ "$nlabels" -gt 400 ] && [ "$nlabels" -eq "$ndistinct" ]; then
+    echo "PASS  every generated label name is distinct"
+else
+    echo "FAIL  every generated label name is distinct: $nlabels names, $ndistinct distinct"
+    status=1
+fi
+
+# The corpus mean is 8.45 over 20,865 definitions and the table is built to
+# reproduce it. A band rather than a number, because the count of labels in the
+# file depends on how the byte budget happens to fall.
+mean=$(printf '%s\n' "$labels" | awk '{t += length($0)} END {printf "%.2f", t / NR}')
+if awk -v m="$mean" 'BEGIN { exit !(m >= 8.0 && m <= 8.9) }'; then
+    echo "PASS  label names average the length the corpus does ($mean)"
+else
+    echo "FAIL  label names average the length the corpus does: got $mean, want 8.0..8.9"
+    status=1
+fi
+
+# The mean alone does not say the distribution is right -- the old generator
+# could have hit it with every name the same length. A tenth of the corpus is
+# four characters or fewer and a tenth is fourteen or more, so both ends have to
+# be there.
+short=$(printf '%s\n' "$labels" | awk 'length($0) <= 4' | wc -l)
+long=$(printf '%s\n' "$labels" | awk 'length($0) >= 14' | wc -l)
+if [ "$short" -gt 0 ] && [ "$long" -gt 0 ]; then
+    echo "PASS  both ends of the length distribution appear ($short short, $long long)"
+else
+    echo "FAIL  both ends of the length distribution appear: $short short, $long long"
+    status=1
+fi
+
+# And none of them may also read as a number. A run of hexadecimal digits with a
+# trailing h is a literal to the reference, which then refuses it as a label --
+# the ambiguity the operand parser resolves in favour of the number.
+if ! printf '%s\n' "$labels" | grep -qiE '^[0-9a-f]+h$'; then
+    echo "PASS  no generated label reads as a hexadecimal literal"
+else
+    echo "FAIL  no generated label reads as a hexadecimal literal"
+    status=1
+fi
+
 exit $status

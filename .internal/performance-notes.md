@@ -1887,3 +1887,103 @@ among them. Four mechanisms verified to bite by breaking the line each covers:
     the positional rewind removed        5
     nesting unbounded again              2
     the closer not matched to its opener 1
+
+## The benchmark's label names, sized from the corpus (2026-09-06)
+
+`gen_isa.sh` built label names as two words and the index --
+`board_145_level_end`, `flush_202_glyph_loop` -- which average **17.1
+characters** and are never shorter than eleven. The Agon corpus averages
+**8.5**, with a median of 7 and a tenth of its labels at four characters or
+fewer.
+
+Every label is hashed once and compared at least once, so the benchmark was
+doing about twice the per-label character work real code does, and every figure
+it produced about the symbol table was inflated by roughly that much. It had
+already bent two conclusions -- the symbol chain compare read as 4.5% and
+`sym_intern` as 8.1% -- and both are noted in `dzap-to-zap.md` as needing to be
+halved before they are believed.
+
+### What the corpus actually looks like
+
+20,865 global label definitions, mean 8.45, median 7:
+
+    p10  4     p25  6     p50  7     p75 11     p90 14     p99 21
+
+**Excluding z88dk**, which is the one judgement call in that number and a large
+one. It is a Z80 C library vendored into the corpus tree, not an Agon program,
+and it supplies 39,922 of the 60,787 labels there. Its names are C symbols put
+through a mangler -- `cm48_sdccixp_ulonglong2ds_callee`,
+`__printf_increment_chars_written` -- and including it moves the mean from 8.5
+to 11.5 on the strength of a single dependency nobody writes by hand.
+
+Local labels, for the record, were already about right: 796 definitions in the
+corpus, mean 6.6 characters including the `@`, median 5, against the generator's
+fixed `@loop`, `@done` and `@skip` at 5.
+
+### How the length is hit
+
+A 200-entry table of lengths, being the corpus distribution rounded to 200 slots
+and shuffled once so consecutive labels vary. 200 rather than 100 because 100
+rounds the mean to 8.27 and 200 gets it to 8.39.
+
+Uniqueness is the part that had to be designed rather than assumed. A label's
+name is built from `s`, its rank among the labels of its own length, which is
+computable from its index alone -- the table entry says the length, and a
+precomputed per-entry rank says the rest -- so `lname(k)` stays a pure function
+and the generator can still ask for label 12 before it has emitted label 11.
+
+    length - digits >= 1    a word fragment, then `s` in decimal
+    otherwise               `s` in base nineteen, as letters
+
+The fragment is letters and underscores only, so where the digits begin is never
+in doubt and two ranks cannot spell the same name. The two branches cannot
+collide with each other either: one ends in a digit and the other does not. The
+nineteen letters are `g` to `z` without `h`, so a name made of them cannot also
+be read as a hexadecimal literal with a trailing `h` -- the same ambiguity
+`mname` met and documented years of commits ago.
+
+One thing measured and then left alone: names now share slightly more prefix
+with their neighbours than real ones do -- mean 5.94 characters of common prefix
+between adjacent sorted names against the corpus's 4.85. It does not matter
+here. What the assembler compares is bucket-mates, and a Pearson hash makes
+those unrelated to each other; the sorted-neighbour figure measures the naming
+convention, not the work.
+
+### The numbers moved the wrong way, and that is correct
+
+Same binary, the two source sets, run one after another:
+
+    isa_real         332 -> 342 cycles/byte   22,457 -> 23,749 lines
+    isa_even         340 -> 352               22,841 -> 24,169
+    isa_degenerate   328 -> 346               20,328 -> 22,530
+
+Shortening the names made the per-byte figure **worse**. The file is sized in
+bytes, so 5.8% shorter label text means 5.8% more lines inside the same 256 KiB,
+and a line costs a great deal more than the characters of a name on it. Per
+line the same change reads 210 -> 205 microseconds, a 2.6% saving, which is the
+label text getting cheaper.
+
+**Both numbers are true, and quoting either alone misleads.** This is a general
+hazard of a benchmark sized in bytes rather than lines: any change to the *text*
+of the source moves the line count, and the per-byte figure moves with it in the
+opposite direction to the thing being measured.
+
+New baselines, on the binary at the head of this branch:
+
+    isa_real         4.86s   342 cycles/byte
+    isa_even         5.00s   352
+    isa_degenerate   4.92s   346
+    isa_memory       5.48s   385
+
+isa_memory is unchanged -- it builds its own four-character names through
+`mname` and never calls `lname` -- and assembles to the same md5 it did before.
+The other three are new files and every timing taken against the old ones is
+against different input. This is the **fourth** time this script has invalidated
+its own baselines: labels, local labels, anonymous labels, and now name length.
+
+### Checked
+
+All four sources still assemble byte-identically between dzap and the reference,
+which is the property that makes them usable at all. 567 distinct global names in
+isa_real with no duplicates, generated length distribution mean 8.37 against the
+corpus's 8.45.

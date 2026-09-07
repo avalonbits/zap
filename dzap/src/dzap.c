@@ -1178,6 +1178,15 @@ static inline sym* loc_define(dz* z, const char* name, int len, int addr) {
  * gone by the time this is resolved. */
 static bool fix_add(dz* z, const sym* target, const sym* sub, int addend,
                     uint8_t width, int off) {
+#ifdef NOFIX
+    /* Prices the fixup list on its own: the immediate bytes are still written,
+     * the reference to them is not recorded. The output is wrong and the
+     * unresolved labels are never reported, which is why this is a measuring
+     * build and nothing else. */
+    (void) target; (void) sub; (void) addend; (void) width; (void) off;
+
+    return true;
+#endif
     /* A reference to a local goes on the scope's own list, because the node it
      * points at stops meaning this label the moment the scope ends. The flag
      * is on the node rather than on the operand that carried it here: the
@@ -1279,6 +1288,14 @@ static bool out_reserve_n(dz* z, int n) {
 }
 
 /* ------------------------------------------------------------- mnemonics */
+
+#if defined(TRUNC) || defined(PTRUNC) || defined(LTRUNC) || defined(ETRUNC) \
+    || defined(MTRUNC)
+/* Where a truncated stage sinks what it computed, so the compiler cannot
+ * delete the work whose result nothing reads. Declared before every cut, of
+ * which there are now five kinds. */
+static volatile int trunc_sink;
+#endif
 
 /* Mnemonics bucketed by first letter.
  *
@@ -1774,7 +1791,12 @@ __attribute__((noinline)) static void build_tables(void) {
  * And it folds one side, not two. Every name in the table is lower case,
  * checked when the table is built, so only the source needs the OR. */
 static inline bool same_ci(const char* name, const char* s, int n) {
-    for (int i = 1; i < n; i++) {
+    /* Unsigned, and that is the whole of the change. Two signed ints compared
+     * with `<` cannot be done in one subtract, so the compiler emitted a
+     * `call pe, __setflag` to repair the flags on overflow -- inside the loop
+     * that compares a mnemonic, on every line of the source. The same fault
+     * the output cursor had when it was an offset and a capacity. */
+    for (unsigned i = 1; i < (unsigned) n; i++) {
         if (name[i] != (s[i] | 0x20)) {
             return false;
         }
@@ -1788,6 +1810,14 @@ static inline bool same_ci(const char* name, const char* s, int n) {
  * leaves one or two candidates, so the compare loop it replaced was two or
  * three characters long, and building the packed key cost more than that. */
 static const insninfo* mnemonic_of(const char* s, int n) {
+#ifdef MTRUNC
+    /* The bucket and not the walk, so the two halves of the lookup can be told
+     * apart. Built with -DTRUNC=4 -DTRUNC_NODIR, where nothing reads the
+     * answer. */
+    trunc_sink = bucket_at(s[0], (unsigned) n) != NULL;
+
+    return NULL;
+#endif
     for (const insninfo* ins = bucket_at(s[0], (unsigned) n); ins != NULL;
          ins = ins->next) {
         /* No length test. The bucket is keyed by first character *and*
@@ -2737,9 +2767,7 @@ static bool expr_value(dz* z, int* out, const char** pp, const char* e,
  * delete the work whose result nothing reads. Declared here because both the
  * line-level and the operand-level cuts write to it, and parse_operand comes
  * first in the file. */
-#if defined(TRUNC) || defined(PTRUNC) || defined(LTRUNC) || defined(ETRUNC)
-static volatile int trunc_sink;
-#endif
+
 
 /* The same trick one level down: -DPTRUNC=n stops parse_operand part way, and
  * is built with -DTRUNC=5 so that assemble_line stops after the operands.
@@ -3068,15 +3096,18 @@ full_expression:
              * displacement above: a one-digit literal then needs no multiply,
              * and `im 2`, `rst 0`, `bit 3` and the rest of the small decimals
              * are exactly that. */
+            /* Unsigned for the same reason same_ci is: two signed ints
+             * compared with `<` cost a `call pe, __setflag` to repair the
+             * flags on overflow, inside a loop that runs once per digit. */
             int acc = ns[0] - '0';
-            int k = 1;
-            for (; k < nn; k++) {
+            unsigned k = 1;
+            for (; k < (unsigned) nn; k++) {
                 if (!digit_ch(ns[k])) {
                     break;
                 }
                 acc = acc * 10 + (ns[k] - '0');
             }
-            if (k == nn) {
+            if (k == (unsigned) nn) {
                 v = acc;
                 got = true;
             }
@@ -3590,14 +3621,14 @@ static inline const char* lit_value(const char* p, const char* e, int* out) {
          * one-digit value then needs no multiply, and `d * 10` is a call to
          * __imulu here. */
         int acc = d[0] - '0';
-        int k = 1;
-        for (; k < nn; k++) {
+        unsigned k = 1;
+        for (; k < (unsigned) nn; k++) {
             if (!digit_ch(d[k])) {
                 break;
             }
             acc = acc * 10 + (d[k] - '0');
         }
-        got = k == nn;
+        got = k == (unsigned) nn;
         value = acc;
     }
     if (!got) {

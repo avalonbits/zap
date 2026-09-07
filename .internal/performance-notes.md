@@ -2699,3 +2699,84 @@ every shape the fast path has to hand back -- and 14 more for the trailing-fill
 rule. Five mechanisms verified to bite: the fast path not checking what follows
 the run, a partial decimal run accepted, the trailing run written out, two runs
 not merging, and ORG's padding counted as reserved.
+
+## The size dzap fails at, and half of it fixed (2026-09-07)
+
+Three benchmark shapes would not assemble at 256 KiB. The first thing to say is
+that the earlier note calling the failure *silent* was wrong, and wrong because
+I read a timeout instead of a log:
+
+    s.s line 9521: out of memory for labels
+
+dzap detects it and names the line. What was silent was the harness: my scratch
+runner had no watcher, so a guest that failed sat at a MOS prompt until the
+600-second timeout. The repo's `time-one.sh` has had that watcher all along --
+it kills the emulator the moment `guest_error` matches. Three failures at ten
+minutes each is where half an afternoon went.
+
+### The names arena could not grow
+
+`sym` holds a name, and the names lived in one array grown with `realloc`. A
+realloc that has to move holds the old block and the new one at once, so an
+arena of 110 KB needs 228 KB to grow by eight -- on a machine with 512 KB, no
+virtual memory and a heap already holding 175 KB of symbol nodes.
+
+The symbol *nodes* had been given blocks that never move for exactly this
+reason, and the comment above them says so. The names had not, and the comment
+on `nameoff` explains why: an offset does not care whether the array moved.
+Make the arena a list of blocks and the reason evaporates -- a pointer is then
+both correct and one add cheaper on the compare, which is the hottest loop the
+symbol table has.
+
+    14,616 labels    out of memory at the 9,521st  ->  assembles, 9.66s
+    isa_memory       387 -> 381 cycles/byte  (-1.6%)
+    isa_real         378 -> 378              unchanged
+    isa_even         387 -> 387              unchanged
+    isa_degenerate   347 -> 347              unchanged
+
+The speed shows up on exactly one benchmark, and it is the one that spends its
+time in the symbol table. That is what says the win is the compare and not
+something else.
+
+Local names get the same blocks, rewound to the first at the end of a scope
+rather than freed, because a scope ends on every global label.
+
+### The output buffer still cannot, and that is a design limit
+
+`DB "string"` at 256 KiB still fails, at the same line as before the change:
+
+    s.s line 6008: out of memory for the output
+
+Same fault, different array. Growth was 32 KB at a time, which makes the
+transient peak about twice the final size; doubling instead makes it about 1.5
+times. **It did not help** -- the same line, either way. Kept anyway, because a
+lower peak is a lower peak, and recorded as not having fixed what it was aimed
+at.
+
+The constant that sizes the buffer is now wrong for the language, and its own
+comment says why it was right before: *"these instructions average a shade
+under a fifth of a byte of output per source byte"*. That was true when a
+source could only hold instructions. `DB "row 1 of the table", 0` produces two
+thirds of a byte per source byte, three times the assumption.
+
+But no ratio fixes this. `DS 4096` is ten source bytes and four thousand of
+output; INCBIN is unbounded. **A contiguous output buffer that has to grow
+cannot work on this machine when the output is large**, and the fix is not a
+constant: it is to stop holding the whole output, writing it as it is produced
+and patching fixups by seeking. That is a design change, and it is now the
+largest known limitation.
+
+### Checked
+
+511 host checks and zap's 634. All five benchmark sources still byte-identical
+to the reference. Three mechanisms verified to bite, two of which had to be made
+testable first because they have no visible answer of their own:
+
+* a name crossing a block boundary needs 4 KB of names to reach, and the
+  sanitised build is what catches the write past the end -- the check that
+  failed to bite at first was simply too small, and with the guard removed the
+  test binary now aborts with a heap-buffer-overflow in `sym_intern` and 232 of
+  511 checks never run;
+* the scope rewind needs more than one block of local names per scope, or three
+  scopes of two characters each fit in the first block whether it is reused or
+  not.

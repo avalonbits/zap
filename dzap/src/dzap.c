@@ -413,7 +413,7 @@ typedef struct {
      *
      * It costs nothing, because `next_addr` used to sit here and did not need
      * to: it was only ever read for a relative jump, and there it is always
-     * `DZ_ORG + off + 1` -- the byte after the displacement byte, which `off`
+     * `org + off + 1` -- the byte after the displacement byte, which `off`
      * already names. Three bytes that were being stored to say something the
      * record already knew.
      *
@@ -518,6 +518,23 @@ typedef struct _dz {
     uint8_t* out;   /* the buffer, for realloc and for writing it out */
     uint8_t* o;     /* the next byte to write */
     uint8_t* lim;   /* the last address at which a whole instruction still fits */
+
+    /* Where the first byte of the output goes, which `ORG` may move.
+     *
+     * It was a compile-time constant, and every address in the assembler was
+     * `DZ_ORG + (o - out)` -- an immediate add. As a field it is a load first,
+     * on every label definition, every `$`, every relative jump and every
+     * fixup patched. That is what ORG costs whether or not a program uses it,
+     * and it is why this sits next to the cursor it is always added to rather
+     * than at the end with the cold fields.
+     *
+     * `org_set` is not "has ORG been seen" for its own sake: the first ORG in
+     * a file relocates the origin and every later one pads out to its address,
+     * and the reference distinguishes them exactly that way -- two ORGs with
+     * nothing in between write the gap between them. */
+    int org;
+    bool org_set;
+
     int cap;
 
     symslot* syms;      /* NSYMB buckets */
@@ -607,6 +624,7 @@ _Static_assert(__builtin_offsetof(dz, locs) > __builtin_offsetof(dz, lim),
 _Static_assert(__builtin_offsetof(dz, line) < 128, "dz.line is out of range");
 _Static_assert(__builtin_offsetof(dz, o) < 128, "dz.o is out of range");
 _Static_assert(__builtin_offsetof(dz, lim) < 128, "dz.lim is out of range");
+_Static_assert(__builtin_offsetof(dz, org) < 128, "dz.org is out of range");
 #endif
 
 /* Marginal pricing of the label paths. Each duplicates a call to a function
@@ -852,7 +870,7 @@ static bool patch_fixup(dz* z, const fixup* f) {
     if (w == 0) {
         /* The byte after the displacement byte, which is where a relative
          * jump is measured from. */
-        const int d = val - (DZ_ORG + f->off + 1);
+        const int d = val - (z->org + f->off + 1);
         if (d < -128 || d > 127) {
             z->line = f->line;
             z->err = "relative jump too far";
@@ -2461,7 +2479,7 @@ static bool expr_term(dz* z, int* out, const char** pp, const char* e,
             /* The address of the instruction being assembled. `$` on its own;
              * with hex digits after it, it is the radix prefix instead, and
              * the scan above has already taken them. */
-            v = DZ_ORG + (int) (z->o - z->out);
+            v = z->org + (int) (z->o - z->out);
         } else if (!expr_atom(z, &v, ts, n)) {
             return false;
         }
@@ -2848,7 +2866,7 @@ full_expression:
             /* The address of the instruction being assembled. `$` alone; with
              * hex digits after it the scan has already taken them and it is
              * the radix prefix instead. */
-            v = DZ_ORG + (int) (z->o - z->out);
+            v = z->org + (int) (z->o - z->out);
             got = true;
         } else if (ns[0] == '@') {
             /* `@f` and `@n` are the next anonymous label, `@b` and `@p` the
@@ -3226,6 +3244,7 @@ static bool line_fill(dz* z, buf_reader* r) {
 #define DIR_DL    3   /* three; the eZ80 word */
 #define DIR_DS    4   /* reserve, filled with 0xFF */
 #define DIR_ALIGN 5
+#define DIR_ORG   6
 
 /* Case-insensitive against a lower-case literal of known length. Deliberately
  * not `same_ci`: that one is inlined into mnemonic_of and stays that way only
@@ -3260,6 +3279,9 @@ static uint8_t directive_of(const char* s, int n) {
             if (dir_is(s, "dw24", 4)) return DIR_DL;
             if (dir_is(s, "defs", 4)) return DIR_DS;
             if (dir_is(s, "blkb", 4)) return DIR_DS;
+            break;
+        case 3:
+            if (dir_is(s, "org", 3)) return DIR_ORG;
             break;
         case 5:
             if (dir_is(s, "ascii", 5)) return DIR_DB;
@@ -3491,6 +3513,33 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
         return true;
     }
 
+    if (kind == DIR_ORG) {
+        /* The first ORG in a file moves the origin; every later one pads out
+         * to its address. That is not a guess -- two ORGs with nothing between
+         * them write the 64 KB gap in the reference, so the second is already
+         * behaving as a pad even though nothing has been emitted. */
+        if (!z->org_set && z->o == z->out) {
+            z->org = value;
+        } else {
+            const int here = z->org + (int) (z->o - z->out);
+            if (value < here) {
+                /* "New address lower than current PC address" there, and the
+                 * same here: an ORG that goes backwards would have to unwrite
+                 * bytes that are already placed. */
+                z->err = "org goes backwards";
+
+                return false;
+            }
+            if (!emit_fill(z, value - here)) {
+                return false;
+            }
+        }
+        z->org_set = true;
+        *stop = p;
+
+        return true;
+    }
+
     if (value <= 0) {
         z->err = "align needs a positive number";
 
@@ -3504,7 +3553,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
     /* Pad to the next multiple. `-addr & (n - 1)` is the distance to it, and
      * the AND is a call to __iand on a 24-bit value -- once per ALIGN, which
      * is a price a directive can pay. */
-    const int addr = DZ_ORG + (int) (z->o - z->out);
+    const int addr = z->org + (int) (z->o - z->out);
     if (!emit_fill(z, (-addr) & (value - 1))) {
         return false;
     }
@@ -3829,7 +3878,7 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
             }
             *o++ = 0;
         } else {
-            const int d = rel->imm - (DZ_ORG + (int) (o - z->out) + 1);
+            const int d = rel->imm - (z->org + (int) (o - z->out) + 1);
             if (d < -128 || d > 127) {
                 z->err = "relative jump too far";
 
@@ -3938,7 +3987,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
      * The line may continue: `foo: ld a,b` is a definition and an instruction,
      * and so is `foo:` alone. */
     if (*p == ':') {
-        const int addr = DZ_ORG + (int) (z->o - z->out);
+        const int addr = z->org + (int) (z->o - z->out);
         if (*s == '@') {
             /* `@@` is an anonymous label, not a local: it has no name to
              * collide with, so writing it twice is not a redefinition. */
@@ -4084,6 +4133,8 @@ __attribute__((noinline)) static bool run(dz* z, const char* path) {
         return false;
     }
     z->o = z->out;
+    z->org = DZ_ORG;
+    z->org_set = false;
     z->lim = z->out + z->cap - OUT_MAX_INSN;
     Z_SITE("symbol buckets");
     z->syms = (symslot*) calloc(NSYMB, sizeof(symslot));

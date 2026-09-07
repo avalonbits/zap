@@ -67,6 +67,17 @@ cli_check "timing line matches the reference's format" \
 bad=$("$OUT/dzap" "$OUT/bad.s" "$OUT/bad.bin" 2>&1 | tr -d '\r' || true)
 cli_check "no timing on failure" "$(printf '%s' "$bad" | grep -c '^Done in ')" 0
 
+# An error inside an included file has to name that file, not the one that
+# included it -- and the name has to still be there to print. It lives in the
+# frame of the include that opened it, and by the time the report happens every
+# one of those frames has unwound; before this was fixed it printed as
+# `inc_ .in`.
+printf '  ld a,\n' > "$OUT/broken.inc"
+printf '  INCLUDE "%s"\n' "$OUT/broken.inc" > "$OUT/inctop.s"
+incbad=$("$OUT/dzap" "$OUT/inctop.s" "$OUT/inc.bin" 2>&1 | tr -d '\r' || true)
+cli_check "an error names the included file" \
+    "$(printf '%s' "$incbad" | grep -c "^$OUT/broken.inc line 1: ")" 1
+
 # mnemonic_of compares without checking the length, which is only safe while
 # every name in a bucket has the same length. build_tables says so if that ever
 # stops being true; nothing else would notice until an instruction assembled as

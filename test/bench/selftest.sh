@@ -77,8 +77,11 @@ esac
 # characters, never shorter than eleven, against the Agon corpus's mean of 8.5
 # and median of 7. Every symbol-table figure taken over those files reads about
 # twice what it should.
-labels=$(test/bench/gen_isa.sh real | grep -oE '^[A-Za-z_.][A-Za-z0-9_.]*:' \
-             | sed 's/:$//')
+# EQU definitions are filtered out: `eq17:` is a name too, but it comes from the
+# directive generator and not from lname, and letting it in dragged the mean
+# from 8.37 to 6.59 the moment the directives arrived.
+labels=$(test/bench/gen_isa.sh real | grep -v ' EQU ' \
+             | grep -oE '^[A-Za-z_.][A-Za-z0-9_.]*:' | sed 's/:$//')
 nlabels=$(printf '%s\n' "$labels" | wc -l)
 
 # Unique, which is what makes the file assemble at all: a second definition of
@@ -124,5 +127,88 @@ else
     echo "FAIL  no generated label reads as a hexadecimal literal"
     status=1
 fi
+
+# The features the two ISA sources are supposed to exercise. Until the fifth
+# revision of gen_isa.sh neither file held a single directive, so every one of
+# those code paths was being measured at zero cost by a source that never
+# reached it -- and isa_real read 342 cycles a byte instead of 401.
+isareal=$(test/bench/gen_isa.sh real)
+for want in 'DB ' 'DW ' 'DL ' 'DS ' 'ALIGN ' 'ORG ' ' EQU '; do
+    n=$(printf '%s\n' "$isareal" | grep -c "$want" || true)
+    if [ "$n" -gt 0 ]; then
+        echo "PASS  isa_real contains $want ($n lines)"
+    else
+        echo "FAIL  isa_real contains $want: none"
+        status=1
+    fi
+done
+
+# And the two it must NOT contain: INCLUDE and INCBIN have a source of their
+# own, because their cost is file opening rather than assembling.
+if ! printf '%s\n' "$isareal" | grep -qE 'INCLUDE|INCBIN'; then
+    echo "PASS  isa_real leaves the file directives to isa_include"
+else
+    echo "FAIL  isa_real leaves the file directives to isa_include"
+    status=1
+fi
+
+# The include tree: ten source files, three blobs, and a shape that is a tree
+# rather than a chain. A chain only pushes readers and then pops them all; the
+# case worth testing is a parent that still has lines left when a child ends.
+INCW=$(mktemp -d)
+test/bench/gen_isa.sh include "$INCW" > /dev/null
+nsrc=$(ls "$INCW"/*.inc "$INCW"/isa_include.s 2>/dev/null | wc -l)
+nbin=$(ls "$INCW"/*.bin 2>/dev/null | wc -l)
+if [ "$nsrc" -eq 10 ] && [ "$nbin" -eq 3 ]; then
+    echo "PASS  the include tree is ten sources and three blobs"
+else
+    echo "FAIL  the include tree is ten sources and three blobs: got $nsrc and $nbin"
+    status=1
+fi
+
+# Branching, not a chain: at least one file has to include two others, or the
+# tree is a line drawn sideways.
+branching=$(grep -c 'INCLUDE' "$INCW"/isa_include.s || true)
+twokids=0
+for f in "$INCW"/isa_include.s "$INCW"/*.inc; do
+    [ "$(grep -c 'INCLUDE' "$f" || true)" -ge 2 ] && twokids=$((twokids + 1))
+done
+if [ "$branching" -ge 2 ] && [ "$twokids" -ge 3 ]; then
+    echo "PASS  the tree branches ($twokids files include two others)"
+else
+    echo "FAIL  the tree branches: root has $branching, $twokids files include two"
+    status=1
+fi
+
+# Four levels deep, which is what makes a parent resume with lines still to go.
+depth=0
+f="$INCW/isa_include.s"
+while [ -n "$f" ]; do
+    depth=$((depth + 1))
+    next=$(grep -oE 'INCLUDE "[^"]+"' "$f" | head -1 | sed 's/.*"\(.*\)"/\1/')
+    [ -n "$next" ] && f="$INCW/$next" || f=""
+done
+if [ "$depth" -ge 4 ]; then
+    echo "PASS  the tree is $depth levels deep"
+else
+    echo "FAIL  the tree is at least four levels deep: got $depth"
+    status=1
+fi
+
+if grep -qE 'INCBIN' "$INCW"/*.inc "$INCW"/isa_include.s; then
+    echo "PASS  the tree mixes INCBIN with INCLUDE"
+else
+    echo "FAIL  the tree mixes INCBIN with INCLUDE"
+    status=1
+fi
+
+inctext=$(cat "$INCW"/*.inc "$INCW"/isa_include.s | wc -c)
+if [ "$inctext" -ge 262144 ] && [ "$inctext" -lt 280000 ]; then
+    echo "PASS  the tree holds 256 KiB of text ($inctext bytes)"
+else
+    echo "FAIL  the tree holds 256 KiB of text: got $inctext"
+    status=1
+fi
+rm -rf "$INCW"
 
 exit $status

@@ -1145,6 +1145,76 @@ int main(void) {
     check("a square bracket closed with a parenthesis",
           emit("  ld hl, [1+2)\n"), "ERR");
 
+    /* EQU: a name for a value rather than for an address.
+     *
+     * What the reference accepts is in test/cases/equ.s and compared against it
+     * line by line. Here are the refusals, which a case file cannot assert, and
+     * the one place this deliberately does more. */
+    check("a value given a name",
+          emit("X: EQU 5\n  ld a, X\n"), "3E 05");
+    check("in lower case",
+          emit("X: equ 5\n  ld a, X\n"), "3E 05");
+    check("with the reference's leading dot",
+          emit("X: .EQU 5\n  ld a, X\n"), "3E 05");
+    /* Used before it is written. The value is not known where it is needed, so
+     * it goes through the fixup list like any other label that has not appeared
+     * yet -- nothing in EQU had to know about that. */
+    check("used above the line that names it",
+          emit("  ld a, X\nX: EQU 5\n"), "3E 05");
+    check("a local can be given a value too",
+          emit("@x: EQU 5\n  ld a, @x\n"), "3E 05");
+    check("the program counter as a value",
+          emit("  nop\nX: EQU $\n  ld hl, X\n"), "00 21 01 00 04");
+    check("a mnemonic is a legal name",
+          emit("ld: EQU 5\n  ld a, ld\n"), "3E 05");
+
+    /* The value has to be knowable now. The reference refuses these too, and it
+     * has a second pass that could have resolved them -- so a single pass costs
+     * nothing here. */
+    check("a label ahead inside the value",
+          emit("X: EQU Y+1\nY: EQU 5\n  ld a, X\n"), "ERR");
+    check("a label ahead of the value, defined by a line",
+          emit("X: EQU L\nL:\n  nop\n"), "ERR");
+    check("a second definition",
+          emit("X: EQU 5\nX: EQU 6\n  ld a, X\n"), "ERR");
+    check("no value at all",
+          emit("X: EQU\n"), "ERR");
+    /* Its own name inside its own value. The label path has already defined it
+     * at the address the line was at, so without care this reads that address
+     * and assembles something meaningless; the reference refuses it. */
+    check("a name inside its own value",
+          emit("X: EQU X+1\n  ld a, X\n"), "ERR");
+    check("text after the value",
+          emit("X: EQU 5 6\n"), "ERR");
+    /* The colon is what makes it an EQU. Without one the reference says
+     * "Invalid mnemonic", and so does this. */
+    check("without the colon",
+          emit("X EQU 5\n  ld a, X\n"), "ERR");
+    /* Four characters and ending in `equ` is not enough: the fourth has to be
+     * the dot. Without that test `aequ` is an EQU. */
+    check("four characters that are not .equ",
+          emit("X: aequ 5\n  ld a, X\n"), "ERR");
+    /* And `equ` at the front is not enough either. The token has to end there,
+     * which is what the class test on the character after it is for -- without
+     * it `equ5` is an EQU whose value is 5, which the reference calls an
+     * invalid mnemonic. */
+    check("equ run into its value",
+          emit("X: equ5\n  ld a, X\n"), "ERR");
+    check("dot equ run into its value",
+          emit("X: .equ5\n  ld a, X\n"), "ERR");
+    check("equ with a letter after it",
+          emit("X: equx 5\n  ld a, X\n"), "ERR");
+    check("EQU with nothing to name",
+          emit("  EQU 5\n"), "ERR");
+    check("an anonymous label cannot be given a value",
+          emit("@@: EQU 5\n"), "ERR");
+
+    /* And the divergence: the value may be parenthesised here. The reference
+     * cannot read `EQU (A)` at all -- `EQU 100/(5)` takes it out with a SIGFPE
+     * -- so this only widens what assembles. */
+    check("a parenthesised value",
+          emit("X: EQU (5+1)*2\n  ld a, X\n"), "3E 0C");
+
     /* Nesting is bounded, and was not before: a bracket recurses through
      * expr_term and expr_value, and expr_value starts a fresh precedence climb
      * at depth zero, so the climb's own limit never saw it. Five thousand deep

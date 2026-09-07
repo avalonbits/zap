@@ -1987,3 +1987,98 @@ All four sources still assemble byte-identically between dzap and the reference,
 which is the property that makes them usable at all. 567 distinct global names in
 isa_real with no duplicates, generated length distribution mean 8.37 against the
 corpus's 8.45.
+
+## EQU (2026-09-06)
+
+`name: EQU value` -- a name for a value rather than for an address. The first
+of the directives, and the one everything else leans on: a program that cannot
+name a constant cannot use the rest of them either.
+
+### What the reference does, measured rather than assumed
+
+    X: EQU 5          yes          X EQU 5        Invalid mnemonic 'X'
+    X: equ 5          yes          X = 5          Invalid mnemonic 'X'
+    X: .EQU 5         yes          X: = 5         Invalid mnemonic '='
+    ld: EQU 5         yes          X: equ5        Invalid mnemonic 'equ5'
+    ld a, X above     yes          X: EQU Y+1     Unknown identifier 'Y'
+    @x: EQU 5         yes          X: EQU X+1     refused
+    X: EQU $          yes          second X:      Label already defined
+
+Two of those decide the shape of the implementation.
+
+**The colon is required**, so an EQU is always a label line that continues, and
+nothing has to be recognised on a line without a label.
+
+**A forward reference inside the value is refused by the reference too**, even
+though it has a second pass and could have resolved it. So one pass costs
+nothing here -- which is the opposite of the usual position and worth saying,
+because it means `EQU` needs no fixup machinery of its own. A forward reference
+*to* an EQU does work, and needed no code at all: `ld a, X` above `X: EQU 5`
+goes through the existing fixup list like any label that has not appeared yet,
+and patching reads the value where it would have read an address.
+
+The name is undefined while its own value is worked out, so `X: EQU X+1` is
+refused rather than quietly reading the address the label path just gave it.
+Two stores, on the EQU path only.
+
+### Three placements, and 1.8% between them
+
+The feature is fifteen lines. Where those lines go was worth four measurements.
+
+**First attempt**: keep the symbol the label path defined in a `sym*` local, and
+overwrite its address once `EQU` is recognised. Reads best, and cost **+1.7% on
+isa_real and +2.0% on isa_even and isa_degenerate, benchmarks with no EQU in
+them at all**. The pointer took three more bytes of frame, `assemble_line` went
+from 115 to 118, and that was enough to lose `iy` as the line pointer:
+
+    ld iy, (ix + 9)        became      ld de, (ix + 9)
+
+**Second**: recognise EQU before defining anything, with a helper taking
+`const char**` so it could report where the token ended. `iy` came back and the
+frame stayed at 118 -- because taking the address of the line pointer is itself
+enough to cost the slot. Passing it by value and letting `equ_line` re-skip the
+three characters put the frame back to 115.
+
+**Third**: that version still cost 2.9% on isa_memory while helping everything
+else. `equ_line` calls `sym_define`, and one cold second caller was enough for
+the compiler to stop inlining it into the label path -- a call and a return on
+all 9,347 label definitions in that file. `always_inline` on `sym_define` and
+`loc_define` fixed it. **Third time this exact fault has appeared here**, after
+`same_ci` and the argument parser: a request to inline is not an instruction,
+and one rarely-taken call site is enough to withdraw it.
+
+**Fourth, and shipped**: put the test *after* the early return that ends a bare
+`label:` line. A label on its own line never reaches it -- which is every label
+in isa_real and 9,347 of isa_memory's lines -- and `equ_line` re-finds the
+symbol by name instead of being handed it.
+
+    placement                          real  even  degen  memory  equ-only
+    baseline, no EQU                    342   352    346     384         --
+    1: symbol kept in a local           349   359    353     391        413
+    2: pointer passed by value          347   357    350     395        404
+    3: + always_inline on the definers  346   356    350     391        402
+    4: tested after the bare-label exit  344   354    349     385        429
+
+The last row trades the synthetic for the real ones on purpose: a source that is
+nothing but EQU pays 6.7% more, because the symbol is looked up a second time,
+and every benchmark made of ordinary code pays a third of what it did.
+
+### What it costs
+
+    isa_real         4.86s -> 4.90s   +0.6%   342 -> 344 cycles/byte
+    isa_even         5.04s            +0.6%   352 -> 354
+    isa_degenerate   4.96s            +0.9%   346 -> 349
+    isa_memory       5.48s            +0.3%   384 -> 385
+
+The cheapest feature so far bar parentheses, which were free. What is left is
+the prologue: `assemble_line` allocates two registers differently, and that runs
+on every line whether or not anything on it is an EQU.
+
+### Checked
+
+421 host checks. `test/cases/equ.s` is compared against the reference line by
+line, and the refusals -- a forward reference in the value, a second definition,
+a self reference, `X EQU 5` without the colon, `equ5` run into its value -- are
+unit tests, since a case file cannot assert a refusal. Twenty-one forms checked
+against the reference by hand, all agreeing, and each of four mechanisms
+verified to bite by breaking the line it covers.

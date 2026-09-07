@@ -37,6 +37,12 @@
 
 static int failures = 0;
 
+/* The same, in the mode that matches the reference: no operator precedence at
+ * all, so `1+2*3` is 9. Set before emit because build_cclass builds the
+ * precedence table from it, and cleared after so the flag cannot leak into the
+ * next check. */
+static const char* emit_ez80(const char* src);
+
 /* Assembles one source and returns its bytes as "3E 42", or "ERR". */
 static const char* emit(const char* src) {
     static char out[1024];
@@ -120,6 +126,14 @@ static int local_blocks(const char* src) {
     dz_free(&z);
 
     return ok ? n : -1;
+}
+
+static const char* emit_ez80(const char* src) {
+    compat_ez80 = true;
+    const char* r = emit(src);
+    compat_ez80 = false;
+
+    return r;
 }
 
 static int range_bad;
@@ -846,6 +860,142 @@ int main(void) {
         snprintf(got, sizeof(got), "%d", local_blocks(src));
         check("local storage is reused between scopes", got, "1");
     }
+
+    /* Expressions.
+     *
+     * The reference evaluates strictly left to right with no precedence at
+     * all, so `1+2*3` is 9 and `2*3+1` is 7. Both are here because an
+     * evaluator written the way arithmetic is usually written would pass one
+     * and fail the other, and passing both is the point. Grouping is `[...]`
+     * -- parentheses already mean indirection.
+     *
+     * Expected bytes generated from the reference, like every other row here.
+     */
+    check("addition", emit("  ld hl, 1+2\n"), "21 03 00 00");
+
+    /* The two modes, and the only thing that separates them.
+     *
+     * dzap gives operators the precedence a reader expects. The reference
+     * gives them none at all -- it keeps a running total and folds each term
+     * in as it arrives -- so the two disagree on any expression whose
+     * operators do not already bind left to right. `-ez80` is that behaviour
+     * and nothing else.
+     *
+     * Every line here was checked against the reference binary before it was
+     * written down; the second column is what ez80asm 2.2 actually prints. */
+    check("times binds tighter than plus",
+          emit("  ld hl, 1+2*3\n"), "21 07 00 00");
+    check("and in -ez80 it does not",
+          emit_ez80("  ld hl, 1+2*3\n"), "21 09 00 00");
+    check("plus then times",
+          emit("  ld hl, 2+3*4\n"), "21 0E 00 00");
+    check("plus then times, -ez80",
+          emit_ez80("  ld hl, 2+3*4\n"), "21 14 00 00");
+    check("minus then times",
+          emit("  ld hl, 10-2*3\n"), "21 04 00 00");
+    check("minus then times, -ez80",
+          emit_ez80("  ld hl, 10-2*3\n"), "21 18 00 00");
+    check("two products added",
+          emit("  ld hl, 2*3+4*5\n"), "21 1A 00 00");
+    check("two products added, -ez80",
+          emit_ez80("  ld hl, 2*3+4*5\n"), "21 32 00 00");
+    /* The whole ordering, not just multiplication. ZDS is a third answer
+     * again -- it has two levels and gives 7, 4 and 0 for the first three of
+     * these -- and dzap follows neither assembler's quirk. A ZDS program that
+     * leans on its ordering needs brackets adding, which is a converter's job.
+     */
+    check("plus binds tighter than shift",
+          emit("  ld hl, 1<<2+3\n"), "21 20 00 00");
+    check("plus binds tighter than shift, -ez80",
+          emit_ez80("  ld hl, 1<<2+3\n"), "21 07 00 00");
+    check("and binds tighter than or", emit("  ld hl, 1|6&4\n"), "21 05 00 00");
+    check("and binds tighter than or, -ez80",
+          emit_ez80("  ld hl, 1|6&4\n"), "21 04 00 00");
+    check("and binds tighter than xor",
+          emit("  ld hl, 6^3&2\n"), "21 04 00 00");
+    check("and binds tighter than xor, -ez80",
+          emit_ez80("  ld hl, 6^3&2\n"), "21 00 00 00");
+    check("shift binds tighter than or",
+          emit("  ld hl, 0xF0|1<<2\n"), "21 F4 00 00");
+    check("shift binds tighter than or, -ez80",
+          emit_ez80("  ld hl, 0xF0|1<<2\n"), "21 C4 03 00");
+    check("times binds tighter than and",
+          emit("  ld hl, 4&3*2\n"), "21 04 00 00");
+    check("times binds tighter than and, -ez80",
+          emit_ez80("  ld hl, 4&3*2\n"), "21 00 00 00");
+    /* Left associative in both, which is where they agree again. */
+    check("division is left associative",
+          emit("  ld hl, 100/5/2\n"), "21 0A 00 00");
+    check("division is left associative, -ez80",
+          emit_ez80("  ld hl, 100/5/2\n"), "21 0A 00 00");
+
+    check("and the other way round",
+          emit("  ld hl, 2*3+1\n"), "21 07 00 00");
+    check("brackets group", emit("  ld hl, 1+[2*3]\n"), "21 07 00 00");
+    check("brackets on the left", emit("  ld hl, [1+2]*3\n"), "21 09 00 00");
+    check("nested brackets", emit("  ld hl, [[1+2]*3]\n"), "21 09 00 00");
+    check("subtraction chains left",
+          emit("  ld hl, 10-2-3\n"), "21 05 00 00");
+    check("integer division", emit("  ld hl, 100/7\n"), "21 0E 00 00");
+    check("shift left", emit("  ld hl, 1<<4\n"), "21 10 00 00");
+    check("shift right", emit("  ld a, 8>>2\n"), "3E 02");
+    check("bitwise and", emit("  ld hl, 0xFF&0x0F\n"), "21 0F 00 00");
+    check("bitwise or", emit("  ld hl, 1|2|4\n"), "21 07 00 00");
+    check("bitwise xor", emit("  ld hl, 0xFF^0x0F\n"), "21 F0 00 00");
+    check("unary minus", emit("  ld hl, -5+10\n"), "21 05 00 00");
+    check("unary complement", emit("  ld hl, ~0\n"), "21 FF FF FF");
+    check("spaces around operators", emit("  ld hl, 5 + 3\n"), "21 08 00 00");
+    check("a character literal", emit("  ld a, 'A'\n"), "3E 41");
+    check("a character literal in a sum", emit("  ld a, 'A'+1\n"), "3E 42");
+
+    /* `$` is the address of the instruction being assembled, and is the same
+     * character the reference uses to introduce hex -- `$42` is a number and
+     * `$` alone is the address, told apart by what follows. */
+    check("dollar is the current address",
+          emit("  nop\n  ld hl, $\n"), "00 21 01 00 04");
+    check("dollar in a sum", emit("  nop\n  ld hl, $+4\n"), "00 21 05 00 04");
+
+    /* Labels of every kind, as terms. The addresses are the test: `st+2*3` is
+     * (st + 2) * 3 and no other reading gives 0x0C0006. */
+    check("a label already defined",
+          emit("st:\n  nop\n  ld hl, st+2\n"), "00 21 02 00 04");
+    check("one label minus another",
+          emit("st:\n  nop\nen:\n  ld hl, en-st\n"), "00 21 01 00 00");
+    check("a length, then scaled",
+          emit("st:\n  nop\nen:\n  ld hl, [en-st]*4\n"), "00 21 04 00 00");
+    /* The constant the reference gets wrong in BBC BASIC: `STAVAR+15*4` with
+     * STAVAR at 0x400 is 1084 in ZDS and 4156 in ez80asm, and nothing rejects
+     * it. Six occurrences over four files, every one a wrong number in a
+     * working program. */
+    check("the BBC BASIC constant",
+          emit("  ld hl, 0x400+15*4\n"), "21 3C 04 00");
+    check("the BBC BASIC constant, -ez80",
+          emit_ez80("  ld hl, 0x400+15*4\n"), "21 3C 10 00");
+
+    check("a label with precedence",
+          emit("st:\n  nop\n  ld hl, st+2*3\n"), "00 21 06 00 04");
+    check("a label left to right, -ez80",
+          emit_ez80("st:\n  nop\n  ld hl, st+2*3\n"), "00 21 06 00 0C");
+    check("a local label in an expression",
+          emit("one:\n@lp:\n  nop\n  ld hl, @lp+1\n"), "00 21 01 00 04");
+    check("an anonymous label in an expression",
+          emit("@@:\n  nop\n  ld hl, @b+2\n"), "00 21 02 00 04");
+
+    /* Refusals the reference also makes. A single angle bracket is an error
+     * there rather than a comparison. */
+    check("a single angle bracket", emit("  ld hl, 1<4\n"), "ERR");
+    check("an operator with nothing after", emit("  ld hl, 1+\n"), "ERR");
+    check("an unclosed bracket", emit("  ld hl, [1+2\n"), "ERR");
+
+    /* The boundary of what is built. A forward reference on its own is still a
+     * fixup and still works; one inside an expression needs the fixup to carry
+     * the rest of the sum, which is the next stage. Refused with a message
+     * rather than guessed at -- the reference assembles it, so this is a
+     * divergence and has to be a loud one. */
+    check("a forward label alone still works",
+          emit("  ld hl, later\nlater:\n  nop\n"), "21 04 00 04 00");
+    check("a forward label in an expression is refused",
+          emit("  ld hl, later+1\nlater:\n  nop\n"), "ERR");
 
     /* Anonymous labels: `@@`, written any number of times and reached by
      * position rather than by name -- `@b`/`@p` for the one above, `@f`/`@n`

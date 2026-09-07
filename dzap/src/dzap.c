@@ -1283,6 +1283,52 @@ static const uint8_t shl4[16] = {
  * multiply, and the multiply is a call to __imulu because the eZ80's MLT is
  * 8-bit and this is an int. All of it is a function of the character alone, so
  * all of it precomputes. 26 * 8 = 208 fits in a byte. */
+/* Which characters begin a binary operator, as a table because cclass has no
+ * bit left -- all eight are taken -- and because the question is asked once
+ * per operand, right where the term ended. A compare chain of nine would be
+ * paid by every operand that is not an expression, and 96.5% of them are not.
+ *
+ * `<` and `>` are here but must be doubled: the reference refuses a single
+ * one, so `1<4` is an error rather than a comparison. */
+static uint8_t exop[256];
+
+/* Binding power per operator, and the switch that makes dzap a drop-in for the
+ * reference instead of an assembler that is right.
+ *
+ * The reference evaluates strictly left to right with no precedence at all:
+ * `1+2*3` is 9 there, `2+3*4` is 20, `2*3+4*5` is 50. That is not a reading of
+ * the source -- it is what the binary does, checked one expression at a time.
+ * Every other assembler, and every reader, gives those 7, 14 and 26.
+ *
+ * So there are two tables and one algorithm. `-ez80` gives every operator the
+ * same binding power, and a precedence climb where everything binds equally
+ * *is* a left-to-right fold -- the compatible answer falls out of the same code
+ * rather than needing its own.
+ *
+ * The default is the ordinary ordering -- C's, which is also every other
+ * language's and what a reader of `mask & flag << 2` expects. It is not ZDS's
+ * either: ZDS II 5.3.5, measured from its own listing, has only two levels,
+ *
+ *     1|6&4     4      (1|6)&4     where normal precedence gives 5
+ *     6^3&2     0      (6^3)&2     and 4
+ *     1<<2+1    5      (1<<2)+1    and 8
+ *     4&3*2     4      4&(3*2)     agreeing here
+ *
+ * so `* /` bind tighter and `+ - << >> & | ^` are one level folding left to
+ * right. Following that would be copying a second assembler's quirk to escape
+ * the first one's. A ZDS program that relies on it needs brackets adding, and
+ * that is a converter's job -- zds2ez80 has the corpus and the ZDS oracle to
+ * do it with, and dzap should be the assembler both of them can agree with
+ * rather than a third dialect.
+ *
+ * Higher binds tighter. */
+static uint8_t exprec[256];
+
+/* Set once, from the command line, and read in the operator loop. A file-scope
+ * flag rather than a field on dz, because dz is reached through a pointer on
+ * every line and this is read only where an expression has an operator in it. */
+static bool compat_ez80 = false;
+
 static uint8_t letter_base[256];
 
 static inline int bucket_of(char first, int n) {
@@ -1740,6 +1786,37 @@ static void build_cclass(void) {
      * leaving it out of C_ALPHA sends it straight to the path that reads a
      * name and looks it up, past reg_of_text entirely. */
     cclass[(uint8_t) '@'] &= (uint8_t) ~C_ALPHA;
+    for (int i = 0; i < 256; i++) {
+        exop[i] = 0;
+    }
+    {
+        const char* o = "+-*/<>&|^";
+        for (int i = 0; o[i] != 0; i++) {
+            exop[(uint8_t) o[i]] = 1;
+        }
+    }
+    for (int i = 0; i < 256; i++) {
+        exprec[i] = 0;
+    }
+    if (compat_ez80) {
+        /* One level, so the climb below folds left to right and agrees with
+         * the reference. */
+        const char* o = "+-*/<>&|^";
+        for (int i = 0; o[i] != 0; i++) {
+            exprec[(uint8_t) o[i]] = 1;
+        }
+    } else {
+        exprec[(uint8_t) '*'] = 6;
+        exprec[(uint8_t) '/'] = 6;
+        exprec[(uint8_t) '+'] = 5;
+        exprec[(uint8_t) '-'] = 5;
+        exprec[(uint8_t) '<'] = 4;   /* << */
+        exprec[(uint8_t) '>'] = 4;   /* >> */
+        exprec[(uint8_t) '&'] = 3;
+        exprec[(uint8_t) '^'] = 2;
+        exprec[(uint8_t) '|'] = 1;
+    }
+
     cclass[(uint8_t) '$'] |= C_NUM;
     cclass[(uint8_t) '#'] |= C_NUM;
     cclass[(uint8_t) '%'] |= C_NUM;
@@ -1933,6 +2010,281 @@ static bool numeric_token(const char* s, int n) {
     return num_parse(s, n, &gv);
 }
 
+/* ------------------------------------------------------------- expressions */
+
+/* The reference evaluates strictly left to right with no precedence at all:
+ * it keeps a running total and folds each term into it as the term arrives.
+ * `1+2*3` is 9 there and 7 nowhere, and matching that is the whole job -- an
+ * evaluator that got precedence "right" would disagree with the assembler this
+ * one exists to agree with.
+ *
+ * Measured over the Agon corpus, 3.46% of operands hold an expression and 73%
+ * of those have exactly one operator, so the shape to be fast on is `label+1`
+ * and `end-start` rather than anything that needs a stack.
+ *
+ * Grouping is `[...]`, not parentheses, because parentheses already mean
+ * indirection. Terms may be a number, a label, `$` for the address of the
+ * instruction being assembled, a character literal, or a bracketed expression,
+ * each optionally preceded by unary `+`, `-` or `~`.
+ *
+ * Out of line, and deliberately: it is reached by one operand in twenty-nine,
+ * and assemble_line has no registers to spare for the other twenty-eight. */
+
+static bool expr_value(dz* z, int* out, const char** pp, const char* e);
+static bool expr_climb(dz* z, int* total, const char** pp, const char* e,
+                       uint8_t minprec, int depth);
+
+/* Bracket nesting and precedence levels both recurse, so both are bounded.
+ * The reference has no limit and a deep enough file takes the stack out from
+ * under it; on a machine with 512 KB and no memory protection that is a reboot
+ * rather than a message. Seven precedence levels and this much nesting is more
+ * than any real source and cheaper than finding out. */
+#define EXPR_MAXDEPTH 32
+
+/* A bare token inside an expression: a number in any radix the reference takes,
+ * or a label that is already defined.
+ *
+ * Already defined is the limit of this stage. A forward reference on its own is
+ * still a fixup and still works -- `jp later` is untouched -- but one inside an
+ * expression would need the fixup to carry the rest of the sum, which is the
+ * next stage and is refused here rather than guessed at. 35.7% of the corpus's
+ * expressions need nothing more than this. */
+static bool expr_atom(dz* z, int* out, const char* ns, int nn) {
+    int v = 0;
+    if (nn >= 3 && ns[0] == '0' && (ns[1] | 0x20) == 'x') {
+        if (hex_digits(ns + 2, nn - 2, &v)) {
+            *out = v;
+
+            return true;
+        }
+    } else if (nn >= 2 && (ns[nn - 1] | 0x20) == 'h') {
+        if (hex_digits(ns, nn - 1, &v)) {
+            *out = v;
+
+            return true;
+        }
+    }
+
+    if (!numeric_token(ns, nn)) {
+        const sym* sp;
+        if (ns[0] == '@') {
+            const char k = nn == 2 ? (char) (ns[1] | 0x20) : 0;
+            if (k == 'b' || k == 'p') {
+                if (!z->anon_has_prev) {
+                    z->err = "no anonymous label above this one";
+
+                    return false;
+                }
+                *out = z->anon_prev;
+
+                return true;
+            }
+            if (k == 'f' || k == 'n') {
+                z->err = "a label in an expression must be defined already";
+
+                return false;
+            }
+            sp = loc_intern(z, ns, nn);
+        } else {
+            sp = sym_intern(z, ns, nn);
+        }
+        if (sp == NULL) {
+            return false;
+        }
+        if (!sp->defined) {
+            z->err = "a label in an expression must be defined already";
+
+            return false;
+        }
+        *out = sp->addr;
+
+        return true;
+    }
+
+    value gv = 0;
+    if (!num_parse(ns, nn, &gv)) {
+        z->err = "expected a value";
+
+        return false;
+    }
+    *out = (int) gv;
+
+    return true;
+}
+
+/* One term, with any unary operators in front of it. */
+static bool expr_term(dz* z, int* out, const char** pp, const char* e) {
+    const char* p = *pp;
+    while (is_space_ch(*p)) {
+        p++;
+    }
+
+    /* Unary operators stack the way the reference allows them: it takes one,
+     * so `--5` is an error there and here. */
+    int sign = 1;
+    bool invert = false;
+    if (*p == '-' || *p == '+' || *p == '~') {
+        if (*p == '-') {
+            sign = -1;
+        } else if (*p == '~') {
+            invert = true;
+        }
+        p++;
+        while (is_space_ch(*p)) {
+            p++;
+        }
+        if (*p == '-' || *p == '+' || *p == '~' || exop[(uint8_t) *p] != 0) {
+            z->err = "a unary operator needs a value";
+
+            return false;
+        }
+    }
+
+    int v = 0;
+    if (*p == '[') {
+        p++;
+        if (!expr_value(z, &v, &p, e)) {
+            return false;
+        }
+        while (is_space_ch(*p)) {
+            p++;
+        }
+        if (*p != ']') {
+            z->err = "expected ]";
+
+            return false;
+        }
+        p++;
+    } else if (*p == '\'') {
+        /* A character literal is its byte. The reference reads one character
+         * and the closing quote, and so does this. */
+        if (p[1] == '\n' || p[1] == 0 || p[2] != '\'') {
+            z->err = "expected a character";
+
+            return false;
+        }
+        v = (uint8_t) p[1];
+        p += 3;
+    } else {
+        const char* const ts = p;
+        while (p < e && num_ch(*p)) {
+            p++;
+        }
+        const int n = (int) (p - ts);
+        if (n == 0) {
+            z->err = "expected a value";
+
+            return false;
+        }
+        if (n == 1 && *ts == '$') {
+            /* The address of the instruction being assembled. `$` on its own;
+             * with hex digits after it, it is the radix prefix instead, and
+             * the scan above has already taken them. */
+            v = DZ_ORG + (int) (z->o - z->out);
+        } else if (!expr_atom(z, &v, ts, n)) {
+            return false;
+        }
+    }
+
+    if (invert) {
+        v = ~v;
+    }
+    *out = sign < 0 ? -v : v;
+    *pp = p;
+
+    return true;
+}
+
+/* Operator, right-hand side, fold into the total; again until what follows
+ * binds less tightly than this level.
+ *
+ * A precedence climb, and in `-ez80` mode every operator has the same binding
+ * power -- which makes the recursive call below return after a single term and
+ * turns the climb into the reference's left-to-right fold. One algorithm, two
+ * tables; the compatible answer is not a second code path to keep in step. */
+static bool expr_climb(dz* z, int* total, const char** pp, const char* e,
+                       uint8_t minprec, int depth) {
+    const char* p = *pp;
+    if (depth > EXPR_MAXDEPTH) {
+        z->err = "expression nested too deeply";
+
+        return false;
+    }
+    for (;;) {
+        while (is_space_ch(*p)) {
+            p++;
+        }
+        const char c = *p;
+        if (exop[(uint8_t) c] == 0) {
+            break;
+        }
+        const uint8_t prec = exprec[(uint8_t) c];
+        if (prec < minprec) {
+            break;
+        }
+        p++;
+        if (c == '<' || c == '>') {
+            /* Doubled or nothing: the reference refuses a single one rather
+             * than reading it as a comparison, so `1<4` is an error. */
+            if (*p != c) {
+                z->err = "expected << or >>";
+
+                return false;
+            }
+            p++;
+        }
+
+        /* Left associative, so the right-hand side takes only operators that
+         * bind *more* tightly than this one. */
+        int t = 0;
+        if (!expr_term(z, &t, &p, e)) {
+            return false;
+        }
+        if (!expr_climb(z, &t, &p, e, (uint8_t) (prec + 1), depth + 1)) {
+            return false;
+        }
+        switch (c) {
+            case '+': *total += t; break;
+            case '-': *total -= t; break;
+            case '*': *total *= t; break;
+            case '/':
+                /* The reference divides without looking, which on the Agon is
+                 * whatever the runtime does with it. Refusing is the one place
+                 * this deliberately does not match: there is no byte sequence
+                 * to agree with. */
+                if (t == 0) {
+                    z->err = "division by zero";
+
+                    return false;
+                }
+                *total /= t;
+                break;
+            case '<': *total <<= t; break;
+            case '>': *total >>= t; break;
+            case '&': *total &= t; break;
+            case '|': *total |= t; break;
+            default:  *total ^= t; break;
+        }
+    }
+    *pp = p;
+
+    return true;
+}
+
+/* A whole expression: a term, then everything that binds to it. */
+static bool expr_value(dz* z, int* out, const char** pp, const char* e) {
+    int total = 0;
+    if (!expr_term(z, &total, pp, e)) {
+        return false;
+    }
+    if (!expr_climb(z, &total, pp, e, 1, 0)) {
+        return false;
+    }
+    *out = total;
+
+    return true;
+}
+
 /* Scans here are mostly unbounded, and safe because the reader keeps a newline
  * one byte past the last valid one.
  *
@@ -2124,7 +2476,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
         p = s;
     }
 
-    /* A literal. */
+    /* A literal, or an expression. */
     {
         const char* s = p;
         if (known_end != NULL) {
@@ -2153,9 +2505,28 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
          * leading $ or # or %, a trailing h or b or o, and a lone character
          * being decimal so that a..f are not hex digits -- none of which can
          * apply to a run that starts with a digit and holds only digits. */
+        int total = 0;
+        if (nn == 0) {
+            /* Nothing the ordinary scan could take, because the operand begins
+             * with a character that is not a C_NUM one: a character literal, a
+             * bracketed group, or a unary `~`. The evaluator knows all three,
+             * and knows what follows them, so it takes the whole operand. */
+            p = s;
+            if (!expr_value(z, &total, &p, e)) {
+                return false;
+            }
+            goto have_value;
+        }
+
         int v = 0;
         bool got = false;
-        if (ns[0] == '@') {
+        if (nn == 1 && ns[0] == '$') {
+            /* The address of the instruction being assembled. `$` alone; with
+             * hex digits after it the scan has already taken them and it is
+             * the radix prefix instead. */
+            v = DZ_ORG + (int) (z->o - z->out);
+            got = true;
+        } else if (ns[0] == '@') {
             /* `@f` and `@n` are the next anonymous label, `@b` and `@p` the
              * previous one. Reserved spellings, whatever a local of that name
              * would mean -- and a local really can be called `@b`: the
@@ -2287,7 +2658,35 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
             }
             v = (int) gv;
         }
-        op->imm = neg ? -v : v;
+        total = neg ? -v : v;
+
+        /* An expression, if an operator follows the term just read. One table
+         * lookup on the character that ended it, which is what the other
+         * twenty-eight operands in twenty-nine pay for this feature.
+         *
+         * A forward reference cannot continue into one yet: the fixup carries
+         * a symbol and nothing else, so there is nowhere to put the rest of
+         * the sum. Refused rather than silently dropped. */
+        {
+            const char* q = p;
+            while (is_space_ch(*q)) {
+                q++;
+            }
+            if (exop[(uint8_t) *q] != 0) {
+                if (op->fwd != NULL) {
+                    z->err = "a label in an expression must be defined already";
+
+                    return false;
+                }
+                p = q;
+                if (!expr_climb(z, &total, &p, e, 1, 0)) {
+                    return false;
+                }
+            }
+        }
+
+have_value:
+        op->imm = total;
         op->has_imm = true;
         op->mode |= IMM;
 
@@ -2982,13 +3381,54 @@ static void dz_free(dz* z) {
     br_destroy(&z->rd);
 }
 
-int main(int argc, char* argv[]) {
-    if (argc < 3) {
-        printf("Usage: dzap <source> <output>\r\n");
+/* One flag, taken from anywhere on the line so that `dzap -ez80 a.s a.bin` and
+ * `dzap a.s a.bin -ez80` both work; the reference accepts its own options
+ * either side of the filenames and this is meant to drop in.
+ *
+ * OUT OF LINE, AND NOT FOR TIDINESS. `run` is inlined into main, so main holds
+ * the loop over the source lines -- and two hundred instructions of argument
+ * handling in front of it moved that loop's register allocation enough to cost
+ * **5.3%** on isa_real, on a build where the option is not even given. It is
+ * the same wall the mnemonic chain and the symbol chain compare sit behind,
+ * reached from the other side: not code that runs, code that is merely
+ * *there*. */
+__attribute__((noinline)) static bool parse_args(int argc, char* argv[],
+                                                 const char** in,
+                                                 const char** out) {
+    *in = NULL;
+    *out = NULL;
+    for (int i = 1; i < argc; i++) {
+        if (argv[i][0] == '-') {
+            if (same_ci("-ez80", argv[i], 5) && argv[i][5] == 0) {
+                compat_ez80 = true;
+            } else {
+                printf("Unknown option %s\r\n", argv[i]);
 
+                return false;
+            }
+        } else if (*in == NULL) {
+            *in = argv[i];
+        } else if (*out == NULL) {
+            *out = argv[i];
+        }
+    }
+    if (*in == NULL || *out == NULL) {
+        printf("Usage: dzap [-ez80] <source> <output>\r\n");
+
+        return false;
+    }
+
+    return true;
+}
+
+int main(int argc, char* argv[]) {
+    const char* in;
+    const char* out;
+    if (!parse_args(argc, argv, &in, &out)) {
         return 1;
     }
 
+    /* After the flag is read: the operator table it builds depends on it. */
     build_tables();
     build_cclass();
 
@@ -2998,22 +3438,22 @@ int main(int argc, char* argv[]) {
     dz z;
     memset(&z, 0, sizeof(z));
 
-    printf("Assembling %s\r\n", argv[1]);
+    printf("Assembling %s\r\n", in);
     const clock_t begin = clock();
-    const bool ok = run(&z, argv[1]);
+    const bool ok = run(&z, in);
     const clock_t end = clock();
 
     if (!ok) {
-        printf("%s line %d: %s\r\n", argv[1], z.line,
+        printf("%s line %d: %s\r\n", in, z.line,
                z.err ? z.err : "out of memory for the output");
         dz_free(&z);
 
         return 1;
     }
 
-    const uint8_t fh = mos_fopen(argv[2], FA_WRITE | FA_CREATE_ALWAYS);
+    const uint8_t fh = mos_fopen(out, FA_WRITE | FA_CREATE_ALWAYS);
     if (fh == 0) {
-        printf("Cannot write %s\r\n", argv[2]);
+        printf("Cannot write %s\r\n", out);
         dz_free(&z);
 
         return 1;
@@ -3024,7 +3464,7 @@ int main(int argc, char* argv[]) {
     }
     mos_fclose(fh);
 
-    printf("Wrote %s, %d bytes\r\n", argv[2], written);
+    printf("Wrote %s, %d bytes\r\n", out, written);
 
 #ifdef ZMALLOC
     z_report();

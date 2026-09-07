@@ -145,7 +145,12 @@ else
         # run at the first one and the cases after it would never be
         # reported at all.
         "$REF" "$src" "$OUT/ref.bin" > /dev/null 2>&1 || true
-        "$OUT/dzap" "$src" "$OUT/dz.bin" > /dev/null 2>&1 || true
+        # -ez80, because this comparison is the compatibility claim. dzap's
+        # default gives operators the precedence a reader expects and the
+        # reference gives them none, so `1+2*3` is 7 by default and 9 here.
+        # Running the default against the reference would be asking two
+        # assemblers that disagree on purpose to agree.
+        "$OUT/dzap" -ez80 "$src" "$OUT/dz.bin" > /dev/null 2>&1 || true
         if [ -f "$OUT/ref.bin" ] && cmp -s "$OUT/ref.bin" "$OUT/dz.bin"; then
             echo "PASS  $(basename "$src") matches ez80asm"
         else
@@ -164,6 +169,21 @@ fi
 # same corpus the reference comparison uses, which is the largest input the
 # host tests have.
 echo "=== test_pricing_flags ==="
+# The -ez80 flag itself, and that it is the only one taken.
+printf '  ld hl, 1+2*3\n' > "$OUT/prec.s"
+"$OUT/dzap" "$OUT/prec.s" "$OUT/prec_def.bin" > /dev/null 2>&1 || true
+"$OUT/dzap" -ez80 "$OUT/prec.s" "$OUT/prec_ez.bin" > /dev/null 2>&1 || true
+cli_check "default gives 1+2*3 the value 7" \
+    "$(xxd -p "$OUT/prec_def.bin" 2>/dev/null | tr -d '\n')" "21070000"
+cli_check "-ez80 gives 1+2*3 the value 9" \
+    "$(xxd -p "$OUT/prec_ez.bin" 2>/dev/null | tr -d '\n')" "21090000"
+"$OUT/dzap" "$OUT/prec.s" "$OUT/prec2.bin" -ez80 > /dev/null 2>&1 || true
+cli_check "the flag is taken after the filenames too" \
+    "$(xxd -p "$OUT/prec2.bin" 2>/dev/null | tr -d '\n')" "21090000"
+unk=$("$OUT/dzap" -wat "$OUT/prec.s" "$OUT/x.bin" 2>&1 | tr -d '\r' || true)
+cli_check "an unknown option is refused" \
+    "$(printf '%s' "$unk" | grep -c 'Unknown option -wat')" 1
+
 for flag in DUP_ROW DUP_GROUP DUP_BUCKET DUP_HASH DUP_SYMCHAIN DUP_INTERN DUP_LOCINTERN DUP_NUMTOK; do
     if ! cc "${CFLAGS[@]}" "-D$flag" -o "$OUT/dzap_$flag" src/dzap.c "${SRCS[@]}" \
          2>"$OUT/$flag.log"; then

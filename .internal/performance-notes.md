@@ -3236,3 +3236,64 @@ the width it was written with -- compared against the reference byte for byte.
 18 forms checked against it by hand, all agreeing. Four mechanisms verified to
 bite: the directive unrecognised, the mode parsed but not applied, the emitter
 ignoring it, and any number accepted as a mode.
+
+## Conditional assembly (2026-09-07)
+
+`IF`, `ELSE`, `ENDIF`, either case, with or without the leading dot.
+
+**Nesting is not supported by the reference** -- "Nested conditionals not
+supported" -- and that is the design: one flag, not a stack. `ELSE` toggles, and
+toggles again, so `IF 1 / a / ELSE / b / ELSE / c / ENDIF` assembles a and c in
+both.
+
+Inside a branch that is switched off, nothing happens: no label is defined, no
+value named, no `ORG` taken, no `INCLUDE` opened, and a name that is never
+defined is never looked up. All of that measured against the reference, which
+skips the same things.
+
+    isa_real         352 -> 352
+    isa_even         359 -> 359
+    isa_degenerate   340 -> 339
+    isa_memory       371 -> 371
+
+**Free.** The test is one field and one branch, placed after the token is
+scanned and before the label is defined -- a label in a switched-off branch must
+not be defined -- and it does not surface. The corpus goes from 68 of 131 to
+**74**.
+
+### The reference does not compare
+
+`IF a == b` does not compare there. It evaluates the left side and throws the
+rest of the line away:
+
+    IF 0 == 0    false        IF 1 == 2            true
+    IF 0 == 1    false        IF 1 == nosuchname   true, name never read
+    IF 2 == 2    true         IF 1 ==              true
+
+So `IF version == 2` means `IF version`, silently. `==` also works *only* here:
+outside an IF it is "Invalid list format", and `!=`, `<` and `>` are "Illegal
+operator" everywhere.
+
+This decides which bytes come out, so it is the precedence situation again and
+gets the same answer: **`-ez80` reproduces it and the default means what it
+says.** Second time that flag has earned its keep. None of the corpus's eleven
+conditional files uses `==` at all.
+
+### One place this is more permissive
+
+The reference still checks that the mnemonic exists inside a branch it is not
+assembling -- `IF 0 / garbage / ENDIF` is "Invalid mnemonic" there and
+assembles here. Skipping the line outright is what makes the feature free; the
+alternative is a mnemonic lookup on every line of every switched-off branch.
+A widening rather than a byte difference, and a diagnostic the reference gives
+and this one does not.
+
+### Checked
+
+567 host checks. `test/cases/cond.s` covers both arms, every spelling, the
+double `ELSE`, expression conditions, and a switched-off branch holding a label,
+a name ahead, an `ORG` and an `INCBIN` -- compared against the reference byte
+for byte. 24 forms checked by hand, and five mechanisms verified to bite. The
+nesting refusal needed a case whose difference survives to the output: without
+it an inner `IF` reopens a closed branch and `IF 0 / IF 1 / db 1 / ENDIF /
+db 9` assembles to `01 09` instead of failing.

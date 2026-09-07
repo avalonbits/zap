@@ -553,6 +553,16 @@ typedef struct _dz {
     int org;
     bool org_set;
 
+    /* Conditional assembly, which is a flag and not a stack: the reference
+     * says "Nested conditionals not supported" and means it, so one IF is all
+     * there is to keep track of.
+     *
+     * `cond_emit` is what every line is tested against, and it is true whenever
+     * there is no IF in force -- so the test is one field and one branch rather
+     * than two. */
+    bool in_cond;
+    bool cond_emit;
+
     /* Whether an address-sized immediate is three bytes or two.
      *
      * `ASSUME ADL=0` is Z80 mode and makes `ld hl, 0x1234` three bytes rather
@@ -3440,6 +3450,9 @@ static bool line_fill(dz* z, buf_reader* r) {
 #define DIR_INCLUDE 7
 #define DIR_INCBIN  8
 #define DIR_ASSUME  9
+#define DIR_IF      10
+#define DIR_ELSE    11
+#define DIR_ENDIF   12
 
 /* Defined with the line loop, far below. An include re-enters it, and the
  * dispatch that does so is here. */
@@ -3474,12 +3487,14 @@ static uint8_t directive_of(const char* s, int n) {
     }
     switch (n) {
         case 2:
+            if (dir_is(s, "if", 2)) return DIR_IF;
             if (dir_is(s, "db", 2)) return DIR_DB;
             if (dir_is(s, "dw", 2)) return DIR_DW;
             if (dir_is(s, "dl", 2)) return DIR_DL;
             if (dir_is(s, "ds", 2)) return DIR_DS;
             break;
         case 4:
+            if (dir_is(s, "else", 4)) return DIR_ELSE;
             if (dir_is(s, "defb", 4)) return DIR_DB;
             if (dir_is(s, "byte", 4)) return DIR_DB;
             if (dir_is(s, "defw", 4)) return DIR_DW;
@@ -3491,6 +3506,7 @@ static uint8_t directive_of(const char* s, int n) {
             if (dir_is(s, "org", 3)) return DIR_ORG;
             break;
         case 5:
+            if (dir_is(s, "endif", 5)) return DIR_ENDIF;
             if (dir_is(s, "ascii", 5)) return DIR_DB;
             if (dir_is(s, "align", 5)) return DIR_ALIGN;
             break;
@@ -3955,6 +3971,104 @@ static bool include_file(dz* z, const char* name) {
     return true;
 }
 
+/* The condition on an IF: an expression, and optionally `== expression`.
+ *
+ * `==` works only here. Outside an IF the reference calls it "Invalid list
+ * format", and `!=`, `<` and `>` are "Illegal operator" everywhere -- so this
+ * is the whole of its comparison vocabulary, and none of the corpus's eleven
+ * conditional files uses even this one.
+ *
+ * The value has to be known now. A name that is defined later is "Unknown
+ * identifier" in the reference too, which has a second pass and could have
+ * waited: deciding what to assemble cannot be deferred by either of us.
+ */
+static bool cond_value(dz* z, int* out, const char** pp, const char* e) {
+    const char* p = *pp;
+    fwd_reset(NULL);
+    uint8_t fwdmask = 0;
+    int lhs = 0;
+    if (!expr_value(z, &lhs, &p, e, &fwdmask)) {
+        return false;
+    }
+    if (expr_fwd != NULL) {
+        z->err = "a label here must be defined already";
+
+        return false;
+    }
+
+    while (is_space_ch(*p)) {
+        p++;
+    }
+    if (p[0] == '=' && p[1] == '=') {
+        p += 2;
+        if (compat_ez80) {
+            /* The reference does not compare. It evaluates the left side and
+             * throws the rest of the line away, so `IF 0 == 0` is false there
+             * and `IF 1 == 2` is true, and `IF 1 == nosuchname` assembles
+             * because the name is never looked at. Measured, all four ways.
+             *
+             * That is a bug, and a quiet one -- `IF version == 2` means
+             * `IF version` -- but it decides which bytes come out, so
+             * reproducing it is what `-ez80` is for. The same position as
+             * operator precedence, and the second time it has been needed. */
+            while (p < e && *p != '\n' && *p != ';') {
+                p++;
+            }
+        } else {
+            fwd_reset(NULL);
+            int rhs = 0;
+            if (!expr_value(z, &rhs, &p, e, &fwdmask)) {
+                return false;
+            }
+            if (expr_fwd != NULL) {
+                z->err = "a label here must be defined already";
+
+                return false;
+            }
+            lhs = lhs == rhs;
+        }
+    }
+
+    *out = lhs;
+    *pp = p;
+
+    return true;
+}
+
+/* Defined just below; cond_skip hands the conditional directives on to it. */
+__attribute__((noinline))
+static bool directive_line(dz* z, const char* s, int n, const char* p,
+                           const char* e, const char** stop);
+
+/* A line inside a branch that is not being assembled.
+ *
+ * Nothing on it is looked at except whether it opens, switches or closes the
+ * conditional: no label is defined, no EQU, no ORG, no INCLUDE, and no operand
+ * is evaluated -- all of which the reference also skips.
+ *
+ * What the reference does and this does not is check that the mnemonic exists.
+ * `IF 0 / garbage / ENDIF` is "Invalid mnemonic" there and assembles here, so
+ * a typo inside a branch that is switched off goes unnoticed. That is a
+ * widening rather than a byte difference -- there is no program the reference
+ * accepts on which the two disagree -- and it is bought by not running a
+ * mnemonic lookup on every skipped line. Recorded rather than hidden, because
+ * it is a diagnostic the reference gives and this one does not.
+ */
+__attribute__((noinline))
+static bool cond_skip(dz* z, const char* s, int n, const char* p,
+                      const char* e, const char** stop) {
+    const uint8_t kind = directive_of(s, n);
+    if (kind >= DIR_IF) {
+        return directive_line(z, s, n, p, e, stop);
+    }
+    while (p < e && *p != '\n') {
+        p++;
+    }
+    *stop = p;
+
+    return true;
+}
+
 /* A directive line, or a report that this was not one.
  *
  * Out of line and reached only where the mnemonic lookup failed, so an
@@ -3969,6 +4083,48 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
         z->err = "unknown instruction";
 
         return false;
+    }
+
+    if (kind >= DIR_IF) {
+        if (kind == DIR_ENDIF || kind == DIR_ELSE) {
+            if (!z->in_cond) {
+                /* "Missing IF directive" there, and the same here. */
+                z->err = "no IF is open";
+
+                return false;
+            }
+            if (kind == DIR_ENDIF) {
+                z->in_cond = false;
+                z->cond_emit = true;
+            } else {
+                /* ELSE toggles, and toggles again: `IF 1 / a / ELSE / b /
+                 * ELSE / c / ENDIF` assembles a and c in the reference. */
+                z->cond_emit = !z->cond_emit;
+            }
+            *stop = p;
+
+            return true;
+        }
+
+        /* IF. Nesting is refused because the reference refuses it, and that is
+         * what makes this a flag rather than a stack. */
+        if (z->in_cond) {
+            z->err = "conditionals do not nest";
+
+            return false;
+        }
+        while (is_space_ch(*p)) {
+            p++;
+        }
+        int cond = 0;
+        if (!cond_value(z, &cond, &p, e)) {
+            return false;
+        }
+        z->in_cond = true;
+        z->cond_emit = cond != 0;
+        *stop = p;
+
+        return true;
     }
 
     if (kind == DIR_ASSUME) {
@@ -4649,6 +4805,14 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
     }
     TRUNC_AT(2, n);
 
+    /* Inside a branch that is not being assembled, nothing on this line
+     * happens except the directives that end it. Tested here, after the token
+     * and before the label, because a label in a switched-off branch must not
+     * be defined -- the reference does not define one either. */
+    if (!z->cond_emit) {
+        return cond_skip(z, s, n, p, e, stop);
+    }
+
     /* A label, if a colon follows the name.
      *
      * The reference takes a label at any indent, not only at column 0, so
@@ -4926,6 +5090,8 @@ __attribute__((noinline)) static bool run(dz* z, const char* path) {
     z->org = DZ_ORG;
     z->org_set = false;
     z->adl = DZ_ADL;
+    z->in_cond = false;
+    z->cond_emit = true;
     z->lim = z->out + z->cap - OUT_MAX_INSN;
     Z_SITE("symbol buckets");
     z->syms = (symslot*) calloc(NSYMB, sizeof(symslot));
@@ -4957,6 +5123,14 @@ __attribute__((noinline)) static bool run(dz* z, const char* path) {
      * one does. Before the globals, because a local that was never defined
      * should be reported against the line that used it rather than after a
      * global's failure somewhere else. */
+    if (z->in_cond) {
+        /* "Missing ENDIF directive" there, and the same here: a conditional
+         * that never closes has silently dropped whatever followed it. */
+        z->err = "an IF was never closed";
+
+        return false;
+    }
+
     if (!scope_end(z)) {
         return false;
     }

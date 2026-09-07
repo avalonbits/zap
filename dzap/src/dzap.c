@@ -3917,29 +3917,45 @@ static char* macro_text(dz* z, const macro* m, const char* p, const char* e,
         z->expbuf[z->depth] = out;
         z->expcap[z->depth] = cap;
     }
+    /* Walked with pointers, not subscripts.
+     *
+     * `argp[k]` and `argn[k]` are three bytes wide apiece, and a subscript by a
+     * variable on something that is not a power of two is a call to __imulu on
+     * this machine. There were two of those per identifier in the body, and a
+     * two-parameter macro with a two-line body cost 18,600 cycles an invocation
+     * because of it. Stepping the two arrays alongside the parameter list costs
+     * an increment each. */
     int len = 0;
-    for (int i = 0; i < m->bodylen; ) {
-        const char c = m->body[i];
+    const char* b = m->body;
+    const char* const bend = b + m->bodylen;
+    while (b < bend) {
+        const char* src = b;
         int take = 1;
-        int put = -1;
-        if (name_ch(c) && !digit_ch(c)) {
-            int j = i;
-            while (j < m->bodylen && name_ch(m->body[j])) {
+        const bool ident = name_ch(*b) && !digit_ch(*b);
+        if (ident) {
+            const char* j = b;
+            while (j < bend && name_ch(*j)) {
                 j++;
             }
-            const int tn = j - i;
+            take = (int) (j - b);
+        }
+        int need = take;
+        if (ident) {
             const char* pp2 = m->params;
+            const char** ap = argp;
+            const int* an = argn;
             for (int k = 0; k < m->nparam; k++) {
                 const int pn = (uint8_t) pp2[0];
-                if (pn == tn && same_ci_full(pp2 + 1, &m->body[i], tn)) {
-                    put = k;
+                if (pn == take && same_ci_full(pp2 + 1, b, take)) {
+                    src = *ap;
+                    need = *an;
                     break;
                 }
                 pp2 += pn + 1;
+                ap++;
+                an++;
             }
-            take = tn;
         }
-        const int need = put >= 0 ? argn[put] : take;
         if (len + need + 1 > cap) {
             cap = (len + need + 1) * 2;
             char* grown = (char*) realloc(out, (size_t) cap);
@@ -3952,12 +3968,12 @@ static char* macro_text(dz* z, const macro* m, const char* p, const char* e,
             z->expbuf[z->depth] = out;
             z->expcap[z->depth] = cap;
         }
-        const char* src = put >= 0 ? argp[put] : &m->body[i];
+        char* o = out + len;
         for (int k = 0; k < need; k++) {
-            out[len + k] = src[k];
+            o[k] = src[k];
         }
         len += need;
-        i += take;
+        b += take;
     }
 
     *outlen = len;

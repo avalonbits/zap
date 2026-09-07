@@ -53,6 +53,11 @@ buf_reader* br_open_mem(buf_reader* br, const char* text, int len);
  * into a second one, which is a malloc, a copy and a free per invocation for
  * nothing. */
 void br_take_mem(buf_reader* br, char* buf, int len);
+
+/* The same again, over a buffer the reader does *not* own: br_destroy leaves
+ * it alone. For a buffer that is kept and reused rather than allocated per
+ * use, which is what a macro expansion wants. */
+void br_use_mem(buf_reader* br, char* buf, int len);
 void br_close(buf_reader* br);
 void br_destroy(buf_reader* br);
 bool br_suspend(buf_reader* br);

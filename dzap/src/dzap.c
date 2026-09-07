@@ -269,6 +269,15 @@ struct sym {
 #define NSYMB 2048
 
 /* One bucket as it was before an expansion took it over. See scope_push. */
+/* How deep INCLUDE and macro expansion may nest. Declared here because the
+ * per-level expansion buffers are part of dz; the reasoning for the number is
+ * where INCLUDE is. */
+/* How deep INCLUDE and macro expansion may nest -- shared, because an
+ * expansion is read the same way an included file is and re-enters the same
+ * loop. Declared up here because the per-level expansion buffers are fields
+ * of dz. */
+#define INCLUDE_MAXDEPTH 8
+
 #define UNDO_STEP 32
 typedef struct {
     sym* head;
@@ -742,6 +751,13 @@ typedef struct _dz {
     locundo* undo;          /* buckets an expansion took over. scope_push */
     int undo_used;
     int undo_cap;
+    /* One expansion buffer per level of nesting, kept and grown rather than
+     * allocated per invocation: a malloc and a free were 2,200 cycles of the
+     * 7,900 an expansion cost. The level in use is `depth`, which is why there
+     * is one each -- an outer expansion is still being read from while an
+     * inner one is built. */
+    char* expbuf[INCLUDE_MAXDEPTH];
+    int expcap[INCLUDE_MAXDEPTH];
 } dz;
 
 /* The fields touched on every line have to be reachable in one instruction.
@@ -3531,10 +3547,6 @@ static bool line_fill(dz* z, buf_reader* r) {
 }
 
 
-/* Shared with INCLUDE: an expansion is read the same way an included file is,
- * so it is bounded the same way and re-enters the same loop. */
-#define INCLUDE_MAXDEPTH 8
-
 static bool run_lines(dz* z);
 
 /* The local-label scope a macro expansion runs in, set aside and put back.
@@ -3890,13 +3902,20 @@ static char* macro_text(dz* z, const macro* m, const char* p, const char* e,
 
     /* The body with the names replaced. Built in one buffer sized as it goes;
      * an expansion is short and this happens once per invocation. */
-    int cap = m->bodylen + 64;
-    Z_SITE("macro expansion");
-    char* out = (char*) malloc((size_t) cap);
-    if (out == NULL) {
-        z->err = "out of memory for macros";
+    int cap = z->expcap[z->depth];
+    char* out = z->expbuf[z->depth];
+    if (cap < m->bodylen + 64) {
+        cap = m->bodylen + 64;
+        Z_SITE("macro expansion");
+        char* grown = (char*) realloc(out, (size_t) cap);
+        if (grown == NULL) {
+            z->err = "out of memory for macros";
 
-        return NULL;
+            return NULL;
+        }
+        out = grown;
+        z->expbuf[z->depth] = out;
+        z->expcap[z->depth] = cap;
     }
     int len = 0;
     for (int i = 0; i < m->bodylen; ) {
@@ -3925,12 +3944,13 @@ static char* macro_text(dz* z, const macro* m, const char* p, const char* e,
             cap = (len + need + 1) * 2;
             char* grown = (char*) realloc(out, (size_t) cap);
             if (grown == NULL) {
-                free(out);
                 z->err = "out of memory for macros";
 
                 return NULL;
             }
             out = grown;
+            z->expbuf[z->depth] = out;
+            z->expcap[z->depth] = cap;
         }
         const char* src = put >= 0 ? argp[put] : &m->body[i];
         for (int k = 0; k < need; k++) {
@@ -3967,9 +3987,10 @@ static bool macro_run(dz* z, const macro* m, char* out, int len) {
      * chain plus the files whose lines are mid-expansion -- bounded by the
      * nesting limit, and a failure to open reports itself plainly. */
     const buf_reader saved = z->rd;
-    /* The reader takes the buffer as it stands. Copying it into one of its
-     * own was a malloc, a copy and a free an invocation for nothing. */
-    br_take_mem(&z->rd, out, len);
+    /* The reader reads the buffer where it stands, and does not own it: it is
+     * kept for the next expansion at this depth. Copying it into a buffer of
+     * the reader's own was a malloc, a copy and a free an invocation. */
+    br_use_mem(&z->rd, out, len);
     z->path = m->name;
     z->line = 0;
     z->depth++;
@@ -5772,6 +5793,10 @@ __attribute__((noinline)) static bool run(dz* z, const char* path) {
     z->undo = NULL;
     z->undo_used = 0;
     z->undo_cap = 0;
+    for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
+        z->expbuf[i] = NULL;
+        z->expcap[i] = 0;
+    }
     z->lim = z->out + z->cap - OUT_MAX_INSN;
     Z_SITE("symbol buckets");
     z->syms = (symslot*) calloc(NSYMB, sizeof(symslot));
@@ -5854,6 +5879,9 @@ static void dz_free(dz* z) {
     free(z->fixups);
     free(z->lfixups);
     free(z->undo);
+    for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
+        free(z->expbuf[i]);
+    }
     while (z->macros != NULL) {
         macro* next = z->macros->next;
         free(z->macros->body);

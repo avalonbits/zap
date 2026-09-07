@@ -593,6 +593,11 @@ typedef struct _dz {
 
     /* The macro being defined, while line_mode says so. */
     macro* defining;
+    /* Non-zero while a macro body is being expanded. The reference refuses a
+     * global label in a body -- "No global labels allowed in macro definition"
+     * -- and refuses it at the invocation, not at the definition, so a body
+     * that is never invoked is never complained about. */
+    uint8_t expanding;
 
     /* Conditional assembly, which is a flag and not a stack: the reference
      * says "Nested conditionals not supported" and means it, so one IF is all
@@ -3487,6 +3492,112 @@ static bool line_fill(dz* z, buf_reader* r) {
 
 static bool run_lines(dz* z);
 
+/* The local-label scope a macro expansion runs in, saved and put back.
+ *
+ * An expansion needs a scope of its own -- the reference gives it one, so a
+ * body defining `@loc` may be invoked twice -- and the caller's has to survive,
+ * because the reference lets a local defined before an invocation be named
+ * after it. The first attempt used `scope_end` at both ends and did the first
+ * of those and not the second: it resolved and cleared the *caller's* locals on
+ * the way in, and `@a: nop / m / jp @a` stopped assembling.
+ *
+ * The buckets cannot be hidden behind the generation stamp the way a new scope
+ * hides an old one, because the expansion writes bucket heads and the stamp
+ * only says whose they are: restoring the stamp afterwards would leave the
+ * caller's chains overwritten. So they are copied out, and the copy goes on the
+ * heap rather than the frame -- 256 bytes per level of expansion is more than
+ * this machine's stack should carry eight deep.
+ *
+ * The slot and name arenas are started empty rather than shared, because
+ * `scope_end` rewinds them to their first block: an expansion that appended to
+ * the caller's arena would have its slots written over the caller's the moment
+ * the body held a global label, and appending without that hazard would mean
+ * teaching every rewind about a floor. Two blocks are allocated, and only if
+ * the body names a local at all. */
+typedef struct {
+    locslot* slots;
+    locblock* locfirst;
+    locblock* loccur;
+    namblock* locnames;
+    namblock* locnamfirst;
+    int locs_used;
+    int locnames_used;
+    int lfix_used;
+    uint8_t gen;
+} locsave;
+
+static bool scope_push(dz* z, locsave* sv) {
+    Z_SITE("macro scope");
+    sv->slots = (locslot*) malloc(sizeof(locslot) * NLOCB);
+    if (sv->slots == NULL) {
+        return false;
+    }
+    for (int b = 0; b < NLOCB; b++) {
+        sv->slots[b] = z->locs[b];
+    }
+    sv->locfirst = z->locfirst;
+    sv->loccur = z->loccur;
+    sv->locnames = z->locnames;
+    sv->locnamfirst = z->locnamfirst;
+    sv->locs_used = z->locs_used;
+    sv->locnames_used = z->locnames_used;
+    sv->lfix_used = z->lfix_used;
+    sv->gen = z->gen;
+
+    /* An empty scope, current: every bucket belongs to this one and holds
+     * nothing. */
+    for (int b = 0; b < NLOCB; b++) {
+        z->locs[b].head = NULL;
+        z->locs[b].gen = z->gen;
+    }
+    z->locfirst = NULL;
+    z->loccur = NULL;
+    z->locs_used = LOCS_STEP;   /* nothing to hand out until a block is taken */
+    z->locnames = NULL;
+    z->locnamfirst = NULL;
+    z->locnames_used = 0;
+
+    return true;
+}
+
+/* Settles what the expansion referred to and puts the caller's scope back.
+ *
+ * Only the fixups the expansion added are resolved -- the caller's are still
+ * outstanding and belong to a scope that has not ended. */
+static bool scope_pop(dz* z, locsave* sv) {
+    bool ok = true;
+    for (int i = sv->lfix_used; i < z->lfix_used; i++) {
+        if (!patch_fixup(z, &z->lfixups[i])) {
+            ok = false;
+            break;
+        }
+    }
+    for (int b = 0; b < NLOCB; b++) {
+        z->locs[b] = sv->slots[b];
+    }
+    free(sv->slots);
+    for (locblock* b = z->locfirst; b != NULL; ) {
+        locblock* next = b->next;
+        free(b);
+        b = next;
+    }
+    for (namblock* b = z->locnames; b != NULL; ) {
+        namblock* next = b->next;
+        free(b);
+        b = next;
+    }
+    z->locfirst = sv->locfirst;
+    z->loccur = sv->loccur;
+    z->locnames = sv->locnames;
+    z->locnamfirst = sv->locnamfirst;
+    z->locs_used = sv->locs_used;
+    z->locnames_used = sv->locnames_used;
+    z->lfix_used = sv->lfix_used;
+    z->gen = sv->gen;
+
+    return ok;
+}
+
 /* ---------------------------------------------------------------- macros */
 
 /* Macro bodies grow a line at a time and are not in the name blocks, because a
@@ -3792,12 +3903,23 @@ static bool macro_expand(dz* z, const macro* m, const char* p, const char* e,
     z->path = m->name;
     z->line = 0;
     z->depth++;
+    z->expanding++;
 
-    /* A scope of its own, opened before the body and closed after it. */
-    const bool ok = scope_end(z) && run_lines(z) && scope_end(z);
+    /* A scope of its own for the body, with the caller's kept and put back. */
+    locsave sv;
+    bool ok = scope_push(z, &sv);
+    if (ok) {
+        ok = run_lines(z);
+        if (!scope_pop(z, &sv)) {
+            ok = false;
+        }
+    } else {
+        z->err = "out of memory for macros";
+    }
 
     br_destroy(&z->rd);
     z->depth--;
+    z->expanding--;
     z->rd = saved;
     if (!ok) {
         if (z->path != z->errpath) {
@@ -5306,6 +5428,11 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
 
                 return false;
             }
+            if (z->expanding != 0) {
+                z->err = "no global labels allowed in a macro";
+
+                return false;
+            }
             if (sym_define(z, s, n, addr) == NULL) {
                 return false;
             }
@@ -5564,6 +5691,7 @@ __attribute__((noinline)) static bool run(dz* z, const char* path) {
     z->line_mode = LINE_ASSEMBLE;
     z->macros = NULL;
     z->defining = NULL;
+    z->expanding = 0;
     z->lim = z->out + z->cap - OUT_MAX_INSN;
     Z_SITE("symbol buckets");
     z->syms = (symslot*) calloc(NSYMB, sizeof(symslot));

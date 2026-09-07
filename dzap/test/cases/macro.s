@@ -76,3 +76,45 @@ xy:  EQU 7
   db 0xBB
   ENDMACRO
   outer
+
+; The expansion gets a scope of its own without taking the caller's away. All
+; three of these were wrong when the body simply ended the surrounding scope on
+; its way in and out: the caller's locals were resolved and cleared by the
+; invocation, so a name defined on either side of it went missing.
+caller:
+@before:
+  nop
+  plain
+  jp @before
+  jp @after
+@after:
+  nop
+
+; The same name in both scopes is two different labels, and the one the caller
+; sees is its own.
+shadow:
+@same:
+  nop
+  MACRO shadowing
+@same:
+  ccf
+  ENDMACRO
+  shadowing
+  jp @same
+
+; Which holds however deep the nesting goes.
+nest:
+@deep:
+  nop
+  MACRO innermost
+@deep:
+  ccf
+  ENDMACRO
+  MACRO outermost
+@deep:
+  scf
+  innermost
+  jp @deep
+  ENDMACRO
+  outermost
+  jp @deep

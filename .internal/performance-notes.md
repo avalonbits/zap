@@ -2918,3 +2918,70 @@ it is not blank costs 10.4% and is close to what the machine can do.
 The honest reading is that 350 is not one change away. It is available, but as
 several 1-2% findings of the kind above, and the way to find them is the table
 rather than a hunch.
+
+## The label path and the emitter, decomposed (2026-09-07)
+
+The last two stages nobody had looked inside.
+
+### The label path
+
+`-DLTRUNC=n` cuts it, built with `-DTRUNC=3`. From the stage-2 floor of 60:
+
+    the colon is found, and nothing else        66     6   1.5%
+    + the label is defined                      91    25   6.3%
+    + EQU                                      115    24   6.1%
+
+**EQU is 447 lines and costs as much as all 2,460 definitions.** Per line that
+is 14,080 cycles against a label definition's 2,665 -- five times, for a line
+that writes no output at all.
+
+### The emitter
+
+`-DETRUNC=n`, built ordinarily:
+
+    room is reserved                           342     ~0
+    + prefixes, transforms, the opcode         342      0     0%
+    + the bytes are written, fixups recorded   373     31   8.3%
+
+**Choosing the row's prefixes and folding the operands into the opcode is
+free.** All of `emit_row` is the writing and the fixups. That is worth knowing
+before anyone optimises `transform` or `ddfd_prefix`: there is nothing there.
+
+### Why EQU costs what it does, and what the benchmark got wrong
+
+`equ_line` sent every value through `expr_value`, which is the same fault
+`emit_data` had. The corpus says how much that matters:
+
+    plain literal   7,778   79.6%
+    an expression   1,994   20.4%     of 9,772 EQUs
+
+**Four EQUs in five are a plain literal**, and every one of them was paying for
+a general expression parser. The fast path is now shared with the data
+directives:
+
+    EQU of literals, 256 KiB     680 -> 407 cycles/byte   -40%
+    isa_real                     373 -> 373               unchanged
+    isa_db1                      401 -> 415               +3.5%
+    isa_db4                      381 -> 390               +2.4%
+
+isa_real does not move because **its EQUs are all expressions** -- the
+generator was written to make sure the evaluator was reached, and in doing so it
+made every EQU four times harder than the average real one. That is the label
+lengths again, and the same class of mistake as the missing directives: a
+benchmark that answers a narrower question than the one being asked. Fixing it
+would move isa_real *down*, which is why it is being raised here and not done
+quietly.
+
+### The trade, stated rather than buried
+
+Sharing one copy of the literal parse costs the data directives 2.4-3.5%. Two
+shapes were tried to get it back and neither did: as an ordinary function it was
+worse still (isa_db4 405), and returning the cursor instead of advancing one
+through an out-parameter -- the fix for the same fault twice before in this file
+-- measured identical to `always_inline` with the out-parameter. So it is
+register allocation in the merged body, not the address-taking.
+
+Shipped shared, because isa_real is unchanged either way, EQU-literal code is
+40% faster, and one copy of a parse that has to agree with the reference is
+worth 3% on a synthetic shape. It is a judgement and the numbers for the other
+choice are here.

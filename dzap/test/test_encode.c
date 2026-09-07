@@ -1156,6 +1156,23 @@ int main(void) {
           emit("X: equ 5\n  ld a, X\n"), "3E 05");
     check("with the reference's leading dot",
           emit("X: .EQU 5\n  ld a, X\n"), "3E 05");
+    /* Four EQUs in five are a plain literal -- 7,778 of 9,772 in the corpus --
+     * and every one of them used to pay for a general expression parser. The
+     * fast path is the one the data directives use, and the cases it has to
+     * hand back are the same. */
+    check("a hexadecimal value", emit("X: EQU 0x41\n  ld a, X\n"), "3E 41");
+    check("a value with a trailing h", emit("X: EQU 0FFh\n  ld a, X\n"),
+          "3E FF");
+    check("a negative value", emit("X: EQU -1\n  ld a, X\n"), "3E FF");
+    check("a value the fast path hands back",
+          emit("X: EQU 1+2\n  ld a, X\n"), "3E 03");
+    check("a bracketed value", emit("X: EQU [1+2]*3\n  ld a, X\n"), "3E 09");
+    check("a value that names something",
+          emit("Y: EQU 5\nX: EQU Y\n  ld a, X\n"), "3E 05");
+    check("binary, which begins with a digit",
+          emit("X: EQU 0b1010\n  ld a, X\n"), "3E 0A");
+    check("a character literal as a value",
+          emit("X: EQU 'A'\n  ld a, X\n"), "3E 41");
     /* Used before it is written. The value is not known where it is needed, so
      * it goes through the fixup list like any other label that has not appeared
      * yet -- nothing in EQU had to know about that. */

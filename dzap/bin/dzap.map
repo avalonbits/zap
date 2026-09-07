@@ -146,7 +146,7 @@ Linker script and memory map
                 0x00040197                _parse_option
                 0x00040197                _parse_params
 
-.text           0x000401e1     0x7a78
+.text           0x000401e1     0x7e47
  *(.text)
  .text          0x000401e1      0x333 obj/value.o
                 0x000401e1                _num_parse
@@ -170,160 +170,160 @@ Linker script and memory map
                 0x00040cf2                _br_next
                 0x00040d0d                _br_char
  .text          0x00040d49        0x0 obj/isa_table.o
- .text          0x00040d49     0x541c obj/dzap.o
+ .text          0x00040d49     0x57eb obj/dzap.o
                 0x00040d49                _main
- .text          0x00046165        0x0 obj/zmalloc.o
- .text          0x00046165     0x1382 /home/icc/agondev/lib/libagon.a(nanoprintf.o)
-                0x00046165                _npf_vpprintf
-                0x0004728e                _npf_pprintf
-                0x000472b6                _npf_snprintf
-                0x000472de                _npf_vsnprintf
-                0x0004739c                _vprintf
-                0x000473cc                _printf
-                0x000473eb                _fprintf
-                0x0004740e                _vfprintf
-                0x00047443                _vsprintf
-                0x00047462                _vsnprintf
-                0x00047496                _sprintf
-                0x000474bf                _snprintf
- .text          0x000474e7       0x76 /home/icc/agondev/lib/libagon.a(realloc.c.o)
-                0x000474e7                _realloc
- .text          0x0004755d       0x30 /home/icc/agondev/lib/libagon.a(memmove.o)
-                0x0004755d                _memmove
- .text          0x0004758d        0x4 /home/icc/agondev/lib/libagon.a(clock.o)
-                0x0004758d                _clock
- .text          0x00047591       0xbd /home/icc/agondev/lib/libagon.a(free.c.o)
-                0x00047591                _free
- .text          0x0004764e       0x21 /home/icc/agondev/lib/libagon.a(memcpy.o)
-                0x0004764e                _memcpy
- .text          0x0004766f       0x9f /home/icc/agondev/lib/libagon.a(malloc.c.o)
-                0x0004766f                _malloc
- .text          0x0004770e       0x1f /home/icc/agondev/lib/libagon.a(calloc.o)
-                0x0004770e                _calloc
- .text          0x0004772d       0x2c /home/icc/agondev/lib/libagon.a(puts.o)
-                0x0004772d                _puts
- .text          0x00047759       0x11 /home/icc/agondev/lib/libagon.a(putchar.o)
-                0x00047759                _putchar
- .text          0x0004776a        0xb /home/icc/agondev/lib/libagon.a(frameset0.o)
-                0x0004776a                __frameset0
- .text          0x00047775       0x1c /home/icc/agondev/lib/libagon.a(and.o)
-                0x00047775                __land
-                0x0004777a                __iand
-                0x0004777b                __iand.hijack_land
- .text          0x00047791        0xd /home/icc/agondev/lib/libagon.a(lneg.o)
-                0x00047791                __lneg
- .text          0x0004779e        0x6 /home/icc/agondev/lib/libagon.a(ladd.o)
-                0x0004779e                __ladd
- .text          0x000477a4       0x1b /home/icc/agondev/lib/libagon.a(xor.o)
-                0x000477a4                __lxor
-                0x000477a8                __ixor
- .text          0x000477bf        0x9 /home/icc/agondev/lib/libagon.a(sand.o)
-                0x000477bf                __sand
- .text          0x000477c8        0x9 /home/icc/agondev/lib/libagon.a(ineg_sneg.o)
-                0x000477c8                __ineg
-                0x000477c8                __sneg
- .text          0x000477d1        0x9 /home/icc/agondev/lib/libagon.a(bshl.o)
-                0x000477d1                __bshl
- .text          0x000477da       0x1d /home/icc/agondev/lib/libagon.a(fpcmp.o)
-                0x000477da                __fcmp
- .text          0x000477f7       0x26 /home/icc/agondev/lib/libagon.a(ishl.o)
-                0x000477f7                __sshl
-                0x000477f7                __ishl
- .text          0x0004781d       0x10 /home/icc/agondev/lib/libagon.a(ldivu.o)
-                0x0004781d                __ldivu
- .text          0x0004782d        0x1 /home/icc/agondev/lib/libagon.a(indcallhl.o)
-                0x0004782d                __indcallhl
- .text          0x0004782e       0x1b /home/icc/agondev/lib/libagon.a(or.o)
-                0x0004782e                __lor
-                0x00047832                __ior
- .text          0x00047849        0xd /home/icc/agondev/lib/libagon.a(sshru.o)
-                0x00047849                __sshru
- .text          0x00047856       0x41 /home/icc/agondev/lib/libagon.a(ishrs.o)
-                0x00047856                __ishru
-                0x0004785b                __ishrs
- .text          0x00047897        0x8 /home/icc/agondev/lib/libagon.a(idivu.o)
-                0x00047897                __idivu
- .text          0x0004789f        0xf /home/icc/agondev/lib/libagon.a(setflag.o)
-                0x0004789f                __setflag
- .text          0x000478ae        0xa /home/icc/agondev/lib/libagon.a(inot.o)
-                0x000478ae                __inot
- .text          0x000478b8        0xd /home/icc/agondev/lib/libagon.a(lshl.o)
-                0x000478b8                __lshl
- .text          0x000478c5        0x7 /home/icc/agondev/lib/libagon.a(idivs.o)
-                0x000478c5                __idivs
- .text          0x000478cc        0xa /home/icc/agondev/lib/libagon.a(bshru.o)
-                0x000478cc                __bshru
- .text          0x000478d6       0x30 /home/icc/agondev/lib/libagon.a(imulu.o)
-                0x000478d6                __imuls
-                0x000478d6                __imulu
- .text          0x00047906       0x10 /home/icc/agondev/lib/libagon.a(lshru.o)
-                0x00047906                __lshru
- .text          0x00047916       0x5c /home/icc/agondev/lib/libagon.a(lmulu.o)
-                0x00047916                __lmuls
-                0x00047916                __lmulu
- .text          0x00047972       0x10 /home/icc/agondev/lib/libagon.a(lremu.o)
-                0x00047972                __lremu
- .text          0x00047982       0x1b /home/icc/agondev/lib/libagon.a(lshrs.o)
-                0x00047982                __lshrs
-                0x0004798e                __lshrs.hijack_lshru
- .text          0x0004799d        0xd /home/icc/agondev/lib/libagon.a(lcmps.o)
-                0x0004799d                __lcmps
- .text          0x000479aa        0xe /home/icc/agondev/lib/libagon.a(frameset.o)
-                0x000479aa                __frameset
- .text          0x000479b8        0x8 /home/icc/agondev/lib/libagon.a(lcmpu.o)
-                0x000479b8                __lcmpu
- .text          0x000479c0        0xb /home/icc/agondev/lib/libagon.a(lcmpzero.o)
-                0x000479c0                __lcmpzero
- .text          0x000479cb       0x2c /home/icc/agondev/lib/libagon.a(crt0.o)
-                0x000479cb                _atexit
-                0x000479cb                _on_exit
- .text          0x000479f7        0xc /home/icc/agondev/lib/libagon.a(mos_getsysvar_time.o)
-                0x000479f7                _getsysvar_time
- .text          0x00047a03       0x16 /home/icc/agondev/lib/libagon.a(mos_fopen.o)
-                0x00047a03                _mos_fopen
- .text          0x00047a19       0x1a /home/icc/agondev/lib/libagon.a(mos_fwrite.o)
-                0x00047a19                _mos_fwrite
- .text          0x00047a33       0x1d /home/icc/agondev/lib/libagon.a(mos_flseek.o)
-                0x00047a33                _mos_flseek
- .text          0x00047a50        0x9 /home/icc/agondev/lib/libagon.a(mos_fclose.o)
-                0x00047a50                _mos_fclose
- .text          0x00047a59        0xa /home/icc/agondev/lib/libagon.a(mos_getfil.o)
-                0x00047a59                _mos_getfil
- .text          0x00047a63       0x1a /home/icc/agondev/lib/libagon.a(mos_fread.o)
-                0x00047a63                _mos_fread
- .text          0x00047a7d       0xb6 /home/icc/agondev/lib/libagon.a(fputc.o)
-                0x00047a7d                _fputc
-                0x00047b0d                _fput_char
- .text          0x00047b33       0x5e /home/icc/agondev/lib/libagon.a(files.o)
-                0x00047b33                __stdio_init
- .text          0x00047b91       0x1f /home/icc/agondev/lib/libagon.a(memset.o)
-                0x00047b91                _memset
- .text          0x00047bb0       0x22 /home/icc/agondev/lib/libagon.a(sbrk.o)
-                0x00047bb0                _sbrk
- .text          0x00047bd2        0x7 /home/icc/agondev/lib/libagon.a(putch.o)
-                0x00047bd2                _putch
-                0x00047bd2                __putch
- .text          0x00047bd9       0x24 /home/icc/agondev/lib/libagon.a(ldvrmu.o)
-                0x00047bd9                __ldvrmu
- .text          0x00047bfd       0x18 /home/icc/agondev/lib/libagon.a(idvrmu.o)
-                0x00047bfd                __idvrmu
-                0x00047c01                __idvrmu.hijack_a_iters_ude_dividend
- .text          0x00047c15       0x2e /home/icc/agondev/lib/libagon.a(idvrms.o)
-                0x00047c15                __idvrms
- .text          0x00047c43       0x16 /home/icc/agondev/lib/libagon.a(mos_fputc.o)
-                0x00047c43                _mos_fputc
+ .text          0x00046534        0x0 obj/zmalloc.o
+ .text          0x00046534     0x1382 /home/icc/agondev/lib/libagon.a(nanoprintf.o)
+                0x00046534                _npf_vpprintf
+                0x0004765d                _npf_pprintf
+                0x00047685                _npf_snprintf
+                0x000476ad                _npf_vsnprintf
+                0x0004776b                _vprintf
+                0x0004779b                _printf
+                0x000477ba                _fprintf
+                0x000477dd                _vfprintf
+                0x00047812                _vsprintf
+                0x00047831                _vsnprintf
+                0x00047865                _sprintf
+                0x0004788e                _snprintf
+ .text          0x000478b6       0x76 /home/icc/agondev/lib/libagon.a(realloc.c.o)
+                0x000478b6                _realloc
+ .text          0x0004792c       0x30 /home/icc/agondev/lib/libagon.a(memmove.o)
+                0x0004792c                _memmove
+ .text          0x0004795c        0x4 /home/icc/agondev/lib/libagon.a(clock.o)
+                0x0004795c                _clock
+ .text          0x00047960       0xbd /home/icc/agondev/lib/libagon.a(free.c.o)
+                0x00047960                _free
+ .text          0x00047a1d       0x21 /home/icc/agondev/lib/libagon.a(memcpy.o)
+                0x00047a1d                _memcpy
+ .text          0x00047a3e       0x9f /home/icc/agondev/lib/libagon.a(malloc.c.o)
+                0x00047a3e                _malloc
+ .text          0x00047add       0x1f /home/icc/agondev/lib/libagon.a(calloc.o)
+                0x00047add                _calloc
+ .text          0x00047afc       0x2c /home/icc/agondev/lib/libagon.a(puts.o)
+                0x00047afc                _puts
+ .text          0x00047b28       0x11 /home/icc/agondev/lib/libagon.a(putchar.o)
+                0x00047b28                _putchar
+ .text          0x00047b39        0xb /home/icc/agondev/lib/libagon.a(frameset0.o)
+                0x00047b39                __frameset0
+ .text          0x00047b44       0x1c /home/icc/agondev/lib/libagon.a(and.o)
+                0x00047b44                __land
+                0x00047b49                __iand
+                0x00047b4a                __iand.hijack_land
+ .text          0x00047b60        0xd /home/icc/agondev/lib/libagon.a(lneg.o)
+                0x00047b60                __lneg
+ .text          0x00047b6d        0x6 /home/icc/agondev/lib/libagon.a(ladd.o)
+                0x00047b6d                __ladd
+ .text          0x00047b73       0x1b /home/icc/agondev/lib/libagon.a(xor.o)
+                0x00047b73                __lxor
+                0x00047b77                __ixor
+ .text          0x00047b8e        0x9 /home/icc/agondev/lib/libagon.a(sand.o)
+                0x00047b8e                __sand
+ .text          0x00047b97        0x9 /home/icc/agondev/lib/libagon.a(ineg_sneg.o)
+                0x00047b97                __ineg
+                0x00047b97                __sneg
+ .text          0x00047ba0        0x9 /home/icc/agondev/lib/libagon.a(bshl.o)
+                0x00047ba0                __bshl
+ .text          0x00047ba9       0x1d /home/icc/agondev/lib/libagon.a(fpcmp.o)
+                0x00047ba9                __fcmp
+ .text          0x00047bc6       0x26 /home/icc/agondev/lib/libagon.a(ishl.o)
+                0x00047bc6                __sshl
+                0x00047bc6                __ishl
+ .text          0x00047bec       0x10 /home/icc/agondev/lib/libagon.a(ldivu.o)
+                0x00047bec                __ldivu
+ .text          0x00047bfc        0x1 /home/icc/agondev/lib/libagon.a(indcallhl.o)
+                0x00047bfc                __indcallhl
+ .text          0x00047bfd       0x1b /home/icc/agondev/lib/libagon.a(or.o)
+                0x00047bfd                __lor
+                0x00047c01                __ior
+ .text          0x00047c18        0xd /home/icc/agondev/lib/libagon.a(sshru.o)
+                0x00047c18                __sshru
+ .text          0x00047c25       0x41 /home/icc/agondev/lib/libagon.a(ishrs.o)
+                0x00047c25                __ishru
+                0x00047c2a                __ishrs
+ .text          0x00047c66        0x8 /home/icc/agondev/lib/libagon.a(idivu.o)
+                0x00047c66                __idivu
+ .text          0x00047c6e        0xf /home/icc/agondev/lib/libagon.a(setflag.o)
+                0x00047c6e                __setflag
+ .text          0x00047c7d        0xa /home/icc/agondev/lib/libagon.a(inot.o)
+                0x00047c7d                __inot
+ .text          0x00047c87        0xd /home/icc/agondev/lib/libagon.a(lshl.o)
+                0x00047c87                __lshl
+ .text          0x00047c94        0x7 /home/icc/agondev/lib/libagon.a(idivs.o)
+                0x00047c94                __idivs
+ .text          0x00047c9b        0xa /home/icc/agondev/lib/libagon.a(bshru.o)
+                0x00047c9b                __bshru
+ .text          0x00047ca5       0x30 /home/icc/agondev/lib/libagon.a(imulu.o)
+                0x00047ca5                __imuls
+                0x00047ca5                __imulu
+ .text          0x00047cd5       0x10 /home/icc/agondev/lib/libagon.a(lshru.o)
+                0x00047cd5                __lshru
+ .text          0x00047ce5       0x5c /home/icc/agondev/lib/libagon.a(lmulu.o)
+                0x00047ce5                __lmuls
+                0x00047ce5                __lmulu
+ .text          0x00047d41       0x10 /home/icc/agondev/lib/libagon.a(lremu.o)
+                0x00047d41                __lremu
+ .text          0x00047d51       0x1b /home/icc/agondev/lib/libagon.a(lshrs.o)
+                0x00047d51                __lshrs
+                0x00047d5d                __lshrs.hijack_lshru
+ .text          0x00047d6c        0xd /home/icc/agondev/lib/libagon.a(lcmps.o)
+                0x00047d6c                __lcmps
+ .text          0x00047d79        0xe /home/icc/agondev/lib/libagon.a(frameset.o)
+                0x00047d79                __frameset
+ .text          0x00047d87        0x8 /home/icc/agondev/lib/libagon.a(lcmpu.o)
+                0x00047d87                __lcmpu
+ .text          0x00047d8f        0xb /home/icc/agondev/lib/libagon.a(lcmpzero.o)
+                0x00047d8f                __lcmpzero
+ .text          0x00047d9a       0x2c /home/icc/agondev/lib/libagon.a(crt0.o)
+                0x00047d9a                _atexit
+                0x00047d9a                _on_exit
+ .text          0x00047dc6        0xc /home/icc/agondev/lib/libagon.a(mos_getsysvar_time.o)
+                0x00047dc6                _getsysvar_time
+ .text          0x00047dd2       0x16 /home/icc/agondev/lib/libagon.a(mos_fopen.o)
+                0x00047dd2                _mos_fopen
+ .text          0x00047de8       0x1a /home/icc/agondev/lib/libagon.a(mos_fwrite.o)
+                0x00047de8                _mos_fwrite
+ .text          0x00047e02       0x1d /home/icc/agondev/lib/libagon.a(mos_flseek.o)
+                0x00047e02                _mos_flseek
+ .text          0x00047e1f        0x9 /home/icc/agondev/lib/libagon.a(mos_fclose.o)
+                0x00047e1f                _mos_fclose
+ .text          0x00047e28        0xa /home/icc/agondev/lib/libagon.a(mos_getfil.o)
+                0x00047e28                _mos_getfil
+ .text          0x00047e32       0x1a /home/icc/agondev/lib/libagon.a(mos_fread.o)
+                0x00047e32                _mos_fread
+ .text          0x00047e4c       0xb6 /home/icc/agondev/lib/libagon.a(fputc.o)
+                0x00047e4c                _fputc
+                0x00047edc                _fput_char
+ .text          0x00047f02       0x5e /home/icc/agondev/lib/libagon.a(files.o)
+                0x00047f02                __stdio_init
+ .text          0x00047f60       0x1f /home/icc/agondev/lib/libagon.a(memset.o)
+                0x00047f60                _memset
+ .text          0x00047f7f       0x22 /home/icc/agondev/lib/libagon.a(sbrk.o)
+                0x00047f7f                _sbrk
+ .text          0x00047fa1        0x7 /home/icc/agondev/lib/libagon.a(putch.o)
+                0x00047fa1                _putch
+                0x00047fa1                __putch
+ .text          0x00047fa8       0x24 /home/icc/agondev/lib/libagon.a(ldvrmu.o)
+                0x00047fa8                __ldvrmu
+ .text          0x00047fcc       0x18 /home/icc/agondev/lib/libagon.a(idvrmu.o)
+                0x00047fcc                __idvrmu
+                0x00047fd0                __idvrmu.hijack_a_iters_ude_dividend
+ .text          0x00047fe4       0x2e /home/icc/agondev/lib/libagon.a(idvrms.o)
+                0x00047fe4                __idvrms
+ .text          0x00048012       0x16 /home/icc/agondev/lib/libagon.a(mos_fputc.o)
+                0x00048012                _mos_fputc
 
-.init_array     0x00047c59        0x0
+.init_array     0x00048028        0x0
  *(.init_array)
- .init_array    0x00047c59        0x0 /home/icc/agondev/lib/libagon.a(crt0.o)
+ .init_array    0x00048028        0x0 /home/icc/agondev/lib/libagon.a(crt0.o)
 
-.ctors          0x00047c59        0x0
+.ctors          0x00048028        0x0
  *(.ctors)
- .ctors         0x00047c59        0x0 /home/icc/agondev/lib/libagon.a(crt0.o)
+ .ctors         0x00048028        0x0 /home/icc/agondev/lib/libagon.a(crt0.o)
 
-.dtors          0x00047c59        0x0
+.dtors          0x00048028        0x0
  *(.dtors)
- .dtors         0x00047c59        0x0 /home/icc/agondev/lib/libagon.a(crt0.o)
+ .dtors         0x00048028        0x0 /home/icc/agondev/lib/libagon.a(crt0.o)
 
 .comment        0x00000000      0x56d
  .comment       0x00000000       0x77 obj/value.o
@@ -339,170 +339,170 @@ Linker script and memory map
  .comment       0x0000047f       0x77 /home/icc/agondev/lib/libagon.a(fputc.o)
  .comment       0x000004f6       0x77 /home/icc/agondev/lib/libagon.a(files.o)
 
-.fini_array     0x00047c59        0x0
+.fini_array     0x00048028        0x0
  *(.fini_array)
- .fini_array    0x00047c59        0x0 /home/icc/agondev/lib/libagon.a(crt0.o)
+ .fini_array    0x00048028        0x0 /home/icc/agondev/lib/libagon.a(crt0.o)
 
-.rodata         0x00047c59     0x2160
+.rodata         0x00048028     0x219b
  *(.rodata)
- .rodata        0x00047c59       0x3c obj/value.o
- .rodata        0x00047c95       0x10 obj/conv.o
-                0x00047c95                _table
- .rodata        0x00047ca5     0x1948 obj/isa_table.o
-                0x000492cc                _isa_table
-                0x000495ea                _isa_table_count
- .rodata        0x000495ed      0x712 obj/dzap.o
- .rodata        0x00049cff       0xa5 /home/icc/agondev/lib/libagon.a(nanoprintf.o)
- .rodata        0x00049da4        0x9 /home/icc/agondev/lib/libagon.a(puts.o)
-                0x00049da4                ___null_literal_str
-                0x00049dab                ___end_of_line_str
- .rodata        0x00049dad        0xc /home/icc/agondev/lib/libagon.a(crt0.o)
+ .rodata        0x00048028       0x3c obj/value.o
+ .rodata        0x00048064       0x10 obj/conv.o
+                0x00048064                _table
+ .rodata        0x00048074     0x1948 obj/isa_table.o
+                0x0004969b                _isa_table
+                0x000499b9                _isa_table_count
+ .rodata        0x000499bc      0x74d obj/dzap.o
+ .rodata        0x0004a109       0xa5 /home/icc/agondev/lib/libagon.a(nanoprintf.o)
+ .rodata        0x0004a1ae        0x9 /home/icc/agondev/lib/libagon.a(puts.o)
+                0x0004a1ae                ___null_literal_str
+                0x0004a1b5                ___end_of_line_str
+ .rodata        0x0004a1b7        0xc /home/icc/agondev/lib/libagon.a(crt0.o)
 
-.data           0x00049db9       0x4e
+.data           0x0004a1c3       0x4e
  *(.data)
- .data          0x00049db9        0x0 obj/value.o
- .data          0x00049db9        0x0 obj/conv.o
- .data          0x00049db9        0x0 obj/buf_reader.o
- .data          0x00049db9        0x0 obj/isa_table.o
- .data          0x00049db9        0x0 obj/dzap.o
- .data          0x00049db9        0x0 obj/zmalloc.o
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(nanoprintf.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(realloc.c.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(memmove.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(clock.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(free.c.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(memcpy.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(malloc.c.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(calloc.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(puts.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(putchar.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(frameset0.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(and.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(lneg.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(ladd.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(xor.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(sand.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(ineg_sneg.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(bshl.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(fpcmp.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(ishl.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(ldivu.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(indcallhl.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(or.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(sshru.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(ishrs.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(idivu.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(setflag.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(inot.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(lshl.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(idivs.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(bshru.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(imulu.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(lshru.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(lmulu.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(lremu.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(lshrs.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(lcmps.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(frameset.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(lcmpu.o)
- .data          0x00049db9        0x0 /home/icc/agondev/lib/libagon.a(lcmpzero.o)
- .data          0x00049db9       0x39 /home/icc/agondev/lib/libagon.a(crt0.o)
-                0x00049dec                _exit.sp
-                0x00049def                _sys_vars
- .data          0x00049df2        0x0 /home/icc/agondev/lib/libagon.a(mos_getsysvar_time.o)
- .data          0x00049df2        0x0 /home/icc/agondev/lib/libagon.a(mos_fopen.o)
- .data          0x00049df2        0x0 /home/icc/agondev/lib/libagon.a(mos_fwrite.o)
- .data          0x00049df2        0x0 /home/icc/agondev/lib/libagon.a(mos_flseek.o)
- .data          0x00049df2        0x0 /home/icc/agondev/lib/libagon.a(mos_fclose.o)
- .data          0x00049df2        0x0 /home/icc/agondev/lib/libagon.a(mos_getfil.o)
- .data          0x00049df2        0x0 /home/icc/agondev/lib/libagon.a(mos_fread.o)
- .data          0x00049df2        0x0 /home/icc/agondev/lib/libagon.a(fputc.o)
- .data          0x00049df2       0x12 /home/icc/agondev/lib/libagon.a(files.o)
-                0x00049df2                _stdin
-                0x00049df8                _stdout
-                0x00049dfe                _stderr
- .data          0x00049e04        0x0 /home/icc/agondev/lib/libagon.a(memset.o)
- .data          0x00049e04        0x3 /home/icc/agondev/lib/libagon.a(sbrk.o)
-                0x00049e04                __sbrkbase
- .data          0x00049e07        0x0 /home/icc/agondev/lib/libagon.a(putch.o)
- .data          0x00049e07        0x0 /home/icc/agondev/lib/libagon.a(ldvrmu.o)
- .data          0x00049e07        0x0 /home/icc/agondev/lib/libagon.a(idvrmu.o)
- .data          0x00049e07        0x0 /home/icc/agondev/lib/libagon.a(idvrms.o)
- .data          0x00049e07        0x0 /home/icc/agondev/lib/libagon.a(mos_fputc.o)
+ .data          0x0004a1c3        0x0 obj/value.o
+ .data          0x0004a1c3        0x0 obj/conv.o
+ .data          0x0004a1c3        0x0 obj/buf_reader.o
+ .data          0x0004a1c3        0x0 obj/isa_table.o
+ .data          0x0004a1c3        0x0 obj/dzap.o
+ .data          0x0004a1c3        0x0 obj/zmalloc.o
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(nanoprintf.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(realloc.c.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(memmove.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(clock.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(free.c.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(memcpy.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(malloc.c.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(calloc.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(puts.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(putchar.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(frameset0.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(and.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(lneg.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(ladd.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(xor.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(sand.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(ineg_sneg.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(bshl.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(fpcmp.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(ishl.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(ldivu.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(indcallhl.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(or.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(sshru.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(ishrs.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(idivu.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(setflag.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(inot.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(lshl.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(idivs.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(bshru.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(imulu.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(lshru.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(lmulu.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(lremu.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(lshrs.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(lcmps.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(frameset.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(lcmpu.o)
+ .data          0x0004a1c3        0x0 /home/icc/agondev/lib/libagon.a(lcmpzero.o)
+ .data          0x0004a1c3       0x39 /home/icc/agondev/lib/libagon.a(crt0.o)
+                0x0004a1f6                _exit.sp
+                0x0004a1f9                _sys_vars
+ .data          0x0004a1fc        0x0 /home/icc/agondev/lib/libagon.a(mos_getsysvar_time.o)
+ .data          0x0004a1fc        0x0 /home/icc/agondev/lib/libagon.a(mos_fopen.o)
+ .data          0x0004a1fc        0x0 /home/icc/agondev/lib/libagon.a(mos_fwrite.o)
+ .data          0x0004a1fc        0x0 /home/icc/agondev/lib/libagon.a(mos_flseek.o)
+ .data          0x0004a1fc        0x0 /home/icc/agondev/lib/libagon.a(mos_fclose.o)
+ .data          0x0004a1fc        0x0 /home/icc/agondev/lib/libagon.a(mos_getfil.o)
+ .data          0x0004a1fc        0x0 /home/icc/agondev/lib/libagon.a(mos_fread.o)
+ .data          0x0004a1fc        0x0 /home/icc/agondev/lib/libagon.a(fputc.o)
+ .data          0x0004a1fc       0x12 /home/icc/agondev/lib/libagon.a(files.o)
+                0x0004a1fc                _stdin
+                0x0004a202                _stdout
+                0x0004a208                _stderr
+ .data          0x0004a20e        0x0 /home/icc/agondev/lib/libagon.a(memset.o)
+ .data          0x0004a20e        0x3 /home/icc/agondev/lib/libagon.a(sbrk.o)
+                0x0004a20e                __sbrkbase
+ .data          0x0004a211        0x0 /home/icc/agondev/lib/libagon.a(putch.o)
+ .data          0x0004a211        0x0 /home/icc/agondev/lib/libagon.a(ldvrmu.o)
+ .data          0x0004a211        0x0 /home/icc/agondev/lib/libagon.a(idvrmu.o)
+ .data          0x0004a211        0x0 /home/icc/agondev/lib/libagon.a(idvrms.o)
+ .data          0x0004a211        0x0 /home/icc/agondev/lib/libagon.a(mos_fputc.o)
 
-.bss            0x00049e07     0x3b4e
-                0x00049e07                        bss_start = .
+.bss            0x0004a211     0x3b4e
+                0x0004a211                        bss_start = .
  *(.bss .bss*)
- .bss           0x00049e07        0x0 obj/value.o
- .bss           0x00049e07        0x0 obj/conv.o
- .bss           0x00049e07        0x0 obj/buf_reader.o
- .bss           0x00049e07        0x0 obj/isa_table.o
- .bss           0x00049e07     0x3b18 obj/dzap.o
- .bss           0x0004d91f        0x0 obj/zmalloc.o
- .bss           0x0004d91f        0x0 /home/icc/agondev/lib/libagon.a(nanoprintf.o)
- .bss           0x0004d91f        0x0 /home/icc/agondev/lib/libagon.a(realloc.c.o)
- .bss           0x0004d91f        0x0 /home/icc/agondev/lib/libagon.a(memmove.o)
- .bss           0x0004d91f        0x0 /home/icc/agondev/lib/libagon.a(clock.o)
- .bss           0x0004d91f        0x0 /home/icc/agondev/lib/libagon.a(free.c.o)
- .bss           0x0004d91f        0x0 /home/icc/agondev/lib/libagon.a(memcpy.o)
- .bss           0x0004d91f        0x6 /home/icc/agondev/lib/libagon.a(malloc.c.o)
-                0x0004d91f                __alloc_base
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(calloc.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(puts.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(putchar.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(frameset0.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(and.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(lneg.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(ladd.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(xor.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(sand.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(ineg_sneg.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(bshl.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(fpcmp.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(ishl.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(ldivu.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(indcallhl.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(or.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(sshru.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(ishrs.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(idivu.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(setflag.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(inot.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(lshl.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(idivs.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(bshru.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(imulu.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(lshru.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(lmulu.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(lremu.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(lshrs.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(lcmps.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(frameset.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(lcmpu.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(lcmpzero.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(crt0.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(mos_getsysvar_time.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(mos_fopen.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(mos_fwrite.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(mos_flseek.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(mos_fclose.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(mos_getfil.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(mos_fread.o)
- .bss           0x0004d925        0x0 /home/icc/agondev/lib/libagon.a(fputc.o)
- .bss           0x0004d925       0x30 /home/icc/agondev/lib/libagon.a(files.o)
-                0x0004d925                __file_streams
- .bss           0x0004d955        0x0 /home/icc/agondev/lib/libagon.a(memset.o)
- .bss           0x0004d955        0x0 /home/icc/agondev/lib/libagon.a(sbrk.o)
- .bss           0x0004d955        0x0 /home/icc/agondev/lib/libagon.a(putch.o)
- .bss           0x0004d955        0x0 /home/icc/agondev/lib/libagon.a(ldvrmu.o)
- .bss           0x0004d955        0x0 /home/icc/agondev/lib/libagon.a(idvrmu.o)
- .bss           0x0004d955        0x0 /home/icc/agondev/lib/libagon.a(idvrms.o)
- .bss           0x0004d955        0x0 /home/icc/agondev/lib/libagon.a(mos_fputc.o)
-                0x0004d955                        bss_end = .
+ .bss           0x0004a211        0x0 obj/value.o
+ .bss           0x0004a211        0x0 obj/conv.o
+ .bss           0x0004a211        0x0 obj/buf_reader.o
+ .bss           0x0004a211        0x0 obj/isa_table.o
+ .bss           0x0004a211     0x3b18 obj/dzap.o
+ .bss           0x0004dd29        0x0 obj/zmalloc.o
+ .bss           0x0004dd29        0x0 /home/icc/agondev/lib/libagon.a(nanoprintf.o)
+ .bss           0x0004dd29        0x0 /home/icc/agondev/lib/libagon.a(realloc.c.o)
+ .bss           0x0004dd29        0x0 /home/icc/agondev/lib/libagon.a(memmove.o)
+ .bss           0x0004dd29        0x0 /home/icc/agondev/lib/libagon.a(clock.o)
+ .bss           0x0004dd29        0x0 /home/icc/agondev/lib/libagon.a(free.c.o)
+ .bss           0x0004dd29        0x0 /home/icc/agondev/lib/libagon.a(memcpy.o)
+ .bss           0x0004dd29        0x6 /home/icc/agondev/lib/libagon.a(malloc.c.o)
+                0x0004dd29                __alloc_base
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(calloc.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(puts.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(putchar.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(frameset0.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(and.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(lneg.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(ladd.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(xor.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(sand.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(ineg_sneg.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(bshl.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(fpcmp.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(ishl.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(ldivu.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(indcallhl.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(or.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(sshru.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(ishrs.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(idivu.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(setflag.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(inot.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(lshl.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(idivs.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(bshru.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(imulu.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(lshru.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(lmulu.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(lremu.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(lshrs.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(lcmps.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(frameset.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(lcmpu.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(lcmpzero.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(crt0.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(mos_getsysvar_time.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(mos_fopen.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(mos_fwrite.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(mos_flseek.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(mos_fclose.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(mos_getfil.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(mos_fread.o)
+ .bss           0x0004dd2f        0x0 /home/icc/agondev/lib/libagon.a(fputc.o)
+ .bss           0x0004dd2f       0x30 /home/icc/agondev/lib/libagon.a(files.o)
+                0x0004dd2f                __file_streams
+ .bss           0x0004dd5f        0x0 /home/icc/agondev/lib/libagon.a(memset.o)
+ .bss           0x0004dd5f        0x0 /home/icc/agondev/lib/libagon.a(sbrk.o)
+ .bss           0x0004dd5f        0x0 /home/icc/agondev/lib/libagon.a(putch.o)
+ .bss           0x0004dd5f        0x0 /home/icc/agondev/lib/libagon.a(ldvrmu.o)
+ .bss           0x0004dd5f        0x0 /home/icc/agondev/lib/libagon.a(idvrmu.o)
+ .bss           0x0004dd5f        0x0 /home/icc/agondev/lib/libagon.a(idvrms.o)
+ .bss           0x0004dd5f        0x0 /home/icc/agondev/lib/libagon.a(mos_fputc.o)
+                0x0004dd5f                        bss_end = .
                 0x000b0000                        __stack = (RAM_START + RAM_SIZE)
-                0x00049e07                        ___low_bss = bss_start
+                0x0004a211                        ___low_bss = bss_start
                 0x00003b4e                        ___len_bss = SIZEOF (.bss)
-                0x0004d955                        ___heapbot = bss_end
+                0x0004dd5f                        ___heapbot = bss_end
                 0x000b0000                        ___heaptop = (RAM_START + RAM_SIZE)
                 0x00000001                        ___run_clearbss = (___len_bss > 0x0)
                 0x00000000                        ___init_array_count = (SIZEOF (.init_array) / 0x3)
@@ -519,10 +519,10 @@ Linker script and memory map
                 0x00000100                        ___fini_count_a = ((((___fini_count - 0x1) >> 0x10) & 0xff) + 0x1)
                 0x00000100                        ___fini_count_b = (((___fini_count - 0x1) & 0xff) + 0x1)
                 0x00000100                        ___fini_count_c = ((((___fini_count - 0x1) >> 0x8) & 0xff) + 0x1)
-                0x00047c59                        ___init_array_functions = (SIZEOF (.init_array) + ADDR (.init_array))
-                0x00047c59                        ___init_ctors_functions = (SIZEOF (.ctors) + ADDR (.ctors))
-                0x00047c59                        ___fini_dtors_functions = (SIZEOF (.dtors) + ADDR (.dtors))
-                0x00047c59                        ___fini_array_functions = (SIZEOF (.fini_array) + ADDR (.fini_array))
+                0x00048028                        ___init_array_functions = (SIZEOF (.init_array) + ADDR (.init_array))
+                0x00048028                        ___init_ctors_functions = (SIZEOF (.ctors) + ADDR (.ctors))
+                0x00048028                        ___fini_dtors_functions = (SIZEOF (.dtors) + ADDR (.dtors))
+                0x00048028                        ___fini_array_functions = (SIZEOF (.fini_array) + ADDR (.fini_array))
 LOAD obj/value.o
 LOAD obj/conv.o
 LOAD obj/buf_reader.o

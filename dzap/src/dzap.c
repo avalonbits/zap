@@ -64,8 +64,9 @@
 #include "agon/mos.h"
 #endif
 
-/* ADL mode is fixed. Choosing it is a directive, and directives are what this
- * program exists to not have. */
+/* The mode the machine starts in. `ASSUME ADL=n` moves it, and may move it
+ * again: the reference lets a file switch back and forth, and the width of an
+ * immediate follows wherever it is at that line. */
 #define DZ_ADL   true
 #define DZ_ORG   0x040000
 
@@ -551,6 +552,17 @@ typedef struct _dz {
      * nothing in between write the gap between them. */
     int org;
     bool org_set;
+
+    /* Whether an address-sized immediate is three bytes or two.
+     *
+     * `ASSUME ADL=0` is Z80 mode and makes `ld hl, 0x1234` three bytes rather
+     * than four; `ADL=1` is the eZ80's own. A file may switch as often as it
+     * likes and the reference honours it per line, so this is a field and not
+     * the compile-time constant it was. A forward reference records the width
+     * it had when the instruction was emitted, which is what the fixup carries
+     * -- so switching after the reference and before the definition changes
+     * nothing, which is also what the reference does. */
+    bool adl;
 
     int cap;
 
@@ -3427,6 +3439,7 @@ static bool line_fill(dz* z, buf_reader* r) {
 #define DIR_ORG   6
 #define DIR_INCLUDE 7
 #define DIR_INCBIN  8
+#define DIR_ASSUME  9
 
 /* Defined with the line loop, far below. An include re-enters it, and the
  * dispatch that does so is here. */
@@ -3483,6 +3496,7 @@ static uint8_t directive_of(const char* s, int n) {
             break;
         case 6:
             if (dir_is(s, "incbin", 6)) return DIR_INCBIN;
+            if (dir_is(s, "assume", 6)) return DIR_ASSUME;
             break;
         case 7:
             if (dir_is(s, "include", 7)) return DIR_INCLUDE;
@@ -3957,6 +3971,47 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
         return false;
     }
 
+    if (kind == DIR_ASSUME) {
+        /* `ASSUME ADL=0` or `=1`, and nothing else: the reference calls any
+         * other name an invalid operand and any other value an invalid ADL
+         * mode. Spaces are allowed around the equals. */
+        while (is_space_ch(*p)) {
+            p++;
+        }
+        if (!dir_is(p, "adl", 3) || (cclass[(uint8_t) p[3]] & C_MNEM) != 0) {
+            z->err = "expected ADL";
+
+            return false;
+        }
+        p += 3;
+        while (is_space_ch(*p)) {
+            p++;
+        }
+        if (*p != '=') {
+            z->err = "expected = after ADL";
+
+            return false;
+        }
+        p++;
+        while (is_space_ch(*p)) {
+            p++;
+        }
+        /* Read as a number, not as one character: the reference takes
+         * `adl=01` and means one by it. Only the two values, though -- `adl=2`
+         * is "Invalid ADL mode" there. */
+        int mode = 0;
+        const char* const after = lit_value(p, e, &mode);
+        if (after == NULL || (mode != 0 && mode != 1)) {
+            z->err = "ADL is 0 or 1";
+
+            return false;
+        }
+        z->adl = mode == 1;
+        *stop = after;
+
+        return true;
+    }
+
     if (kind >= DIR_INCLUDE) {
         /* A file name rather than a value, and the only argument that is not
          * an expression. `name` lives in this frame for as long as the file it
@@ -4288,8 +4343,8 @@ __attribute__((always_inline)) static inline void transform(emitted* out, dop* o
     }
 }
 
-static uint8_t* emit_imm(uint8_t* o, const dop* op, uint8_t cond) {
-    const int width = (cond & IMM_N) ? 1 : (DZ_ADL ? 3 : 2);
+static uint8_t* emit_imm(uint8_t* o, const dop* op, uint8_t cond, bool adl) {
+    const int width = (cond & IMM_N) ? 1 : (adl ? 3 : 2);
 
     /* Written out rather than looped, and reading op->imm afresh each time
      * rather than through a local. The loop's `>> (i * 8)` is a variable shift
@@ -4470,23 +4525,23 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
             if (a->fwd != NULL
                 && !fix_add(z, a->fwd, a->fwd2, a->imm,
                             (uint8_t) (((row->condA & IMM_N) ? 1
-                                                             : (DZ_ADL ? 3 : 2))
+                                                             : (z->adl ? 3 : 2))
                                        | (a->fwd2_neg ? FIX_SUB2 : 0)),
                             (int) (o - z->out))) {
                 return false;
             }
-            o = emit_imm(o, a, row->condA);
+            o = emit_imm(o, a, row->condA, z->adl);
         }
         if ((b->mode & IMM) != 0 && (row->condB & (IMM_N | IMM_MMN))) {
             if (b->fwd != NULL
                 && !fix_add(z, b->fwd, b->fwd2, b->imm,
                             (uint8_t) (((row->condB & IMM_N) ? 1
-                                                             : (DZ_ADL ? 3 : 2))
+                                                             : (z->adl ? 3 : 2))
                                        | (b->fwd2_neg ? FIX_SUB2 : 0)),
                             (int) (o - z->out))) {
                 return false;
             }
-            o = emit_imm(o, b, row->condB);
+            o = emit_imm(o, b, row->condB, z->adl);
         }
     }
 
@@ -4870,6 +4925,7 @@ __attribute__((noinline)) static bool run(dz* z, const char* path) {
     z->o = z->out;
     z->org = DZ_ORG;
     z->org_set = false;
+    z->adl = DZ_ADL;
     z->lim = z->out + z->cap - OUT_MAX_INSN;
     Z_SITE("symbol buckets");
     z->syms = (symslot*) calloc(NSYMB, sizeof(symslot));

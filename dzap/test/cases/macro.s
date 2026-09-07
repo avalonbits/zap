@@ -151,3 +151,130 @@ second:
   ENDMACRO
   trim2 5, 6
   trim2   5  ,   65  
+
+; A body with more local labels than the undo log starts with, invoked twice.
+;
+; Entering an expansion advances the generation stamp, which makes every bucket
+; read as empty; leaving it puts the stamp back. What the stamp cannot undo is
+; a bucket the body wrote over, so those are recorded as they happen, and the
+; record grows -- the reference assembles a body with sixty locals in it, so a
+; fixed table would refuse a legal program.
+wide:
+@k1:
+  nop
+  MACRO manylocals
+@k1:
+  nop
+@k2:
+  nop
+@k3:
+  nop
+@k4:
+  nop
+@k5:
+  nop
+@k6:
+  nop
+@k7:
+  nop
+@k8:
+  nop
+@k9:
+  nop
+@k10:
+  nop
+@k11:
+  nop
+@k12:
+  nop
+@k13:
+  nop
+@k14:
+  nop
+@k15:
+  nop
+@k16:
+  nop
+@k17:
+  nop
+@k18:
+  nop
+@k19:
+  nop
+@k20:
+  nop
+@k21:
+  nop
+@k22:
+  nop
+@k23:
+  nop
+@k24:
+  nop
+@k25:
+  nop
+@k26:
+  nop
+@k27:
+  nop
+@k28:
+  nop
+@k29:
+  nop
+@k30:
+  nop
+@k31:
+  nop
+@k32:
+  nop
+@k33:
+  nop
+@k34:
+  nop
+@k35:
+  nop
+@k36:
+  nop
+@k37:
+  nop
+@k38:
+  nop
+@k39:
+  nop
+@k40:
+  nop
+@k41:
+  nop
+@k42:
+  nop
+@k43:
+  nop
+@k44:
+  nop
+@k45:
+  nop
+@k46:
+  nop
+@k47:
+  nop
+@k48:
+  nop
+@k49:
+  nop
+@k50:
+  nop
+@k51:
+  nop
+@k52:
+  nop
+@k53:
+  nop
+@k54:
+  nop
+@k55:
+  nop
+  jp @k55
+  ENDMACRO
+  manylocals
+  manylocals
+  jp @k1

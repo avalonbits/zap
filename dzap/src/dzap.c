@@ -183,7 +183,7 @@ _Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
 /* How many parameters a macro may take. The reference's own corpus does not go
  * past four; sixteen is more than any of it and keeps the argument spans on the
  * stack rather than in another allocation. */
-#define MACRO_MAXPARAM 16
+#define MACRO_MAXPARAM 8
 
 typedef struct _macro macro;
 struct _macro {
@@ -267,6 +267,14 @@ struct sym {
  * 10.8 characters against 11.8, and costs 32 KB; the smaller table is the
  * starting point and the trade is recorded rather than assumed. */
 #define NSYMB 2048
+
+/* One bucket as it was before an expansion took it over. See scope_push. */
+#define UNDO_STEP 32
+typedef struct {
+    sym* head;
+    uint8_t b;
+    uint8_t gen;
+} locundo;
 
 typedef struct {
     sym* head;
@@ -731,6 +739,9 @@ typedef struct _dz {
     int lfix_used;
     int lfix_cap;
     uint8_t gen;            /* which scope the local buckets belong to */
+    locundo* undo;          /* buckets an expansion took over. scope_push */
+    int undo_used;
+    int undo_cap;
 } dz;
 
 /* The fields touched on every line have to be reachable in one instruction.
@@ -1083,6 +1094,34 @@ static bool scope_end(dz* z) {
     return true;
 }
 
+/* Remembers one bucket, so that scope_pop can put it back. Out of line and
+ * reached at most once per bucket per expansion. */
+__attribute__((noinline))
+static bool undo_note(dz* z, int b) {
+    if (z->undo_used == z->undo_cap) {
+        /* Grown rather than capped. One entry per distinct bucket per level of
+         * nesting is at most 64 times the nesting limit, but a body with sixty
+         * local labels is legal -- the reference assembles one -- and a fixed
+         * table would refuse it. */
+        const int want = z->undo_cap == 0 ? UNDO_STEP : z->undo_cap + z->undo_cap;
+        Z_SITE("macro scope");
+        locundo* grown = (locundo*) realloc(z->undo, sizeof(locundo) * (size_t) want);
+        if (grown == NULL) {
+            z->err = "out of memory for macros";
+
+            return false;
+        }
+        z->undo = grown;
+        z->undo_cap = want;
+    }
+    locundo* u = &z->undo[z->undo_used++];
+    u->head = z->locs[b].head;
+    u->b = (uint8_t) b;
+    u->gen = z->locs[b].gen;
+
+    return true;
+}
+
 /* The entry for a local name in the current scope, made if there is not one.
  *
  * The bucket is empty unless its stamp is this scope's, whatever chain it
@@ -1124,6 +1163,12 @@ static sym* loc_intern(dz* z, const char* name, int len) {
             }
         }
     } else {
+        /* The bucket belonged to an older scope and is about to belong to this
+         * one. Inside an expansion the older scope is the caller's and is not
+         * finished with, so what is here is written down first. */
+        if (z->expanding != 0 && !undo_note(z, b)) {
+            return NULL;
+        }
         z->locs[b].gen = z->gen;
         z->locs[b].head = NULL;
     }
@@ -3492,57 +3537,52 @@ static bool line_fill(dz* z, buf_reader* r) {
 
 static bool run_lines(dz* z);
 
-/* The local-label scope a macro expansion runs in, saved and put back.
+/* The local-label scope a macro expansion runs in, set aside and put back.
  *
  * An expansion needs a scope of its own -- the reference gives it one, so a
- * body defining `@loc` may be invoked twice -- and the caller's has to survive,
- * because the reference lets a local defined before an invocation be named
- * after it. The first attempt used `scope_end` at both ends and did the first
- * of those and not the second: it resolved and cleared the *caller's* locals on
- * the way in, and `@a: nop / m / jp @a` stopped assembling.
+ * body defining `@loc` may be invoked twice, and a body naming `@a` does not
+ * see the caller's -- and the caller's has to survive, because the reference
+ * lets a local defined before an invocation be named after it.
  *
- * The buckets cannot be hidden behind the generation stamp the way a new scope
- * hides an old one, because the expansion writes bucket heads and the stamp
- * only says whose they are: restoring the stamp afterwards would leave the
- * caller's chains overwritten. So they are copied out, and the copy goes on the
- * heap rather than the frame -- 256 bytes per level of expansion is more than
- * this machine's stack should carry eight deep.
+ * The scope is entered by advancing the generation stamp, which is what ends
+ * an ordinary scope: every bucket then belongs to an older generation and
+ * reads as empty. Leaving it is the stamp going back.
  *
- * The slot and name arenas are started empty rather than shared, because
- * `scope_end` rewinds them to their first block: an expansion that appended to
- * the caller's arena would have its slots written over the caller's the moment
- * the body held a global label, and appending without that hazard would mean
- * teaching every rewind about a floor. Two blocks are allocated, and only if
- * the body names a local at all. */
+ * What the stamp cannot undo is a bucket the body *wrote*, because claiming a
+ * bucket overwrites the head the caller had. Those are written down as they
+ * happen -- see undo_note -- and there are only ever as many as the body has
+ * distinct local names.
+ *
+ * The first version copied all 64 buckets out and back instead. It was correct
+ * and it cost 12,300 cycles an invocation against 770, because an indexed
+ * struct assignment in a loop is not a block move on this machine and memcpy
+ * of 256 bytes is not free either. isa_real spent 1.48 seconds in it.
+ *
+ * The slot and name arenas are shared with the caller rather than replaced.
+ * The hazard there was `scope_end` rewinding them to their first block on top
+ * of the caller's live slots, and it cannot arise: a scope only ends on a
+ * global label or an EQU, and the reference refuses both inside a macro body,
+ * which dzap now does too. So the body appends, and the counters rewind at the
+ * end to hand the space back. */
 typedef struct {
-    locslot* slots;
-    locblock* locfirst;
     locblock* loccur;
     namblock* locnames;
-    namblock* locnamfirst;
     int locs_used;
     int locnames_used;
     int lfix_used;
+    int undo_used;
     int scope_line;
     uint8_t gen;
 } locsave;
 
+__attribute__((noinline))
 static bool scope_push(dz* z, locsave* sv) {
-    Z_SITE("macro scope");
-    sv->slots = (locslot*) malloc(sizeof(locslot) * NLOCB);
-    if (sv->slots == NULL) {
-        return false;
-    }
-    for (int b = 0; b < NLOCB; b++) {
-        sv->slots[b] = z->locs[b];
-    }
-    sv->locfirst = z->locfirst;
     sv->loccur = z->loccur;
     sv->locnames = z->locnames;
-    sv->locnamfirst = z->locnamfirst;
     sv->locs_used = z->locs_used;
     sv->locnames_used = z->locnames_used;
     sv->lfix_used = z->lfix_used;
+    sv->undo_used = z->undo_used;
     sv->gen = z->gen;
     /* The scope end a global label left pending belongs to the caller. Left
      * standing, the first local in the body would notice it -- the body counts
@@ -3553,18 +3593,16 @@ static bool scope_push(dz* z, locsave* sv) {
     sv->scope_line = z->scope_line;
     z->scope_line = 0;
 
-    /* An empty scope, current: every bucket belongs to this one and holds
-     * nothing. */
-    for (int b = 0; b < NLOCB; b++) {
-        z->locs[b].head = NULL;
-        z->locs[b].gen = z->gen;
+    if (++z->gen == 0) {
+        /* The stamp has wrapped, so a bucket left over from 256 scopes ago
+         * would read as belonging to this one. The undo log is what puts them
+         * back, and it records what it finds, so emptying them here is safe. */
+        for (int b = 0; b < NLOCB; b++) {
+            z->locs[b].gen = 0;
+            z->locs[b].head = NULL;
+        }
+        z->gen = 1;
     }
-    z->locfirst = NULL;
-    z->loccur = NULL;
-    z->locs_used = LOCS_STEP;   /* nothing to hand out until a block is taken */
-    z->locnames = NULL;
-    z->locnamfirst = NULL;
-    z->locnames_used = 0;
 
     return true;
 }
@@ -3573,6 +3611,7 @@ static bool scope_push(dz* z, locsave* sv) {
  *
  * Only the fixups the expansion added are resolved -- the caller's are still
  * outstanding and belong to a scope that has not ended. */
+__attribute__((noinline))
 static bool scope_pop(dz* z, locsave* sv) {
     bool ok = true;
     for (int i = sv->lfix_used; i < z->lfix_used; i++) {
@@ -3581,29 +3620,24 @@ static bool scope_pop(dz* z, locsave* sv) {
             break;
         }
     }
-    for (int b = 0; b < NLOCB; b++) {
-        z->locs[b] = sv->slots[b];
+
+    while (z->undo_used > sv->undo_used) {
+        const locundo* u = &z->undo[--z->undo_used];
+        z->locs[u->b].head = u->head;
+        z->locs[u->b].gen = u->gen;
     }
-    free(sv->slots);
-    for (locblock* b = z->locfirst; b != NULL; ) {
-        locblock* next = b->next;
-        free(b);
-        b = next;
-    }
-    for (namblock* b = z->locnames; b != NULL; ) {
-        namblock* next = b->next;
-        free(b);
-        b = next;
-    }
-    z->locfirst = sv->locfirst;
-    z->loccur = sv->loccur;
-    z->locnames = sv->locnames;
-    z->locnamfirst = sv->locnamfirst;
-    z->locs_used = sv->locs_used;
-    z->locnames_used = sv->locnames_used;
-    z->lfix_used = sv->lfix_used;
-    z->scope_line = sv->scope_line;
     z->gen = sv->gen;
+    z->scope_line = sv->scope_line;
+    z->lfix_used = sv->lfix_used;
+
+    /* The arena counters go back so the space is handed out again. The name
+     * blocks only rewind if the body did not need a new one: nam_take pushes a
+     * new block in front of the list, and rewinding past it would lose it. */
+    z->loccur = sv->loccur;
+    z->locs_used = sv->locs_used;
+    if (z->locnames == sv->locnames) {
+        z->locnames_used = sv->locnames_used;
+    }
 
     return ok;
 }
@@ -3788,14 +3822,17 @@ static bool macro_line(dz* z, const char* p, const char* e) {
  * redefinition, and `@a` cannot be named after the expansion ends.
  */
 __attribute__((noinline))
-static bool macro_expand(dz* z, const macro* m, const char* p, const char* e,
-                         const char** stop) {
-    if (z->depth >= INCLUDE_MAXDEPTH) {
-        z->err = "macros nested too deeply";
-
-        return false;
-    }
-
+/* The body with its parameters replaced, as a buffer the caller owns.
+ *
+ * Separate from the running of it because of the frame. `argp` and `argn` are
+ * sixteen pointers between them, and while they sat in the same function as
+ * the reader that is set aside and the scope that is saved, everything in
+ * there was past the 128 bytes an `ix` displacement reaches: thirty accesses
+ * went through a five-instruction address computation apiece. Split, both
+ * frames fit. */
+__attribute__((noinline))
+static char* macro_text(dz* z, const macro* m, const char* p, const char* e,
+                        const char** stop, int* outlen) {
     /* The arguments, as spans of the invocation line. A macro takes as many as
      * it declares and the reference counts them -- "0 provided, 1 expected". */
     const char* argp[MACRO_MAXPARAM];
@@ -3815,7 +3852,7 @@ static bool macro_expand(dz* z, const macro* m, const char* p, const char* e,
         if (nargs == MACRO_MAXPARAM) {
             z->err = "too many macro arguments";
 
-            return false;
+            return NULL;
         }
         /* The end is carried forward rather than walked back from.
          *
@@ -3848,7 +3885,7 @@ static bool macro_expand(dz* z, const macro* m, const char* p, const char* e,
     if (nargs != m->nparam) {
         z->err = "wrong number of macro arguments";
 
-        return false;
+        return NULL;
     }
 
     /* The body with the names replaced. Built in one buffer sized as it goes;
@@ -3859,7 +3896,7 @@ static bool macro_expand(dz* z, const macro* m, const char* p, const char* e,
     if (out == NULL) {
         z->err = "out of memory for macros";
 
-        return false;
+        return NULL;
     }
     int len = 0;
     for (int i = 0; i < m->bodylen; ) {
@@ -3891,7 +3928,7 @@ static bool macro_expand(dz* z, const macro* m, const char* p, const char* e,
                 free(out);
                 z->err = "out of memory for macros";
 
-                return false;
+                return NULL;
             }
             out = grown;
         }
@@ -3903,29 +3940,37 @@ static bool macro_expand(dz* z, const macro* m, const char* p, const char* e,
         i += take;
     }
 
-    /* And now it is read exactly as an included file is. */
+    *outlen = len;
+
+    return out;
+}
+
+/* Reads the expanded body, in a scope of its own, exactly as an included file
+ * is read. Takes the buffer whatever built it. */
+__attribute__((noinline))
+static bool macro_run(dz* z, const macro* m, char* out, int len) {
     const char* const saved_path = z->path;
     const int saved_line = z->line;
 
-    /* Only a reader over a file has a handle to give up. A macro that invokes
-     * another, or an INCLUDE inside an expansion, displaces a reader over
-     * memory -- and `br_suspend` refuses one of those, because there is nothing
-     * to close and nothing to seek back to. */
-    const bool was_file = !z->rd.mem_;
-    if (was_file && !br_suspend(&z->rd)) {
-        free(out);
-        z->err = "cannot set the file aside";
-
-        return false;
-    }
+    /* The file the invocation came from is left open.
+     *
+     * An INCLUDE gives its parent's handle up, because MOS has few of them and
+     * the file being opened needs one. An expansion opens no file at all -- it
+     * reads a buffer -- so there is nothing to make room for, and giving the
+     * handle up costs a close, an open and a seek every time a macro is used.
+     * The open is the expensive one: it walks a FAT directory. Suspending here
+     * cost 1.48 seconds across the 426 invocations in isa_real, which is 64,000
+     * cycles an invocation against roughly 2,000 for the expansion itself.
+     *
+     * What it buys back is a handle held while the body runs. Only a reader
+     * over a file holds one, so the count is the number of INCLUDEs in the
+     * chain plus the files whose lines are mid-expansion -- bounded by the
+     * nesting limit, and a failure to open reports itself plainly. */
     const buf_reader saved = z->rd;
     Z_SITE("macro reader");
     if (br_open_mem(&z->rd, out, len) == NULL) {
         free(out);
         z->rd = saved;
-        if (was_file) {
-            br_resume(&z->rd);
-        }
         z->err = "out of memory for macros";
 
         return false;
@@ -3938,14 +3983,10 @@ static bool macro_expand(dz* z, const macro* m, const char* p, const char* e,
 
     /* A scope of its own for the body, with the caller's kept and put back. */
     locsave sv;
-    bool ok = scope_push(z, &sv);
-    if (ok) {
-        ok = run_lines(z);
-        if (!scope_pop(z, &sv)) {
-            ok = false;
-        }
-    } else {
-        z->err = "out of memory for macros";
+    scope_push(z, &sv);
+    bool ok = run_lines(z);
+    if (!scope_pop(z, &sv)) {
+        ok = false;
     }
 
     br_destroy(&z->rd);
@@ -3965,15 +4006,26 @@ static bool macro_expand(dz* z, const macro* m, const char* p, const char* e,
 
         return false;
     }
-    if (was_file && !br_resume(&z->rd)) {
-        z->err = "cannot reopen the file";
-
-        return false;
-    }
     z->path = saved_path;
     z->line = saved_line;
 
     return true;
+}
+
+static bool macro_expand(dz* z, const macro* m, const char* p, const char* e,
+                         const char** stop) {
+    if (z->depth >= INCLUDE_MAXDEPTH) {
+        z->err = "macros nested too deeply";
+
+        return false;
+    }
+    int len = 0;
+    char* out = macro_text(z, m, p, e, stop, &len);
+    if (out == NULL) {
+        return false;
+    }
+
+    return macro_run(z, m, out, len);
 }
 
 /* ---------------------------------------------------------- directives */
@@ -5723,6 +5775,9 @@ __attribute__((noinline)) static bool run(dz* z, const char* path) {
     z->macros = NULL;
     z->defining = NULL;
     z->expanding = 0;
+    z->undo = NULL;
+    z->undo_used = 0;
+    z->undo_cap = 0;
     z->lim = z->out + z->cap - OUT_MAX_INSN;
     Z_SITE("symbol buckets");
     z->syms = (symslot*) calloc(NSYMB, sizeof(symslot));
@@ -5804,6 +5859,7 @@ static void dz_free(dz* z) {
     free(z->syms);
     free(z->fixups);
     free(z->lfixups);
+    free(z->undo);
     while (z->macros != NULL) {
         macro* next = z->macros->next;
         free(z->macros->body);

@@ -133,15 +133,29 @@
 # isa_memory builds its own names and is untouched by it -- it assembles to the
 # same md5 as before -- so its figure has moved only because the assembler has.
 #
-# What isa_real now holds, per 23,749 lines:
+# What isa_real now holds, per 21,742 lines:
 #
-#   global      567 definitions,  1,130 references
-#   local     1,698 definitions,  1,130 references
-#   anonymous   284 definitions,    849 references
+#   global      454 definitions,    904 references
+#   local     1,359 definitions,    906 references
+#   anonymous   227 definitions,    678 references
+#   directives          2,272 lines, 10.4%
+#   EQU                   453 lines,  2.1%
 #
-# 23.8% of its lines define or name a label. That is denser than real code and
-# is meant to be: these two sources exist to price the label machinery, and the
-# corpus programs that use it are covered by test/corpus.
+# 23.4% of its lines define or name a label and another 12.5% are a directive
+# or an EQU. Denser in both than real code, and meant to be, for the reason
+# that keeps coming up: a benchmark with almost none of a thing in it cannot
+# track what that thing costs. The corpus programs with realistic proportions
+# are in test/corpus.
+#
+# The values those EQUs take, against the 9,772 in the corpus:
+#
+#   hexadecimal   69.1%  (65.0)      decimal       8.8%  (10.1)
+#   an expression 18.5%  (22.1)      binary        2.6%   (2.7)
+#   a character    0.9%   (0.1)
+#
+# The bands are exact and the sample is not: 453 EQUs is four and a half turns
+# of a hundred-slot cycle, and a partial turn skews it by a few points. The
+# character literal is the one deliberate over-weighting, for coverage.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -585,6 +599,28 @@ function write_blob(path, n,   i) {
     close(path)
 }
 
+# The value on an EQU line, in the proportions the corpus has. See the comment
+# at its call site for where the numbers come from.
+function equ_value(k,   band) {
+    band = k % 100
+    if (band < 65) {
+        return sprintf("0x%04X", (k * 37) % 65536)
+    }
+    if (band < 75) {
+        return (k * 7) % 1000
+    }
+    if (band < 78) {
+        return sprintf("%%%s", substr("10110100", 1 + (k % 4), 4))
+    }
+    if (band < 79) {
+        # 39 is the apostrophe, which cannot be written here: the whole program
+        # is inside a single-quoted shell string.
+        return sprintf("%c%s%c", 39, substr("ABCDEFGHIJKLMNOP", 1 + (k % 16), 1), 39)
+    }
+
+    return "[" (k % 97) " + 3] * 2 - " (k % 7)
+}
+
 # One relocating ORG at the top, which moves the origin and writes nothing.
 #
 # The padding form appears later, once every 64 scopes; this is the other arm
@@ -622,11 +658,29 @@ function out(line,   used, k, t) {
         # below it in a different scope from the references above it, and the
         # file would stop assembling.
         #
-        # The value is an expression rather than a literal, because an EQU that
-        # is only a number never reaches the evaluator. Square brackets and not
-        # parentheses: the reference has no parentheses at all, and these files
-        # exist to be compared against it byte for byte.
-        t = "eq" lbl ": EQU [" (lbl % 97) " + 3] * 2 - " (lbl % 7)
+        # The value is drawn from the mix the corpus has, counted over its
+        # 9,772 EQU definitions:
+        #
+        #     hexadecimal   65.0%      decimal       10.1%
+        #     an expression 22.1%      binary         2.7%
+        #     a character    0.1%
+        #
+        # Every one of these used to be an expression, on the reasoning that an
+        # EQU which is only a number never reaches the evaluator. True, and it
+        # made every EQU in the file four times harder than the average real
+        # one -- the same fault as the label lengths two revisions ago, and as
+        # the directives being absent one revision ago: a benchmark answering a
+        # narrower question than the one being asked of it.
+        #
+        # The character literal is the one deliberate over-weighting, at one in
+        # a hundred against the one in a thousand the corpus has, because at 447
+        # EQUs a file the honest share is less than one, and a path with none
+        # of a thing in it is not being measured at all.
+        #
+        # Square brackets and not parentheses in the expression: the reference
+        # has no parentheses, and these files exist to be compared against it
+        # byte for byte.
+        t = "eq" lbl ": EQU " equ_value(lbl)
         used += length(t) + 1
         emit(t)
     } else if (k == 7) {

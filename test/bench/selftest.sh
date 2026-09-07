@@ -143,6 +143,38 @@ for want in 'DB ' 'DW ' 'DL ' 'DS ' 'ALIGN ' 'ORG ' ' EQU '; do
     fi
 done
 
+# The values those EQUs take. They were all expressions once, on the reasoning
+# that a value which is only a number never reaches the evaluator -- and four in
+# five are exactly that in the corpus, so the file was making every EQU four
+# times harder than the average real one. Both ends have to be there: without
+# the literals it measures an evaluator nobody runs, and without the
+# expressions it stops measuring the evaluator at all.
+equvals=$(printf '%s\n' "$isareal" | sed -n 's/^[^ ]*: EQU //p')
+nequ=$(printf '%s\n' "$equvals" | grep -c . || true)
+for kind in '^0x' '^[0-9][0-9]*$' '^%[01]' "^'" '[]+*[]'; do
+    n=$(printf '%s\n' "$equvals" | grep -c -- "$kind" || true)
+    if [ "$n" -gt 0 ]; then
+        echo "PASS  isa_real has EQU values matching $kind ($n)"
+    else
+        echo "FAIL  isa_real has EQU values matching $kind: none"
+        status=1
+    fi
+done
+
+# And roughly the corpus proportions: hexadecimal is most of them and
+# expressions are about a fifth. A band rather than a number, because the
+# sample is a few turns of a hundred-slot cycle and a partial turn skews it.
+nhex=$(printf '%s\n' "$equvals" | grep -c '^0x' || true)
+nexp=$(printf '%s\n' "$equvals" | grep -c -- '[]+*[]' || true)
+if [ "$nequ" -gt 100 ] \
+   && [ $((nhex * 100 / nequ)) -ge 55 ] && [ $((nhex * 100 / nequ)) -le 80 ] \
+   && [ $((nexp * 100 / nequ)) -ge 10 ] && [ $((nexp * 100 / nequ)) -le 30 ]; then
+    echo "PASS  the EQU mix is about the corpus's ($((nhex * 100 / nequ))% hex, $((nexp * 100 / nequ))% expressions)"
+else
+    echo "FAIL  the EQU mix is about the corpus's: $nhex hex and $nexp expressions of $nequ"
+    status=1
+fi
+
 # And the two it must NOT contain: INCLUDE and INCBIN have a source of their
 # own, because their cost is file opening rather than assembling.
 if ! printf '%s\n' "$isareal" | grep -qE 'INCLUDE|INCBIN'; then

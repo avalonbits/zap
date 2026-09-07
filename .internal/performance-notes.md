@@ -2506,3 +2506,105 @@ testable at all:
 And one that bites by hanging rather than failing: breaking `fread_` puts the
 parent into the infinite re-read described above. Left as it is, because the
 test is right and the failure mode is the bug.
+
+## The benchmarks learn the language (2026-09-07)
+
+Two changes to `gen_isa.sh`, and the first of them moves every number.
+
+### isa_real and isa_even had never seen a directive
+
+Until now neither file contained a single `DB`, `DW`, `DL`, `DS`, `ALIGN`,
+`ORG` or `EQU`. Every one of those paths was being measured at zero cost by
+sources that never reached them, which is the same fault as the label lengths
+two revisions ago: the benchmark answering a narrower question than the one
+being asked of it.
+
+They contain them now, on the same 32-line scope cycle the labels use. Per
+21,436 lines of isa_real:
+
+    instructions            11,912   55.6%
+    label references         4,825   22.5%
+    data directives          2,239   10.4%
+    label definitions        2,013    9.4%
+    EQU definitions            447    2.1%
+
+Two things the reference forced. **Square brackets, not parentheses**, because
+it has no parentheses at all and these files exist to be compared against it
+byte for byte. And **an EQU only at the top of a scope**: an EQU ends the
+enclosing scope exactly as a global label does, so one in the middle puts the
+locals below it in a different scope from the references above, and the file
+stops assembling.
+
+    isa_real   342 -> 401 cycles/byte     isa_degenerate  347 -> 347
+    isa_even   352 -> 409                 isa_memory      387 -> 387
+
+**The assembler did not get 17% slower; the source got harder.** The two files
+that build their own text and contain no directives are unchanged in both
+content and timing, which is what says so. The old figure was not wrong -- it
+was answering a question that excluded half the language.
+
+This is the fifth time this script has invalidated its own baselines.
+
+### isa_include is a tree, not a chain
+
+Ten source files and three blobs. The root includes two, each of those includes
+one or two, four levels deep:
+
+                          isa_include.s
+                           /         \
+                       inc_a       inc_b
+                       /   \       /   \
+                   inc_c  inc_d  inc_e  inc_f
+                     |      |      |
+                   inc_g  inc_h  inc_i
+
+The shape is the point. A chain pushes readers and then pops them all; a tree
+**pops back to a parent that still has lines left and pushes again from
+there**, which is the case that catches a parent reader resumed at the wrong
+offset -- the `fread_` bug INCLUDE was built on top of. A chain cannot reach it.
+
+Three things had to be got right, each found by the file failing to assemble:
+
+* **Bodies are generated in the order the assembler reads them**, which is a
+  depth-first walk in which a parent's body comes *after* all of its children,
+  because the includes are at the top of each file. Generating in file order
+  numbers the label cycle in an order the stream never has, and the locals stop
+  matching their scopes. It reported as `inc_g.inc line 2: unknown label`.
+* **The root settles the forward references**, not the last leaf, for the same
+  reason: the last lines the assembler sees are the root's own body.
+* **Every file ends on a scope boundary.** The reference scopes locals *per
+  file* -- a local defined in one and named in another is "Unknown identifier"
+  there, in either direction, and dzap is more permissive. A file cut at an
+  arbitrary line assembles here and not there.
+
+    isa_include    5.92s   412 cycles/byte   21,919 lines over ten files
+
+**Not comparable with the others, and not because of the assembler.** Opening
+thirteen files on an emulated SD card is real work no single-file source does,
+and it lands inside the same "Done in" line. It measures the shape.
+
+### A divergence found by building it
+
+The reference scopes local labels per file and dzap does not: a local defined in
+an included file can be named after it returns, and one defined before an
+INCLUDE can be named inside it. Both are refused there and accepted here.
+
+Left as it is. It only ever *widens* what assembles -- there is no program the
+reference accepts on which the two produce different bytes -- and matching it
+would mean a `scope_end` on every file entry and exit, which walks 64 buckets,
+to reject source that is already broken. Same position as parentheses.
+
+### Checked
+
+`test/bench/selftest.sh`, which `test/run.sh` already runs, now checks that
+isa_real contains every directive, that it contains neither INCLUDE nor INCBIN,
+and that the tree is ten sources and three blobs, branches in at least three
+places, is four levels deep, mixes INCBIN with INCLUDE and holds 256 KiB of
+text. Each verified to bite -- including one that only bites when *both* DB
+generators are disabled, since two different lines produce one.
+
+One of the new checks caught a regression in an old one on its first run: the
+label-length test was picking up `eq17:` from the EQU generator and read the
+mean as 6.59 rather than 8.37.
+
+All five sources still assemble byte-identically between dzap and the reference.

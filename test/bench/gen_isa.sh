@@ -5,6 +5,7 @@
 #   test/bench/gen_isa.sh real [bytes] > isa_real.s
 #   test/bench/gen_isa.sh degenerate [bytes] > isa_degenerate.s
 #   test/bench/gen_isa.sh memory [bytes] > isa_memory.s
+#   test/bench/gen_isa.sh include <dir> [bytes]     writes a tree of files
 #
 # gen_pure.sh cycles forty hand-picked forms, which is a plausible instruction
 # stream but not a sample of the instruction set: it reaches 31 of the ISA's
@@ -59,6 +60,19 @@
 #         2.8 bytes of table per byte of source at three characters, 1.4 at
 #         twenty. Alternating short definitions with instructions is about the
 #         worst a valid program can be.
+#
+#   include  A tree of ten source files and three blobs, written into a
+#         directory rather than a stream. The root includes two, each of those
+#         includes one or two, four levels deep -- a *tree* and not a chain,
+#         because a chain only ever pushes readers and then pops them all,
+#         while a tree pops back to a parent that still has lines left and
+#         pushes again from there. That is the case that catches a parent
+#         reader resumed at the wrong offset, and a chain cannot reach it.
+#
+#         Its figure is not comparable with the others, and the reason is not
+#         the assembler: opening thirteen files on an emulated SD card is real
+#         work no single-file source does, and it lands inside the same
+#         "Done in" line. It measures the shape, not the throughput.
 #
 #   real  Weighted by how often each mnemonic appears in the two real programs
 #         in test/corpus -- BBC BASIC and Rokky, 10,440 instructions between
@@ -132,8 +146,18 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-MODE="${1:?usage: gen_isa.sh <even|real|degenerate|memory> [bytes]}"
-TOTAL="${2:-262144}"
+MODE="${1:?usage: gen_isa.sh <even|real|degenerate|memory|include> [bytes]}"
+
+# `include` writes a directory rather than a stream, because ten files cannot
+# come out of one pipe. Everything else takes the byte budget as $2.
+INCDIR=""
+if [ "$MODE" = include ]; then
+    INCDIR="${2:?usage: gen_isa.sh include <dir> [bytes]}"
+    TOTAL="${3:-262144}"
+    mkdir -p "$INCDIR"
+else
+    TOTAL="${2:-262144}"
+fi
 CASES="dzap/test/cases/opcodes.s"
 
 if [ ! -f "$CASES" ]; then
@@ -155,7 +179,7 @@ out0:3 lea:3 lddr:3 in0:3 sra:2 ldi:2 in:2 rrd:1 rld:1 reti:1 out:1"
     for cc in "" "nz, " "z, " "nc, " "c, " "po, " "pe, " "p, " "m, "; do
         printf '  call %s0x040000\n' "$cc"
     done
-} | sed 's/[[:space:]]*$//' | sort -u | awk -v mode="$MODE" -v total="$TOTAL" -v w="$WEIGHTS" '
+} | sed 's/[[:space:]]*$//' | sort -u | awk -v mode="$MODE" -v total="$TOTAL" -v w="$WEIGHTS" -v incdir="$INCDIR" '
 BEGIN {
     # Label names, sized like the corpus rather than like a generator.
     #
@@ -304,6 +328,11 @@ END {
         exit 0
     }
 
+    if (mode == "include") {
+        include_tree()
+        exit 0
+    }
+
     if (mode == "even") {
         # Strided rather than sequential. The forms arrive grouped by mnemonic,
         # and emitting them in that order would put every `ld` together, so a
@@ -314,7 +343,7 @@ END {
         while (stride > 1 && gcd(stride, n) != 1) stride--
         if (stride < 1) stride = 1
         i = 0
-        bytes = 0
+        bytes = org_header()
         while (bytes < total) {
             bytes += out(form[i % n])
             i += stride
@@ -324,7 +353,7 @@ END {
     }
 
     # real: every form once, then weighted by mnemonic.
-    bytes = 0
+    bytes = org_header()
     for (i = 0; i < n && bytes < total; i++) {
         bytes += out(form[i])
     }
@@ -396,36 +425,267 @@ END {
 # anonymous definitions against roughly 800 local ones, so this is heavier on
 # them than real code is -- deliberately, because a benchmark that contains
 # almost none of a thing cannot track what it costs.
-function out(line,   used, k) {
+# A tree of included files, not a chain.
+#
+# The root includes two, each of those includes one or two, and so on: nine
+# files below the root, four levels deep. A chain would only ever push readers
+# and then pop them all; a tree pushes, pops back to a parent that still has
+# lines left, and pushes again from there -- which is the case that catches a
+# parent resumed at the wrong offset, and the one a straight chain cannot
+# reach.
+#
+#                       isa_include.s
+#                        /         \
+#                    inc_a       inc_b
+#                    /   \       /   \
+#                inc_c  inc_d  inc_e  inc_f
+#                  |      |      |
+#                inc_g  inc_h  inc_i
+#
+# Binary blobs are pulled in with INCBIN at three points, which need no reader
+# at all and so exercise the other half of the pair.
+#
+# Every file is a flat name in one directory, because the reference resolves an
+# include relative to where the assembler runs and not to the file doing the
+# including -- measured, and it means the same paths work on the host and on
+# the Agon, where the sdcard root is the working directory.
+function include_tree(   i, share, want, k) {
+    nfile = split("isa_include.s inc_a.inc inc_b.inc inc_c.inc inc_d.inc" \
+                  " inc_e.inc inc_f.inc inc_g.inc inc_h.inc inc_i.inc",
+                  fname, " ")
+
+    # Who includes whom, as a space-separated list per file.
+    kidsof[1] = "2 3"          # root -> a, b
+    kidsof[2] = "4 5"          # a    -> c, d
+    kidsof[3] = "6 7"          # b    -> e, f
+    kidsof[4] = "8"            # c    -> g
+    kidsof[5] = "9"            # d    -> h
+    kidsof[6] = "10"           # e    -> i
+    kidsof[7] = ""
+    kidsof[8] = ""
+    kidsof[9] = ""
+    kidsof[10] = ""
+
+    # Where each file pulls in a blob. The root takes one, a middle file takes
+    # one and a leaf takes one, so INCBIN appears at three different depths.
+    binof[1] = "blob1.bin"
+    binof[5] = "blob2.bin"
+    binof[10] = "blob3.bin"
+    write_blob(incdir "/blob1.bin", 64)
+    write_blob(incdir "/blob2.bin", 300)
+    write_blob(incdir "/blob3.bin", 17)
+
+    # The budget is split unevenly on purpose: a root that is mostly includes
+    # and leaves that hold most of the text is what a real program looks like.
+    weightof[1] = 6;  weightof[2] = 8;  weightof[3] = 8;  weightof[4] = 12
+    weightof[5] = 12; weightof[6] = 12; weightof[7] = 14; weightof[8] = 14
+    weightof[9] = 14; weightof[10] = 14
+    share = 0
+    for (i = 1; i <= nfile; i++) {
+        share += weightof[i]
+    }
+
+    # Headers first, for every file: the comment, the ORG in the root, the
+    # includes and any blob. Written before any body so that the bodies can go
+    # in a different order below, appending to files that already exist.
+    for (i = 1; i <= nfile; i++) {
+        write_header(i)
+    }
+
+    # And now the bodies, in the order the assembler will read them.
+    #
+    # This is the part that has to be right. A file lists its includes at the
+    # top, so the reader descends before it reads a line of the body: the
+    # stream is a depth-first walk in which a parent body comes *after* all of
+    # its children. The label cycle, the scopes and the forward references all
+    # run continuously through that stream, so generating the bodies in file
+    # order would number them in an order the assembler never sees -- and the
+    # locals stop matching their scopes. It reported as
+    # `inc_g.inc line 2: unknown label`.
+    nbody = 0
+    dfs_bodies(1)
+    for (k = 1; k <= nbody; k++) {
+        i = bodyof[k]
+        want = int(total * weightof[i] / share)
+        write_body(i, want)
+    }
+
+    # The last body in that order is the root, so this is the end of the
+    # stream, which is where the outstanding forward references have to land.
+    outfile = incdir "/" fname[1]
+    finish()
+    for (i = 1; i <= nfile; i++) {
+        close(incdir "/" fname[i])
+    }
+    outfile = ""
+}
+
+# The order the bodies are read in: every child of a file, and then the file.
+function dfs_bodies(i,   kn, kf, j) {
+    kn = split(kidsof[i], kf, " ")
+    for (j = 1; j <= kn; j++) {
+        dfs_bodies(kf[j] + 0)
+    }
+    bodyof[++nbody] = i
+}
+
+function write_header(i,   kn, kf, j, t) {
+    outfile = incdir "/" fname[i]
+    emit("; " fname[i] " -- generated by gen_isa.sh include")
+    used[i] = length(fname[i]) + 36
+
+    if (i == 1) {
+        t = "  ORG 0x040000"
+        emit(t)
+        used[i] += length(t) + 1
+    }
+
+    kn = split(kidsof[i], kf, " ")
+    for (j = 1; j <= kn; j++) {
+        t = "  INCLUDE \"" fname[kf[j] + 0] "\""
+        emit(t)
+        used[i] += length(t) + 1
+    }
+    if (i in binof) {
+        t = "  INCBIN \"" binof[i] "\""
+        emit(t)
+        used[i] += length(t) + 1
+    }
+    outfile = ""
+}
+
+# A file body stops on a scope boundary, not on the byte budget alone.
+#
+# The reference scopes local labels **per file**: a local defined in one and
+# named in another is "Unknown identifier" there, in either direction. dzap is
+# more permissive and lets a scope cross an include, so a file cut at an
+# arbitrary line assembles here and not there -- and these files exist to be
+# compared. Ending on a multiple of 32 keeps every local, and every anonymous
+# reference, inside the file that opened it.
+function write_body(i, want) {
+    outfile = incdir "/" fname[i]
+    while (used[i] < want || ln % 32 != 0) {
+        used[i] += out(form[fi++ % n])
+    }
+    outfile = ""
+}
+
+# A blob for INCBIN. Bytes, not text: the point is that nothing reads it as
+# source.
+#
+# Values stay under 128 because awk writes %c through the locale, and anything
+# above that comes out as two UTF-8 bytes -- which makes the file a different
+# size from the one asked for. What the bytes are does not matter; how many
+# there are does.
+function write_blob(path, n,   i) {
+    printf "" > path
+    for (i = 0; i < n; i++) {
+        printf "%c", (i * 37 + 11) % 128 > path
+    }
+    close(path)
+}
+
+# One relocating ORG at the top, which moves the origin and writes nothing.
+#
+# The padding form appears later, once every 64 scopes; this is the other arm
+# of the same directive and it is the one every real program has. It costs
+# nothing to run and is here so that neither arm is absent.
+function org_header(   t) {
+    t = "  ORG 0x040000"
+    print t
+
+    return length(t) + 1
+}
+
+# `outfile` is empty for the modes that write one stream to stdout, and names a
+# file for the include tree. Every print below goes through emit() so that the
+# two cases share one body.
+function emit(t) {
+    if (outfile == "") {
+        print t
+    } else {
+        print t > outfile
+    }
+}
+
+function out(line,   used, k, t) {
     used = 0
     k = ln % 32
     if (k == 0) {
         lbl++
         used += length(lname(lbl)) + 2
-        print lname(lbl) ":"
+        emit(lname(lbl) ":")
+    } else if (k == 1) {
+        # A name for a value, at the top of the scope and nowhere else. An EQU
+        # ends the enclosing scope exactly as a global label does -- measured
+        # against the reference -- so one in the middle would put the locals
+        # below it in a different scope from the references above it, and the
+        # file would stop assembling.
+        #
+        # The value is an expression rather than a literal, because an EQU that
+        # is only a number never reaches the evaluator. Square brackets and not
+        # parentheses: the reference has no parentheses at all, and these files
+        # exist to be compared against it byte for byte.
+        t = "eq" lbl ": EQU [" (lbl % 97) " + 3] * 2 - " (lbl % 7)
+        used += length(t) + 1
+        emit(t)
+    } else if (k == 7) {
+        t = "  DB " (lbl % 251) ", " ((lbl * 3) % 251) ", 0x" \
+            sprintf("%02X", (lbl * 7) % 256) ", -1"
+        used += length(t) + 1
+        emit(t)
+    } else if (k == 11) {
+        # A word list with a name in it, so the directive takes a fixup at a
+        # width an instruction never asks for.
+        t = "  DW 0x" sprintf("%04X", (lbl * 11) % 65536) ", eq" lbl
+        used += length(t) + 1
+        emit(t)
+    } else if (k == 15) {
+        t = "  DB \"row " lbl " of the table\", 0"
+        used += length(t) + 1
+        emit(t)
+    } else if (k == 19) {
+        # Reserved space and alignment alternate, so both the fill loop and the
+        # distance-to-the-next-multiple appear.
+        t = (lbl % 2 == 0) ? "  DS 4" : "  ALIGN 4"
+        used += length(t) + 1
+        emit(t)
+    } else if (k == 27) {
+        # Three bytes of a label that has already been defined, which is the
+        # width a fixup uses for an address.
+        t = "  DL " lname(lbl)
+        used += length(t) + 1
+        emit(t)
+    } else if (k == 31 && lbl % 64 == 0) {
+        # The padding ORG, rarely: it writes 0xFF into the output without
+        # taking a byte of source, and once every 64 scopes is enough to keep
+        # the path exercised without the output running away.
+        t = "  ORG $ + 8"
+        used += length(t) + 1
+        emit(t)
     } else if (k == 8) {
         used += 7
-        print "@loop:"
+        emit("@loop:")
     } else if (k == 16) {
         used += 7
-        print "@done:"
+        emit("@done:")
     } else if (k == 24) {
         used += 7
-        print "@skip:"
+        emit("@skip:")
     } else if (k == 4) {
         if (lbl > 1) {
             used += length(lname(lbl - 1)) + 6
-            print "  jp " lname(lbl - 1)
+            emit("  jp " lname(lbl - 1))
         }
     } else if (k == 12) {
         used += 11
-        print "  jp @loop"
+        emit("  jp @loop")
     } else if (k == 20) {
         used += 13
-        print "  call @skip"
+        emit("  call @skip")
     } else if (k == 28) {
         used += length(lname(lbl + 1)) + 8
-        print "  call " lname(lbl + 1)
+        emit("  call " lname(lbl + 1))
     } else if (int(ln / 32) % 2 == 1) {
         # Anonymous labels, in every other scope. They are not scope-bound --
         # @f reaches the next @@ anywhere below and @b the last one anywhere
@@ -433,23 +693,23 @@ function out(line,   used, k) {
         # scope ends, only that one @@ follows the last @f in the file.
         if (k == 2) {
             used += 8
-            print "  jp @f"
+            emit("  jp @f")
         } else if (k == 3) {
             # A second forward reference before the same @@, because every @f
             # since the last one shares a single pending symbol and resolving
             # them together is the part worth exercising.
             used += 10
-            print "  call @f"
+            emit("  call @f")
         } else if (k == 6) {
             used += 4
-            print "@@:"
+            emit("@@:")
         } else if (k == 10) {
             used += 8
-            print "  jp @b"
+            emit("  jp @b")
         }
     }
     ln++
-    print line
+    emit(line)
     return used + length(line) + 1
 }
 
@@ -464,14 +724,14 @@ function finish(   k) {
     # cheap to leave outstanding and impossible to redefine, so emitting one
     # that nothing needs costs a line and emitting none where one is needed
     # fails the file.
-    print "@@:"
+    emit("@@:")
     k = ln % 32
     if (k > 0) {
-        if (k <= 8)  print "@loop:"
-        if (k <= 16) print "@done:"
-        if (k <= 24) print "@skip:"
+        if (k <= 8)  emit("@loop:")
+        if (k <= 16) emit("@done:")
+        if (k <= 24) emit("@skip:")
     }
-    print lname(lbl + 1) ":"
+    emit(lname(lbl + 1) ":")
 }
 
 # A letter and three base-36 digits: short, unique, and a name rather than a

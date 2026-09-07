@@ -165,6 +165,11 @@ _Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
  * three-byte immediates. */
 #define OUT_MAX_INSN 12
 
+/* The longest file name INCLUDE and INCBIN will take. Fixed, because the name
+ * is copied into a frame that has to outlive the line it came from, and into
+ * `dz.errpath` when an include fails. */
+#define INCLUDE_NAME_MAX 80
+
 /* ------------------------------------------------------------- symbols */
 
 /* A label, and where it turned out to be.
@@ -603,6 +608,19 @@ typedef struct _dz {
      * anything. */
     const char* path;
     uint8_t depth;
+
+    /* Where `path` points when an include fails.
+     *
+     * The name of an included file lives in the frame of the include that
+     * opened it, which is the right lifetime while the file is being read and
+     * the wrong one afterwards: a failure unwinds every one of those frames
+     * and then reports, and `path` would name freed stack. It printed as
+     * `inc_ .in`, which is how it was found.
+     *
+     * Copied here on the way out of a failure and nowhere else. The arena the
+     * label names live in cannot be used -- it is grown with realloc and
+     * moves. */
+    char errpath[INCLUDE_NAME_MAX];
 
     locslot locs[NLOCB];
     locblock* locfirst;     /* kept, to rewind to */
@@ -3636,6 +3654,19 @@ static bool include_file(dz* z, const char* name) {
     z->depth--;
     z->rd = saved;
     if (!ok) {
+        /* `z->path` names this file and points into this frame, which goes
+         * away as soon as this returns. The report happens after every frame
+         * has unwound, so it is copied somewhere that outlives them. */
+        if (z->path != z->errpath) {
+            int i = 0;
+            while (i + 1 < (int) sizeof(z->errpath) && z->path[i] != 0) {
+                z->errpath[i] = z->path[i];
+                i++;
+            }
+            z->errpath[i] = 0;
+            z->path = z->errpath;
+        }
+
         return false;
     }
     if (!br_resume(&z->rd)) {
@@ -3669,7 +3700,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
         /* A file name rather than a value, and the only argument that is not
          * an expression. `name` lives in this frame for as long as the file it
          * opens does -- see include_file. */
-        char name[80];
+        char name[INCLUDE_NAME_MAX];
         if (!file_name(z, &p, e, name, (int) sizeof(name))) {
             return false;
         }

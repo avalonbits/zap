@@ -79,7 +79,7 @@ source_bytes() {
 # rokky is a smaller real program with a different shape. synth is generated:
 # straight instructions, no labels, no macros, no includes, so it isolates
 # lexing and encoding from everything else.
-SETS="bbcbasic rokky synth isa_even isa_real"
+SETS="bbcbasic rokky synth isa_even isa_real isa_include"
 
 stage_bbcbasic() { cp -r test/corpus/Z_PRG_Agon-bbc-basic-v/tests/* "$1/"; echo bbcbasicvez.s; }
 stage_rokky()    { cp -r test/corpus/Z_PRG_Agon-Rokky/tests/*     "$1/"; echo rokky.s; }
@@ -101,6 +101,19 @@ stage_synth()    { test/bench/gen_synth.sh > "$1/synth.s";              echo syn
 # made them measure the wrong assembler. The rest of the set is unaffected.
 stage_isa_even() { test/bench/gen_isa.sh even > "$1/isa_even.s";        echo isa_even.s; }
 stage_isa_real() { test/bench/gen_isa.sh real > "$1/isa_real.s";        echo isa_real.s; }
+
+# The include tree: ten source files and three blobs, not one file, so this one
+# stages a directory. The names are flat because the reference resolves an
+# include relative to where the assembler runs and not to the file doing the
+# including -- so the sdcard root is the working directory and the paths in the
+# files are bare names.
+#
+# It is NOT comparable with the rows above, and not because of the assembler:
+# opening thirteen files on an emulated SD card is real work the single-file
+# sources never do, and it lands inside the "Done in" line along with
+# everything else. What it is for is the shape -- a parent reader suspended,
+# resumed and carried on with, ten times over a tree four deep.
+stage_isa_include() { test/bench/gen_isa.sh include "$1" > /dev/null;   echo isa_include.s; }
 
 # Two emulators sharing one sdcard directory mutate the filesystem under each
 # other. That produced an RST $38 guru meditation once that looked exactly like

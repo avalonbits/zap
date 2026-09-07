@@ -1451,6 +1451,69 @@ int main(void) {
           emit("  INCBIN \"test/cases/inc/nosuch.bin\"\n"), "ERR");
     check("an INCBIN with no name", emit("  INCBIN\n"), "ERR");
 
+    /* The name arenas are blocks that never move, so that a growth cannot need
+     * the old block and the new one at once -- which is what a 512 KB machine
+     * cannot afford, and what stopped 14,616 labels assembling at the 9,521st.
+     *
+     * Two properties with no visible answer of their own, checked directly.
+     * The first is that a name crossing a block boundary is put in a new block
+     * rather than past the end of the current one; 4 KB of names is enough to
+     * reach it, and the sanitised build is what catches it if it does not. */
+    {
+        static char many[24000];
+        char* w = many;
+        for (int i = 0; i < 600; i++) {
+            w += sprintf(w, "label_that_is_long_%03d:\n", i);
+        }
+        w += sprintf(w, "  ld hl, label_that_is_long_000\n");
+        w += sprintf(w, "  ld hl, label_that_is_long_599\n");
+        *w = 0;
+        /* Both labels are at the same address: nothing between them emits a
+         * byte. The point is the 15 KB of names, not the addresses. */
+        check("names past the end of one block",
+              emit(many), "21 00 00 04 21 00 00 04");
+    }
+
+    /* And the second: a scope rewinds its local names to the first block
+     * rather than allocating more. A scope ends on every global label, so
+     * without the rewind a program with many scopes allocates a block per
+     * scope and never reuses one -- which is invisible in the output and
+     * fatal on the machine this is for. */
+    {
+        dz z;
+        memset(&z, 0, sizeof(z));
+        char path[] = "/tmp/dzap_scope_XXXXXX";
+        int fd = mkstemp(path);
+        /* Enough local names per scope to need more than one block, or the
+         * rewind has nothing to undo: three scopes of two characters each fit
+         * in the first block whether it is reused or not. */
+        static char src[40000];
+        {
+            char* w = src;
+            for (int g = 0; g < 3; g++) {
+                w += sprintf(w, "scope_%d:\n", g);
+                for (int i = 0; i < 300; i++) {
+                    w += sprintf(w, "@local_name_%03d:\n", i);
+                }
+            }
+            *w = 0;
+        }
+        if (write(fd, src, strlen(src)) != (long) strlen(src)) {
+            check("a scope rewinds its local names", "write failed", "ok");
+        } else {
+            close(fd);
+            const bool ok = run(&z, path);
+            char got[64];
+            snprintf(got, sizeof(got), "%d %d %d", ok ? 1 : 0,
+                     z.locnames == z.locnamfirst ? 1 : 0,
+                     z.locnamfirst != NULL ? 1 : 0);
+            check("a scope rewinds its local names to the first block",
+                  got, "1 1 1");
+            dz_free(&z);
+        }
+        unlink(path);
+    }
+
     /* Nesting is bounded, and was not before: a bracket recurses through
      * expr_term and expr_value, and expr_value starts a fresh precedence climb
      * at depth zero, so the climb's own limit never saw it. Five thousand deep

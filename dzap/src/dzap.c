@@ -180,17 +180,29 @@ _Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
  */
 typedef struct symblock symblock;
 
+/* Names live in blocks of this size; see namblock below for why. Declared here
+ * because `dz` holds the list. */
+#define NAMES_BLOCK 4096
+
+typedef struct _namblock namblock;
+struct _namblock {
+    namblock* next;
+    char buf[NAMES_BLOCK];
+};
+
+_Static_assert(NAMES_BLOCK > 255, "any single name has to fit in one block");
+
 struct sym {
     const sym* next;
 
-    /* An offset into the name arena, not a pointer into it.
+    /* The name, pointed at.
      *
-     * The arena is realloc'd in blocks, and a pointer into it would have to be
-     * rebased on every growth -- for every symbol and every fixup. That rebase
-     * cannot be tested: glibc extends the block in place, so the pointer does
-     * not move, and deleting the rebase failed no check even with six hundred
-     * long labels. An offset does not care whether the block moved. */
-    int nameoff;
+     * It was an offset, because the arena behind it was one array grown with
+     * realloc and a pointer into that would have to be rebased on every
+     * growth. The arena is a list of blocks that never move now -- see
+     * namblock -- so a pointer is both correct and one add cheaper on the
+     * compare, which is the hottest loop the symbol table has. */
+    const char* name;
     uint8_t len;
 
     /* A name is interned on first sight, defined or not, so a reference to a
@@ -543,9 +555,8 @@ typedef struct _dz {
     int cap;
 
     symslot* syms;      /* NSYMB buckets */
-    char* names;        /* arena: every label's text, copied */
-    int names_used;
-    int names_cap;
+    namblock* names;    /* every label's text, copied, in blocks */
+    int names_used;     /* within the newest block */
     symblock* blocks;   /* symbol nodes, in blocks that never move */
     int syms_used;      /* used in the newest block */
     fixup* fixups;
@@ -642,9 +653,12 @@ typedef struct _dz {
     locblock* locfirst;     /* kept, to rewind to */
     locblock* loccur;
     int locs_used;          /* in loccur */
-    char* locnames;
+    /* The same, for a scope's locals. `locnamfirst` is kept so that the end of
+     * a scope can rewind to it rather than free and re-allocate: a scope ends
+     * on every global label. */
+    namblock* locnames;
+    namblock* locnamfirst;
     int locnames_used;
-    int locnames_cap;
     fixup* lfixups;
     int lfix_used;
     int lfix_cap;
@@ -725,7 +739,41 @@ struct symblock {
     sym nodes[SYMS_STEP];
 };
 
-static bool sym_room(dz* z, int len) {
+/* The names, in blocks that never move, for the reason the nodes are.
+ *
+ * They were one array grown with realloc, and that is what a machine with
+ * 512 KB and no virtual memory cannot afford: a realloc that has to move
+ * holds the old block and the new one at once, so an arena of 110 KB needs
+ * 228 KB to grow by eight. 14,616 labels ran out of memory at the 9,521st,
+ * with the arena about two thirds of the way there.
+ *
+ * A block is never resized and never copied, so the peak is the total. A name
+ * is at most 255 characters, so one always fits in a block and there is no
+ * oversized case to write. */
+/* Room for `len` characters in the newest block, or a new block.
+ *
+ * `used` is the offset within the newest one, so the blocks below it are full
+ * and are never looked at again -- nothing walks this list except the free at
+ * the end, and the local one, which rewinds it. */
+static char* nam_take(namblock** head, int* used, int len) {
+    namblock* b = *head;
+    if (b == NULL || *used + len > NAMES_BLOCK) {
+        Z_SITE("label names");
+        b = (namblock*) malloc(sizeof(namblock));
+        if (b == NULL) {
+            return NULL;
+        }
+        b->next = *head;
+        *head = b;
+        *used = 0;
+    }
+    char* at = &b->buf[*used];
+    *used += len;
+
+    return at;
+}
+
+static bool sym_room(dz* z) {
     if (z->syms_used == SYMS_STEP) {
         Z_SITE("symbol blocks");
         symblock* b = (symblock*) malloc(sizeof(symblock));
@@ -735,19 +783,6 @@ static bool sym_room(dz* z, int len) {
         b->next = z->blocks;
         z->blocks = b;
         z->syms_used = 0;
-    }
-    if (z->names_used + len > z->names_cap) {
-        Z_SITE("label names");
-        int want = z->names_cap + NAMES_STEP;
-        while (z->names_used + len > want) {
-            want += NAMES_STEP;
-        }
-        char* grown = (char*) realloc(z->names, (size_t) want);
-        if (grown == NULL) {
-            return false;
-        }
-        z->names = grown;
-        z->names_cap = want;
     }
 
     return true;
@@ -760,7 +795,7 @@ static const sym* sym_at(const dz* z, int b, const char* name, int len) {
         if (sp->len != (uint8_t) len) {
             continue;
         }
-        const char* text = &z->names[sp->nameoff];
+        const char* text = sp->name;
         int i = 0;
         while (i < len && text[i] == name[i]) {
             i++;
@@ -787,15 +822,15 @@ static sym* sym_intern(dz* z, const char* name, int len) {
      * length and differing in the last character, so the compare runs to the
      * end before failing. Doubles the chain walk; the real entry is still
      * found, so the output does not change. */
-    if (sym_at(z, b, name, len) == NULL && sym_room(z, len)) {
-        const int doff = z->names_used;
+    char* dtext;
+    if (sym_at(z, b, name, len) == NULL && sym_room(z)
+        && (dtext = nam_take(&z->names, &z->names_used, len)) != NULL) {
         for (int i = 0; i < len; i++) {
-            z->names[doff + i] = name[i];
+            dtext[i] = name[i];
         }
-        z->names[doff + len - 1] = (char) (name[len - 1] == 'z' ? 'y' : 'z');
-        z->names_used += len;
+        dtext[len - 1] = (char) (name[len - 1] == 'z' ? 'y' : 'z');
         sym* dec = &z->blocks->nodes[z->syms_used++];
-        dec->nameoff = doff;
+        dec->name = dtext;
         dec->len = (uint8_t) len;
         dec->defined = false;
         dec->islocal = false;
@@ -809,20 +844,24 @@ static sym* sym_intern(dz* z, const char* name, int len) {
     if (found != NULL) {
         return found;
     }
-    if (!sym_room(z, len)) {
+    if (!sym_room(z)) {
         z->err = "out of memory for labels";
 
         return NULL;
     }
 
-    const int off = z->names_used;
-    for (int i = 0; i < len; i++) {
-        z->names[off + i] = name[i];
+    char* text = nam_take(&z->names, &z->names_used, len);
+    if (text == NULL) {
+        z->err = "out of memory for labels";
+
+        return NULL;
     }
-    z->names_used += len;
+    for (int i = 0; i < len; i++) {
+        text[i] = name[i];
+    }
 
     sym* sp = &z->blocks->nodes[z->syms_used++];
-    sp->nameoff = off;
+    sp->name = text;
     sp->len = (uint8_t) len;
     sp->defined = false;
     /* Set where the node is made, not where it is defined: a global that is
@@ -854,7 +893,7 @@ static inline int loc_bucket(const char* name, int len) {
 
 /* Room for one more local node and its name. Blocks are threaded once and
  * then reused: after a scope ends loccur walks the same list again. */
-static bool loc_room(dz* z, int len) {
+static bool loc_room(dz* z) {
     if (z->locs_used == LOCS_STEP || z->loccur == NULL) {
         locblock* next = z->loccur != NULL ? z->loccur->next : z->locfirst;
         if (next == NULL) {
@@ -872,19 +911,6 @@ static bool loc_room(dz* z, int len) {
         }
         z->loccur = next;
         z->locs_used = 0;
-    }
-    if (z->locnames_used + len > z->locnames_cap) {
-        Z_SITE("local label names");
-        int want = z->locnames_cap + LOCNAMES_STEP;
-        while (z->locnames_used + len > want) {
-            want += LOCNAMES_STEP;
-        }
-        char* grown = (char*) realloc(z->locnames, (size_t) want);
-        if (grown == NULL) {
-            return false;
-        }
-        z->locnames = grown;
-        z->locnames_cap = want;
     }
 
     return true;
@@ -964,6 +990,9 @@ static bool scope_end(dz* z) {
     z->lfix_used = 0;
     z->locs_used = LOCS_STEP;   /* forces loc_room back to the first block */
     z->loccur = NULL;
+    /* Back to the first block rather than freeing them: a scope ends on every
+     * global label, and the blocks are the same size every time. */
+    z->locnames = z->locnamfirst;
     z->locnames_used = 0;
     if (++z->gen == 0) {
         /* The stamp has wrapped, so a slot left over from 256 scopes ago would
@@ -1008,7 +1037,7 @@ static sym* loc_intern(dz* z, const char* name, int len) {
             if (sp->len != (uint8_t) len) {
                 continue;
             }
-            const char* t = &z->locnames[sp->nameoff];
+            const char* t = sp->name;
             const char* q = name;
             const char* const qend = name + len;
             while (q != qend && *t == *q) {
@@ -1024,20 +1053,27 @@ static sym* loc_intern(dz* z, const char* name, int len) {
         z->locs[b].head = NULL;
     }
 
-    if (!loc_room(z, len)) {
+    if (!loc_room(z)) {
         z->err = "out of memory for labels";
 
         return NULL;
     }
 
-    const int off = z->locnames_used;
-    for (int i = 0; i < len; i++) {
-        z->locnames[off + i] = name[i];
+    char* text = nam_take(&z->locnames, &z->locnames_used, len);
+    if (text == NULL) {
+        z->err = "out of memory for labels";
+
+        return NULL;
     }
-    z->locnames_used += len;
+    if (z->locnamfirst == NULL) {
+        z->locnamfirst = z->locnames;
+    }
+    for (int i = 0; i < len; i++) {
+        text[i] = name[i];
+    }
 
     sym* sp = &z->loccur->nodes[z->locs_used++];
-    sp->nameoff = off;
+    sp->name = text;
     sp->len = (uint8_t) len;
     sp->defined = false;
     sp->islocal = true;
@@ -1092,14 +1128,14 @@ static bool anon_define(dz* z, int addr) {
  * thing that finds it again is this field. */
 static sym* anon_next(dz* z) {
     if (z->anon_fwd == NULL) {
-        if (!sym_room(z, 0)) {
+        if (!sym_room(z)) {
             z->err = "out of memory for labels";
 
             return NULL;
         }
         sym* sp = &z->blocks->nodes[z->syms_used++];
         sp->next = NULL;
-        sp->nameoff = 0;
+        sp->name = NULL;
         sp->len = 0;
         sp->defined = false;
         sp->islocal = false;
@@ -1181,7 +1217,20 @@ static bool fix_add(dz* z, const sym* target, const sym* sub, int addend,
  * realloc per step. */
 static bool out_grow(dz* z, int need) {
         Z_SITE("output buffer");
-    int want = z->cap + OUT_STEP;
+    /* Doubled, not stepped.
+     *
+     * A realloc that has to move holds the old block and the new one at once,
+     * so the transient peak is what decides whether a growth fits rather than
+     * the final size. Stepping by 32 KB reaches a 197 KB output through five
+     * growths and the last of them asks for 192 + 224 = 416 KB; doubling
+     * reaches it in two and the last asks for 128 + 256 = 384 KB. The peak
+     * goes from about twice the final size to about 1.5 times it.
+     *
+     * `DB "row 1 of the table", 0` produces two thirds of a byte of output per
+     * byte of source, against the fifth that the initial size below is
+     * reckoned from -- the constant was set when the only thing a source could
+     * hold was instructions. That is what made this reachable. */
+    int want = z->cap + (z->cap < OUT_STEP ? OUT_STEP : z->cap);
     const int least = (int) (z->o - z->out) + need + OUT_MAX_INSN;
     if (want < least) {
         want = least;
@@ -4628,10 +4677,22 @@ __attribute__((noinline)) static bool run(dz* z, const char* path) {
 static void dz_free(dz* z) {
     free(z->out);
     free(z->syms);
-    free(z->names);
     free(z->fixups);
-    free(z->locnames);
     free(z->lfixups);
+    while (z->names != NULL) {
+        namblock* next = z->names->next;
+        free(z->names);
+        z->names = next;
+    }
+    /* The local blocks are rewound rather than freed at the end of a scope, so
+     * `locnames` may be pointing part way down a list that is still whole.
+     * Freed from the first, which is the only pointer that always names the
+     * head. */
+    while (z->locnamfirst != NULL) {
+        namblock* next = z->locnamfirst->next;
+        free(z->locnamfirst);
+        z->locnamfirst = next;
+    }
     while (z->blocks != NULL) {
         symblock* next = z->blocks->next;
         free(z->blocks);

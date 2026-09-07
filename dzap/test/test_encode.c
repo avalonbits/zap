@@ -1220,6 +1220,38 @@ int main(void) {
      * cannot express, and the three places this deliberately differs. */
     check("a byte", emit("  DB 1\n"), "01");
     check("a list of bytes", emit("  DB 1,2,3\n"), "01 02 03");
+
+    /* The literal fast path, and the line between it and the evaluator.
+     *
+     * A directive used to send every item through expr_value, which measured
+     * `DB 42` at 889 cycles a byte against `ld a, 42`'s 349. The fast path is
+     * the operand parser's, and what matters here is that it hands back
+     * anything it is not certain of: the character that ended the run has to
+     * end the item too. */
+    check("a decimal that fills the item", emit("  DB 255\n"), "FF");
+    check("hex with an 0x", emit("  DB 0x41\n"), "41");
+    check("hex with a trailing h", emit("  DB 0FFh\n"), "FF");
+    check("a value the fast path must hand back",
+          emit("  DB 1+2\n"), "03");
+    check("and one with spaces around the operator",
+          emit("  DB 1 + 2\n"), "03");
+    check("a product, which is not a literal", emit("  DB 1*3\n"), "03");
+    check("a bracketed group", emit("  DB [1+2]*3\n"), "09");
+    /* Digit-leading and not decimal: the run is `0b1010`, the decimal loop
+     * stops on the `b`, and the item goes to the evaluator. */
+    check("binary, which starts with a digit",
+          emit("  DB 0b1010\n"), "0A");
+    check("a name that starts where a number could",
+          emit("  DB later\nlater: DB 9\n"), "01 09");
+    check("a name in the middle of a list",
+          emit("  DB 1, later, 3\nlater: DB 9\n"), "01 03 03 09");
+    check("a character literal", emit("  DB 'A'\n"), "41");
+    check("a negative, which the fast path never sees",
+          emit("  DB -1\n"), "FF");
+    check("a mixed list", emit("  DB 0xFF, 0, 0x10, 255\n"), "FF 00 10 FF");
+    check("words the fast path reads", emit("  DW 0x1234,0x5678\n"),
+          "34 12 78 56");
+    check("and decimal ones", emit("  DW 1,2\n"), "01 00 02 00");
     check("a string", emit("  DB \"hi\",0\n"), "68 69 00");
     check("two bytes", emit("  DW 0x1234\n"), "34 12");
     check("three bytes", emit("  DL 0x123456\n"), "56 34 12");
@@ -1227,6 +1259,26 @@ int main(void) {
      * an erased ROM reads as. */
     check("reserved space is 0xFF",
           emit("  DS 4\n  DB 1\n"), "FF FF FF FF 01");
+    /* Reserved and never written over is not output at all. `DS` and `ALIGN`
+     * reserve space; the reference only materialises it when something follows,
+     * so a file ending in one is that much shorter there. `ORG` is not the
+     * same and does pad -- all three measured against it. */
+    check("a DS at the end of the output is dropped",
+          emit("  DB 1\n  DS 4\n"), "01");
+    check("and an ALIGN at the end is too",
+          emit("  DB 1\n  ALIGN 8\n"), "01");
+    check("two of them at the end are one run",
+          emit("  DB 1\n  DS 4\n  DS 4\n"), "01");
+    check("but a byte between them ends the run",
+          emit("  DB 1\n  DS 4\n  DB 2\n  DS 4\n"), "01 FF FF FF FF 02");
+    check("an ORG at the end pads and stays",
+          emit("  DB 1\n  ORG 0x040008\n"),
+          "01 FF FF FF FF FF FF FF");
+    check("a DS before an ORG is kept by it",
+          emit("  DB 1\n  DS 4\n  ORG 0x040010\n"),
+          "01 FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF");
+    check("a label after a dropped DS still has its address",
+          emit("  DS 4\nlbl:\n  ld hl, lbl\n"), "FF FF FF FF 21 04 00 04");
     check("alignment pads with 0xFF",
           emit("  DB 1\n  ALIGN 4\n  DB 2\n"), "01 FF FF FF 02");
     check("a value not known yet, one byte wide",

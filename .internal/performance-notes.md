@@ -2334,3 +2334,78 @@ escape, forward references at all three widths, locals and anonymous labels
 naming data, and `$` -- compared against the reference byte for byte. 44 forms
 checked by hand against it, 43 agreeing and the 44th being `DS -1`. Six
 mechanisms verified to bite by breaking the line each covers.
+
+## ORG, and a constant that was not free (2026-09-07)
+
+`ORG`, which turns out to be two directives sharing a name.
+
+### The rule, which is not the obvious one
+
+    ORG 0x50000 / ld hl, $              4 bytes -- the origin moved
+    DB 1 / ORG 0x50000 / DB 2      65,537 bytes -- padded with 0xFF
+    ORG 0x50000 / ORG 0x60000      65,540 bytes -- padded, with nothing between
+
+The first ORG in a file moves the origin and writes nothing. **Every later one
+pads out to its address, even when nothing has been emitted in between.** The
+third line is what settles it: two ORGs in a row with no output between them
+still write the 64 KB gap, so "has anything been emitted" is not the question
+the reference is asking -- "has an ORG already claimed the origin" is.
+
+An ORG that goes backwards past the current address is "New address lower than
+current PC address" there, and refused here for the same reason: it would have
+to unwrite bytes that are already placed.
+
+### The origin stops being a constant
+
+Every address in the assembler was `DZ_ORG + (o - out)` with `DZ_ORG` a
+compile-time 0x040000: label definitions, `$`, both relative-jump paths and
+`patch_fixup`. ORG makes it a field, and the expectation was that this costs --
+a load in front of five adds, on paths that run per label, per `$` and per
+relative jump, for a feature most programs never use.
+
+It is **faster**:
+
+    isa_real         4.90s -> 4.86s   -0.6%   344 -> 342 cycles/byte
+    isa_even         5.02s -> 5.00s   -0.3%   353 -> 352
+    isa_degenerate   4.96s -> 4.92s   -0.9%   349 -> 346
+    isa_memory       5.48s -> 5.46s   -0.3%   385 -> 384
+
+Because on this chip a 24-bit constant is not free. There is no add-immediate
+here, so `DZ_ORG + x` has to put the value in a register first, and the
+generated code was:
+
+    ld bc, 262144        4 bytes    at five sites
+    add hl, bc
+
+against
+
+    ld bc, (ix - 92)     3 bytes
+    add hl, bc
+
+One instruction either way, and the immediate form is a byte longer -- fetched
+from RAM with wait states, on a machine with no instruction cache. Reading the
+value out of a struct field the code already has a pointer to is *cheaper* than
+spelling it out. `assemble_line` came out seven instructions smaller, and the
+whole program has three fewer 24-bit literal loads.
+
+**A constant is not free when it does not fit in an instruction.** Worth
+checking wherever a wide literal appears on a hot path here: a `#define` that
+reads as free in C is a four-byte load in the generated code, and a field is
+three.
+
+### What it costs
+
+Nothing, and it gives 0.3-0.9% back. The directive itself is another arm in
+`directive_line`, on the same failure path as the rest, so an instruction line
+pays nothing for it.
+
+### Checked
+
+465 host checks. `test/cases/org.s` is 516 bytes covering the relocating ORG,
+the padding ORG, an ORG to exactly the current address, alignment measured off
+the moved origin, and forward and backward relative jumps after one -- compared
+against the reference byte for byte. 23 forms checked against it by hand, all
+agreeing, including the three that decide the relocate-or-pad rule. Six
+mechanisms verified to bite, and three of those breaks are the three address
+sites: putting `DZ_ORG` back in the label path, the backward relative or the
+forward one each fails a different set of checks.

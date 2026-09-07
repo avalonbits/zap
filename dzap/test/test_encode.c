@@ -1286,6 +1286,48 @@ int main(void) {
         check("a line longer than the reader's buffer", emit(longline), "ERR");
     }
 
+    /* ORG, which is two directives sharing a name: the first one in a file
+     * moves the origin, and every later one pads out to its address. What the
+     * reference accepts is in test/cases/org.s; here are the refusals and the
+     * two places the distinction shows.
+     *
+     * The origin used to be a compile-time constant, so every address in the
+     * assembler was an immediate add. These check that it still means the same
+     * thing once it can move. */
+    check("the origin moves and writes nothing",
+          emit("  ORG 0x050000\n  ld hl, $\n"), "21 00 00 05");
+    check("a label takes the moved origin",
+          emit("  ORG 0x050000\nlbl:\n  ld hl, lbl\n"), "21 00 00 05");
+    check("a label before the ORG keeps the old one",
+          emit("lbl:\n  ORG 0x050000\n  ld hl, lbl\n"), "21 00 00 04");
+    check("a second ORG pads with 0xFF",
+          emit("  DB 1\n  ORG 0x040008\n  DB 2\n"),
+          "01 FF FF FF FF FF FF FF 02");
+    /* Nothing has been emitted here either, and it still pads: the first ORG
+     * has already claimed the origin. That is the reference's rule and it is
+     * not the obvious one. */
+    check("two ORGs pad between them",
+          emit("  ORG 0x040000\n  ORG 0x040004\n  DB 1\n"),
+          "FF FF FF FF 01");
+    check("an ORG to where the counter already is",
+          emit("  DB 1\n  ORG 0x040001\n  DB 9\n"), "01 09");
+    check("alignment measures from the moved origin",
+          emit("  ORG 0x050001\n  DB 1\n  ALIGN 4\n  DB 2\n"),
+          "01 FF FF 02");
+    /* The one that would go wrong silently: a relative displacement is
+     * measured from the address, and the address is what ORG moves. */
+    check("a relative jump after ORG",
+          emit("  ORG 0x050000\n  jr $\n"), "18 FE");
+    check("a forward relative jump after ORG",
+          emit("  ORG 0x050000\n  jr ahead\nahead:\n  nop\n"), "18 00 00");
+
+    check("an ORG that goes backwards",
+          emit("  DB 1,2,3,4\n  ORG 0x040001\n  DB 9\n"), "ERR");
+    check("an ORG to a label ahead",
+          emit("  ORG n\nn: EQU 0x050000\n"), "ERR");
+    check("an ORG with no address", emit("  ORG\n"), "ERR");
+    check("an ORG with two arguments", emit("  ORG 0x050000, 1\n"), "ERR");
+
     /* Nesting is bounded, and was not before: a bracket recurses through
      * expr_term and expr_value, and expr_value starts a fresh precedence climb
      * at depth zero, so the climb's own limit never saw it. Five thousand deep

@@ -972,20 +972,25 @@ static sym* loc_intern(dz* z, const char* name, int len) {
     return sp;
 }
 
-static bool sym_define(dz* z, const char* name, int len, int addr) {
+/* Returns the symbol rather than a yes, because the caller has a use for it --
+ * `name: EQU value` overwrites the address it was just given -- and because the
+ * function already has it in hand. A pointer and a bool come back in the same
+ * register here, so saying more costs nothing. */
+__attribute__((always_inline))
+static inline sym* sym_define(dz* z, const char* name, int len, int addr) {
     sym* sp = sym_intern(z, name, len);
     if (sp == NULL) {
-        return false;
+        return NULL;
     }
     if (sp->defined) {
         z->err = "label defined twice";
 
-        return false;
+        return NULL;
     }
     sp->defined = true;
     sp->addr = addr;
 
-    return true;
+    return sp;
 }
 
 /* Writes an anonymous label here.
@@ -1031,20 +1036,22 @@ static sym* anon_next(dz* z) {
 
 /* Defines a local in the current scope. Same shape as sym_define, against the
  * other table. */
-static bool loc_define(dz* z, const char* name, int len, int addr) {
+/* Hands the symbol back, and stays inlined, for the reasons above. */
+__attribute__((always_inline))
+static inline sym* loc_define(dz* z, const char* name, int len, int addr) {
     sym* sp = loc_intern(z, name, len);
     if (sp == NULL) {
-        return false;
+        return NULL;
     }
     if (sp->defined) {
         z->err = "label defined twice";
 
-        return false;
+        return NULL;
     }
     sp->defined = true;
     sp->addr = addr;
 
-    return true;
+    return sp;
 }
 
 /* Remembers a reference to a label that is not defined yet. The name is
@@ -3005,6 +3012,122 @@ have_value:
     return true;
 }
 
+/* ----------------------------------------------------------------- equ */
+
+/* `EQU`, or `.EQU`, in any case -- tested in place, and advancing past it if it
+ * is one.
+ *
+ * Four compares and no token scan, because a scan needs somewhere to keep the
+ * end of it and this function runs inside assemble_line, where a local costs
+ * three bytes of frame and the frame costs `iy`. The same test written with a
+ * `const char* q` measured a whole 1.8% worse across every benchmark.
+ *
+ * Reading ahead is safe without a bound for the usual reason and one more: the
+ * chain short-circuits on the first mismatch, and the buffer ends in a newline
+ * that matches nothing here, so it can reach the sentinel and never pass it.
+ * The class test on the fourth character is what keeps `equx` from being one.
+ *
+ * The reference takes `EQU`, `equ` and `.EQU`; it does not take `X EQU 5`
+ * without the colon -- that is "Invalid mnemonic 'X'" there -- and it has no
+ * `=`. Each of those was measured against it rather than assumed. */
+static bool is_equ_at(const char* p) {
+    if (*p == '.') {
+        p++;
+    }
+
+    return (p[0] | 0x20) == 'e' && (p[1] | 0x20) == 'q' && (p[2] | 0x20) == 'u'
+           && (cclass[(uint8_t) p[3]] & C_MNEM) == 0;
+}
+
+/* The rest of `name: EQU value`.
+ *
+ * `named` is the symbol the label path just defined, holding the address the
+ * line happened to be at; this replaces it with the value. Defining it first
+ * and overwriting is what keeps the ordinary label path unchanged -- and the
+ * redefinition check, which has to happen either way, happens there.
+ *
+ * The value must be knowable now. `X: EQU Y+1` with `Y` still ahead is
+ * "Unknown identifier" in the reference too, which has a second pass and could
+ * have resolved it: a forward reference in an EQU is refused by both, so this
+ * is one of the places where one pass costs nothing.
+ *
+ * A forward reference *to* an EQU is a different thing and already works.
+ * `ld a, X` above `X: EQU 5` goes through the fixup list like any other label
+ * that is not defined yet, and patching reads the value the same way it reads
+ * an address. Nothing here had to know about it. */
+__attribute__((noinline))
+static bool equ_line(dz* z, const char* name, int nlen, const char* p,
+                     const char* e, const char** stop) {
+    /* Steps over the EQU itself. is_equ_at only answered whether one is here,
+     * and telling it to also report where it ended meant taking the address of
+     * assemble_line's line pointer -- which is the one thing that function
+     * cannot afford. Three characters re-read once per EQU against a pointer
+     * spilled on every line. */
+    if (*p == '.') {
+        p++;
+    }
+    p += 3;
+    while (is_space_ch(*p)) {
+        p++;
+    }
+
+    /* The label path has already defined this name at the address the line
+     * happened to be at, including the check for a second definition and the
+     * scope it ends -- a name given a value ends one exactly as a label does,
+     * which is what the reference does too. All that is left is to replace the
+     * address with the value.
+     *
+     * Found by name rather than handed over, for the reason given at the call
+     * site. Interning a name that exists is a lookup and no allocation. */
+    sym* named;
+    if (*name == '@') {
+        if (nlen == 2 && name[1] == '@') {
+            /* An anonymous label has no name to attach a value to, and the
+             * reference refuses this too. */
+            z->err = "invalid label";
+
+            return false;
+        }
+        named = loc_intern(z, name, nlen);
+    } else {
+        named = sym_intern(z, name, nlen);
+    }
+    if (named == NULL) {
+        return false;
+    }
+
+    /* Undefined while its own value is being worked out, so that `X: EQU X+1`
+     * is refused rather than quietly reading the address the label path just
+     * gave it. The reference refuses it too. Two stores, on the EQU path
+     * only. */
+    named->defined = false;
+
+    fwd_reset(NULL);
+    uint8_t fwdmask = 0;
+    int value = 0;
+    if (!expr_value(z, &value, &p, e, &fwdmask)) {
+        return false;
+    }
+    if (expr_fwd != NULL) {
+        z->err = "a label here must be defined already";
+
+        return false;
+    }
+    named->defined = true;
+    named->addr = value;
+
+    while (is_space_ch(*p)) {
+        p++;
+    }
+    *stop = p;
+
+    /* No test for what follows. The line loop already reports anything left
+     * over -- `X: EQU 5 6` is "unexpected text after the instruction" there --
+     * and a second check here was dead code that only looked like safety. */
+
+    return true;
+}
+
 /* ------------------------------------------------------------- selecting */
 
 
@@ -3438,7 +3561,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
                 if (!anon_define(z, addr)) {
                     return false;
                 }
-            } else if (!loc_define(z, s, n, addr)) {
+            } else if (loc_define(z, s, n, addr) == NULL) {
                 /* A local. It is not tested against the number formats: the
                  * reference returns before that check for a local, so `@123:`
                  * and `@0ffh:` are labels there and have to be here. */
@@ -3450,7 +3573,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
 
                 return false;
             }
-            if (!sym_define(z, s, n, addr)) {
+            if (sym_define(z, s, n, addr) == NULL) {
                 return false;
             }
             /* A global ends the scope before it starts a new one -- but not
@@ -3465,6 +3588,25 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
         *stop = p;
         if (p >= e || *p == '\n' || *p == ';') {
             return true;
+        }
+
+        /* `name: EQU value`, which names a value rather than an address.
+         *
+         * Placed after the return above and not before the definition, which
+         * is where the two earlier attempts put it. A bare `label:` line never
+         * reaches here, and those are 9,347 of isa_memory's lines and every
+         * label in isa_real; testing before the definition instead cost 1.8%
+         * on isa_memory alone.
+         *
+         * The label has already been defined at the address the line was at,
+         * and equ_line replaces that with the value. It re-finds the symbol by
+         * name rather than being handed it: keeping the pointer in a local
+         * here took three more bytes of frame, and the frame going 115 to 118
+         * was enough to lose `iy` as the line pointer -- 1.8% on every
+         * benchmark, including the ones with no EQU in them. One hash lookup
+         * per EQU line against a spill on every line in the file. */
+        if (is_equ_at(p)) {
+            return equ_line(z, s, n, p, e, stop);
         }
 
         s = p;

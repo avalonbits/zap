@@ -1246,8 +1246,22 @@ int main(void) {
     check("a name in the middle of a list",
           emit("  DB 1, later, 3\nlater: DB 9\n"), "01 03 03 09");
     check("a character literal", emit("  DB 'A'\n"), "41");
-    check("a negative, which the fast path never sees",
-          emit("  DB -1\n"), "FF");
+    /* A sign, which the operand parser has always taken and the directive did
+     * not. One item in four of `DB 1, 2, 3, -1` went to the evaluator for it,
+     * and a table of signed bytes is what DB is for. */
+    check("a negative", emit("  DB -1\n"), "FF");
+    check("an explicit plus", emit("  DB +1\n"), "01");
+    check("a signed list", emit("  DB 1,2,3,-1\n"), "01 02 03 FF");
+    check("a negative that fills the byte", emit("  DB -128\n"), "80");
+    check("negative hex", emit("  DB -0x10\n"), "F0");
+    check("a negative word", emit("  DW -1\n"), "FF FF");
+    check("a space between the sign and the digits",
+          emit("  DB - 1\n"), "FF");
+    /* A sign in front of something the fast path still has to hand back. */
+    check("a sign then an operator", emit("  DB -1-1\n"), "FE");
+    check("two signs", emit("  DB --1\n"), "ERR");
+    check("a sign in front of a name",
+          emit("here: DB 9\n  DB -here\n"), "09 00");
     check("a mixed list", emit("  DB 0xFF, 0, 0x10, 255\n"), "FF 00 10 FF");
     check("words the fast path reads", emit("  DW 0x1234,0x5678\n"),
           "34 12 78 56");

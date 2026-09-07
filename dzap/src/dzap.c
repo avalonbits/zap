@@ -3520,11 +3520,22 @@ static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
              * on a character already in hand. */
             const char* q = p;
             bool got = false;
+
+            /* A sign, which the operand parser has always taken and this did
+             * not. It matters more than it looks: `DB 1, 2, 3, -1` sends one
+             * item in four back to the evaluator, and a table of signed bytes
+             * is what `DB` is for. */
+            bool neg = false;
+            if (*q == '-' || *q == '+') {
+                neg = *q == '-';
+                q++;
+            }
+            const char* const d = q;
             if (digit_ch(*q)) {
                 while (q < e && num_ch(*q)) {
                     q++;
                 }
-                const int nn = (int) (q - p);
+                const int nn = (int) (q - d);
 
                 /* What ends the run has to end the item too. `DB 1+2` is the
                  * evaluator's, and one look at the character the scan stopped
@@ -3534,21 +3545,21 @@ static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
                     r++;
                 }
                 if (*r == ',' || *r == '\n' || *r == ';' || r >= e) {
-                    if (nn >= 3 && p[0] == '0' && (p[1] | 0x20) == 'x') {
-                        got = hex_digits(p + 2, nn - 2, &value);
-                    } else if (nn >= 2 && (p[nn - 1] | 0x20) == 'h') {
-                        got = hex_digits(p, nn - 1, &value);
+                    if (nn >= 3 && d[0] == '0' && (d[1] | 0x20) == 'x') {
+                        got = hex_digits(d + 2, nn - 2, &value);
+                    } else if (nn >= 2 && (d[nn - 1] | 0x20) == 'h') {
+                        got = hex_digits(d, nn - 1, &value);
                     } else {
                         /* First digit outside the loop, as the operand parser
                          * does it: a one-digit value then needs no multiply,
                          * and `d * 10` is a call to __imulu here. */
-                        int acc = p[0] - '0';
+                        int acc = d[0] - '0';
                         int k = 1;
                         for (; k < nn; k++) {
-                            if (!digit_ch(p[k])) {
+                            if (!digit_ch(d[k])) {
                                 break;
                             }
-                            acc = acc * 10 + (p[k] - '0');
+                            acc = acc * 10 + (d[k] - '0');
                         }
                         if (k == nn) {
                             value = acc;
@@ -3559,6 +3570,9 @@ static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
             }
 
             if (got) {
+                if (neg) {
+                    value = -value;
+                }
                 p = q;
             } else {
                 q = p;
@@ -4330,6 +4344,42 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
  * The same tests the operand parser uses, in the same order, so the two cannot
  * disagree about what a number is. */
 
+/* Where the time in a line goes, by building an assembler that stops part way.
+ *
+ * -DTRUNC=n keeps stages 1..n of assemble_line and skips the rest; the
+ * difference between two builds is the stage between them. See
+ * .internal/measuring.md, which this exists to serve.
+ *
+ *   1  the line is read and found not to be blank or a remark
+ *   2  + the mnemonic run is scanned
+ *   3  + the label, if any, is defined -- and an EQU is a label line
+ *   4  + mnemonic_of, or the directive that its failure dispatches
+ *   5  + both operands are parsed
+ *   6  + the row is chosen
+ *   7  + the bytes are emitted, which is the ordinary build
+ *
+ * Two rules, both learned the hard way and both enforced here. Every value a
+ * stage produces is sunk into a volatile, or the compiler deletes the work
+ * whose result nothing reads and the stage measures nothing. And every variant
+ * leaves the line the way the loop expects to find it -- the scan to the
+ * newline at `trunc_done` is in *every* build including the seventh, so it is
+ * a constant across the set and cancels out of the differences. A probe that
+ * skipped it once left match_row reading uninitialised memory, and the guest
+ * wandered off for 469 seconds before anything noticed.
+ */
+#ifdef TRUNC
+static volatile int trunc_sink;
+#define TRUNC_AT(n, v)                       \
+    do {                                     \
+        trunc_sink = (int) (v);              \
+        if ((TRUNC) <= (n)) {                \
+            goto trunc_done;                 \
+        }                                    \
+    } while (0)
+#else
+#define TRUNC_AT(n, v) do { } while (0)
+#endif
+
 __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const char* e, const char** stop) {
     /* Bounded, and it has to be.
      *
@@ -4354,6 +4404,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
     if (p >= e || *p == '\n' || *p == ';') {
         return true;
     }
+    TRUNC_AT(1, *p);
 
     const char* s = p;
     while ((cclass[(uint8_t) *p] & C_MNEM) != 0) {
@@ -4365,6 +4416,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
 
         return false;
     }
+    TRUNC_AT(2, n);
 
     /* A label, if a colon follows the name.
      *
@@ -4443,7 +4495,15 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
         }
     }
 
+    TRUNC_AT(3, n);
+
     const insninfo* insn = mnemonic_of(s, n);
+#ifdef TRUNC_NODIR
+    /* Stage 4 without the directive path, so the two halves of that stage can
+     * be told apart: the lookup happens on every line, the dispatch on one in
+     * eight. */
+    TRUNC_AT(4, insn != NULL);
+#endif
     if (insn == NULL) {
         /* A directive, or nothing this understands. Asked here and nowhere
          * earlier, so an instruction line never tests for one: `DB` and its
@@ -4451,6 +4511,8 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
          * but set "unknown instruction". */
         return directive_line(z, s, n, p, e, stop);
     }
+
+    TRUNC_AT(4, insn != NULL);
 
     dop a;
     dop b;
@@ -4470,6 +4532,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
     }
 
     *stop = p;
+    TRUNC_AT(5, a.mode + b.mode + a.r0 + b.r0);
 
     const isa_row* row = match_row(insn, &a, &b);
     if (row == NULL) {
@@ -4478,7 +4541,22 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
         return false;
     }
 
+    TRUNC_AT(6, row != NULL);
+
     return emit_row(z, row, &a, &b);
+
+#ifdef TRUNC
+trunc_done:
+    /* The loop wants the line left on its newline. In the seventh build this
+     * runs too, over the handful of characters an instruction leaves behind,
+     * so every variant carries it and it cancels out of the differences. */
+    while (*p != '\n') {
+        p++;
+    }
+    *stop = p;
+
+    return true;
+#endif
 }
 
 /* Patches every forward reference, once the whole source has been read.

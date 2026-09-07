@@ -125,6 +125,16 @@ typedef struct _dop {
      * operand that is not a forward reference, which is most of them. */
     const sym* fwd;
 
+    /* A second one, subtracted or added. `end - start` with neither written
+     * yet is how a program measures a table it has not finished emitting, and
+     * it is 61% of the operands that name more than one label ahead.
+     *
+     * Two is the limit, and not an arbitrary one: the fixup that carries them
+     * is sixteen bytes because that made its indexing a shift instead of a
+     * multiply, and two symbols is what fits. */
+    const sym* fwd2;
+    bool fwd2_neg;
+
     bool has_imm;
 
     /* An instruction's immediate is at most three bytes -- a 24-bit address in
@@ -388,6 +398,23 @@ __attribute__((always_inline)) static inline int sym_bucket(const char* name,
 typedef struct {
     const sym* target;  /* interned, so no name and no lookup to do */
 
+    /* A second symbol, subtracted or added, or NULL. `end - start` with both
+     * still ahead is 61% of the expressions that hold more than one forward
+     * reference, and it is how a program measures a table it has not finished
+     * writing.
+     *
+     * It costs nothing, because `next_addr` used to sit here and did not need
+     * to: it was only ever read for a relative jump, and there it is always
+     * `DZ_ORG + off + 1` -- the byte after the displacement byte, which `off`
+     * already names. Three bytes that were being stored to say something the
+     * record already knew.
+     *
+     * Next to `target` rather than after `addend` so that the record is a
+     * power of two on the host too, where a pointer is eight bytes and an int
+     * four; the static assert below is checked in both builds and only one
+     * field order satisfies both. */
+    const sym* sub;
+
     /* What to add to the address once it is known. `later + 4` is one symbol
      * and one constant, and that is what an expression over a forward label
      * comes to when the label appears once and only `+` and `-` connect it --
@@ -395,11 +422,15 @@ typedef struct {
      * is refused, because a fixup with one addend cannot represent it. */
     int addend;
 
-    uint8_t width;      /* 1, 2 or 3 bytes, or 0 for a relative displacement */
+    uint8_t width;      /* 1, 2 or 3 bytes, or 0 for a relative displacement,
+                         * plus FIX_SUB2 when `sub` is subtracted rather than
+                         * added */
     int off;            /* where in the output it goes */
-    int next_addr;      /* the address after the instruction, for a relative */
     int line;           /* to report against, long after the line is gone */
 } fixup;
+
+#define FIX_SUB2  0x80
+#define FIX_WIDTH 0x7F
 
 /* Sixteen bytes, and the fourth byte of it is the point: `&list[i]` on a
  * thirteen-byte record is a call to __imulu, because the eZ80's multiply is
@@ -797,11 +828,23 @@ static bool patch_fixup(dz* z, const fixup* f) {
         return false;
     }
 
-    const int val = sp->addr + f->addend;
+    int val = sp->addr + f->addend;
+    if (f->sub != NULL) {
+        if (!f->sub->defined) {
+            z->line = f->line;
+            z->err = "unknown label";
 
+            return false;
+        }
+        val += (f->width & FIX_SUB2) ? -f->sub->addr : f->sub->addr;
+    }
+
+    const uint8_t w = (uint8_t) (f->width & FIX_WIDTH);
     uint8_t* at = z->out + f->off;
-    if (f->width == 0) {
-        const int d = val - f->next_addr;
+    if (w == 0) {
+        /* The byte after the displacement byte, which is where a relative
+         * jump is measured from. */
+        const int d = val - (DZ_ORG + f->off + 1);
         if (d < -128 || d > 127) {
             z->line = f->line;
             z->err = "relative jump too far";
@@ -814,10 +857,10 @@ static bool patch_fixup(dz* z, const fixup* f) {
     }
 
     at[0] = (uint8_t) val;
-    if (f->width > 1) {
+    if (w > 1) {
         at[1] = (uint8_t) (val >> 8);
     }
-    if (f->width > 2) {
+    if (w > 2) {
         at[2] = (uint8_t) (val >> 16);
     }
 
@@ -1007,8 +1050,8 @@ static bool loc_define(dz* z, const char* name, int len, int addr) {
 /* Remembers a reference to a label that is not defined yet. The name is
  * copied for the same reason a definition's is: the line it came from is
  * gone by the time this is resolved. */
-static bool fix_add(dz* z, const sym* target, int addend, uint8_t width,
-                    int off, int next_addr) {
+static bool fix_add(dz* z, const sym* target, const sym* sub, int addend,
+                    uint8_t width, int off) {
     /* A reference to a local goes on the scope's own list, because the node it
      * points at stops meaning this label the moment the scope ends. The flag
      * is on the node rather than on the operand that carried it here: the
@@ -1038,10 +1081,10 @@ static bool fix_add(dz* z, const sym* target, int addend, uint8_t width,
 
     fixup* f = &(*list)[(*used)++];
     f->target = target;
+    f->sub = sub;
     f->addend = addend;
     f->width = width;
     f->off = off;
-    f->next_addr = next_addr;
     f->line = z->line;
 
     return true;
@@ -1889,6 +1932,8 @@ static const dop dop_none = {
     .indirect = false,
     .disp = 0,
     .fwd = NULL,
+    .fwd2 = NULL,
+    .fwd2_neg = false,
     .has_imm = false,
     .imm = 0,
 };
@@ -2049,24 +2094,128 @@ static bool numeric_token(const char* s, int n) {
  * Out of line, and deliberately: it is reached by one operand in twenty-nine,
  * and assemble_line has no registers to spare for the other twenty-eight. */
 
-/* The one forward reference an expression is allowed to contain, and whether
- * it is still in a shape a fixup can carry.
+/* The forward references an expression is carrying, and whether they are still
+ * in a shape a fixup can hold.
  *
- * A fixup holds a symbol and a constant, so it can represent `sym + k` and
- * nothing else. The symbol may therefore appear once, may not be negated or
- * complemented, and may only be joined to the rest by `+` and `-` -- and by `-`
- * only on the left, because `k - sym` needs the address negated and the fixup
- * has nowhere to say so.
+ * A fixup holds two symbols and a constant, and adds the first: it can
+ * represent `k + a`, `k + a - b` and `k + a + b`, and nothing else. So an
+ * expression may name at most two labels that are not defined yet, each may
+ * only be joined to the rest by `+` and `-`, and at least one of the two has
+ * to end up added.
  *
- * Tracked here rather than returned, because returning it would widen every
+ * A sign is kept per symbol rather than a single "is this still usable" flag,
+ * which is what the one-symbol version had. That is what makes `end - start`
+ * work, and it also picked up `k - later` for free -- previously refused,
+ * because with nowhere to write a sign the only safe answer was no.
+ *
+ * Tracked here rather than returned, because returning them would widen every
  * signature in the evaluator including the recursive one. Reset per operand,
- * in parse_operand, which is the only place an expression starts. */
-static const sym* expr_fwd;
+ * in parse_operand, which is the only place an expression starts.
+ *
+ * Two named slots rather than an array: a `const sym*` is three bytes, so a
+ * variable subscript into an array of them is a call to __imulu on every
+ * lookup. Two is few enough to spell out. */
+static const sym* expr_fwd;     /* slot 0, bit 0 of a mask */
+static const sym* expr_fwd2;    /* slot 1, bit 1 */
+static bool expr_fwd_neg;
+static bool expr_fwd2_neg;
 static bool expr_fwd_bad;
 
-static bool expr_value(dz* z, int* out, const char** pp, const char* e);
+/* Which slots hold a symbol. A term reports the ones it filled by taking this
+ * before and after itself, so a bracketed sub-expression needs no special
+ * case: whatever it left behind belongs to the term that contained it. */
+static uint8_t fwd_live(void) {
+    uint8_t m = 0;
+    if (expr_fwd != NULL) {
+        m = 1;
+    }
+    if (expr_fwd2 != NULL) {
+        m |= 2;
+    }
+
+    return m;
+}
+
+/* Claim a slot for a symbol that is not defined yet. A third one has nowhere
+ * to go, and saying so here is the only place that has to know the limit. */
+static void fwd_take(const sym* sp) {
+    if (expr_fwd == NULL) {
+        expr_fwd = sp;
+        expr_fwd_neg = false;
+    } else if (expr_fwd2 == NULL) {
+        expr_fwd2 = sp;
+        expr_fwd2_neg = false;
+    } else {
+        expr_fwd_bad = true;
+    }
+}
+
+/* Subtraction, and unary minus, flip the sign of everything on their right. */
+static void fwd_negate(uint8_t mask) {
+    if (mask & 1) {
+        expr_fwd_neg = !expr_fwd_neg;
+    }
+    if (mask & 2) {
+        expr_fwd2_neg = !expr_fwd2_neg;
+    }
+}
+
+/* What survived, arranged the way a fixup wants it: the added symbol first.
+ *
+ * `start - end` and `end - start` differ only in which slot the minus landed
+ * on, so the ordering is decided here rather than by the order they were
+ * written in. Two negatives is the one two-symbol shape that cannot be
+ * represented, because the fixup always adds its first symbol. */
+static bool fwd_finish(dz* z, dop* op) {
+    if (expr_fwd == NULL) {
+        return true;
+    }
+    if (expr_fwd_bad) {
+        z->err = "a label here must be defined already";
+
+        return false;
+    }
+    if (expr_fwd2 == NULL) {
+        if (expr_fwd_neg) {
+            z->err = "a label cannot be negated";
+
+            return false;
+        }
+        op->fwd = expr_fwd;
+
+        return true;
+    }
+    if (!expr_fwd_neg) {
+        op->fwd = expr_fwd;
+        op->fwd2 = expr_fwd2;
+        op->fwd2_neg = expr_fwd2_neg;
+    } else if (!expr_fwd2_neg) {
+        op->fwd = expr_fwd2;
+        op->fwd2 = expr_fwd;
+        op->fwd2_neg = true;
+    } else {
+        /* Both subtracted. A fixup adds its first symbol, so there is nowhere
+         * for `-a - b` to go. */
+        z->err = "a label cannot be negated";
+
+        return false;
+    }
+
+    return true;
+}
+
+static void fwd_reset(const sym* seed) {
+    expr_fwd = seed;
+    expr_fwd2 = NULL;
+    expr_fwd_neg = false;
+    expr_fwd2_neg = false;
+    expr_fwd_bad = false;
+}
+
+static bool expr_value(dz* z, int* out, const char** pp, const char* e,
+                       uint8_t* fwdmask);
 static bool expr_climb(dz* z, int* total, const char** pp, const char* e,
-                       uint8_t minprec, int depth, bool* has_fwd);
+                       uint8_t minprec, int depth, uint8_t* fwdmask);
 
 /* Bracket nesting and precedence levels both recurse, so both are bounded.
  * The reference has no limit and a deep enough file takes the stack out from
@@ -2118,11 +2267,7 @@ static bool expr_atom(dz* z, int* out, const char* ns, int nn) {
                 if (sp == NULL) {
                     return false;
                 }
-                if (expr_fwd != NULL) {
-                    expr_fwd_bad = true;
-                } else {
-                    expr_fwd = sp;
-                }
+                fwd_take(sp);
                 *out = 0;
 
                 return true;
@@ -2135,13 +2280,9 @@ static bool expr_atom(dz* z, int* out, const char* ns, int nn) {
             return false;
         }
         if (!sp->defined) {
-            /* Not known yet. One of these an expression may have; a second
-             * one has nowhere to go. */
-            if (expr_fwd != NULL) {
-                expr_fwd_bad = true;
-            } else {
-                expr_fwd = sp;
-            }
+            /* Not known yet. Two of these an expression may have; a third has
+             * nowhere to go. */
+            fwd_take(sp);
             *out = 0;
 
             return true;
@@ -2162,8 +2303,11 @@ static bool expr_atom(dz* z, int* out, const char* ns, int nn) {
     return true;
 }
 
-/* One term, with any unary operators in front of it. */
-static bool expr_term(dz* z, int* out, const char** pp, const char* e) {
+/* One term, with any unary operators in front of it. `fwdmask` comes back
+ * holding the slots this term put a forward reference into, so its caller
+ * knows which signs its operator has to flip. */
+static bool expr_term(dz* z, int* out, const char** pp, const char* e,
+                      uint8_t* fwdmask) {
     const char* p = *pp;
     while (is_space_ch(*p)) {
         p++;
@@ -2190,11 +2334,12 @@ static bool expr_term(dz* z, int* out, const char** pp, const char* e) {
         }
     }
 
-    const sym* const fwd_before = expr_fwd;
+    const uint8_t fwd_before = fwd_live();
     int v = 0;
     if (*p == '[') {
         p++;
-        if (!expr_value(z, &v, &p, e)) {
+        uint8_t inner = 0;
+        if (!expr_value(z, &v, &p, e, &inner)) {
             return false;
         }
         while (is_space_ch(*p)) {
@@ -2237,10 +2382,16 @@ static bool expr_term(dz* z, int* out, const char** pp, const char* e) {
         }
     }
 
-    if (expr_fwd != fwd_before && (invert || sign < 0)) {
-        /* `-later` or `~later`: the fixup adds the address, it cannot negate
-         * it. Refused rather than emitted with the sign quietly dropped. */
-        expr_fwd_bad = true;
+    const uint8_t mine = (uint8_t) (fwd_live() & ~fwd_before);
+    *fwdmask = mine;
+    if (mine != 0) {
+        if (invert) {
+            /* `~later`: the fixup adds an address, it cannot complement one.
+             * Refused rather than emitted with the operator quietly dropped. */
+            expr_fwd_bad = true;
+        } else if (sign < 0) {
+            fwd_negate(mine);
+        }
     }
     if (invert) {
         v = ~v;
@@ -2259,7 +2410,7 @@ static bool expr_term(dz* z, int* out, const char** pp, const char* e) {
  * turns the climb into the reference's left-to-right fold. One algorithm, two
  * tables; the compatible answer is not a second code path to keep in step. */
 static bool expr_climb(dz* z, int* total, const char** pp, const char* e,
-                       uint8_t minprec, int depth, bool* has_fwd) {
+                       uint8_t minprec, int depth, uint8_t* fwdmask) {
     const char* p = *pp;
     if (depth > EXPR_MAXDEPTH) {
         z->err = "expression nested too deeply";
@@ -2292,27 +2443,29 @@ static bool expr_climb(dz* z, int* total, const char** pp, const char* e,
 
         /* Left associative, so the right-hand side takes only operators that
          * bind *more* tightly than this one. */
-        /* Whether *this* operator's operands carry the forward reference,
-         * which is not the same as whether the expression has one anywhere.
-         * In `later + 2*3` the `*` joins two constants and is perfectly fine;
-         * asking only "is there a forward reference about" refused it. */
-        const sym* const fwd_before_rhs = expr_fwd;
+        /* Which slots *this* operator's right-hand side carries, which is not
+         * the same as which the expression holds anywhere. In `later + 2*3`
+         * the `*` joins two constants and is perfectly fine; asking only "is
+         * there a forward reference about" refused it. */
+        uint8_t rhs_mask = 0;
         int t = 0;
-        if (!expr_term(z, &t, &p, e)) {
+        if (!expr_term(z, &t, &p, e, &rhs_mask)) {
             return false;
         }
-        bool rhs_fwd = expr_fwd != fwd_before_rhs;
         if (!expr_climb(z, &t, &p, e, (uint8_t) (prec + 1), depth + 1,
-                        &rhs_fwd)) {
+                        &rhs_mask)) {
             return false;
         }
-        if (*has_fwd || rhs_fwd) {
-            /* It survives `+` from either side and `-` from the left. `k -
-             * later` would need the address negated, and every other operator
-             * would need it multiplied, masked or shifted -- none of which a
-             * symbol and an addend can say. */
-            if (c == '+' || (c == '-' && !rhs_fwd)) {
-                *has_fwd = true;
+        if ((*fwdmask | rhs_mask) != 0) {
+            /* A forward reference survives `+` and `-`, which move it between
+             * added and subtracted and nothing more. Every other operator
+             * would multiply, mask or shift an address that is not known yet,
+             * and a symbol with a sign cannot say that. */
+            if (c == '+') {
+                *fwdmask |= rhs_mask;
+            } else if (c == '-') {
+                fwd_negate(rhs_mask);
+                *fwdmask |= rhs_mask;
             } else {
                 expr_fwd_bad = true;
             }
@@ -2346,14 +2499,13 @@ static bool expr_climb(dz* z, int* total, const char** pp, const char* e,
 }
 
 /* A whole expression: a term, then everything that binds to it. */
-static bool expr_value(dz* z, int* out, const char** pp, const char* e) {
-    const sym* const before = expr_fwd;
+static bool expr_value(dz* z, int* out, const char** pp, const char* e,
+                       uint8_t* fwdmask) {
     int total = 0;
-    if (!expr_term(z, &total, pp, e)) {
+    if (!expr_term(z, &total, pp, e, fwdmask)) {
         return false;
     }
-    bool has_fwd = expr_fwd != before;
-    if (!expr_climb(z, &total, pp, e, 1, 0, &has_fwd)) {
+    if (!expr_climb(z, &total, pp, e, 1, 0, fwdmask)) {
         return false;
     }
     *out = total;
@@ -2586,20 +2738,22 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
             /* Nothing the ordinary scan could take, because the operand begins
              * with a character that is not a C_NUM one: a character literal, a
              * bracketed group, or a unary `~`. The evaluator knows all three,
-             * and knows what follows them, so it takes the whole operand. */
+             * and knows what follows them, so it takes the whole operand.
+             *
+             * Also where a negated label lands, from the two places below: the
+             * fast path reads `-name` as a sign and a name and has nowhere to
+             * put the sign, but `-f1 + f2` is representable and the evaluator
+             * is what knows that. Reached by goto rather than by testing for
+             * it, so the ordinary operand pays nothing for the detour. */
+full_expression:
             p = s;
-            expr_fwd = NULL;
-            expr_fwd_bad = false;
-            if (!expr_value(z, &total, &p, e)) {
+            fwd_reset(NULL);
+            uint8_t fwdmask = 0;
+            if (!expr_value(z, &total, &p, e, &fwdmask)) {
                 return false;
             }
-            if (expr_fwd != NULL) {
-                if (expr_fwd_bad) {
-                    z->err = "a label here must be defined already";
-
-                    return false;
-                }
-                op->fwd = expr_fwd;
+            if (!fwd_finish(z, op)) {
+                return false;
             }
             goto have_value;
         }
@@ -2652,9 +2806,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
                 if (sp->defined) {
                     v = sp->addr;
                 } else if (neg) {
-                    z->err = "a label cannot be negated";
-
-                    return false;
+                    goto full_expression;
                 } else {
                     op->fwd = sp;
                     v = 0;
@@ -2723,12 +2875,11 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
                 v = sp->addr;
                 got = true;
             } else if (neg) {
-                /* -label would have to negate an address that is not known
-                 * yet. The reference has expressions; dzap does not, and
-                 * refusing is better than emitting the address unnegated. */
-                z->err = "a label cannot be negated";
-
-                return false;
+                /* `-label` with the address not known yet. On its own it
+                 * cannot be represented -- a fixup adds its first symbol --
+                 * but `-start + end` can, so the evaluator decides rather
+                 * than this path, which has nowhere to keep the sign. */
+                goto full_expression;
             } else {
                 op->fwd = sp;
                 v = 0;
@@ -2762,21 +2913,15 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
                 /* The term already read may itself be a forward reference --
                  * `later + 4` reaches here with `later` in op->fwd -- so the
                  * evaluator is seeded with it rather than refusing. */
-                expr_fwd = op->fwd;
-                expr_fwd_bad = false;
+                fwd_reset(op->fwd);
                 op->fwd = NULL;
                 p = q;
-                bool has_fwd = expr_fwd != NULL;
-                if (!expr_climb(z, &total, &p, e, 1, 0, &has_fwd)) {
+                uint8_t fwdmask = fwd_live();
+                if (!expr_climb(z, &total, &p, e, 1, 0, &fwdmask)) {
                     return false;
                 }
-                if (expr_fwd != NULL) {
-                    if (expr_fwd_bad) {
-                        z->err = "a label here must be defined already";
-
-                        return false;
-                    }
-                    op->fwd = expr_fwd;
+                if (!fwd_finish(z, op)) {
+                    return false;
                 }
             }
         }
@@ -3112,8 +3257,9 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
             /* Forward: the displacement is not known, so a zero goes down and
              * the fixup carries the address it will be measured from. Whether
              * it is in reach is decided when it is patched. */
-            if (!fix_add(z, rel->fwd, rel->imm, 0, (int) (o - z->out),
-                         DZ_ORG + (int) (o - z->out) + 1)) {
+            if (!fix_add(z, rel->fwd, rel->fwd2, rel->imm,
+                         rel->fwd2_neg ? FIX_SUB2 : 0,
+                         (int) (o - z->out))) {
                 return false;
             }
             *o++ = 0;
@@ -3129,18 +3275,22 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
     } else {
         if (a->has_imm && (row->condA & (IMM_N | IMM_MMN))) {
             if (a->fwd != NULL
-                && !fix_add(z, a->fwd, a->imm,
-                            (row->condA & IMM_N) ? 1 : (DZ_ADL ? 3 : 2),
-                            (int) (o - z->out), 0)) {
+                && !fix_add(z, a->fwd, a->fwd2, a->imm,
+                            (uint8_t) (((row->condA & IMM_N) ? 1
+                                                             : (DZ_ADL ? 3 : 2))
+                                       | (a->fwd2_neg ? FIX_SUB2 : 0)),
+                            (int) (o - z->out))) {
                 return false;
             }
             o = emit_imm(o, a, row->condA);
         }
         if (b->has_imm && (row->condB & (IMM_N | IMM_MMN))) {
             if (b->fwd != NULL
-                && !fix_add(z, b->fwd, b->imm,
-                            (row->condB & IMM_N) ? 1 : (DZ_ADL ? 3 : 2),
-                            (int) (o - z->out), 0)) {
+                && !fix_add(z, b->fwd, b->fwd2, b->imm,
+                            (uint8_t) (((row->condB & IMM_N) ? 1
+                                                             : (DZ_ADL ? 3 : 2))
+                                       | (b->fwd2_neg ? FIX_SUB2 : 0)),
+                            (int) (o - z->out))) {
                 return false;
             }
             o = emit_imm(o, b, row->condB);

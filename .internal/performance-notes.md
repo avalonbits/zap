@@ -1669,3 +1669,110 @@ with one -- and `(hl)` and `(ix+d)` are among the commonest operands there are.
 The register path recognises those first, so the scan is only needed when `(`
 is followed by something that is not a register, which is the version to build
 and price.
+
+## Expressions, stage three (2026-09-06)
+
+Two forward references in one expression, joined by `+` or `-`: `end - start`
+with neither label written yet, which is how a program measures a table it is
+still emitting. Of the 1,114 expression operands in the corpus that name more
+than one label ahead, **678 (60.9%)** join them with nothing but `+` and `-`,
+and coverage of the corpus's expressions goes from 73.8% to about 90%.
+
+### The three bytes were already there
+
+The obvious cost is the fixup. It holds a symbol pointer and an addend and is
+sixteen bytes, which is a power of two, which is what stopped `&list[i]` being
+a `call __imulu` in stage two. A second `const sym*` is three more bytes and
+takes it to nineteen, and the multiply comes back.
+
+It did not have to. `next_addr` -- the address a relative jump is measured from
+-- was stored on every fixup and read on almost none, and where it was read it
+is always `DZ_ORG + off + 1`, the byte after the displacement byte, which `off`
+already names. Three bytes recording something the record already knew. Dropped,
+computed in `patch_fixup` instead, and the second symbol goes exactly where it
+was:
+
+    const sym* target;   /* added */
+    const sym* sub;      /* added or subtracted, or NULL */
+    int addend;
+    uint8_t width;       /* 1, 2, 3, or 0 for a relative, | FIX_SUB2 */
+    int off;
+    int line;
+
+Still sixteen bytes, so the static assert still holds and the fixup array is
+exactly as large as it was. **The feature costs no memory at all** -- unlike
+stage two, which widened the array by 23%.
+
+The sign lives in the spare high bits of `width`, whose values are 0 to 3.
+
+One thing the host build forces: `sub` sits next to `target` and not after
+`addend`, because a pointer is eight bytes on the host and an int four, and only
+that field order is a power of two in both builds. The assert is checked in both,
+which is what caught it.
+
+### A sign per symbol, instead of a flag
+
+Stage two tracked one symbol and a "no longer linear" flag. Stage three tracks
+two symbols and a sign each, and the evaluator passes a two-bit mask saying
+which slots a sub-expression's value is carrying:
+
+    +   result carries both sides, signs unchanged
+    -   result carries both sides, the right-hand side's signs flipped
+    anything else, with either side carrying a slot: refused
+
+That is smaller than what it replaces, and more general. `k - later` used to be
+refused -- with nowhere to write a sign the only safe answer was no -- and now
+works. So does `-start + end`, which needed the fast path to stop refusing a
+negated label outright and hand the operand to the evaluator instead; it does
+that with a `goto` into the general branch, so an ordinary operand pays nothing
+for the detour.
+
+The mask is taken as a before-and-after of which slots are occupied, so a
+bracketed sub-expression needs no special case: whatever it left behind belongs
+to the term that contained it. `-[f2-f1]` negates both and comes out as
+`f1 - f2`.
+
+Which of the two symbols is the added one is decided at the end, not by the
+order they were written in: the fixup always adds its first symbol, so
+`f1 - f2` stores `f1` as the target and `f2` subtracted, and `-f1 + f2` stores
+`f2` as the target and `f1` subtracted. Two negatives is the one two-symbol
+shape with nowhere to go, and it is refused.
+
+Three or more is still refused, as is any label under `*`, `/`, `&`, `|`, `^`,
+`<<`, `>>` or `~`. The reference assembles all of those, having a second pass,
+so each is a divergence and is loud rather than a wrong address.
+
+### It is faster than the feature it adds to
+
+    isa_real         4.80s -> 4.72s   -1.7%   337 -> 332 cycles/byte
+    isa_even         4.92s -> 4.84s   -1.6%   346 -> 340
+    isa_degenerate   4.76s -> 4.66s   -2.1%   335 -> 328
+    isa_memory       5.54s -> 5.48s   -1.1%   390 -> 385
+
+Reproduced by running base, new, base, new on isa_real and isa_even, with the
+same generated sources and no rebuild in between; both rounds gave the same four
+numbers. Output byte-identical to the reference on all four.
+
+The gain is `next_addr`: a store on every fixup and, more to the point, its
+argument -- `DZ_ORG + (o - z->out) + 1` -- computed in `emit_row` on the
+relative-jump path. Removing a field paid for adding one, and then some. The
+new tracking runs only where a forward reference actually appears; what every
+expression pays is two pointer tests per term for the occupied-slot mask.
+
+**A record that is already the right size can still be carrying a field it does
+not need.** That is the second time here: the fixup's padding paid for the
+addend in stage two, and its dead field pays for the second symbol now.
+
+### Checked
+
+7,000 random forward-reference expressions against the reference across two
+fuzzers -- 3,000 over two labels and 4,000 over four with brackets, unary
+operators and every binary operator -- with 2,714 agreeing byte for byte, 4,286
+refused by design and **no mismatches**. Host suite at 374 checks; each of the
+five mechanisms was verified to bite by breaking the line it covers:
+
+    the sign ignored when patching        6 checks fail
+    fwd_negate made a no-op               5
+    the second slot never taken           5
+    a negated label refused, not deferred 1, plus the reference comparison
+    the relative measured from `off`      4

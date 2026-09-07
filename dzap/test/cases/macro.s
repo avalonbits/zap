@@ -131,3 +131,23 @@ second:
   withlocal
 @twice:
   nop
+
+; Arguments are trimmed of the space around them, down to the last one.
+;
+; A single character is the case that matters, and it is the one that broke:
+; the trim used to walk back from the end of the argument, which the compiler
+; gets wrong at -Oz, and `1` came out empty while `65` came out whole. The
+; benchmark sources are what exercise that on the target -- isa_real invokes
+; `mload` with a one-digit argument -- and this pins the trimming itself.
+  MACRO trim1 v
+  db "[v]"
+  ENDMACRO
+  trim1 5
+  trim1   5
+  trim1 5  
+  trim1   5  
+  MACRO trim2 v, w
+  db "[v][w]"
+  ENDMACRO
+  trim2 5, 6
+  trim2   5  ,   65  

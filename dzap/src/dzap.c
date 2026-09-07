@@ -3680,7 +3680,12 @@ static bool macro_begin(dz* z, const char** pp) {
 
         return false;
     }
-    char* nm = nam_take(&z->names, &z->names_used, nn);
+    /* One byte more than the name, for a terminator. Nothing else in the name
+     * blocks carries one -- a label is a pointer and a length -- but an
+     * expansion puts this name in `z->path`, where a failure inside the body
+     * reports it, and that is read as a string. Without the nul the message
+     * came out as the whole arena from the name onwards. */
+    char* nm = nam_take(&z->names, &z->names_used, nn + 1);
     if (nm == NULL) {
         free(m);
         z->err = "out of memory for macros";
@@ -3690,6 +3695,7 @@ static bool macro_begin(dz* z, const char** pp) {
     for (int i = 0; i < nn; i++) {
         nm[i] = ns[i];
     }
+    nm[nn] = 0;
     m->name = nm;
     m->namelen = (uint8_t) nn;
 
@@ -3811,13 +3817,28 @@ static bool macro_expand(dz* z, const macro* m, const char* p, const char* e,
 
             return false;
         }
+        /* The end is carried forward rather than walked back from.
+         *
+         * `while (ae > as && is_space_ch(ae[-1])) ae--;` is the obvious way to
+         * write this and the compiler gets it wrong at -Oz: it commits the
+         * decrement before the test and then reads the byte off the pointer it
+         * has already moved, so the character examined is `ae[-2]`. A single
+         * character argument therefore saw the space in front of it, trimmed
+         * itself away, and expanded to nothing -- `mload 5` became `ld a,` and
+         * "no such instruction form", while `mload 65` was fine because the
+         * byte one further back was still part of the argument.
+         *
+         * Nothing on the host reproduces it; it took a benchmark that invokes
+         * macros to find, and reading the generated code to explain. Tracking
+         * the last non-space while scanning needs no backward index at all,
+         * and is one pass rather than two. */
         const char* as = p;
-        while (p < e && *p != '\n' && *p != ';' && *p != ',') {
-            p++;
-        }
         const char* ae = p;
-        while (ae > as && is_space_ch(ae[-1])) {
-            ae--;
+        while (p < e && *p != '\n' && *p != ';' && *p != ',') {
+            if (!is_space_ch(*p)) {
+                ae = p + 1;
+            }
+            p++;
         }
         argp[nargs] = as;
         argn[nargs] = (int) (ae - as);

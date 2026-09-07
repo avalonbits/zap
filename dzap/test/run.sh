@@ -171,6 +171,46 @@ else
     done
 fi
 
+# The generated code, on the machine this is for.
+#
+# Some changes have no answer of their own: making a loop counter unsigned
+# produces identical bytes and identical output, and the whole of it is that
+# two signed ints compared with `<` cost a `call pe, __setflag` to repair the
+# flags on overflow. The only place that is visible is the assembly, so that is
+# where it is checked.
+#
+# Skipped, not failed, without the cross compiler -- the same way the reference
+# comparison above is skipped without ez80asm.
+echo "=== test_codegen ==="
+if ! command -v agondev-config > /dev/null 2>&1 \
+   && ! [ -x "$HOME/agondev/bin/agondev-config" ]; then
+    echo "SKIP  no agondev toolchain; the target codegen is not checked"
+else
+    CC_EZ80="$HOME/agondev/bin/ez80-none-elf-clang"
+    [ -x "$CC_EZ80" ] || CC_EZ80=ez80-none-elf-clang
+    if "$CC_EZ80" -mllvm -z80-gas-style -mllvm -z80-print-zero-offset \
+        -nostdinc -isystem "$HOME/agondev/include" -target ez80-none-elf \
+        -DAGONDEV -Oz -I"$ROOT/src" -Isrc -S -o "$OUT/dzap.s" src/dzap.c \
+        > /dev/null 2>&1; then
+        # The flag repairs left in the line assembler. Each is eleven
+        # instructions and a call, on a path that runs per line or per digit;
+        # they came down from 14 when three loop counters went unsigned, and
+        # this is what stops them coming back.
+        nset=$(awk '/^_assemble_line:$/ { go = 1; next }
+                    go && /^_[a-z_0-9]+:$/ { exit }
+                    go && /call[ \t]+pe, __setflag/ { n++ }
+                    END { print n + 0 }' "$OUT/dzap.s")
+        if [ "$nset" -le 12 ]; then
+            echo "PASS  assemble_line has no more signed-compare repairs than it did ($nset)"
+        else
+            echo "FAIL  assemble_line has $nset signed-compare repairs, was 12"
+            status=1
+        fi
+    else
+        echo "SKIP  the target build failed; the codegen is not checked"
+    fi
+fi
+
 # The marginal-pricing flags in dzap.c. The first three duplicate a table so
 # the walk over it does twice the work; the rest duplicate a call to a function
 # that is already out of line, so nothing is outlined by the measurement. Each one is only a measurement if the program

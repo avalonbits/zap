@@ -3086,3 +3086,65 @@ the `__imulu`s and reach for exactly this.
 
 **The size-for-speed trade `-Oz` is making is not always the one wanted, and
 there is no per-site way to overrule it here.**
+
+## Under 350, by making three loop counters unsigned (2026-09-07)
+
+`mnemonic_of` and the fixup list were the last two stages nobody had opened.
+
+    mnemonic_of, from 94 before it
+      the bucket is found                    107    13   3.7%
+      + the chain is walked                  131    24   6.8%
+
+    the immediate section, from 342
+      the immediate bytes are written        347     5   1.4%
+      + the fixup is recorded                354     7   2.0%
+
+290 cycles a line to walk a chain of one candidate and compare two characters
+is too much, and reading the assembly said why:
+
+    call pe, __setflag
+
+**`same_ci`'s loop bound was two signed ints.** They cannot be compared in one
+subtract, so the compiler emits a call to repair the flags on overflow -- inside
+the loop that compares a mnemonic, on every line of the source. `dz` had this
+exact fault when the output was an offset and a capacity, it is written up in
+these notes, and it was still sitting in three more loops.
+
+    isa_real         354 -> 349   -1.4%
+    isa_even         363 -> 356   -1.9%
+    isa_degenerate   346 -> 339   -2.0%
+    isa_memory       377 -> 371   -1.6%
+
+**isa_real is under 350 for the first time since the benchmarks learned the
+language.** Output byte-identical on all five.
+
+The three were measured together and the credit is not equally theirs: the
+generated code says `same_ci` is where both `__setflag` calls went, 14 to 12,
+and the two digit loops removed none. They are kept because they are the same
+idiom in the same file and cost nothing, not because they were shown to pay.
+
+### Two that could not be made to work
+
+**`bucket_at`'s scale.** `bucket_head[i]` on a four-byte slot is `i << 2`, and
+the compiler spends a `call __ishl` on it once per line -- a library shift for
+two bits. Writing the scale by hand as `(i + i) + (i + i)` does not help: the
+compiler re-forms the shift, exactly as it re-forms `acc * 10` into a multiply,
+and for the same reason. Worse, indexing the array as bytes is wrong on the
+host, where a pointer is eight bytes and the slot is not four -- the sanitiser
+caught a misaligned load immediately. Left alone.
+
+**Nine `__setflag` calls remain**, and twelve is now a ceiling the test suite
+enforces rather than a floor anyone has reached. Each is a signed compare
+somewhere on the line path.
+
+### Testing a change with no answer of its own
+
+Making a counter unsigned produces identical bytes, identical output and
+identical behaviour. Every one of the 528 host checks passes with it and
+without it, which is exactly right and leaves nothing to break.
+
+So the test is on the generated code: `test/run.sh` now builds `dzap.c` for the
+eZ80 and counts the flag repairs left in `assemble_line`, failing if there are
+more than twelve. It skips rather than fails without the cross compiler, the way
+the reference comparison skips without ez80asm. Verified by putting `same_ci`
+back to `int`, which takes it to fourteen.

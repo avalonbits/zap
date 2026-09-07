@@ -117,7 +117,7 @@ typedef struct _dop {
     bool cc;
     uint8_t cc_index;
     uint8_t mode;
-    bool indirect;
+
     int disp;
     /* The label this operand named, when it is not defined yet. imm holds
      * nothing useful in that case; the emitter records a fixup once it knows
@@ -135,8 +135,6 @@ typedef struct _dop {
     const sym* fwd2;
     bool fwd2_neg;
 
-    bool has_imm;
-
     /* An instruction's immediate is at most three bytes -- a 24-bit address in
      * ADL mode -- so it is held in the machine's own word rather than the
      * 32-bit `value` the expression evaluator deals in. Same reasoning as the
@@ -148,6 +146,16 @@ typedef struct _dop {
      * never going to be looked at. */
     int imm;
 } dop;
+
+#ifdef AGONDEV
+/* Pinned, because the way a struct like this grows is one innocent `bool` at a
+ * time, and every byte of it is copied twice a line from the empty template.
+ *
+ * Twenty-three until two of those bools turned out to be bits that were
+ * already here; see `mode`. Twenty-one is not a power of two and does not need
+ * to be -- nothing indexes an array of these. */
+_Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
+#endif
 
 /* Room for the longest instruction, asked for once.
  *
@@ -1936,12 +1944,10 @@ static const dop dop_none = {
     .cc = false,
     .cc_index = 0,
     .mode = NOREQ,
-    .indirect = false,
     .disp = 0,
     .fwd = NULL,
     .fwd2 = NULL,
     .fwd2_neg = false,
-    .has_imm = false,
     .imm = 0,
 };
 
@@ -2583,7 +2589,6 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
     }
 
     if ((cl & C_LPAREN) != 0) {
-        op->indirect = true;
         op->mode |= INDIRECT;
         p++;
         while (is_space_ch(*p)) {
@@ -2690,7 +2695,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
                 }
             }
 
-            if (op->indirect) {
+            if ((op->mode & INDIRECT) != 0) {
                 if (*p != ')') {
                     z->err = "expected )";
 
@@ -2960,13 +2965,12 @@ full_expression:
 
 have_value:
         op->imm = total;
-        op->has_imm = true;
         op->mode |= IMM;
 
         while (is_space_ch(*p)) {
             p++;
         }
-        if (op->indirect) {
+        if ((op->mode & INDIRECT) != 0) {
             if (*p != ')') {
                 z->err = "expected )";
 
@@ -2997,7 +3001,6 @@ have_value:
                 p++;
             }
             if (exop[(uint8_t) *p] != 0) {
-                op->indirect = false;
                 op->mode &= (uint8_t) ~INDIRECT;
                 op->fwd = NULL;
                 op->fwd2 = NULL;
@@ -3304,7 +3307,7 @@ __attribute__((always_inline)) static inline void transform(emitted* out, dop* o
             out->opcode |= op->reg_index;
             break;
         case TR_Y:
-            if (op->has_imm) {
+            if ((op->mode & IMM) != 0) {
                 out->opcode |= shl3[imm_lo(op) & 7];
             } else {
                 out->opcode |= shl3[op->reg_index & 7];
@@ -3318,11 +3321,11 @@ __attribute__((always_inline)) static inline void transform(emitted* out, dop* o
             break;
         case TR_N:
             out->opcode |= (uint8_t) op->imm;
-            op->has_imm = false;
+            op->mode &= (uint8_t) ~IMM;
             break;
         case TR_BIT:
             out->opcode |= shl3[imm_lo(op) & 7];
-            op->has_imm = false;
+            op->mode &= (uint8_t) ~IMM;
             break;
         case TR_SELECT: {
             uint8_t y = 0;
@@ -3332,7 +3335,7 @@ __attribute__((always_inline)) static inline void transform(emitted* out, dop* o
                 y = 3;
             }
             out->opcode |= shl3[y & 7];
-            op->has_imm = false;
+            op->mode &= (uint8_t) ~IMM;
             break;
         }
         default:
@@ -3383,7 +3386,7 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
     if (row->flags & F_DDFDOK) {
         const uint8_t p1 = ddfd_prefix(a);
         const uint8_t p2 = ddfd_prefix(b);
-        out.prefix1 = ((p1 == 0 && p2 != 0) || (!a->indirect && p1 != 0 && p2 != 0))
+        out.prefix1 = ((p1 == 0 && p2 != 0) || ((a->mode & INDIRECT) == 0 && p1 != 0 && p2 != 0))
                       ? p2 : p1;
     }
 
@@ -3453,7 +3456,7 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
             *o++ = (uint8_t) d;
         }
     } else {
-        if (a->has_imm && (row->condA & (IMM_N | IMM_MMN))) {
+        if ((a->mode & IMM) != 0 && (row->condA & (IMM_N | IMM_MMN))) {
             if (a->fwd != NULL
                 && !fix_add(z, a->fwd, a->fwd2, a->imm,
                             (uint8_t) (((row->condA & IMM_N) ? 1
@@ -3464,7 +3467,7 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
             }
             o = emit_imm(o, a, row->condA);
         }
-        if (b->has_imm && (row->condB & (IMM_N | IMM_MMN))) {
+        if ((b->mode & IMM) != 0 && (row->condB & (IMM_N | IMM_MMN))) {
             if (b->fwd != NULL
                 && !fix_add(z, b->fwd, b->fwd2, b->imm,
                             (uint8_t) (((row->condB & IMM_N) ? 1

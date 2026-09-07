@@ -2151,3 +2151,73 @@ without costing more than they save. **The lever, if there is one, is making a
 
 Recorded so that the next person -- who will look at a 3,858-instruction
 function and reach for the same knife -- does not have to spend the afternoon.
+
+## The operand, from twenty-three bytes to twenty-one (2026-09-07)
+
+The note above concluded that the lever was making a `dop` smaller rather than
+making `assemble_line` shorter. Half right, and the half that is wrong is worth
+as much as the half that is not.
+
+Two operands are 46 bytes of `assemble_line`'s 115-byte frame, and both are
+copied from a zeroed template on every line. Five of those 46 bytes were flags
+holding one bit each.
+
+### Two of the five were not carrying information at all
+
+`op->indirect` and `op->has_imm` were exactly bits that already existed in
+`op->mode`. Every place that set one set the matching bit in the same
+statement, every place that cleared one cleared the bit, and nothing ever made
+them disagree -- which is the only reason it was safe. They were two bytes of
+every operand, written twice a line, to say what the byte beside them already
+said.
+
+`has_imm` looks independent, because three transform cases clear it after
+folding the immediate into the opcode. They can clear `mode`'s IMM bit instead:
+`match_row` has already run by then and nothing reads the mode again.
+
+    isa_real         4.90s -> 4.88s   -0.3%   344 -> 343 cycles/byte
+    isa_even         5.02s            -0.3%   354 -> 353
+    isa_degenerate   4.94s            -0.6%   349 -> 347
+    isa_memory       5.48s             0.0%   385 -> 385
+
+Small, and it is the whole of what a smaller operand buys: two bytes off two
+copies over 23,749 lines is about 190,000 cycles of `ldir` against 90 million,
+which is the 0.2-0.3% observed. The frame going 115 to 111 buys nothing, for the
+same reason it bought nothing in the split -- the cliff is at 128 and neither
+number is near it.
+
+### The other three were, and packing them is a wash
+
+`noreg`, `cc` and `fwd2_neg` carry real bits, and `mode` has four spare ones --
+a row's `IMM_N` and friends are conditions on a *row*, never on an operand, and
+`match_row` masks with 15 before it looks. Moving all three in takes the operand
+to **18 bytes** and the frame to 106. Two of the row tables have to change with
+them, so that `ri->aempty` and `ri->ccok` hold the same bit the flag now sits in
+rather than 1 -- otherwise `ri->aempty & anone` ANDs 1 against 0x10 and every
+condition-code instruction stops matching, which is what the tests said.
+
+    isa_real         4.90s   344 cycles/byte   (23 bytes: 344)
+    isa_even         5.04s   354                            354
+    isa_degenerate   4.96s   349                            349
+    isa_memory       5.50s   387                            385
+
+Exactly back where it started, and worse on isa_memory. The three bytes come off
+the copy and go straight back on as read-modify-write: `ld (ix - n), 1` becomes
+`ld a, (ix - n); or 0x20; ld (ix - n), a` at every place a flag is set, and
+those run twice a line too. `assemble_line` grew 43 instructions to save four
+bytes of frame it was not short of.
+
+**Deleting a field that duplicates another is free money. Packing a field that
+carries something is a wash.** The first is a correctness improvement that
+happens to be faster -- two values that could silently disagree are now one --
+and the second is only a smaller number.
+
+### So the operand is not the lever either
+
+Between this and the split above, the two obvious structural levers on
+`assemble_line` are both measured and both close to zero: outlining costs 8-12%,
+and shrinking the operand by 22% gains 0.3%. What that leaves is the per-line
+work itself, which the truncation decomposition in `measuring.md` is the tool
+for. The register pressure is real and it is not addressable by moving bytes
+around; it shows up as a tax on *adding* code -- EQU paid it three times in one
+afternoon -- rather than as something that can be reclaimed.

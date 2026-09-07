@@ -847,6 +847,76 @@ int main(void) {
         check("local storage is reused between scopes", got, "1");
     }
 
+    /* Expressions.
+     *
+     * The reference evaluates strictly left to right with no precedence at
+     * all, so `1+2*3` is 9 and `2*3+1` is 7. Both are here because an
+     * evaluator written the way arithmetic is usually written would pass one
+     * and fail the other, and passing both is the point. Grouping is `[...]`
+     * -- parentheses already mean indirection.
+     *
+     * Expected bytes generated from the reference, like every other row here.
+     */
+    check("addition", emit("  ld hl, 1+2\n"), "21 03 00 00");
+    check("no precedence, left to right",
+          emit("  ld hl, 1+2*3\n"), "21 09 00 00");
+    check("and the other way round",
+          emit("  ld hl, 2*3+1\n"), "21 07 00 00");
+    check("brackets group", emit("  ld hl, 1+[2*3]\n"), "21 07 00 00");
+    check("brackets on the left", emit("  ld hl, [1+2]*3\n"), "21 09 00 00");
+    check("nested brackets", emit("  ld hl, [[1+2]*3]\n"), "21 09 00 00");
+    check("subtraction chains left",
+          emit("  ld hl, 10-2-3\n"), "21 05 00 00");
+    check("integer division", emit("  ld hl, 100/7\n"), "21 0E 00 00");
+    check("shift left", emit("  ld hl, 1<<4\n"), "21 10 00 00");
+    check("shift right", emit("  ld a, 8>>2\n"), "3E 02");
+    check("bitwise and", emit("  ld hl, 0xFF&0x0F\n"), "21 0F 00 00");
+    check("bitwise or", emit("  ld hl, 1|2|4\n"), "21 07 00 00");
+    check("bitwise xor", emit("  ld hl, 0xFF^0x0F\n"), "21 F0 00 00");
+    check("unary minus", emit("  ld hl, -5+10\n"), "21 05 00 00");
+    check("unary complement", emit("  ld hl, ~0\n"), "21 FF FF FF");
+    check("spaces around operators", emit("  ld hl, 5 + 3\n"), "21 08 00 00");
+    check("a character literal", emit("  ld a, 'A'\n"), "3E 41");
+    check("a character literal in a sum", emit("  ld a, 'A'+1\n"), "3E 42");
+
+    /* `$` is the address of the instruction being assembled, and is the same
+     * character the reference uses to introduce hex -- `$42` is a number and
+     * `$` alone is the address, told apart by what follows. */
+    check("dollar is the current address",
+          emit("  nop\n  ld hl, $\n"), "00 21 01 00 04");
+    check("dollar in a sum", emit("  nop\n  ld hl, $+4\n"), "00 21 05 00 04");
+
+    /* Labels of every kind, as terms. The addresses are the test: `st+2*3` is
+     * (st + 2) * 3 and no other reading gives 0x0C0006. */
+    check("a label already defined",
+          emit("st:\n  nop\n  ld hl, st+2\n"), "00 21 02 00 04");
+    check("one label minus another",
+          emit("st:\n  nop\nen:\n  ld hl, en-st\n"), "00 21 01 00 00");
+    check("a length, then scaled",
+          emit("st:\n  nop\nen:\n  ld hl, [en-st]*4\n"), "00 21 04 00 00");
+    check("left to right with a label",
+          emit("st:\n  nop\n  ld hl, st+2*3\n"), "00 21 06 00 0C");
+    check("a local label in an expression",
+          emit("one:\n@lp:\n  nop\n  ld hl, @lp+1\n"), "00 21 01 00 04");
+    check("an anonymous label in an expression",
+          emit("@@:\n  nop\n  ld hl, @b+2\n"), "00 21 02 00 04");
+
+    /* Refusals the reference also makes. A single angle bracket is an error
+     * there rather than a comparison. */
+    check("a single angle bracket", emit("  ld hl, 1<4\n"), "ERR");
+    check("an operator with nothing after", emit("  ld hl, 1+\n"), "ERR");
+    check("an unclosed bracket", emit("  ld hl, [1+2\n"), "ERR");
+
+    /* The boundary of what is built. A forward reference on its own is still a
+     * fixup and still works; one inside an expression needs the fixup to carry
+     * the rest of the sum, which is the next stage. Refused with a message
+     * rather than guessed at -- the reference assembles it, so this is a
+     * divergence and has to be a loud one. */
+    check("a forward label alone still works",
+          emit("  ld hl, later\nlater:\n  nop\n"), "21 04 00 04 00");
+    check("a forward label in an expression is refused",
+          emit("  ld hl, later+1\nlater:\n  nop\n"), "ERR");
+
     /* Anonymous labels: `@@`, written any number of times and reached by
      * position rather than by name -- `@b`/`@p` for the one above, `@f`/`@n`
      * for the one below. Expected bytes generated from the reference, like

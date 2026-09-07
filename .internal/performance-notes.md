@@ -1359,3 +1359,67 @@ a word-list generator that was never checked against one. That is worth fixing
 a fourth time, so it should be done deliberately rather than folded into
 something else. **Until then, halve anything the benchmark says about label
 text before believing it of real code.**
+
+## Expressions, stage one (2026-09-06)
+
+The reference evaluates **strictly left to right with no precedence at all** --
+a running total, each term folded in as it arrives. `1+2*3` is 9 there. An
+evaluator that got precedence "right" would disagree with the assembler this one
+exists to agree with, so matching that is the whole job.
+
+Operators are `+ - * / << >> & | ^`, unary `+ - ~`, grouping is `[...]` because
+parentheses already mean indirection, terms may be a number, a label, `$` for
+the address of the instruction being assembled, or a character literal. A single
+`<` or `>` is an error rather than a comparison.
+
+### What the corpus actually uses
+
+3.46% of operands hold an expression, in 257 of 1,000 files, and **73% of those
+have exactly one operator**: `label+1` and `end-start`, not anything needing a
+stack. By frequency: `+` 1.60% of all operands, `-` 0.77%, `$` 0.67%, `/` 0.30%,
+`*` 0.16%, `&` 0.12%, `[` 0.12%, `|` 0.08%, `>>` 0.06%, `^` 0.04%, `~` 0.03%,
+`<<` 0.02%.
+
+### Why it stages, and where stage one stops
+
+Sorted by what a one-pass assembler needs to evaluate them:
+
+    constants and $ only          26.8%     evaluator only     <- stage 1
+    symbols already defined        8.8%     evaluator only     <- ends here
+    one forward symbol            33.3%     fixup + addend
+    one forward + known symbols    4.9%     fixup + addend
+    two or more forward symbols   26.1%     fixup with two terms
+
+Stage one is the evaluator and covers **35.7%**. A forward reference on its own
+is still a fixup and still works -- `jp later` is untouched -- but one *inside*
+an expression is refused with a message, because the fixup carries a symbol and
+nothing else and there is nowhere to put the rest of the sum. The reference
+assembles it, so this is a divergence and has to be a loud one.
+
+Stage two is an addend in the fixup and would reach 73.8%. Note the fixup is 13
+bytes; three more makes 16, a power of two, which would also remove the
+`__imulu` in fix_add -- the two changes want to happen together.
+
+Stage three is `end-start` with both forward, which needs two symbol terms in
+the fixup. 26.1%, and the classic use is computing a length.
+
+### Cost
+
+    isa_real         4.74s -> 4.86s   +2.5%   333 -> 342 cycles/byte
+    isa_even         4.88s -> 4.98s   +2.0%   343 -> 350
+    isa_degenerate   4.70s -> 4.82s   +2.6%   330 -> 339
+    isa_memory       5.54s -> 5.60s   +1.1%   390 -> 394
+
+on sources containing no expressions at all, against local labels' 2.7%. The
+hook is five instructions -- `ld hl, _exop; add hl, bc; ld a, (hl); or a, a;
+jr nz` on the character that ended the term -- and the evaluator is a call, not
+inlined. So the 2.5% is **not** the hook: it is 2,418 bytes of new code
+disturbing assemble_line's register allocation, which is the same wall the
+mnemonic chain and the symbol chain compare are stuck behind. The operator table
+is its own 256 bytes because cclass has no bit left; all eight are taken.
+
+### Checked
+
+Byte-identical to the reference on 1,200 randomly generated expressions, on the
+new expr.s case file, and on all four ISA benchmarks and pure, which contain no
+expressions and must therefore be unchanged -- they are.

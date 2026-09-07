@@ -3967,15 +3967,9 @@ static bool macro_run(dz* z, const macro* m, char* out, int len) {
      * chain plus the files whose lines are mid-expansion -- bounded by the
      * nesting limit, and a failure to open reports itself plainly. */
     const buf_reader saved = z->rd;
-    Z_SITE("macro reader");
-    if (br_open_mem(&z->rd, out, len) == NULL) {
-        free(out);
-        z->rd = saved;
-        z->err = "out of memory for macros";
-
-        return false;
-    }
-    free(out);
+    /* The reader takes the buffer as it stands. Copying it into one of its
+     * own was a malloc, a copy and a free an invocation for nothing. */
+    br_take_mem(&z->rd, out, len);
     z->path = m->name;
     z->line = 0;
     z->depth++;

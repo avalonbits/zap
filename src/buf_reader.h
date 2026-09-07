@@ -44,6 +44,15 @@ buf_reader* br_open(buf_reader* br, const char* fname, int bsz);
 
 /* Reads from a copy of the given text. The copy is freed by br_destroy. */
 buf_reader* br_open_mem(buf_reader* br, const char* text, int len);
+
+/* The same, over a buffer the reader takes ownership of. `buf` must hold at
+ * least len + 1 bytes -- the extra one is the sentinel -- and must have come
+ * from malloc, because br_destroy frees it.
+ *
+ * A macro expansion builds its text in a buffer already and then had it copied
+ * into a second one, which is a malloc, a copy and a free per invocation for
+ * nothing. */
+void br_take_mem(buf_reader* br, char* buf, int len);
 void br_close(buf_reader* br);
 void br_destroy(buf_reader* br);
 bool br_suspend(buf_reader* br);

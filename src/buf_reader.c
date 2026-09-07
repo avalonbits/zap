@@ -74,7 +74,12 @@ buf_reader* br_open_mem(buf_reader* br, const char* text, int len) {
     for (int i = 0; i < len; i++) {
         buf[i] = text[i];
     }
+    br_take_mem(br, buf, len);
 
+    return br;
+}
+
+void br_take_mem(buf_reader* br, char* buf, int len) {
     br->fh_ = 0;
     br->fname_ = NULL;
     br->fsz_ = len;
@@ -90,8 +95,6 @@ buf_reader* br_open_mem(buf_reader* br, const char* text, int len) {
     /* The same sentinel the refilling reader writes. This one never refills,
      * so it is written once here. */
     buf[len > 0 ? len : 0] = '\n';
-
-    return br;
 }
 
 void br_close(buf_reader* br) {

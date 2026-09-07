@@ -2985,3 +2985,54 @@ Shipped shared, because isa_real is unchanged either way, EQU-literal code is
 40% faster, and one copy of a parse that has to agree with the reference is
 worth 3% on a synthetic shape. It is a judgement and the numbers for the other
 choice are here.
+
+## The benchmark's EQU values, from the corpus (2026-09-07)
+
+Every EQU in isa_real and isa_even was an expression, written that way
+deliberately -- *"an EQU that is only a number never reaches the evaluator"*.
+True, and the corpus says four in five are exactly that:
+
+    hexadecimal   6,351  65.0%      decimal         984  10.1%
+    an expression 2,160  22.1%      binary          266   2.7%
+    a character      11   0.1%                    of 9,772
+
+So the file was making its 447 EQUs four times harder than the average real one,
+and paying for it in a stage that is 6.1% of the run.
+
+The generated mix is those bands: 69.1% hex, 18.5% expression, 8.8% decimal,
+2.6% binary, 0.9% character. The bands are exact and the sample is not -- 453
+EQUs is four and a half turns of a hundred-slot cycle, so a partial turn skews
+it a few points. The character literal is over-weighted ten times on purpose,
+because at the honest share a 447-EQU file would contain less than one, and a
+path with none of a thing in it is not being measured.
+
+### The number moved and the assembler did not
+
+    same binary          old mix     corpus mix
+    isa_real                 373            356    -4.6%
+    isa_even                 381            363    -4.7%
+    isa_degenerate           347            347    (no EQU)
+    isa_memory               377            377    (no EQU)
+
+**Nothing got faster.** One binary, two source sets. This is the same mistake as
+the label lengths and the missing directives -- a benchmark answering a narrower
+question than the one being asked -- and it is the first time correcting it has
+moved the number *down*. That is why it was raised before it was done rather
+than folded quietly into an optimisation commit: it moves the metric the target
+is set against, in the direction that flatters.
+
+The sixth invalidation of these baselines. New ones:
+
+    isa_real         5.06s   356 cycles/byte   21,742 lines
+    isa_even         5.16s   363               22,070
+    isa_degenerate   4.94s   347               22,530
+    isa_memory       5.36s   377               28,040
+    isa_include      5.24s   366               over ten files
+
+### Checked
+
+`selftest.sh` now checks that every value kind appears -- hexadecimal, decimal,
+binary, a character and an expression -- and that the proportions are about the
+corpus's, hexadecimal between 55 and 80 per cent and expressions between 10 and
+30. Four ways of getting the mix wrong were tried and each fails a check. All
+five sources still assemble byte-identically to the reference.

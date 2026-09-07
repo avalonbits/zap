@@ -71,3 +71,23 @@ mid:
   ld hl, fwd-start
 fwd:
   nop
+
+; Two forward references at once. `end - start` with neither written yet is
+; how a program measures a table it is still emitting, so both slots of the
+; fixup are used and one of them is subtracted.
+  ld hl, f2-f1
+  ld hl, f1-f2
+  ld hl, f2-f1+4
+  ld hl, 4+f2-f1
+  ld hl, f1+f2
+  ld bc, f2-f1
+  ld a, f2-f1
+  jp f2-f1
+  ld hl, [f2-f1]+1
+  ld hl, -f1+f2
+f1:
+  nop
+  nop
+  nop
+f2:
+  nop

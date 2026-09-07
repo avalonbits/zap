@@ -43,6 +43,15 @@ static int failures = 0;
  * next check. */
 static const char* emit_ez80(const char* src);
 
+/* Two pieces of source, joined. The forward-reference checks all end in the
+ * same run of labels and would otherwise repeat it on every line. */
+static const char* str2(const char* a, const char* b) {
+    static char joined[512];
+    snprintf(joined, sizeof joined, "%s%s", a, b);
+
+    return joined;
+}
+
 /* Assembles one source and returns its bytes as "3E 42", or "ERR". */
 static const char* emit(const char* src) {
     static char out[1024];
@@ -1033,8 +1042,41 @@ int main(void) {
           emit("  ld hl, later*2\nlater:\n  nop\n"), "ERR");
     check("a masked forward label",
           emit("  ld hl, later&0xFF\nlater:\n  nop\n"), "ERR");
-    check("two forward labels at once",
-          emit("  ld hl, a1+a2\na1:\n  nop\na2:\n  nop\n"), "ERR");
+    check("three forward labels at once",
+          emit("  ld hl, f3-f2-f1\nf1:\n  nop\nf2:\n  nop\nf3:\n  nop\n"),
+          "ERR");
+    check("two forward labels multiplied",
+          emit("  ld hl, f2*f1\nf1:\n  nop\nf2:\n  nop\n"), "ERR");
+    check("two forward labels both subtracted",
+          emit("  ld hl, -f1-f2\nf1:\n  nop\nf2:\n  nop\n"), "ERR");
+
+    /* Two forward references at once: `end - start` with neither written yet,
+     * which is how a program measures a table it is still emitting. The fixup
+     * carries both, adds the first and applies the second's sign, so which of
+     * the two is the added one is decided by where the minus landed and not by
+     * the order they were written in. Bytes from the reference. */
+    const char* const two = "f1:\n  nop\n  nop\n  nop\nf2:\n  nop\n";
+    check("one forward label minus another",
+          emit(str2("  ld hl, f2-f1\n", two)), "21 03 00 00 00 00 00 00");
+    check("and the other way round, so the sum is negative",
+          emit(str2("  ld hl, f1-f2\n", two)), "21 FD FF FF 00 00 00 00");
+    check("a constant on the end of the difference",
+          emit(str2("  ld hl, f2-f1+4\n", two)), "21 07 00 00 00 00 00 00");
+    check("a constant in front of the difference",
+          emit(str2("  ld hl, 4+f2-f1\n", two)), "21 07 00 00 00 00 00 00");
+    check("two forward labels added",
+          emit(str2("  ld hl, f1+f2\n", two)), "21 0B 00 08 00 00 00 00");
+    check("a difference of two forward labels in a byte immediate",
+          emit(str2("  ld a, f2-f1\n", two)), "3E 03 00 00 00 00");
+    check("the subtracted one written first",
+          emit(str2("  ld hl, -f1+f2\n", two)), "21 03 00 00 00 00 00 00");
+    check("a bracketed difference of two forward labels",
+          emit(str2("  ld hl, [f2-f1]+1\n", two)), "21 04 00 00 00 00 00 00");
+    /* The second symbol is checked at patch time like the first. Without this
+     * an undefined one reaches the arithmetic with address zero and assembles
+     * silently. */
+    check("the subtracted label is never defined",
+          emit("  ld hl, f2-nosuch\nf2:\n  nop\n"), "ERR");
 
     /* Anonymous labels: `@@`, written any number of times and reached by
      * position rather than by name -- `@b`/`@p` for the one above, `@f`/`@n`

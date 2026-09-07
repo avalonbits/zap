@@ -2780,3 +2780,65 @@ testable first because they have no visible answer of their own:
 * the scope rewind needs more than one block of local names per scope, or three
   scopes of two characters each fit in the first block whether it is reused or
   not.
+
+## Where a line goes, by truncation (2026-09-07)
+
+isa_real at 378 and the target 350. Built seven assemblers that stop after each
+stage of `assemble_line`, under `-DTRUNC=n`, and timed each on the same source.
+
+Every build carries the scan to the newline at `trunc_done`, including the
+seventh, so it is a constant across the set and cancels out of the differences
+-- which is why the seventh reads 394 against the ordinary build's 378.
+
+    stage                                    cumulative   delta   share
+    1  the line is read, not blank or remark        41      41   10.4%
+    2  + the mnemonic run is scanned                60      19    4.8%
+    3  + the label is defined (EQU included)       115      55   14.0%
+    4  + mnemonic_of, or the directive it sends    212      97   24.6%
+    5  + both operands are parsed                  323     111   28.2%
+    6  + the row is chosen                         351      28    7.1%
+    7  + the bytes are emitted                     394      43   10.9%
+
+Stage 4 bundles two things that happen at very different rates, so it was split
+again -- `-DTRUNC=4 -DTRUNC_NODIR` stops after the lookup and before the
+dispatch:
+
+    mnemonic_of, on every line                              37    9.4%
+    the directive path, on one line in eight                60   15.2%
+
+**The directives were still 15.2%**, twice what the shape timings suggested,
+and that is the finding. `DB 42` had been made cheap; isa_real's directive lines
+are not `DB 42`. Every one of them ends in `-1`, and the fast path began at
+`digit_ch`, so a quarter of the items on those lines went back to the evaluator
+for a minus sign the operand parser has always taken.
+
+### The sign
+
+    isa_real         378 -> 373   -1.3%
+    isa_even         387 -> 381   -1.6%
+    isa_degenerate   347 -> 347
+    isa_memory       381 -> 382   (noise)
+    stage 4          212 -> 207   -- the directive half, 60 -> 55
+
+Less than the 3.9% predicted from the shape numbers, which is worth writing
+down: the prediction assumed the evaluator costs about 5,000 cycles an item and
+the measured saving says it is nearer 1,000. **A shape file says what a
+directive costs; it does not say what the directives in a real mix cost, because
+the items are not the same.**
+
+### What is left, and where it is not
+
+    operands                                              111   28.2%
+    the directive path (strings and named items)            55   14.0%
+    the label definition                                    55   14.0%
+    emit_row                                                43   10.9%
+    reading the line at all                                 41   10.4%
+    mnemonic_of                                             37    9.4%
+    match_row                                               28    7.1%
+    scanning the mnemonic run                               19    4.8%
+
+isa_real is at 373 and 350 needs 6.2% more. Nothing above is obviously wasteful
+in the way the directive evaluator was: the operand path has had many rounds,
+`match_row` has had four, and what remains of the directive path is strings and
+items that name a symbol, both of which have to do the work they do. The next
+6% is a search rather than a lever, and this table is where to start it.

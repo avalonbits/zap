@@ -2082,3 +2082,72 @@ a self reference, `X EQU 5` without the colon, `equ5` run into its value -- are
 unit tests, since a case file cannot assert a refusal. Twenty-one forms checked
 against the reference by hand, all agreeing, and each of four mechanisms
 verified to bite by breaking the line it covers.
+
+## Splitting assemble_line does not pay (2026-09-07)
+
+`assemble_line` is 3,858 instructions -- **51% of the whole program** -- with a
+115-byte frame, and it has been on the list as "the register-pressure wall"
+behind three separate measurements: the mnemonic chain walk that would not go
+below a 4% floor, the symbol chain compare where four shapes were within 1% of
+each other, and EQU, where fifteen lines of feature cost 1.8% until they were
+moved somewhere the hot path does not pass through.
+
+The obvious move is to split it. Measured, and it costs 8 to 12%.
+
+### What was tried
+
+`parse_operand` is `always_inline` and appears twice, which is where the size
+comes from. Outlining it is a one-word change:
+
+    variant                          assemble_line   frame   program
+    base                                      3858    -115      7511
+    A: parse_operand out of line              1454     -89      6577
+    D: label definition out of line           3759    -115      7530
+    C: both                                   1345     -89      6585
+
+A and C are exactly what the shelf item asked for: the function drops to a third
+of its size, the frame falls below 90 bytes, and the whole program gets 12%
+smaller.
+
+    variant   isa_real   isa_even   isa_degenerate   isa_memory
+    base           344        354              349          385
+    A              381        395              392          423
+    C              370        384              380          416
+                +7.6..12.3%
+
+Every benchmark, both variants, and not close.
+
+### Why, and what it retires
+
+**The frame was never over the cliff.** `ix` displacement is a signed byte, so
+the cliff is at 128 and the frame is 115; taking it to 89 buys nothing at all,
+because nothing was past the edge. The size of the function was mistaken for the
+problem it causes.
+
+**What a call costs here is larger than what the frame saves.** Inlined,
+`parse_operand` writes the operand at constant `ix` offsets. Called, it writes
+through a pointer, and every field of a 23-byte struct becomes
+`ld iy, (ix - nn); ld (iy + k), a` instead of `ld (ix - mm), a`. That is the
+same finding as two entries already in `dzap-to-zap.md` -- the operand passed as
+a pointer to the shared empty one, +2.7%, and the register plane read by index,
++6.2% -- and this is the third and largest instance. **A fixed frame slot is
+cheaper than a pointer to anything, and it stays true when the pointer would let
+you delete two thirds of a function.**
+
+D on its own is nearly free and nearly pointless: 99 instructions out of a
+function of 3,858, and the frame does not move, because two 23-byte operands and
+`parse_operand`'s own locals are what fills it. It is worth keeping in mind only
+as part of C, where it is worth about 1.7% against A -- the label path does
+compete once the frame is small enough for that to matter.
+
+### So the wall stands, and it is not made of frame
+
+The register pressure in `assemble_line` is real -- EQU measured it three times
+in one afternoon -- but it is not addressable by moving code out of the
+function. What it is made of is the two operands: 46 bytes of frame that
+everything else has to fit around, and which cannot be reached through a pointer
+without costing more than they save. **The lever, if there is one, is making a
+`dop` smaller, not making `assemble_line` shorter.**
+
+Recorded so that the next person -- who will look at a 3,858-instruction
+function and reach for the same knife -- does not have to spend the afternoon.

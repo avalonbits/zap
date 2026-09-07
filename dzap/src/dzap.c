@@ -2737,7 +2737,7 @@ static bool expr_value(dz* z, int* out, const char** pp, const char* e,
  * delete the work whose result nothing reads. Declared here because both the
  * line-level and the operand-level cuts write to it, and parse_operand comes
  * first in the file. */
-#if defined(TRUNC) || defined(PTRUNC)
+#if defined(TRUNC) || defined(PTRUNC) || defined(LTRUNC) || defined(ETRUNC)
 static volatile int trunc_sink;
 #endif
 
@@ -3220,6 +3220,10 @@ have_value:
     return true;
 }
 
+/* Defined with the directives below, and used by both. */
+__attribute__((always_inline))
+static inline const char* lit_value(const char* p, const char* e, int* out);
+
 /* ----------------------------------------------------------------- equ */
 
 /* `EQU`, or `.EQU`, in any case -- tested in place, and advancing past it if it
@@ -3310,16 +3314,21 @@ static bool equ_line(dz* z, const char* name, int nlen, const char* p,
      * only. */
     named->defined = false;
 
-    fwd_reset(NULL);
-    uint8_t fwdmask = 0;
     int value = 0;
-    if (!expr_value(z, &value, &p, e, &fwdmask)) {
-        return false;
-    }
-    if (expr_fwd != NULL) {
-        z->err = "a label here must be defined already";
+    const char* const lit = lit_value(p, e, &value);
+    if (lit != NULL) {
+        p = lit;
+    } else {
+        fwd_reset(NULL);
+        uint8_t fwdmask = 0;
+        if (!expr_value(z, &value, &p, e, &fwdmask)) {
+            return false;
+        }
+        if (expr_fwd != NULL) {
+            z->err = "a label here must be defined already";
 
-        return false;
+            return false;
+        }
     }
     named->defined = true;
     named->addr = value;
@@ -3515,6 +3524,91 @@ static bool emit_string(dz* z, const char** pp, const char* e) {
     return true;
 }
 
+/* A whole item that is nothing but a signed literal, read without the
+ * evaluator.
+ *
+ * Shared by the data directives and by EQU, which had the same fault for the
+ * same reason: both went straight to `expr_value` for every value, and an
+ * operand has had this path since early on. `DB 42` measured 889 cycles a byte
+ * against `ld a, 42`'s 349 before the directives got it; **four EQUs in five
+ * are a plain literal** in the corpus, 7,778 of 9,772, and every one of them
+ * was paying for a general expression parser.
+ *
+ * always_inline, and measured that way. Written as an ordinary function it
+ * costs `emit_data` a call per item and **isa_db4 went from 381 to 405** --
+ * 6.3% to save the duplication, on a loop that runs four times a line. Inlined
+ * into both, the directives keep what they had and EQU gets the same path.
+ *
+ * What makes it safe is what it refuses: the character that ended the digit run has
+ * to end the item, so `1+2` goes to the evaluator, and so does `0b1010`, whose
+ * run begins with a digit and whose decimal loop stops on the `b`.
+ *
+ * Hands back where it stopped rather than advancing a pointer through an
+ * out-parameter. Taking the address of the caller's cursor is what put it in
+ * memory, and that cost the data directives 2.4% even inlined -- the third
+ * time in this file that `&p` has been the expensive part of a helper. NULL
+ * means it was not a literal and nothing moved. */
+__attribute__((always_inline))
+static inline const char* lit_value(const char* p, const char* e, int* out) {
+    const char* q = p;
+
+    /* A sign, which the operand parser has always taken and these did not.
+     * `DB 1, 2, 3, -1` sends one item in four back to the evaluator without
+     * it, and a table of signed bytes is what DB is for. */
+    bool neg = false;
+    if (*q == '-' || *q == '+') {
+        neg = *q == '-';
+        q++;
+    }
+    if (!digit_ch(*q)) {
+        return NULL;
+    }
+
+    const char* const d = q;
+    while (q < e && num_ch(*q)) {
+        q++;
+    }
+    const int nn = (int) (q - d);
+
+    /* What ended the run has to end the item too. */
+    const char* r = q;
+    while (is_space_ch(*r)) {
+        r++;
+    }
+    if (*r != ',' && *r != '\n' && *r != ';' && r < e) {
+        return NULL;
+    }
+
+    int value = 0;
+    bool got;
+    if (nn >= 3 && d[0] == '0' && (d[1] | 0x20) == 'x') {
+        got = hex_digits(d + 2, nn - 2, &value);
+    } else if (nn >= 2 && (d[nn - 1] | 0x20) == 'h') {
+        got = hex_digits(d, nn - 1, &value);
+    } else {
+        /* First digit outside the loop, as the operand parser does it: a
+         * one-digit value then needs no multiply, and `d * 10` is a call to
+         * __imulu here. */
+        int acc = d[0] - '0';
+        int k = 1;
+        for (; k < nn; k++) {
+            if (!digit_ch(d[k])) {
+                break;
+            }
+            acc = acc * 10 + (d[k] - '0');
+        }
+        got = k == nn;
+        value = acc;
+    }
+    if (!got) {
+        return NULL;
+    }
+
+    *out = neg ? -value : value;
+
+    return q;
+}
+
 /* `DB`, `DW` and `DL`: a comma-separated list of values, and for DB of strings
  * too.
  *
@@ -3559,64 +3653,10 @@ static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
              * Only if what ends the run also ends the item. `DB 1+2` has to go
              * through the evaluator, and deciding that costs one class lookup
              * on a character already in hand. */
-            const char* q = p;
-            bool got = false;
-
-            /* A sign, which the operand parser has always taken and this did
-             * not. It matters more than it looks: `DB 1, 2, 3, -1` sends one
-             * item in four back to the evaluator, and a table of signed bytes
-             * is what `DB` is for. */
-            bool neg = false;
-            if (*q == '-' || *q == '+') {
-                neg = *q == '-';
-                q++;
-            }
-            const char* const d = q;
-            if (digit_ch(*q)) {
-                while (q < e && num_ch(*q)) {
-                    q++;
-                }
-                const int nn = (int) (q - d);
-
-                /* What ends the run has to end the item too. `DB 1+2` is the
-                 * evaluator's, and one look at the character the scan stopped
-                 * on says so. */
-                const char* r = q;
-                while (is_space_ch(*r)) {
-                    r++;
-                }
-                if (*r == ',' || *r == '\n' || *r == ';' || r >= e) {
-                    if (nn >= 3 && d[0] == '0' && (d[1] | 0x20) == 'x') {
-                        got = hex_digits(d + 2, nn - 2, &value);
-                    } else if (nn >= 2 && (d[nn - 1] | 0x20) == 'h') {
-                        got = hex_digits(d, nn - 1, &value);
-                    } else {
-                        /* First digit outside the loop, as the operand parser
-                         * does it: a one-digit value then needs no multiply,
-                         * and `d * 10` is a call to __imulu here. */
-                        int acc = d[0] - '0';
-                        int k = 1;
-                        for (; k < nn; k++) {
-                            if (!digit_ch(d[k])) {
-                                break;
-                            }
-                            acc = acc * 10 + (d[k] - '0');
-                        }
-                        if (k == nn) {
-                            value = acc;
-                            got = true;
-                        }
-                    }
-                }
-            }
-
-            if (got) {
-                if (neg) {
-                    value = -value;
-                }
+            const char* const q = lit_value(p, e, &value);
+            if (q != NULL) {
                 p = q;
             } else {
-                q = p;
                 fwd_reset(NULL);
                 uint8_t fwdmask = 0;
                 if (!expr_value(z, &value, &p, e, &fwdmask)) {
@@ -3626,7 +3666,7 @@ static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
             if (!out_reserve_n(z, width)) {
                 return false;
             }
-            if (!got && expr_fwd != NULL) {
+            if (q == NULL && expr_fwd != NULL) {
                 const sym* target = NULL;
                 const sym* sub = NULL;
                 bool subneg = false;
@@ -4238,6 +4278,47 @@ static uint8_t* emit_imm(uint8_t* o, const dop* op, uint8_t cond) {
     return o;
 }
 
+/* And one level down inside the label path, built with -DTRUNC=3.
+ *
+ *   1  the colon is found, and nothing else
+ *   2  + the label is defined, whichever of the three kinds it is
+ *   3  + EQU, which is the whole of it
+ *
+ * Safe to cut because a definition is only ever read by an operand, and stage
+ * 3 has the operands switched off. */
+#ifdef LTRUNC
+#define LTRUNC_AT(n)                         \
+    do {                                     \
+        if ((LTRUNC) <= (n)) {               \
+            trunc_sink = (int) n;            \
+            goto trunc_done;                 \
+        }                                    \
+    } while (0)
+#else
+#define LTRUNC_AT(n) do { } while (0)
+#endif
+
+/* The same for the emitter, built with -DTRUNC=7, which is the ordinary build.
+ *
+ *   1  room is reserved for the instruction
+ *   2  + the prefixes are chosen and the operands folded into the opcode
+ *   3  + the bytes are written and the fixups recorded
+ *
+ * The output is wrong in the first two, which is the point, and `z->o` does not
+ * advance -- safe here only because these two sources contain no relative jump
+ * whose reach depends on it. */
+#ifdef ETRUNC
+#define ETRUNC_AT(n)                         \
+    do {                                     \
+        if ((ETRUNC) <= (n)) {               \
+            trunc_sink = (int) n;            \
+            return true;                     \
+        }                                    \
+    } while (0)
+#else
+#define ETRUNC_AT(n) do { } while (0)
+#endif
+
 __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row* row, dop* a, dop* b) {
     if (!out_reserve(z)) {
         return false;
@@ -4250,6 +4331,8 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
      * reservation above is what makes a bare cursor safe: room for the
      * longest form is already there, so nothing between here and the
      * write-back can move the buffer. */
+    ETRUNC_AT(1);
+
     uint8_t* o = z->o;
 
     emitted out;
@@ -4274,6 +4357,8 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
     if (row->transformB != TR_NONE) {
         transform(&out, b, row->transformB);
     }
+
+    ETRUNC_AT(2);
 
     const bool dd_before_opcode =
         (out.prefix1 == 0xDD || out.prefix1 == 0xFD) && out.prefix2 == 0xCB
@@ -4467,6 +4552,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
      * The line may continue: `foo: ld a,b` is a definition and an instruction,
      * and so is `foo:` alone. */
     if (*p == ':') {
+        LTRUNC_AT(1);
         const int addr = z->org + (int) (z->o - z->out);
         if (*s == '@') {
             /* `@@` is an anonymous label, not a local: it has no name to
@@ -4495,6 +4581,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
              * belongs to the scope being closed. */
             z->scope_line = z->line;
         }
+        LTRUNC_AT(2);
         p++;
         while (is_space_ch(*p)) {
             p++;

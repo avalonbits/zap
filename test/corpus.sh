@@ -116,9 +116,6 @@ total=0; same=0; rejected=0; differ=0
 
 for dir in "$CORPUS"/*/; do
     name=$(basename "$dir")
-    # Errors_cputype exercises -cpu selection across Z80/Z180/Z280. zap is
-    # eZ80-only, so those are out of scope by design rather than deferred.
-    [ "$name" = "Errors_cputype" ] && continue
     [ -d "$dir/tests" ] || continue
 
     for src in "$dir"/tests/*.s; do

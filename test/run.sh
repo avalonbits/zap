@@ -243,11 +243,63 @@ rl4=$("$OUT/zap" "$OUT/rl4.s" "$OUT/rl4.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a nested RELOCATE is refused" \
     "$(printf '%s' "$rl4" | grep -c 'line 2: RELOCATE does not nest')" 1
 
-# .CPU is a check, not a setting: this assembler has one instruction table.
-printf '  .cpu Z80\n  nop\n' > "$OUT/cpu1.s"
+# .CPU selects an instruction set, and the bytes it produces are in
+# test/cases/cpu.s against the reference. These are the refusals, which have
+# no bytes and so can only be told apart by their message.
+#
+# The rows the filter takes away. `ld ixh, b` is an eZ80 form, assembles at the
+# top of cpu.s, and is 260 of the reference's own corpus sources under Z180.
+printf '  .cpu Z180\n  ld ixh, b\n' > "$OUT/cpu1.s"
 cpu1=$("$OUT/zap" "$OUT/cpu1.s" "$OUT/cpu1.bin" 2>&1 | tr -d '\r' || true)
-cli_check "a CPU that is not eZ80 is refused" \
-    "$(printf '%s' "$cpu1" | grep -c 'line 1: this assembler is eZ80 only')" 1
+cli_check "an eZ80 form is gone under .cpu Z180" \
+    "$(printf '%s' "$cpu1" | grep -c 'line 2: no such instruction form')" 1
+
+# Neither the Z80 nor the Z180 has ADL, so there is no mode to select and no
+# suffix to select it with. The reference refuses ADL=0 as well as ADL=1,
+# though it names the mode they are already in.
+for mode in 0 1; do
+    printf '  .cpu Z80\n  .assume ADL=%s\n' "$mode" > "$OUT/cpu2.s"
+    cpu2=$("$OUT/zap" "$OUT/cpu2.s" "$OUT/cpu2.bin" 2>&1 | tr -d '\r' || true)
+    cli_check "ADL=$mode is refused on the Z80" \
+        "$(printf '%s' "$cpu2" | grep -c 'line 2: no ADL mode on this CPU')" 1
+done
+printf '  .cpu Z80\n  ld.lil a,(0)\n' > "$OUT/cpu3.s"
+cpu3=$("$OUT/zap" "$OUT/cpu3.s" "$OUT/cpu3.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a mode suffix is refused on the Z80" \
+    "$(printf '%s' "$cpu3" | grep -c 'line 2: no mode suffix on this CPU')" 1
+
+# The Z280 has a bit in the table and no rows tagged with it, so it is not
+# offered rather than accepted and then quietly empty.
+printf '  .cpu Z280\n  nop\n' > "$OUT/cpu4.s"
+cpu4=$("$OUT/zap" "$OUT/cpu4.s" "$OUT/cpu4.bin" 2>&1 | tr -d '\r' || true)
+cli_check "an unsupported CPU is refused" \
+    "$(printf '%s' "$cpu4" | grep -c 'line 1: unsupported CPU type')" 1
+
+# The three-operand form is RES and SET and nothing else, and the bit is spent
+# on the pseudo mnemonic -- so nothing downstream would notice an eighth bit,
+# and nothing but the lookup stops `ld a, b, c`.
+printf '  .cpu Z80\n  res 8,(ix+0),b\n' > "$OUT/cpu5.s"
+cpu5=$("$OUT/zap" "$OUT/cpu5.s" "$OUT/cpu5.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a bit outside 0..7 has no third-operand form" \
+    "$(printf '%s' "$cpu5" | grep -c 'line 2: no such instruction form')" 1
+printf '  ld a, b, c\n' > "$OUT/cpu6.s"
+cpu6=$("$OUT/zap" "$OUT/cpu6.s" "$OUT/cpu6.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a third operand on an instruction that has none is refused" \
+    "$(printf '%s' "$cpu6" | grep -c 'line 1: no such instruction form')" 1
+printf '  .cpu Z80\n  bit 0,(ix+0),b\n' > "$OUT/cpu7.s"
+cpu7=$("$OUT/zap" "$OUT/cpu7.s" "$OUT/cpu7.bin" 2>&1 | tr -d '\r' || true)
+cli_check "BIT has no third-operand form, because it writes no result" \
+    "$(printf '%s' "$cpu7" | grep -c 'line 2: no such instruction form')" 1
+
+# The mask is a file-scope static and the unit tests assemble many sources in
+# one process, so it has to be reset with the rest of the state. Two files,
+# the second of which would fail to encode if the first one's .cpu leaked.
+printf '  .cpu Z80\n  sll b\n' > "$OUT/cpu8.s"
+"$OUT/zap" "$OUT/cpu8.s" "$OUT/cpu8.bin" > /dev/null 2>&1 || true
+printf '  ld.lil hl, 0x123456\n' > "$OUT/cpu9.s"
+cpu9=$("$OUT/zap" "$OUT/cpu9.s" "$OUT/cpu9.bin" 2>&1 | tr -d '\r' || true)
+cli_check "an eZ80 file after a Z80 one still assembles" \
+    "$(xxd -p "$OUT/cpu9.bin" 2>/dev/null | tr -d '\n')" "5b21563412"
 
 # A negative count, which the reference reads as unsigned: `blkb -1` there is
 # sixteen megabytes of fill and a successful assembly. Refused here for the

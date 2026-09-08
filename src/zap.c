@@ -1926,6 +1926,23 @@ static uint8_t exprec[256];
  * every line and this is read only where an expression has an operator in it. */
 static bool compat_ez80 = false;
 
+/* Which instruction set is in force, as the bitmask an isa_row carries.
+ *
+ * `.CPU Z80` and `.CPU Z180` are a *filter* in the reference, not a second
+ * assembler: the same table, with the rows another machine does not have
+ * taken out of it. The table here has carried the same bits since it was
+ * written -- BIT_Z80, BIT_U80 for the undocumented Z80 forms, BIT_Z180,
+ * BIT_EZ80 -- so honouring the directive is this mask and the two tests in
+ * match_row that read it, and not a row of new work.
+ *
+ * A file-scope static rather than a field on `dz`, for the reason
+ * `compat_ez80` is one: match_row is inlined into assemble_line and every
+ * argument it takes is paid for on every instruction in the file. It is set
+ * once per assembly at most.
+ *
+ * eZ80 until a directive says otherwise, which is what an Agon source is. */
+static uint8_t cpu_mask = CPU_EZ80;
+
 static uint8_t letter_base[256];
 
 static inline int bucket_of(char first, int n) {
@@ -3600,6 +3617,30 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
                     return false;
                 }
                 p++;
+                /* Past what follows the parenthesis, which the general path
+                 * below already does after its own `)`.
+                 *
+                 * It is here rather than in assemble_line because it is
+                 * needed in one case and one only: finding the comma before a
+                 * third operand, in `res 5, (ix+1) , h`, which the reference
+                 * takes and gives the same bytes as the unspaced form.
+                 *
+                 * Three placements, measured:
+                 *
+                 *   in assemble_line, after the second operand   +0.04 real
+                 *   here, on the indirect register operands      +0.02 real
+                 *   nowhere, and the spaced form refused          0.00
+                 *
+                 * On isa_degenerate, which is nothing but instructions and
+                 * has the most indirect operands of the set, this placement
+                 * is 0.04 rather than 0.02. It is kept: `res 5, (ix+1) , h`
+                 * assembling to the same bytes as `res 5,(ix+1),h` is the
+                 * whole claim this project makes, and a spelling nobody
+                 * writes is exactly the kind of thing that turns out to be in
+                 * somebody's file. */
+                while (p < e && is_space_ch(*p)) {
+                    p++;
+                }
             }
             *pp = p;
 
@@ -5595,6 +5636,21 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
         uint8_t suffix = 0;
         const insninfo* const insn = suffixed_mnemonic(z, s, n, &suffix);
         if (insn != NULL) {
+            if (cpu_mask != CPU_EZ80) {
+                /* A mode suffix says which of two address widths one
+                 * instruction runs in, and neither the Z80 nor the Z180 has
+                 * two. The reference refuses all eight spellings under either,
+                 * which is eight of its own corpus sources.
+                 *
+                 * Asked here rather than in suffixed_mnemonic, which returns
+                 * NULL for a token that is not a suffixed mnemonic at all --
+                 * `read.next` may be a macro. Refusing there would report this
+                 * as "unknown instruction" and lose which of the two it was. */
+                z->err = "no mode suffix on this CPU";
+
+                return false;
+            }
+
             return suffixed_insn(z, insn, suffix, p, e, stop);
         }
 
@@ -5673,13 +5729,20 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
     }
 
     if (kind == DIR_CPU) {
-        /* zap is eZ80-only, so this is a check rather than a setting. The
-         * reference takes `.cpu Z80` and `.cpu Z180` and filters its
-         * instruction table by them; reproducing that would be a second
-         * assembler's worth of rows for a directive whose whole in-scope use
-         * in the corpus is two lines. A file that says what it is gets to
-         * assemble; one that asks for another machine is told so rather than
-         * quietly given eZ80 encodings. */
+        /* A setting, and the whole of it is `cpu_mask`. See there.
+         *
+         * This was a *check* -- anything but eZ80 refused -- on the reasoning
+         * that reproducing the filter meant a second assembler's worth of
+         * rows. That was wrong, and wrong about a table that was already in
+         * the tree: every Z80, undocumented-Z80 and Z180 row has carried its
+         * CPU bits since the day it was written, and match_row has always
+         * tested them. Refusing the directive was the only thing standing in
+         * front of them.
+         *
+         * The mode follows the machine. Neither the Z80 nor the Z180 has ADL
+         * -- there is no 24-bit mode to be in -- so both select it off, which
+         * is what makes `ld hl, 0x1234` three bytes there and four here. The
+         * reference does the same; measured, not assumed. */
         while (p < e && is_space_ch(*p)) {
             p++;
         }
@@ -5687,8 +5750,20 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
         while (p < e && name_ch(*p)) {
             p++;
         }
-        if ((int) (p - cs) != 4 || !same_ci_full("ez80", cs, 4)) {
-            z->err = "this assembler is eZ80 only";
+        const int cn = (int) (p - cs);
+        if (cn == 4 && same_ci_full("ez80", cs, 4)) {
+            cpu_mask = CPU_EZ80;
+            z->adl = ZAP_ADL;
+        } else if (cn == 3 && same_ci_full("z80", cs, 3)) {
+            cpu_mask = CPU_Z80;
+            z->adl = false;
+        } else if (cn == 4 && same_ci_full("z180", cs, 4)) {
+            cpu_mask = CPU_Z180;
+            z->adl = false;
+        } else {
+            /* "Unsupported CPU type" there. The Z280 has a bit in the table
+             * and no rows tagged with it, so it is not offered. */
+            z->err = "unsupported CPU type";
 
             return false;
         }
@@ -5715,6 +5790,15 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
         /* `ASSUME ADL=0` or `=1`, and nothing else: the reference calls any
          * other name an invalid operand and any other value an invalid ADL
          * mode. Spaces are allowed around the equals. */
+        if (cpu_mask != CPU_EZ80) {
+            /* "No ADL mode for CPU type" there, and for *either* value: the
+             * Z80 and the Z180 have no ADL to select, so `ADL=0` is refused
+             * as well, though it names the mode they are already in.
+             * Measured, all six ways. */
+            z->err = "no ADL mode on this CPU";
+
+            return false;
+        }
         while (p < e && is_space_ch(*p)) {
             p++;
         }
@@ -6079,7 +6163,7 @@ __attribute__((always_inline)) static inline const isa_row* match_row_cc(
             && (uint8_t) ((ri->b0 & b0) | (ri->b1 & b1) | (ri->b2 & b2)
                           | (ri->bempty & bnone)) != 0) {
             const isa_row* row = ri->row;
-            if ((row->cpu & CPU_EZ80) == 0) {
+            if ((row->cpu & cpu_mask) == 0) {
                 return NULL;
             }
 
@@ -6152,7 +6236,7 @@ __attribute__((always_inline)) static inline const isa_row* match_row(const insn
             && (uint8_t) ((ri->b0 & b0) | (ri->b1 & b1) | (ri->b2 & b2)
                           | (ri->bempty & bnone)) != 0) {
             const isa_row* row = ri->row;
-            if ((row->cpu & CPU_EZ80) == 0) {
+            if ((row->cpu & cpu_mask) == 0) {
                 return NULL;
             }
 
@@ -6657,6 +6741,64 @@ static bool suffixed_insn(dz* z, const insninfo* insn, uint8_t suffix,
 #endif
 }
 
+/* `RES n, (IX+d), r` and `SET n, (IX+d), r`, and nothing else has three.
+ *
+ * These are the undocumented Z80 forms that write the result to a register as
+ * well as to memory -- `DD CB d 80+r` rather than `DD CB d 86` -- and they are
+ * the only instruction shape in the reference with an operand after the second.
+ * The table holds them as sixteen pseudo-mnemonics, `res0` through `set7`,
+ * each taking `(IX+d)` and a register, so the bit is part of the *name* and
+ * two operands is all a row ever needs. Building the name here is what turns
+ * the three-operand line into a two-operand one.
+ *
+ * noinline and reached by a tail call, like the directives and the suffixes:
+ * nothing from assemble_line has to survive it, so an ordinary instruction
+ * pays one compare on a character already in a register and no frame at all.
+ *
+ * The bit is checked here because the row cannot: it was spent on the name,
+ * so nothing downstream would notice `res 9, (ix+0), b`. A mnemonic that has
+ * no numbered form -- `bit`, which writes no result, or `ld` -- simply fails
+ * the lookup, which is why this asks the table rather than a list of names. */
+__attribute__((noinline))
+static bool third_operand(dz* z, const insninfo* insn, dop* a, dop* b,
+                          const char* p, const char* e, const char** stop) {
+    char nm[8];
+    const int n = insn->len;
+    if (n + 1 > (int) sizeof(nm) || !a->noreg || (a->mode & IMM) == 0
+        || (a->mode & INDIRECT) != 0 || a->fwd != NULL
+        || (unsigned) a->imm > 7) {
+        z->err = "no such instruction form";
+
+        return false;
+    }
+    for (int i = 0; i < n; i++) {
+        nm[i] = insn->name[i];
+    }
+    nm[n] = (char) ('0' + a->imm);
+
+    const insninfo* const alt = mnemonic_of(nm, n + 1);
+    if (alt == NULL) {
+        z->err = "no such instruction form";
+
+        return false;
+    }
+
+    dop c;
+    if (!parse_operand(z, &c, &p, e)) {
+        return false;
+    }
+    *stop = p;
+
+    const isa_row* const row = match_row(alt, b, &c);
+    if (row == NULL) {
+        z->err = "no such instruction form";
+
+        return false;
+    }
+
+    return emit_row(z, row, b, &c, 0);
+}
+
 /* ------------------------------------------------------------------ main */
 
 /* Assembles one line and reports where it stopped.
@@ -6923,6 +7065,17 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
         if (!parse_operand(z, &b, &p, e)) {
             return false;
         }
+        /* A third operand, which only RES and SET have. See third_operand.
+         *
+         * One compare, on a character already in a register. parse_operand
+         * leaves the cursor past whatever follows the operand -- it did so
+         * already on three of its four exits and now does on the fourth -- so
+         * there is no scan here, and a two-operand line pays a byte compare
+         * and nothing else. Written with the scan here instead it was 0.04s
+         * of isa_real. */
+        if (*p == ',') {
+            return third_operand(z, insn, &a, &b, p + 1, e, stop);
+        }
     } else {
         b = dop_none;
     }
@@ -7164,6 +7317,11 @@ __attribute__((noinline)) static bool run(dz* z, const char* path) {
     z->reloc = false;
     z->reloc_org = 0;
     z->adl = ZAP_ADL;
+    /* Reset with the rest, and it has to be: `cpu_mask` is a file-scope
+     * static so that match_row need not carry it, and the unit tests assemble
+     * many sources in one process. Without this, one `.cpu Z80` would decide
+     * what every later test in the same run could encode. */
+    cpu_mask = CPU_EZ80;
     z->in_cond = false;
     z->cond_emit = true;
     z->line_mode = LINE_ASSEMBLE;

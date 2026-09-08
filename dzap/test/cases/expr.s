@@ -91,3 +91,30 @@ f1:
   nop
 f2:
   nop
+
+; Numbers reaching the evaluator rather than the fast read the data path has.
+;
+; `DL 5` goes through lit_value and never reaches expr_atom; `DL 5+0` does, and
+; a token that is nothing but decimal digits is now read there directly instead
+; of through num_parse. These are the cases where reading it there could
+; disagree: the ends of the range, a value too big for one, and the radixes the
+; short read must not swallow.
+  DL 0+0
+  DL 1+0
+  DL 9+0
+  DL 10+0
+  DL 255+0
+  DL 65535+0
+  DL 65536+0
+  DL 16777215+0
+  DL 16777216+0
+  DL 20000000+0
+  DL 4294967295+0
+  DB 20000000
+  DL 0+0x1F
+  DL 0+1Fh
+  DL 0+%1010
+  DL 0+'A'
+  DL 0+$
+  DL 1+2*3
+  DL 100-1

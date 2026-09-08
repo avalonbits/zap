@@ -2616,6 +2616,34 @@ static bool expr_atom(dz* z, int* out, const char* ns, int nn) {
         }
     }
 
+    /* Decimal, read here rather than through num_parse.
+     *
+     * A token that is nothing but digits is a number and can be nothing else,
+     * so neither the check nor the general parser has anything to decide. Both
+     * are real calls, and between them they were most of what `DS 4` cost:
+     * 7,520 cycles against `DB 4`'s 3,281, for the same one-digit number
+     * through the evaluator instead of the data path's fast read.
+     *
+     * The same accumulation as lit_value, deliberately: the first digit
+     * outside the loop, because `acc * 10` is a call to __imulu here, and the
+     * same 24-bit wrap on a value too big to fit, so that `DB 20000000` and
+     * `DS 20000000` cannot disagree with each other. */
+    if (digit_ch(ns[0])) {
+        int acc = ns[0] - '0';
+        int k = 1;
+        for (; k < nn; k++) {
+            if (!digit_ch(ns[k])) {
+                break;
+            }
+            acc = acc * 10 + (ns[k] - '0');
+        }
+        if (k == nn) {
+            *out = acc;
+
+            return true;
+        }
+    }
+
     if (!numeric_token(ns, nn)) {
         const sym* sp = NULL;
         if (ns[0] == '@') {

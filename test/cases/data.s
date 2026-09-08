@@ -183,3 +183,49 @@ blkfill:  EQU 0xAA
   asciz 5
   ascii "ab"
   byte "ab"
+
+; DW32 and BLKL: four bytes, which is wider than the machine. The evaluator is
+; four bytes wide for exactly these two directives -- see evalue in zap.c --
+; and the values below are the reference's own corpus, which is where the
+; width stopped being a question with a plausible answer and became one with a
+; measurable one.
+  dw32 1
+  .dw32 2
+  DW32 3
+  dw32 0x55555555
+  dw32 ~0
+  dw32 -2147483648
+  dw32 0xffffffff-0xffffffff+0x100<<1>>1/2*2
+  dw32 1, 2, 3
+  dw32 0x12345678, -1
+
+  blkl 2, 0x55555555
+  blkl 2, ~0
+  blkl 2, -2147483648
+  blkl 1
+  .blkl 1, 0x11223344
+  BLKL 1, 0x11223344
+  blkl 2, 0xffffffff-0xffffffff+0x100<<1>>1/2*2
+
+; The four widths side by side on the same value, which is what says the
+; fourth byte is written where it belongs and nowhere else.
+  db   0x11223344
+  dw   0x11223344
+  dl   0x11223344
+  dw32 0x11223344
+  dw24 0x11223344
+
+; A name carries the whole width. `dl` of the same name keeps three, which is
+; the reference truncating at the emitter rather than at the definition.
+wide: EQU 0x55555555
+  dw32 wide
+  dl wide
+  dw wide
+  db wide
+  blkl 2, wide
+
+; And through a forward reference, where the value arrives after the bytes
+; have been written.
+  dw32 laterwide
+  blkl 2, laterwide
+laterwide: EQU 0x7EDCBA98

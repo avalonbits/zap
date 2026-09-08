@@ -118,10 +118,18 @@
 # anything measured against this one -- the baselines below are the ones that
 # count.
 #
-#   isa_real         5.28s   371 cycles/byte   21,494 lines
-#   isa_even         5.34s   376               21,719
-#   isa_degenerate   4.86s   342               22,530
-#   isa_memory       5.32s   374               28,040
+#   isa_real         5.64s   397 cycles/byte   21,494 lines
+#   isa_even         5.74s   404               21,719
+#   isa_degenerate   5.24s   368               22,530
+#   isa_memory       5.72s   402               28,040
+#
+# Those four are up on the 5.28 / 5.34 / 4.86 / 5.32 recorded before, and none
+# of it is this file: it has not changed. Two rounds of correctness work moved
+# them -- deferred expressions, a deferred BLK fill, a displacement that is an
+# expression, and a global minus a local settled at the end of its scope -- and
+# then bounding every character scan added 0.06 to 0.08 across the set. What
+# that last one bought and why it is not optional is in
+# .internal/performance-notes.md.
 #
 # isa_degenerate and isa_memory build their own bodies and take none of this,
 # so their figures move only when the assembler does -- which it has, hence 385

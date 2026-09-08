@@ -3685,11 +3685,19 @@ its own, with a number attached, and it should come before the width does.
 
 Forty scans, `p < e` on each, and the whole price is **0.06s**:
 
-    isa_real   5.58 -> 5.64   392 -> 397 cycles a byte
-    isa_even   5.68 -> 5.74   399 -> 404
+    isa_real         5.58 -> 5.64   392 -> 397 cycles a byte
+    isa_even         5.68 -> 5.74   399 -> 404
+    isa_degenerate   5.18 -> 5.24   364 -> 368
+    isa_memory       5.64 -> 5.72   397 -> 402
 
-Output byte-identical on both, and the corpus does not move -- 122 identical,
-6 disagreeing, the same six.
+Output byte-identical on all four, and the corpus does not move -- 122
+identical, 6 disagreeing, the same six.
+
+That `isa_degenerate` and `isa_memory` move by the same amount is the check on
+where the cost is, and it points the same way as the group table below rather
+than against it: **neither of those two holds a directive**, so the only
+bounded scans they can be paying for are the operand parser's. The uniformity
+across four very different files is what an operand-shaped cost looks like.
 
 **All 0.06 of it is the operand parser.** Measured in four groups, one build
 and one run each:

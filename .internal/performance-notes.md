@@ -4367,3 +4367,52 @@ restructuring the path -- not expanding through a reader at all, say, but
 assembling the body from the macro record with a substitution cursor -- and
 that is a design change rather than a tuning one. The numbers above are what
 it would have to beat.
+
+## The design change: no reader for a macro
+
+The body was expanded into a buffer and the buffer handed to a `buf_reader`,
+which `run_lines` then ran over as though it were a file. **Nothing needed a
+reader.** `macro_line` stores each body line with the newline that ends it, so
+the lines are already lines; each one goes straight to `assemble_line`.
+
+Two steps, and the second is where the money was.
+
+    machinery, one line, no parameters
+
+        through a reader          7,815 cycles
+        direct, still copied      7,152      -8%
+        direct, in place          5,825     -25%
+
+**Removing the reader on its own bought 8%**, where the host profile said the
+reader parts -- macro_run, the nested run_lines, br_fill_lines, br_destroy --
+were 25% of the machinery between them. The copy that remained was most of
+what was left.
+
+**A body with no parameters is assembled where it lies.** Nothing in it can be
+substituted, so the copy has nothing to do, and `assemble_line` reads a span
+rather than a buffer of its own. Half the macros in a real header take no
+arguments -- a save, a restore, a wait.
+
+    5,000 invocations, no parameters   2.74 -> 2.20   -19.7%
+    forty macros, using the deepest    2.90 -> 2.34   -19.3%
+    three parameters                   4.72 -> 4.58    -3.0%
+    isa_real                           5.44 -> 5.38   383 -> 378 cycles a byte
+    bbcbasic                           3.78 -> 3.78
+
+### What it cost to keep the frames small
+
+The arguments -- eight pointers and eight lengths, 48 bytes on the Agon --
+moved out of the frame and into `dz`, indexed by `depth * MACRO_MAXPARAM`.
+Eight is a shift; anything else would be a call to `__imulu` on every access.
+That is what lets the scope save and the body loop share a frame and still sit
+inside the 128 bytes an `ix` displacement reaches: 67, 44 and 16 bytes across
+the three functions.
+
+### What is left of it
+
+5,825 cycles for the simplest invocation, against 2,286 for the `nop` line it
+produces. Still more than double, and now it is the argument-free case that is
+cheap while a parameter is 1,940 cycles -- so the next thing to look at, if
+anyone does, is the substitution rather than the plumbing.
+
+The plumbing is gone.

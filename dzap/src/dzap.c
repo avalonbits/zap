@@ -4210,11 +4210,22 @@ static int str_escape(char c) {
  *
  * Reserved in one go before anything is written: the length is known once the
  * closing quote is found, and escapes only ever shrink it. */
+/* Out of line, and measured that way.
+ *
+ * Inlined into directive_line it shares a frame deep enough that the scan
+ * spills its pointer and its cursor on every character -- 35 instructions a
+ * character, most of them `ld (ix - 111), hl` and back. A string is one call
+ * per item against that. */
+__attribute__((noinline))
 static bool emit_string(dz* z, const char** pp, const char* e) {
     const char* p = *pp + 1;                      /* past the opening quote */
+    /* No bound on the step past an escape. The buffer ends in a newline one
+     * byte past the last valid character, so a backslash in the last position
+     * steps over the sentinel and the `q < e` test above ends the scan -- as
+     * "string not terminated", which is what it is. */
     const char* q = p;
     while (q < e && *q != '"' && *q != '\n') {
-        q += (*q == '\\' && q + 1 < e) ? 2 : 1;
+        q += (*q == '\\') ? 2 : 1;
     }
     if (q >= e || *q != '"') {
         z->err = "string not terminated";

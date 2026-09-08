@@ -139,6 +139,18 @@ loc=$("$OUT/dzap" "$OUT/loc.s" "$OUT/loc.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an undefined local names the line that used it" \
     "$(printf '%s' "$loc" | grep -c 'line 3: unknown label')" 1
 
+# A string whose last character is a backslash, which is not terminated.
+#
+# The scan steps two past an escape and no longer asks whether the second one
+# is inside the buffer: the reader keeps a newline one byte past the last valid
+# character, so the step lands on or past it and the `q < e` test ends the
+# scan. Without the message this looks the same as any other refusal, and the
+# encoding tests would read both as ERR.
+printf '  DB "abc\\' > "$OUT/esc.s"
+esc=$("$OUT/dzap" "$OUT/esc.s" "$OUT/esc.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a string ending in a backslash is not terminated" \
+    "$(printf '%s' "$esc" | grep -c 'line 1: string not terminated')" 1
+
 # A global label in a macro body, which the reference refuses -- "No global
 # labels allowed in macro definition" -- and refuses at the invocation rather
 # than at the definition, so a body that is never used is never complained

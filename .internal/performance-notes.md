@@ -3946,3 +3946,113 @@ and nothing distinguishes them until the day something turns them on. The
 corpus caught it within a minute of the filter going in -- which is the
 argument for running the whole corpus rather than the part currently believed
 to be in scope.
+
+## Where the time is now, measured on the machine
+
+A round aimed at 350 cycles a byte on isa_real and 0.10x on the real programs.
+**Neither was reached.** What follows is the map that came out of trying,
+which is worth more than the 0.14s that came with it, because it says where
+the remaining time actually is and what shape of change could reach it.
+
+### The three floors
+
+    a blank line                        412 cycles
+    `  nop`                           2,446
+    `  ld a, b`                       3,294
+    `  ld a, 0x42`                    4,350
+
+Measured with `gen_shape.sh` at 30,000 lines, and the first from a file of
+262,144 newlines. **A source of nothing but blank lines takes 5.86s -- longer
+than isa_real takes with real instructions in it.** The cost of this assembler
+is per *line*, not per byte, and the numbers above are the whole reason:
+isa_real averages 12 bytes a line and 4,922 cycles.
+
+Read them as: 412 to get a line to the parser and back, 2,034 more for an
+instruction with no operands at all, and 848 for two register operands on top
+of that.
+
+### The stage map, isa_real
+
+`-DTRUNC=n` keeps stages 1..n; `-DTRUNC_NODIR` splits the fourth.
+
+    1  line read, blank/remark test        0.72   12.5%
+    2  + the mnemonic run scanned          0.40    6.9%
+    3  + the label path, EQU               0.46    8.0%
+    4a + mnemonic_of                       0.38    6.6%
+    4b + directives, macros, conditionals  1.56   27.1%
+    5  + both operands parsed              1.28   22.2%
+    6  + the row chosen                    0.34    5.9%
+    7  + the bytes emitted                 0.62   10.8%
+
+The directive stage is the largest and is not all overhead: isa_real holds 426
+macro invocations, and the two or three lines each expands into are assembled
+in it. Stages 1 to 6 also run a scan to the newline that the seventh does not,
+so 7 minus 6 understates the emitter.
+
+### What was found and fixed
+
+**A comment was walked through the out-parameter.** `stop` has its address
+taken, so the compiler stored it to the frame on every character of every
+comment -- fourteen instructions a byte, three of them memory. With a local
+that is never addressed it is eight, and no memory at all.
+
+    gen_comments.sh 100        1.08 -> 0.82     -24%
+    bbcbasic                   4.12 -> 3.98      -3.4%
+    isa_real                   5.76 -> 5.74      -0.3%
+
+Comments are 28% of BBC BASIC's bytes and 0% of isa_real's, and those three
+numbers are that ratio. `gen_comments.sh` has been in the tree since before
+this and is what makes the first line reproducible; it took a round with
+bbcbasic in the per-change set for anyone to run it.
+
+### Four things that did not work
+
+Each is one build and one run on the Agon, and each is worth knowing about
+before someone tries it again.
+
+**`is_space_ch` as three compares instead of a class lookup.** C_SPACE is
+exactly space, tab and carriage return, and the lookup costs a zero-extend, an
+add and a load against three `cp`. It compiled to a loop that spilled the scan
+pointer to the frame and reloaded it: **isa_real 5.76 to 5.78, bbcbasic 4.12
+to 4.22.** The table wins.
+
+**`parse_operand` taken out of line.** assemble_line went from 4,506
+instructions to 1,646 and its frame from 114 bytes to 86, and the scan loops
+stopped spilling -- and it was **5.74 to 6.26**. Two calls a line cost more
+than every spill they remove. The inlining decision in the header comment
+still holds, now re-measured with the whole feature set in place.
+
+**A `skip_space(p, e)` helper at all 37 sites.** Frame references inside
+assemble_line's loops fell from 84 to 51 and the loops shed 41 instructions --
+and the frame grew 114 to 117, and it measured **5.74 to 5.84**. Three bytes
+of frame again, which is the same cliff this file has recorded four times.
+
+**`-O2`, `-O3` and `-Ofast` instead of `-Oz`.** isa_real 5.74 to 5.68 for all
+three, and the binary from 69,694 bytes to 91,736. But **bbcbasic goes 3.98 to
+4.22**. One percent on the generated file against six percent on the real one:
+`-Oz` stays, and this is the clearest case yet for having bbcbasic in the set.
+
+### What standing between here and the targets
+
+350 cycles a byte on isa_real is 4.98s, a 13% cut. 0.10x on bbcbasic is 2.24s,
+a 44% cut -- 107 cycles a byte, or about 2,800 cycles a line against today's
+5,145.
+
+Neither is reachable by tuning the scans. The scanning is roughly a quarter of
+the work and the register allocator defends it well: three of the four
+attempts above made it slower. **The number to attack is the 2,034 cycles an
+operandless instruction costs between the line floor and its one emitted
+byte**, and it is spread across the mnemonic lookup, two 21-byte `dop`
+template copies, the row match and the emitter, none of which is more than a
+third of it.
+
+Two structural changes are worth pricing before any more tuning:
+
+* **`dz` as a file-scope object rather than a pointer parameter.** Every
+  `z->field` is `ld iy, (ix + 6)` and then an offset load; there are 463 of
+  those reloads in the translation unit and a handful execute on every line.
+  Absolute addressing would halve each and free a register pair.
+* **`assemble_line` returning where it stopped rather than writing through
+  `stop`.** That out-parameter is what made the comment loop cost what it did,
+  and it costs an argument, a `pea`, and two or three indirect stores on every
+  line as well.

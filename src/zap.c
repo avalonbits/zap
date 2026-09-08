@@ -6717,7 +6717,6 @@ static bool suffixed_insn(const insninfo* insn, uint8_t suffix,
      * instruction assembles to nothing in those builds: they exist to measure,
      * and every variant then contains the same nothing, so no difference
      * between two of them holds it. */
-    (void) z;
     (void) insn;
     (void) suffix;
     while (p < e && *p != '\n') {

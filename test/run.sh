@@ -569,6 +569,39 @@ else
             status=1
         fi
 
+        # Every measuring configuration still builds.
+        #
+        # The truncation flags are how this project finds out where the time
+        # goes, and they are compiled from paths the ordinary build does not
+        # reach -- so an edit can break all of them and nothing notices until
+        # somebody needs a measurement. That has happened: moving the state to
+        # a fixed address left a `(void) z;` inside a `#if defined(TRUNC)`
+        # block and every staged build failed for a fortnight of commits,
+        # silently, because the runner only ever built the ordinary one.
+        #
+        # Compiled and not run. What is being asserted is that the code is
+        # still valid, not that the numbers are still what they were.
+        #
+        # LTRUNC and PTRUNC name a stage inside a stage, so each is paired
+        # with the TRUNC that reaches it; that is how they have always been
+        # used and not a workaround.
+        for flags in "-DTRUNC=1" "-DTRUNC=7" "-DTRUNC=4 -DTRUNC_NODIR" \
+                     "-DTRUNC=4 -DTRUNC_NODIR -DMTRUNC" "-DTRUNC=3 -DLTRUNC=1" \
+                     "-DTRUNC=5 -DPTRUNC=1" "-DETRUNC=1" "-DMTRUNC" \
+                     "-DNOFIX" "-DEVAL=int" "-DZMALLOC"; do
+            # shellcheck disable=SC2086
+            if "$CC_EZ80" -mllvm -z80-gas-style -mllvm -z80-print-zero-offset \
+                -nostdinc -isystem "$HOME/agondev/include" -target ez80-none-elf \
+                -DAGONDEV -Oz -Isrc -S -o /dev/null $flags src/zap.c \
+                > "$OUT/mflags.log" 2>&1; then
+                echo "PASS  the measuring build $flags still compiles"
+            else
+                echo "FAIL  the measuring build $flags does not compile"
+                sed 's/^/      /' "$OUT/mflags.log" | head -6
+                status=1
+            fi
+        done
+
         # The rotated-scan shape, in the one function every line goes through.
         #
         # test_scan_bounds above says the source carries a bound. This says the

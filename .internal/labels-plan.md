@@ -205,7 +205,7 @@ path, and measure anything else.
 ## How to price it
 
 The corpus and the benchmarks are now generated from what **ez80asm** accepts,
-never from what dzap accepts -- see `dzap/test/cases/gen_opcodes.sh`. That
+never from what dzap accepts -- see `test/cases/gen_opcodes.sh`. That
 rule is what makes a feature's cost measurable at all: the previous corpus was
 filtered through dzap and hid 53 wrong forms, and the benchmarks built from it
 had never once executed the branch that negates a literal.

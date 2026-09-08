@@ -63,7 +63,7 @@ anything that touches instruction handling. `synth` and the pure file cycle a
 few dozen hand-picked forms; between them they reach 31 of the ISA's 114
 mnemonics and 40 of its 322 rows, with no `call`, `jp` or `djnz` at all.
 
-`gen_isa.sh even` gives every one of the 1,083 forms dzap assembles the same
+`gen_isa.sh even` gives every one of the 1,083 forms zap assembles the same
 number of times, so nothing is over-weighted. `gen_isa.sh real` weights them by
 how often each mnemonic appears in the two real programs already in
 test/corpus -- BBC BASIC and Rokky, 10,440 instructions -- while still
@@ -80,5 +80,5 @@ faster on the forty-form file, and 0.9% and 1.2% slower on these two.
 Neither contains a relative jump. Without labels there is no way to write a
 target that stays within a displacement's reach as the output grows, so `jr`
 and `djnz` -- 10.3% of real instructions -- are covered by
-`dzap/test/cases/relative.s` instead, and `real` is optimistic by about that
+`test/cases/relative.s` instead, and `real` is optimistic by about that
 much.

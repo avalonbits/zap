@@ -7,7 +7,7 @@
 # arbitrary binary against an arbitrary source, which is what comparing two
 # variants of a change needs: build both, keep both, and run them against the
 # same file without a rebuild in between. Every "measured on its own" figure in
-# .internal/dzap-to-zap.md was taken this way.
+# .internal/zap-to-zap.md was taken this way.
 #
 # The same two rules as bench.sh, for the same reasons. THE TIMING IS THE
 # ASSEMBLER'S OWN -- the "Done in" line it prints, never host wall clock, which
@@ -38,10 +38,10 @@ sd="$W/sd"
 mkdir -p "$sd/bin"
 cp -r "$EMU/sdcard/mos" "$sd/" 2>/dev/null
 cp "$EMU/sdcard/MOS.bin" "$EMU/sdcard/firmware.bin" "$sd/" 2>/dev/null
-cp "$BIN" "$sd/bin/dzap.bin"
+cp "$BIN" "$sd/bin/zap.bin"
 cp "$SRC" "$sd/s.s"
 printf '  nop\n  ret\n' > "$sd/flush.s"
-printf 'dzap s.s out.bin\r\ndzap flush.s flush.bin\r\nemulator_exit_success\r\n' \
+printf 'zap s.s out.bin\r\nzap flush.s flush.bin\r\nemulator_exit_success\r\n' \
     > "$sd/autoexec.txt"
 
 # Shared with bench.sh so the two cannot drift apart.

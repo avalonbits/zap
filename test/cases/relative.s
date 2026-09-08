@@ -1,6 +1,6 @@
 ; Relative jumps, whose displacement depends on where the instruction sits.
 ;
-; dzap emitted the target address truncated to one byte for all of these until
+; zap emitted the target address truncated to one byte for all of these until
 ; the TR_REL transform was implemented -- `jr 0x040000` assembled to 18 00 where
 ; the reference gives 18 fe. Nothing caught it: no benchmark or case file held a
 ; relative jump, and the corpus forms that did were dropped from opcodes.s for

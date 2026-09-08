@@ -1,12 +1,14 @@
 ; Every instruction form in the reference's own opcode corpus that ez80asm
 ; assembles: test/corpus/Opcodes and test/corpus/Addressing, with labels,
-; directives, ADL suffixes and symbolic operands removed because dzap has none
-; of those features yet. Plus negative displacements and immediates, which the
-; corpus itself barely covers.
+; directives, ADL suffixes and symbolic operands taken out. Not because zap
+; cannot read them -- it can, and each has a case file of its own -- but
+; because this file is the instruction-form corpus and one thing at a time is
+; what makes a failure here point somewhere. Plus negative displacements and
+; immediates, which the corpus itself barely covers.
 ;
-; KEPT BY WHAT THE REFERENCE ACCEPTS, NOT BY WHAT DZAP ACCEPTS. The earlier
-; version of this file was filtered through dzap, which made it a record of
-; what dzap already got right and silently dropped anything it got wrong -- jr
+; KEPT BY WHAT THE REFERENCE ACCEPTS, NOT BY WHAT ZAP ACCEPTS. The earlier
+; version of this file was filtered through zap, which made it a record of
+; what zap already got right and silently dropped anything it got wrong -- jr
 ; and djnz were wrong for the whole life of that file and it could not say so.
 ;
 ; This is breadth the unit tests cannot reach, and it is what makes a change to
@@ -14,7 +16,7 @@
 ; picks the wrong one for some rare addressing mode shows up here and nowhere
 ; else. Compared against ez80asm by test/run.sh like every other case file.
 ;
-; Regenerate with dzap/test/cases/gen_opcodes.sh. Do not edit by hand.
+; Regenerate with zap/test/cases/gen_opcodes.sh. Do not edit by hand.
 ; 1191 forms, from 1555 candidates.
 
     ld a,(aabbh)

@@ -7,7 +7,7 @@
 ;
 ; No @b, @f, @n or @p: those two-character spellings are the reference's
 ; anonymous-label references whatever a local of that name would mean, and
-; dzap refuses them rather than reading them as locals.
+; zap refuses them rather than reading them as locals.
 
 ; Before any global label at all: the file is the scope.
 @start:

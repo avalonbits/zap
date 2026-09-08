@@ -1,6 +1,6 @@
 /* See zmalloc.h.
  *
- * Inert unless ZMALLOC is defined, so it can be symlinked into dzap/src
+ * Inert unless ZMALLOC is defined, so it can be symlinked into src
  * beside the other shared sources and cost an ordinary build nothing. */
 #ifdef ZMALLOC
 

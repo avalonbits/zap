@@ -178,6 +178,9 @@ _Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
  * three-byte immediates. */
 /* Twelve was the longest instruction; a mode suffix puts one more byte in
  * front of it. */
+/* The longest label the reference takes, counting the `@` of a local. */
+#define LABEL_MAX 64
+
 #define OUT_MAX_INSN 13
 
 /* The longest file name INCLUDE and INCBIN will take. Fixed, because the name
@@ -3217,6 +3220,14 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
                     d = (int) dv;
                 }
                 op->disp = neg ? -d : d;
+                if (op->disp < -128 || op->disp > 127) {
+                    /* "Index register offset exceeded" there. One signed byte
+                     * is what the instruction has room for, so anything else
+                     * would be emitted truncated and silently wrong. */
+                    z->err = "index offset out of range";
+
+                    return false;
+                }
                 while (is_space_ch(*p)) {
                     p++;
                 }
@@ -3809,7 +3820,75 @@ static bool scope_pop(dz* z, locsave* sv) {
     return ok;
 }
 
+/* Which directive a token is, or none.
+ *
+ * Reached only when mnemonic_of has already failed, so an ordinary instruction
+ * line never runs a character of it. That is why it is spelled out as compares
+ * rather than bucketed the way mnemonics are: on the path it is on, twelve
+ * names and a switch on length cost nothing worth measuring, and the table it
+ * would otherwise need would be paid for in memory by every program.
+ *
+ * The reference takes a leading dot on all of them -- `.DB`, `.ALIGN` -- and
+ * every spelling below was checked against it. `WORD`, `DWORD`, `DEFL`, `DC`,
+ * `TEXT` and `DB8` are *not* directives there, however plausible they look. */
+#define DIR_NONE  0
+#define DIR_DB    1   /* one byte per value, and strings */
+#define DIR_DW    2   /* two */
+#define DIR_DL    3   /* three; the eZ80 word */
+/* ASCIZ is the data list plus one terminating zero, so it is not a width and
+ * cannot live in the range above. */
+#define DIR_ASCIZ 4
+#define DIR_DS    5   /* reserve, filled with FILLBYTE's value */
+#define DIR_ALIGN 6
+#define DIR_ORG   7
+#define DIR_FILLBYTE 8
+#define DIR_RELOCATE 9
+/* BLKB, BLKW and BLKP: n units of a fill value, written out. Consecutive and
+ * in width order, so the width is `kind - DIR_BLKB + 1`.
+ *
+ * Not the same directive as DS, which is why they are not the same number.
+ * `blkb` was an alias for DS here and it is wrong twice: DS reserves 0xFF and
+ * ignores a fill argument, and a run of it at the end of a file is dropped;
+ * BLKB writes the fill it is given and is never dropped. `blkb 1, 1` came out
+ * as 0xFF and `blkb 1, 255` at the end of a file came out as nothing.
+ *
+ * BLKL is absent rather than approximated. It is four bytes and the corpus
+ * fills it with `0x55555555` and `-2147483648`, which the expression evaluator
+ * cannot hold: it works in the machine's own word, which is 24 bits here, and
+ * that is a deliberate choice paid for on every operand in the file. A BLKL
+ * that quietly wrote the low three bytes and a sign would be wrong for half of
+ * the reference's own cases, and "unknown instruction" is the honest answer
+ * until the evaluator's width is a decision someone has made. */
+#define DIR_BLKB  10
+#define DIR_BLKW  11
+#define DIR_BLKP  12
+/* Below INCLUDE, because these three are tested by name and the file
+ * directives are tested as a range. */
+#define DIR_CPU         13
+#define DIR_ENDRELOCATE 14
+#define DIR_ASSUME      15
+#define DIR_INCLUDE 16
+#define DIR_INCBIN  17
+/* MACRO and ENDMACRO below the conditionals, and that ordering is load-bearing:
+ * a line inside a switched-off branch asks `kind >= DIR_IF` and nothing else,
+ * so anything at or above IF is handled while skipping and anything below is
+ * skipped. With MACRO above them, `IF 0 / MACRO m / ... / ENDMACRO / ENDIF`
+ * captured the body and defined the macro -- the reference skips it, and
+ * `IF 1 / macro m / db 0 / endmacro / ELSE / macro m / db 1 / endmacro / ENDIF`
+ * assembled the branch that was not taken. */
+#define DIR_MACRO    18
+#define DIR_ENDMACRO 19
+#define DIR_IF       20
+#define DIR_ELSE     21
+#define DIR_ENDIF    22
+
 /* ---------------------------------------------------------------- macros */
+
+/* Both defined with the directives below. A macro parameter may not be a
+ * mnemonic or a directive, and that is asked where the parameters are read. */
+static uint8_t directive_of(const char* s, int n);
+static bool is_equ_at(const char* p);
+
 
 /* Macro bodies grow a line at a time and are not in the name blocks, because a
  * block is fixed and a body is not known until ENDMACRO. One allocation per
@@ -3878,6 +3957,13 @@ static bool macro_begin(dz* z, const char** pp) {
         return false;
     }
 
+    if (macro_at(z, ns, nn) != NULL) {
+        /* "Macro already defined" there, and case-blind, as the lookup is. */
+        z->err = "that macro is already defined";
+
+        return false;
+    }
+
     Z_SITE("macro table");
     macro* m = (macro*) calloc(1, sizeof(macro));
     if (m == NULL) {
@@ -3922,7 +4008,27 @@ static bool macro_begin(dz* z, const char** pp) {
         }
         const int pn = (int) (p - ps);
         if (pn > 255) {
+            /* Freed on the way out. The macro is not linked into the list
+             * until the body has been captured, so nothing else will ever see
+             * it -- which also means nothing else will ever free it. This path
+             * leaked before ASan was pointed at it. */
+            free(m);
             z->err = "macro parameter name too long";
+
+            return false;
+        }
+        /* "Invalid argument name" there, for anything the body could not tell
+         * from what it stands for: a number in any radix, and any mnemonic or
+         * directive. Register names are allowed -- `macro m hl` assembles --
+         * because a parameter is substituted by whole identifier and a
+         * register is one the body could have meant either way.
+         *
+         * Asked once per parameter at the definition, which is a dozen times
+         * in a file rather than once per expansion. */
+        if (numeric_token(ps, pn) || mnemonic_of(ps, pn) != NULL
+            || directive_of(ps, pn) != DIR_NONE || is_equ_at(ps)) {
+            free(m);
+            z->err = "a macro parameter may not be a number or a mnemonic";
 
             return false;
         }
@@ -4235,67 +4341,6 @@ static bool macro_expand(dz* z, const macro* m, const char* p, const char* e,
 
 /* ---------------------------------------------------------- directives */
 
-/* Which directive a token is, or none.
- *
- * Reached only when mnemonic_of has already failed, so an ordinary instruction
- * line never runs a character of it. That is why it is spelled out as compares
- * rather than bucketed the way mnemonics are: on the path it is on, twelve
- * names and a switch on length cost nothing worth measuring, and the table it
- * would otherwise need would be paid for in memory by every program.
- *
- * The reference takes a leading dot on all of them -- `.DB`, `.ALIGN` -- and
- * every spelling below was checked against it. `WORD`, `DWORD`, `DEFL`, `DC`,
- * `TEXT` and `DB8` are *not* directives there, however plausible they look. */
-#define DIR_NONE  0
-#define DIR_DB    1   /* one byte per value, and strings */
-#define DIR_DW    2   /* two */
-#define DIR_DL    3   /* three; the eZ80 word */
-/* ASCIZ is the data list plus one terminating zero, so it is not a width and
- * cannot live in the range above. */
-#define DIR_ASCIZ 4
-#define DIR_DS    5   /* reserve, filled with FILLBYTE's value */
-#define DIR_ALIGN 6
-#define DIR_ORG   7
-#define DIR_FILLBYTE 8
-#define DIR_RELOCATE 9
-/* BLKB, BLKW and BLKP: n units of a fill value, written out. Consecutive and
- * in width order, so the width is `kind - DIR_BLKB + 1`.
- *
- * Not the same directive as DS, which is why they are not the same number.
- * `blkb` was an alias for DS here and it is wrong twice: DS reserves 0xFF and
- * ignores a fill argument, and a run of it at the end of a file is dropped;
- * BLKB writes the fill it is given and is never dropped. `blkb 1, 1` came out
- * as 0xFF and `blkb 1, 255` at the end of a file came out as nothing.
- *
- * BLKL is absent rather than approximated. It is four bytes and the corpus
- * fills it with `0x55555555` and `-2147483648`, which the expression evaluator
- * cannot hold: it works in the machine's own word, which is 24 bits here, and
- * that is a deliberate choice paid for on every operand in the file. A BLKL
- * that quietly wrote the low three bytes and a sign would be wrong for half of
- * the reference's own cases, and "unknown instruction" is the honest answer
- * until the evaluator's width is a decision someone has made. */
-#define DIR_BLKB  10
-#define DIR_BLKW  11
-#define DIR_BLKP  12
-/* Below INCLUDE, because these three are tested by name and the file
- * directives are tested as a range. */
-#define DIR_CPU         13
-#define DIR_ENDRELOCATE 14
-#define DIR_ASSUME      15
-#define DIR_INCLUDE 16
-#define DIR_INCBIN  17
-/* MACRO and ENDMACRO below the conditionals, and that ordering is load-bearing:
- * a line inside a switched-off branch asks `kind >= DIR_IF` and nothing else,
- * so anything at or above IF is handled while skipping and anything below is
- * skipped. With MACRO above them, `IF 0 / MACRO m / ... / ENDMACRO / ENDIF`
- * captured the body and defined the macro -- the reference skips it, and
- * `IF 1 / macro m / db 0 / endmacro / ELSE / macro m / db 1 / endmacro / ENDIF`
- * assembled the branch that was not taken. */
-#define DIR_MACRO    18
-#define DIR_ENDMACRO 19
-#define DIR_IF       20
-#define DIR_ELSE     21
-#define DIR_ENDIF    22
 
 /* How deep INCLUDE may go, and how much buffer a file below the first gets.
  *
@@ -6253,10 +6298,40 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
     if (*p == ':') {
         LTRUNC_AT(1);
         const int addr = z->org + (int) (z->o - z->out);
+        /* "Label too long" there, at sixty-five characters. The `@` of a
+         * local counts towards it, which is why this is asked once for both
+         * rather than after the two are told apart.
+         *
+         * Unsigned, because a length cannot be negative and a signed compare
+         * is a `call pe, __setflag` that the codegen budget in test/run.sh
+         * counts.
+         *
+         * This test and the anonymous one below each take assemble_line's
+         * frame from 110 bytes to 113, and isa_real from 5.42s to 5.54s. That
+         * is the frame and not the tests: the same 128 bytes an `ix`
+         * displacement reaches, and the same size of growth that cost 1.8%
+         * when an EQU kept a pointer here. Moving both into a function of
+         * their own, and moving them into sym_intern, loc_intern and
+         * anon_define which are already out of line, both still read 113 --
+         * so they are written where the definition is, which is where they
+         * are easiest to find. */
+        if ((unsigned) n > LABEL_MAX) {
+            z->err = "label too long";
+
+            return false;
+        }
         if (*s == '@') {
             /* `@@` is an anonymous label, not a local: it has no name to
              * collide with, so writing it twice is not a redefinition. */
             if (n == 2 && s[1] == '@') {
+                if (z->expanding != 0) {
+                    /* "No anonymous labels allowed in macro definition"
+                     * there, and refused at the invocation rather than at the
+                     * definition, exactly as a global label in a body is. */
+                    z->err = "no anonymous labels allowed in a macro";
+
+                    return false;
+                }
                 if (!anon_define(z, addr)) {
                     return false;
                 }

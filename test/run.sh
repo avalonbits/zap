@@ -685,6 +685,21 @@ else
     status=1
 fi
 
+# An expansion gets a scope of its own only when its body mentions a local,
+# and the body that *names* one without defining one is the case that decides
+# whether the test for it is right.
+#
+# Without the scope, `@here` would resolve against the caller and the file
+# would assemble; with it, the body cannot see the caller's locals and the
+# reference agrees -- "Unknown identifier '@here'" there. One `@` in the body
+# is what asks for the scope, which is why a body that only refers to a local
+# has to be checked as well as one that defines one.
+printf 'g:\n@here:\n  nop\n  MACRO r\n  jp @here\n  ENDMACRO\n  r\n' \
+    > "$OUT/mloc.s"
+mloc=$("$OUT/zap" "$OUT/mloc.s" "$OUT/mloc.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a body naming a local it does not define is refused" \
+    "$(printf '%s' "$mloc" | grep -c 'unknown label')" 1
+
 # The macro machinery measurement rests on one property: the file with the
 # invocations and the file with them written out must assemble to the *same
 # bytes*. If they ever stop doing so, the number attribute.sh prints stops

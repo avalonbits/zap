@@ -284,6 +284,18 @@ struct _macro {
     macmark* marks;       /* where its parameters are, in body order */
     int nmarks;
     int markcap;
+
+    /* Whether the body mentions a local label at all -- defines one, or names
+     * one. Decided as the body is read, for the same reason the marks are.
+     *
+     * An expansion is given a scope of its own so that a body which defines
+     * `@spin` may be invoked a hundred times without a redefinition, and so
+     * that its locals are not visible to the caller. A body with no `@` in it
+     * has neither to arrange: nothing it does can be seen by the scope
+     * machinery and nothing the caller has done can be seen by it. Saving and
+     * restoring the scope around one is 62 of the 417 instructions an
+     * invocation costs. */
+    bool haslocal;
 };
 
 /* What assemble_line does with a line before looking at it. */
@@ -4645,6 +4657,17 @@ static bool macro_line(const char* p, const char* e) {
         return false;
     }
 
+    /* Every spelling of a local starts with one: `@name`, `@@`, `@f`, `@b`.
+     * So one character decides whether the expansion needs a scope. */
+    if (!zz.defining->haslocal) {
+        for (int i = at; i < at + n - 1; i++) {
+            if (zz.defining->body[i] == '@') {
+                zz.defining->haslocal = true;
+                break;
+            }
+        }
+    }
+
     return true;
 }
 
@@ -4867,9 +4890,12 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
     const int slot = zz.depth;
     zz.depth++;
 
-    /* A scope of its own for the body, with the caller's kept and put back. */
+    /* A scope of its own for the body, with the caller's kept and put back --
+     * and only for a body that has a local in it. See `haslocal`. */
     locsave sv;
-    scope_push(&sv);
+    if (m->haslocal) {
+        scope_push(&sv);
+    }
 
     bool ok = true;
     /* Offsets into the body, not pointers, because the body may have been
@@ -4938,7 +4964,7 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
         b = le + 1;
     }
 
-    if (!scope_pop(&sv)) {
+    if (m->haslocal && !scope_pop(&sv)) {
         ok = false;
     }
 

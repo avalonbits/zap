@@ -4449,14 +4449,53 @@ Offsets and not pointers, because `macro_room` reallocs the body as it is read.
 `test/cases/macro.s` has a body long enough to force that move, which is the
 case a pointer would fail.
 
+## And the fixed cost: no scope for a body without a local
+
+At 417 host instructions an invocation, the scope save and restore was 62 of
+them -- `scope_push` 21, `scope_pop` 36, `fold_subs` 5 -- and most bodies have
+nothing for it to do.
+
+A body is given a scope so that one defining `@spin` may be invoked a hundred
+times without a redefinition, and so that its locals are not visible to the
+caller. **A body with no `@` in it needs neither.** Every spelling of a local
+starts with that one character, so a pass over each line as the body is read
+decides it, in the same place the parameter marks are found.
+
+    machinery, one line, no parameters   5,972 -> 4,645 cycles   -22%
+
+    5,000 invocations, no parameters      2.24 -> 1.88   -16.1%
+    forty macros, using the deepest       2.38 -> 2.04   -14.3%
+    5,000 invocations, three parameters   3.90 -> 3.54    -9.2%
+    isa_real                              5.34 -> 5.32   376 -> 374 cycles/byte
+    bbcbasic                              3.74 -> 3.74
+
+The case that decides whether the test for it is right is not the body that
+*defines* a local -- a missing scope there makes a second invocation "label
+defined twice", which was already caught. It is the body that only **names**
+one: without a scope `@here` resolves against the caller and the file
+assembles, where the reference refuses it.
+
 ### Where the macro path now stands
 
-    machinery, one line, no parameters    5,972 cycles   (was 7,815)
+    machinery, one line, no parameters    4,645 cycles   (was 7,815)
     per body line                         1,217
     per parameter                         1,450          (was 1,940)
     per link in the macro list              138 -- or none, after the first use
 
-Against 2,286 for the `nop` line an invocation produces. The plumbing and the
-rediscovery are both gone; what is left is the fixed cost of getting into and
-out of an expansion, which is spread across the same eight functions it always
-was.
+Against 2,286 for the `nop` line an invocation produces: **twice, where it was
+three and a half times.** Across four rounds the machinery is down 41%.
+
+What is left, at 417 host instructions before this and about 355 after:
+
+    macro_expand                123    the loop, the path save, the frame
+    assemble_line, net           81    the invocation line is a directive line
+    macro_at + directive_line +
+      directive_of +
+      suffixed_mnemonic         124    finding out that it *is* a macro
+    macro_args                   28
+
+The third row is the interesting one and it is not obviously reducible: a
+macro is looked up last, after the mnemonic table and the directives, so that
+nothing which is either pays for the walk. Moving the macro lookup earlier
+would put a list walk on every directive line in the file to save it on one
+line in fifty.

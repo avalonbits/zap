@@ -225,6 +225,29 @@ local -- three bytes in 31,520 with both assemblers accepting the file -- and
 BBC BASIC, which needed an index displacement to be an expression and an
 expression to be kept as text when a fixup could not hold it.
 
+## One divergence found while testing the macro marks
+
+**The reference substitutes a parameter name found inside a longer
+identifier.** zap substitutes whole identifiers only.
+
+    aa: EQU 6
+      MACRO m a
+      db aa
+      ENDMACRO
+      m 5
+
+The reference reports `Unknown identifier 'a5'` -- it replaced the `a` at the
+end of `aa` and left the `a` in front of it. zap assembles `db aa` as 6,
+because `aa` is a whole identifier and is not the parameter `a`.
+
+Not in the corpus, which is why 507 sources agree without it, and not
+introduced by anything recent: matching whole identifiers is what the
+substitution has always done. It is written down here rather than reproduced,
+because reproducing it means substituting inside names -- the C preprocessor
+hazard, in an assembler -- and a program that relies on it is a program whose
+author did not mean it. If a real source ever needs it, this is the note that
+says the behaviour was known and the decision was deliberate.
+
 ## One refusal that is left, and is not in the corpus
 
 `@local - global`, with both still ahead, is "unknown label" here. The mirror

@@ -285,6 +285,15 @@ struct sym {
  * starting point and the trade is recorded rather than assumed. */
 #define NSYMB 2048
 
+/* An expression that named something not yet defined and could not be reduced
+ * to the symbols a fixup carries. See defer_expr. */
+typedef struct {
+    sym* sp;            /* the nameless symbol standing in for its value */
+    const char* text;
+    int len;
+    int line;
+} defexpr;
+
 /* One bucket as it was before an expansion took it over. See scope_push. */
 /* How deep INCLUDE and macro expansion may nest. Declared here because the
  * per-level expansion buffers are part of dz; the reasoning for the number is
@@ -786,6 +795,11 @@ typedef struct _dz {
     int* subfix;
     int subfix_used;
     int subfix_cap;
+    /* Expressions that could not become a fixup, kept as text to be evaluated
+     * when everything is known. See defer_expr. */
+    defexpr* defer;
+    int defer_used;
+    int defer_cap;
     /* One expansion buffer per level of nesting, kept and grown rather than
      * allocated per invocation: a malloc and a free were 2,200 cycles of the
      * 7,900 an expansion cost. The level in use is `depth`, which is why there
@@ -2728,6 +2742,80 @@ static inline bool fwd_result(dz* z, const sym** target, const sym** sub,
  * The data directives want the ordering too and have no operand to write it
  * onto, which is why it is a function of its own rather than the tail of this
  * one. */
+/* Keeps an expression that could not be reduced to what a fixup carries.
+ *
+ * A fixup holds two symbols and a constant, which covers `end - start + 4` and
+ * every shape an assembler is usually asked for. `TENDIF*256+TTHEN` is not one
+ * of them, and it is real: BBC BASIC builds a two-byte token pair that way,
+ * eleven times, from EQUs defined in a file included after the one using them.
+ * A second pass resolves it; one pass has to keep something.
+ *
+ * What it keeps is the text, and a nameless symbol to stand for its value.
+ * Nothing else has to change: the operand carries that symbol as an ordinary
+ * forward reference, the emitter makes an ordinary fixup out of it, and when
+ * the source runs out the text is evaluated -- with everything now defined --
+ * and the symbol given its answer before any fixup is patched.
+ *
+ * Nameless and in no bucket, exactly as `@f`'s pending symbol is, so nothing
+ * can find it by name. */
+/* Defined below, with the rest of the forward-reference slots. */
+static void fwd_reset(const sym* seed);
+
+__attribute__((noinline))
+static bool defer_expr(dz* z, const char* text, int n, dop* op) {
+    if (!sym_room(z)) {
+        z->err = "out of memory for labels";
+
+        return false;
+    }
+    if (z->defer_used == z->defer_cap) {
+        Z_SITE("deferred expressions");
+        const int want = z->defer_cap == 0 ? 8 : z->defer_cap + z->defer_cap;
+        defexpr* grown =
+            (defexpr*) realloc(z->defer, (size_t) want * sizeof(defexpr));
+        if (grown == NULL) {
+            z->err = "out of memory for labels";
+
+            return false;
+        }
+        z->defer = grown;
+        z->defer_cap = want;
+    }
+    char* copy = nam_take(&z->names, &z->names_used, n + 1);
+    if (copy == NULL) {
+        z->err = "out of memory for labels";
+
+        return false;
+    }
+    for (int i = 0; i < n; i++) {
+        copy[i] = text[i];
+    }
+    copy[n] = 0;
+
+    sym* sp = &z->blocks->nodes[z->syms_used++];
+    sp->next = NULL;
+    sp->name = NULL;
+    sp->len = 0;
+    sp->defined = false;
+    sp->islocal = false;
+    sp->addr = 0;
+
+    defexpr* d = &z->defer[z->defer_used++];
+    d->sp = sp;
+    d->text = copy;
+    d->len = n;
+    d->line = z->line;
+
+    op->fwd = sp;
+    op->fwd2 = NULL;
+    op->fwd2_neg = false;
+    op->imm = 0;
+    z->err = NULL;
+    fwd_reset(NULL);
+
+    return true;
+}
+
 static bool fwd_finish(dz* z, dop* op) {
     if (expr_fwd == NULL) {
         return true;
@@ -3285,12 +3373,39 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
                      * program's spelling: it is how the Agon corpus writes
                      * `ld a, (ix + 05h)`. */
                     value dv = 0;
-                    if (!num_parse(ds, (int) (p - ds), &dv)) {
-                        z->err = "bad displacement";
+                    if (num_parse(ds, (int) (p - ds), &dv)) {
+                        d = (int) dv;
+                        got = true;
+                    }
+                }
+                if (!got) {
+                    /* A name or a sum, which is what a structure field looks
+                     * like: `RES.LIL 4, (IX+sysvar_vpd_pflags)` is how BBC
+                     * BASIC reaches MOS's system variables, and it is most of
+                     * that program's use of an index register.
+                     *
+                     * The sign is applied to the whole of it and not to the
+                     * first term -- `(ix-v+1)` with `v` five is -6 in the
+                     * reference, not -4 -- which is what negating the result
+                     * below already does.
+                     *
+                     * A name still ahead is refused. The reference has a
+                     * second pass and resolves it; here the displacement is
+                     * one byte of an instruction that is being written now,
+                     * and there is nowhere to put a fixup for a field that is
+                     * not a whole operand. Same position as the count of a DS
+                     * and the value of an EQU. */
+                    p = ds;
+                    fwd_reset(NULL);
+                    uint8_t dmask = 0;
+                    if (!expr_value(z, &d, &p, e, &dmask)) {
+                        return false;
+                    }
+                    if (expr_fwd != NULL) {
+                        z->err = "a label here must be defined already";
 
                         return false;
                     }
-                    d = (int) dv;
                 }
                 op->disp = neg ? -d : d;
                 if (op->disp < -128 || op->disp > 127) {
@@ -3403,7 +3518,14 @@ full_expression:
                 return false;
             }
             if (!fwd_finish(z, op)) {
-                return false;
+                /* Every way fwd_finish can refuse is a shape the reference
+                 * assembles -- a negated label, a complemented one, a third
+                 * symbol, any operator but plus and minus -- so all of them
+                 * are kept as text rather than refused. */
+                if (!defer_expr(z, s, (int) (p - s), op)) {
+                    return false;
+                }
+                total = 0;
             }
             goto have_value;
         }
@@ -3554,9 +3676,9 @@ full_expression:
          * lookup on the character that ended it, which is what the other
          * twenty-eight operands in twenty-nine pay for this feature.
          *
-         * A forward reference cannot continue into one yet: the fixup carries
-         * a symbol and nothing else, so there is nowhere to put the rest of
-         * the sum. Refused rather than silently dropped. */
+         * A forward reference continues into one by being kept as text: the
+         * fixup carries two symbols and a constant, and `TENDIF*256+TTHEN` is
+         * not that shape. See defer_expr. */
         {
             const char* q = p;
             while (is_space_ch(*q)) {
@@ -3574,7 +3696,15 @@ full_expression:
                     return false;
                 }
                 if (!fwd_finish(z, op)) {
-                    return false;
+                    /* Same as the branch above: an expression a fixup cannot
+                     * hold is kept as text rather than refused. This is the
+                     * site that matters in practice, because an operand that
+                     * begins with a name reaches the expression through here
+                     * and not through `full_expression`. */
+                    if (!defer_expr(z, s, (int) (p - s), op)) {
+                        return false;
+                    }
+                    total = 0;
                 }
             }
         }
@@ -6570,7 +6700,38 @@ trunc_done:
  * again.
  *
  * Little-endian, as everywhere else here. */
+/* Settles every expression that was kept as text, before a byte is patched.
+ *
+ * Everything is defined by now, so the evaluator is simply run again over the
+ * copy. A forward reference that survives even this is one to a name nothing
+ * ever defined, and is reported against the line that wrote it. */
+static bool resolve_deferred(dz* z) {
+    for (int i = 0; i < z->defer_used; i++) {
+        defexpr* d = &z->defer[i];
+        const char* p = d->text;
+        int v = 0;
+        uint8_t mask = 0;
+        fwd_reset(NULL);
+        z->line = d->line;
+        if (!expr_value(z, &v, &p, d->text + d->len, &mask)) {
+            return false;
+        }
+        if (expr_fwd != NULL || expr_fwd_bad) {
+            z->err = "unknown label";
+
+            return false;
+        }
+        d->sp->addr = v;
+        d->sp->defined = true;
+    }
+
+    return true;
+}
+
 static bool resolve_fixups(dz* z) {
+    if (!resolve_deferred(z)) {
+        return false;
+    }
     for (int i = 0; i < z->fix_used; i++) {
         if (!patch_fixup(z, &z->fixups[i])) {
             return false;
@@ -6716,6 +6877,9 @@ __attribute__((noinline)) static bool run(dz* z, const char* path) {
     z->subfix = NULL;
     z->subfix_used = 0;
     z->subfix_cap = 0;
+    z->defer = NULL;
+    z->defer_used = 0;
+    z->defer_cap = 0;
     for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
         z->expbuf[i] = NULL;
         z->expcap[i] = 0;
@@ -6803,6 +6967,7 @@ static void dz_free(dz* z) {
     free(z->lfixups);
     free(z->undo);
     free(z->subfix);
+    free(z->defer);
     for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
         free(z->expbuf[i]);
     }

@@ -191,3 +191,40 @@ subg5:
   db 6
 subafter:
   db 7
+
+; A displacement that is a name or a sum, which is what a structure field
+; looks like: `RES.LIL 4, (IX+sysvar_vpd_pflags)` is how BBC BASIC reaches
+; MOS's system variables. The sign applies to the whole of it -- `(ix-v+1)`
+; with v five is -6, not -4.
+dispv: EQU 5
+dispw: EQU 2
+  ld a, (ix+dispv)
+  ld a, (ix-dispv)
+  ld a, (ix+dispv+1)
+  ld a, (ix-dispv+1)
+  ld a, (ix+dispv-1)
+  ld a, (ix-dispv-1)
+  ld a, (ix+dispw*3)
+  ld a, (ix-dispw*3)
+  ld a, (ix + dispv)
+  ld a, (iy+dispv)
+  res 4, (ix+dispv)
+  res.lil 4, (ix+dispv)
+  bit 0, (iy-dispv)
+  lea hl, ix+dispv
+  pea ix+dispv
+  ld (ix+dispv), b
+
+; An expression a fixup cannot hold, kept as text and settled when the source
+; runs out. BBC BASIC builds a two-byte token pair this way eleven times, from
+; EQUs defined in a file included after the one using them.
+  ld de, DEFTOK2*256+DEFTOK1
+  ld bc, DEFTOK1+[DEFTOK2*256]
+  ld hl, DEFLATER*2
+  ld hl, DEFLATER&0xFF
+  ld hl, ~DEFLATER
+  ld hl, -DEFLATER
+  ld hl, 1-DEFLATER
+DEFTOK1: EQU 0x8C
+DEFTOK2: EQU 0xCD
+DEFLATER: EQU 0x40

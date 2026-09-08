@@ -6,13 +6,14 @@ one against `ez80asm` to separate a missing feature from a user symbol that
 merely looks like one.
 
     247 sources in scope        (Errors_cputype excluded, as it always is)
-    120 byte-identical          81 before the mode suffixes, 98 before BLKB,
+    121 byte-identical          81 before the mode suffixes, 98 before BLKB,
                                 104 before the parser gaps, 110 before the
                                 remaining directives, 115 before two bugs the
-                                Macro tests were sitting on, 119 before Rokky
+                                Macro tests were sitting on, 119 before Rokky,
+                                120 before BBC BASIC
     119 rejected by both        the negative tests, working as intended --
                                 106 before the error checks
-      8 divergences             was 60
+      7 divergences             was 60
 
 The 60 are what follows. They are ranked by what they unblock, not by how many
 tests they fix, because those two orders are very different here.
@@ -139,7 +140,7 @@ and all read 113.
 
 ## What is left
 
-Nine sources, and they are three things:
+Seven sources, and they are two things:
 
   - **The 24-bit evaluator**, above: five sources --
     `Value_operators/compound_all_operator_values_dx` and `_blkx`,
@@ -148,11 +149,14 @@ Nine sources, and they are three things:
   - **`.cpu Z80` and `.cpu Z180`**, which ask for another machine's
     instruction set. Two sources, out of scope by the same rule that excludes
     Errors_cputype.
-  - **One whole program**: `bbcbasicvez`, which zap rejects. Not failing for
-    a reason the corpus has already named, so it needs looking at on its own
-    -- and the last three rounds say that is where the remaining bugs are.
-    Rokky's was a global minus a local resolving against the wrong local, and
-    it was three bytes in 31,520 with both assemblers accepting the file.
+
+That is the whole of it. Nothing is left that is a bug rather than a decision
+or a scope line.
+Every whole program in the corpus now assembles byte-identically. The last two
+were Rokky, whose bug was a global minus a local resolving against the wrong
+local -- three bytes in 31,520 with both assemblers accepting the file -- and
+BBC BASIC, which needed an index displacement to be an expression and an
+expression to be kept as text when a fixup could not hold it.
 
 ## One refusal that is left, and is not in the corpus
 

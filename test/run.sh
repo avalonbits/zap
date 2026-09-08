@@ -135,6 +135,68 @@ loc=$("$OUT/zap" "$OUT/loc.s" "$OUT/loc.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an undefined local names the line that used it" \
     "$(printf '%s' "$loc" | grep -c 'line 3: unknown label')" 1
 
+# The thirteen refusals the reference makes and this one did not. None of them
+# changes the bytes of a valid program; each is a diagnostic that was missing.
+# They produce no output, so only a message can tell them from any other
+# refusal.
+lab64=$(printf 'a%.0s' $(seq 1 64))
+lab65=$(printf 'a%.0s' $(seq 1 65))
+printf '%s: nop\n' "$lab64" > "$OUT/lab1.s"
+"$OUT/zap" "$OUT/lab1.s" "$OUT/lab1.bin" > /dev/null 2>&1 || true
+cli_check "a label of 64 characters is allowed" \
+    "$(od -An -tx1 "$OUT/lab1.bin" 2>/dev/null | tr -s ' ')" " 00"
+printf '%s: nop\n' "$lab65" > "$OUT/lab2.s"
+lab2=$("$OUT/zap" "$OUT/lab2.s" "$OUT/lab2.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a label of 65 characters is refused" \
+    "$(printf '%s' "$lab2" | grep -c 'line 1: label too long')" 1
+
+# The `@` counts towards the limit, so a local has one character less of name.
+printf 'g:\n@%s: nop\n' "$lab64" > "$OUT/lab3.s"
+lab3=$("$OUT/zap" "$OUT/lab3.s" "$OUT/lab3.bin" 2>&1 | tr -d '\r' || true)
+cli_check "the at sign counts towards the limit" \
+    "$(printf '%s' "$lab3" | grep -c 'line 2: label too long')" 1
+
+# One signed byte is what the instruction has room for, so anything else would
+# be emitted truncated and silently wrong.
+printf '  ld a,(ix+127)\n  ld a,(ix-128)\n' > "$OUT/dsp1.s"
+"$OUT/zap" "$OUT/dsp1.s" "$OUT/dsp1.bin" > /dev/null 2>&1 || true
+cli_check "the ends of the displacement range are allowed" \
+    "$(od -An -tx1 "$OUT/dsp1.bin" 2>/dev/null | tr -s ' ')" " dd 7e 7f dd 7e 80"
+for d in '+128' '-129'; do
+    printf '  ld a,(ix%s)\n' "$d" > "$OUT/dsp2.s"
+    dsp2=$("$OUT/zap" "$OUT/dsp2.s" "$OUT/dsp2.bin" 2>&1 | tr -d '\r' || true)
+    cli_check "a displacement of $d is refused" \
+        "$(printf '%s' "$dsp2" | grep -c 'line 1: index offset out of range')" 1
+done
+
+# A macro parameter may not be anything the body could not tell from what it
+# stands for: a number in any radix, or a mnemonic or directive. Registers are
+# allowed, and `macro m hl` assembles in both.
+for bad in 1 1h 0x1 0b1 1b and ld db equ macro align; do
+    printf '  macro m %s\n  db 5\n  endmacro\n' "$bad" > "$OUT/arg.s"
+    arg=$("$OUT/zap" "$OUT/arg.s" "$OUT/arg.bin" 2>&1 | tr -d '\r' || true)
+    cli_check "a macro parameter called $bad is refused" \
+        "$(printf '%s' "$arg" | grep -c 'line 1: a macro parameter may not be')" 1
+done
+for ok in hl nz af x1 _x; do
+    printf '  macro m %s\n  db %s\n  endmacro\n  m 5\n' "$ok" "$ok" > "$OUT/argok.s"
+    "$OUT/zap" "$OUT/argok.s" "$OUT/argok.bin" > /dev/null 2>&1 || true
+    cli_check "a macro parameter called $ok is allowed" \
+        "$(od -An -tx1 "$OUT/argok.bin" 2>/dev/null | tr -s ' ')" " 05"
+done
+
+# And the same macro name twice, which is case-blind as the lookup is.
+printf '  macro m\n  ld a,b\n  endmacro\n  macro M\n  ld b,c\n  endmacro\n' > "$OUT/dup.s"
+dup=$("$OUT/zap" "$OUT/dup.s" "$OUT/dup.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a macro defined twice is refused" \
+    "$(printf '%s' "$dup" | grep -c 'line 4: that macro is already defined')" 1
+
+# An anonymous label in a body, refused at the invocation as a global one is.
+printf '  macro m\n  ld a,b\n@@: db 5\n  endmacro\n  m\n' > "$OUT/anon.s"
+anon=$("$OUT/zap" "$OUT/anon.s" "$OUT/anon.bin" 2>&1 | tr -d '\r' || true)
+cli_check "an anonymous label in a macro is refused" \
+    "$(printf '%s' "$anon" | grep -c 'no anonymous labels allowed in a macro')" 1
+
 # A FILLBYTE that would change the fill of a reservation already written.
 #
 # The reference fills a reservation when it writes the file out, so the last

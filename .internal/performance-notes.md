@@ -3641,3 +3641,42 @@ means making an expansion nearly free, which has already had a round.
 
 The other 27% is the operands, which the notes above record as having resisted
 two rounds, and `mnemonic_of` at 9% has now resisted three.
+
+## The evaluator's width is not a performance question
+
+`BLKL` and `DW32` are four bytes wide and the reference's own corpus fills them
+with `0x55555555` and `-2147483648`. The evaluator works in the machine's word,
+which is 24 bits here, so those cannot be represented and both directives
+report an unknown instruction rather than write the low three bytes and a sign.
+That was recorded as one decision with a measurable answer nobody had measured.
+
+It has been measured now, and the answer is not a number of cycles.
+
+**The widening was never timed, because the build it produced does not
+assemble.** `in0 a, (5)` -- an indirect immediate, which does not touch the
+evaluator at all -- came out as "unexpected text after the instruction" on the
+Agon while the host build assembled the same file correctly.
+
+The cause is the one this file has recorded four times: an unbounded scan
+compiling to a loop rotated the wrong way, testing one character past the
+pointer, so it stops one short. `assemble_line`'s first scan carries a bound
+for exactly this, and so does the displacement scan, and the comments at both
+say the bound is what stops the rotation.
+
+What is new is the trigger. Nothing about the change touched those scans:
+
+    dec iy in assemble_line       main 3      with the widening 7
+
+Four more loops rotated, in a function whose source was untouched, because one
+function was added between `expr_value` and the two it calls and the register
+allocation moved. Narrowing the type back and keeping the same function
+structure fails identically, which is how the width was ruled out as the cause.
+
+**So the scans in `assemble_line` are correct by register allocation and not by
+construction.** That is the finding. It is not a reason to keep the evaluator
+at 24 bits -- it is a reason the next person to touch that function will lose
+an afternoon, and it will not be the evaluator that does it.
+
+Bounding them all is the fix and it is not free: the bound is a compare per
+character on scans that run over every operand in the file. That is a round of
+its own, with a number attached, and it should come before the width does.

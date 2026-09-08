@@ -6,14 +6,15 @@ one against `ez80asm` to separate a missing feature from a user symbol that
 merely looks like one.
 
     247 sources in scope        (Errors_cputype excluded, as it always is)
-    121 byte-identical          81 before the mode suffixes, 98 before BLKB,
+    122 byte-identical          81 before the mode suffixes, 98 before BLKB,
                                 104 before the parser gaps, 110 before the
                                 remaining directives, 115 before two bugs the
                                 Macro tests were sitting on, 119 before Rokky,
-                                120 before BBC BASIC
+                                120 before BBC BASIC, 121 before a BLK fill
+                                that names something ahead
     119 rejected by both        the negative tests, working as intended --
                                 106 before the error checks
-      7 divergences             was 60
+      6 divergences             was 60
 
 The 60 are what follows. They are ranked by what they unblock, not by how many
 tests they fix, because those two orders are very different here.
@@ -140,12 +141,24 @@ and all read 113.
 
 ## What is left
 
-Seven sources, and they are two things:
+Six sources, and they are two things:
 
-  - **The 24-bit evaluator**, above: five sources --
+  - **The 24-bit evaluator**, above: four sources --
     `Value_operators/compound_all_operator_values_dx` and `_blkx`,
-    `Defines/compound`, `Labels/EQU_order_in_defines` and
-    `Macro/argument_replacement_equ`. One decision, not five pieces of work.
+    `Defines/compound` and `Macro/argument_replacement_equ`.
+
+    This was recorded as a decision with a measurable answer nobody had
+    measured. It has been measured, and the answer is not a number of cycles:
+    the widened build does not assemble. `in0 a, (5)`, which does not touch the
+    evaluator, comes out as "unexpected text after the instruction" on the
+    Agon and correctly on the host, because adding one function between
+    `expr_value` and the two it calls moved the register allocation and
+    rotated four more of `assemble_line`'s unbounded scans -- the fault this
+    project has now met five times. `dec iy` in that function goes from 3 to 7.
+
+    So the scans there are correct by register allocation rather than by
+    construction, and that has to be fixed before the width can be. See
+    .internal/performance-notes.md.
   - **`.cpu Z80` and `.cpu Z180`**, which ask for another machine's
     instruction set. Two sources, out of scope by the same rule that excludes
     Errors_cputype.

@@ -3198,6 +3198,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
                  * an int; leaving it in the loop meant paying that call even
                  * for `(ix+8)`, where the accumulator is still zero. */
                 int d = 0;
+                bool got = false;
                 if (digit_ch(*ds)) {
                     const char* q = ds + 1;
                     d = *ds - '0';
@@ -3205,12 +3206,19 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
                         d = d * 10 + (*q - '0');
                         q++;
                     }
-                    if (q != p) {
-                        z->err = "bad displacement";
-
-                        return false;
-                    }
-                } else {
+                    got = q == p;
+                }
+                if (!got) {
+                    /* Not a plain decimal, so the general parser has it.
+                     *
+                     * The fast path used to *refuse* what it could not finish
+                     * rather than hand it over, which made `(ix + 05h)` and
+                     * `(ix + 0x05)` "bad displacement" -- both begin with a
+                     * digit, so the decimal scan claimed them and then stopped
+                     * on the `h` or the `x`. `$05` worked, because a dollar is
+                     * not a digit and it never reached here. That is a real
+                     * program's spelling: it is how the Agon corpus writes
+                     * `ld a, (ix + 05h)`. */
                     value dv = 0;
                     if (!num_parse(ds, (int) (p - ds), &dv)) {
                         z->err = "bad displacement";
@@ -4196,10 +4204,19 @@ static char* macro_text(dz* z, const macro* m, const char* p, const char* e,
     while (b < bend) {
         const char* src = b;
         int take = 1;
-        /* One class load, not two: a character that may start a name is one
-         * C_NAME admits and C_DIGIT does not, and both bits arrive together. */
-        const uint8_t cl = cclass[(uint8_t) *b];
-        const bool ident = (cl & (C_NAME | C_DIGIT)) == C_NAME;
+        /* Any name character starts a token, digits included.
+         *
+         * They were excluded, on the reasoning that a number is not a
+         * parameter -- and a parameter cannot be a number, which is now
+         * checked where they are read. But it can *begin* with a digit
+         * without being one, and the reference's own corpus has exactly that:
+         * `macro test 0123456789abcdef0123456789abcdef`, which is not a
+         * number in any radix and was never substituted here.
+         *
+         * A token that really is a number matches no parameter name and is
+         * copied through as it was, which is what happened before -- one
+         * character at a time rather than all at once. */
+        const bool ident = name_ch(*b);
         if (ident) {
             const char* j = b;
             while (j < bend && name_ch(*j)) {

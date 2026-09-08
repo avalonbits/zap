@@ -148,3 +148,22 @@
   in a, (0xFE)
   out (c), b
   in d, (c)
+
+; An index displacement written in any radix the assembler takes, not only
+; decimal. The fast path reads a plain decimal inline and used to *refuse*
+; what it could not finish rather than hand it over, so `(ix + 05h)` and
+; `(ix + 0x05)` were "bad displacement" while `$05` worked -- a dollar is not
+; a digit, so it never reached the fast path. `ld a, (ix + 05h)` is how the
+; Agon corpus writes it.
+  ld a, (ix + 5)
+  ld a, (ix + 05h)
+  ld a, (ix + 0x05)
+  ld a, (ix + $05)
+  ld a, (ix + #05)
+  ld a, (ix + %101)
+  ld a, (ix + 1Fh)
+  ld a, (ix - 05h)
+  ld a, (iy + 7Fh)
+  ld a, (iy - 80h)
+  ld (ix + 0Ah), b
+  bit 0, (ix + 0Fh)

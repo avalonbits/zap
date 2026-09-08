@@ -2,6 +2,16 @@
 # Times one binary on one source, and prints the seconds it reported.
 #
 #   test/bench/time-one.sh <assembler.bin> <source.s>
+#   test/bench/time-one.sh <assembler.bin> <dir> <entry.s>
+#
+# The second form is for a program with an include tree: the whole directory is
+# staged and `entry.s` is the file named on the command line. That is what
+# measuring against a real program takes -- bbcbasic is twenty files and a
+# 554-byte root -- and it is the same staging bench.sh does, without the
+# reference run or the table.
+#
+#   test/bench/time-one.sh bin/zap.bin \
+#       test/corpus/Z_PRG_Agon-bbc-basic-v/tests bbcbasicvez.s
 #
 # bench.sh times the fixed set with the build in the tree. This times an
 # arbitrary binary against an arbitrary source, which is what comparing two
@@ -23,8 +33,23 @@
 set -uo pipefail
 
 EMU="${AGON_EMU:-$HOME/fab-agon-emulator-1.2.4}"
-BIN="${1:?usage: time-one.sh <assembler.bin> <source.s>}"
-SRC="${2:?usage: time-one.sh <assembler.bin> <source.s>}"
+BIN="${1:?usage: time-one.sh <assembler.bin> <source.s> | <dir> <entry.s>}"
+SRC="${2:?usage: time-one.sh <assembler.bin> <source.s> | <dir> <entry.s>}"
+ENTRY="${3:-}"
+
+if [ -d "$SRC" ]; then
+    if [ -z "$ENTRY" ]; then
+        echo "a directory needs the entry file named: time-one.sh <bin> <dir> <entry.s>" >&2
+        exit 2
+    fi
+    if [ ! -f "$SRC/$ENTRY" ]; then
+        echo "no $ENTRY in $SRC" >&2
+        exit 2
+    fi
+elif [ -n "$ENTRY" ]; then
+    echo "$SRC is not a directory, so there is no entry file to name" >&2
+    exit 2
+fi
 
 if [ ! -x "$EMU/agon-cli-emulator" ]; then
     echo "no emulator at $EMU/agon-cli-emulator; set AGON_EMU" >&2
@@ -39,10 +64,21 @@ mkdir -p "$sd/bin"
 cp -r "$EMU/sdcard/mos" "$sd/" 2>/dev/null
 cp "$EMU/sdcard/MOS.bin" "$EMU/sdcard/firmware.bin" "$sd/" 2>/dev/null
 cp "$BIN" "$sd/bin/zap.bin"
-cp "$SRC" "$sd/s.s"
+
+# A tree keeps its own names, because an INCLUDE inside it names its siblings.
+# A single file is copied to a fixed name so that the guest command line is the
+# same whatever the host called it.
+if [ -d "$SRC" ]; then
+    cp -r "$SRC"/* "$sd/" || exit 1
+    top="$ENTRY"
+else
+    cp "$SRC" "$sd/s.s"
+    top=s.s
+fi
+
 printf '  nop\n  ret\n' > "$sd/flush.s"
-printf 'zap s.s out.bin\r\nzap flush.s flush.bin\r\nemulator_exit_success\r\n' \
-    > "$sd/autoexec.txt"
+printf 'zap %s out.bin\r\nzap flush.s flush.bin\r\nemulator_exit_success\r\n' \
+    "$top" > "$sd/autoexec.txt"
 
 # Shared with bench.sh so the two cannot drift apart.
 eval "$(sed -n '/^guest_error() {/,/^}/p' "$(dirname "$0")/bench.sh")"

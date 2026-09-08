@@ -326,3 +326,52 @@ wide:
   db 0abcz
   ENDMACRO
   digitpar2 7
+
+; Where the parameters are is decided when the body is read, not when it is
+; expanded, so these are the shapes that tell a mark list from a scan.
+
+; The same parameter twice on one line, and once on the next: the marks are
+; walked in body order across the whole body, so a cursor that did not carry
+; between lines would put the second line back to the start of the list.
+  MACRO twice a, b
+  db a, a, b
+  db b, a
+  ENDMACRO
+  twice 1, 2
+
+; Adjacent, with nothing between them but a comma, so two marks meet with an
+; empty span in between.
+  MACRO adj p, q
+  db p,q
+  ENDMACRO
+  adj 3, 4
+
+; A parameter at the very start of a line and at the very end of one, which
+; are the two spans that can be empty.
+  MACRO edges e
+  db e
+  db 1, e
+  ENDMACRO
+  edges 9
+
+; A body long enough to make the buffer it is copied into grow past its first
+; block, which is 256 bytes. The marks are offsets for exactly this: the body
+; is realloc'd as it is read, and a pointer taken before the move would be
+; wrong afterwards.
+  MACRO grow g
+  db g, g, g, g, g, g, g, g, g, g, g, g, g, g, g, g
+  db g, g, g, g, g, g, g, g, g, g, g, g, g, g, g, g
+  db g, g, g, g, g, g, g, g, g, g, g, g, g, g, g, g
+  db g, g, g, g, g, g, g, g, g, g, g, g, g, g, g, g
+  db g, g, g, g, g, g, g, g, g, g, g, g, g, g, g, g
+  db g, g, g, g, g, g, g, g, g, g, g, g, g, g, g, g
+  ENDMACRO
+  grow 2
+
+; An argument longer than the parameter it replaces, and one shorter, so the
+; expansion both grows and shrinks against the body it came from.
+  MACRO widths wide
+  db wide
+  ENDMACRO
+  widths 0x11223344 & 0xFF
+  widths 1

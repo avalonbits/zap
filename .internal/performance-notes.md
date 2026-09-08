@@ -4416,3 +4416,47 @@ cheap while a parameter is 1,940 cycles -- so the next thing to look at, if
 anyone does, is the substitution rather than the plumbing.
 
 The plumbing is gone.
+
+## And the substitution: found once, not every time
+
+The body does not change after ENDMACRO and neither do the places its
+parameters occur. The expansion was rediscovering them every time -- every
+token of every line classified, every parameter asked about every identifier --
+for something settled when the macro was written.
+
+`macro_line` records where each parameter is as it copies the line in, and the
+expansion copies up to the next mark, copies the argument, carries on. No
+classification at expansion time at all.
+
+    per parameter    2,335 -> 1,450 cycles
+
+    5,000 invocations, three parameters   4.58 -> 3.90   -14.8%
+    isa_real                              5.38 -> 5.34   378 -> 376 cycles/byte
+    bbcbasic                              3.78 -> 3.74
+    5,000 invocations, no parameters      2.20 -> 2.24   +1.8%
+
+The last is a regression and it reproduced. That path is untouched -- a body
+with no parameters is still assembled where it lies -- so it is layout, and it
+is 0.04s against 0.68s the other way.
+
+**A mark is walked with a cursor and never subscripted.** `marks[i]` would be a
+call to __imulu on either machine, and padding the record to a power of two
+cannot help: `int` is three bytes on the Agon and four on the host, so no
+single amount of padding is a power of two on both. That was tried first. The
+marks are in body order, so one cursor covers every line.
+
+Offsets and not pointers, because `macro_room` reallocs the body as it is read.
+`test/cases/macro.s` has a body long enough to force that move, which is the
+case a pointer would fail.
+
+### Where the macro path now stands
+
+    machinery, one line, no parameters    5,972 cycles   (was 7,815)
+    per body line                         1,217
+    per parameter                         1,450          (was 1,940)
+    per link in the macro list              138 -- or none, after the first use
+
+Against 2,286 for the `nop` line an invocation produces. The plumbing and the
+rediscovery are both gone; what is left is the fixed cost of getting into and
+out of an expansion, which is spread across the same eight functions it always
+was.

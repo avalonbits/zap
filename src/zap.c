@@ -250,6 +250,27 @@ _Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
 #define MACRO_MAXPARAM 8
 
 typedef struct _macro macro;
+/* Where a parameter appears in the body, found once when the body is read.
+ *
+ * The body does not change after ENDMACRO and neither do the places its
+ * parameters occur, so deciding them at expansion time meant classifying every
+ * token of every line and asking every parameter about every identifier --
+ * **1,940 cycles a parameter**, on every invocation, to rediscover something
+ * settled when the macro was written.
+ *
+ * Walked with a pointer and never subscripted, which is why the record is its
+ * natural size rather than padded to a power of two. It is five bytes on the
+ * Agon and six here, and `marks[i]` on either would be a call to __imulu
+ * because the eZ80 multiply is 8-bit -- the expansion steps a cursor instead,
+ * and the marks are in body order, so one pass covers every line. Padding it
+ * to eight was tried first and does not work: `int` is three bytes there and
+ * four here, so no single amount of padding is a power of two on both. */
+typedef struct {
+    int off;        /* where in the body the name starts */
+    uint8_t k;      /* which parameter */
+    uint8_t len;    /* how many bytes of body the argument replaces */
+} macmark;
+
 struct _macro {
     macro* next;
     const char* name;
@@ -259,6 +280,10 @@ struct _macro {
     char* body;           /* the lines between MACRO and ENDMACRO */
     int bodylen;
     int bodycap;
+
+    macmark* marks;       /* where its parameters are, in body order */
+    int nmarks;
+    int markcap;
 };
 
 /* What assemble_line does with a line before looking at it. */
@@ -4340,6 +4365,22 @@ static bool is_equ_at(const char* p);
 /* Macro bodies grow a line at a time and are not in the name blocks, because a
  * block is fixed and a body is not known until ENDMACRO. One allocation per
  * macro, doubled when it fills, freed with everything else. */
+static bool mark_room(macro* m) {
+    if (m->nmarks < m->markcap) {
+        return true;
+    }
+    const int want = m->markcap == 0 ? 8 : m->markcap + m->markcap;
+    Z_SITE("macro bodies");
+    macmark* grown = (macmark*) realloc(m->marks, (size_t) want * sizeof(macmark));
+    if (grown == NULL) {
+        return false;
+    }
+    m->marks = grown;
+    m->markcap = want;
+
+    return true;
+}
+
 static bool macro_room(macro* m, int need) {
     if (m->bodylen + need <= m->bodycap) {
         return true;
@@ -4530,6 +4571,54 @@ static bool macro_begin(const char** pp, const char* e) {
 /* One line of a macro body, copied in as it stands. Nothing on it is parsed
  * until the macro is invoked, which is why a body may hold names that do not
  * exist yet and arguments that are not values. */
+/* Every parameter in the span just copied, recorded where it is.
+ *
+ * Once per line of the definition, which a file does a dozen times, against
+ * once per identifier per invocation, which isa_real does four hundred times
+ * over. The scan is the one that used to run at expansion: any name character
+ * starts a token, digits included -- a parameter cannot be a number, which is
+ * checked where they are read, but it can begin with a digit, and the
+ * reference's own corpus has `macro test 0123456789abcdef...`.
+ *
+ * Case-sensitively, which is what the reference does: `MACRO m v` with `V` in
+ * the body is "Unknown identifier" there. Everything else about a macro is
+ * case-blind, so this had been assumed rather than measured, once. */
+static bool macro_marks(macro* m, int from, int to) {
+    int b = from;
+    while (b < to) {
+        if (!name_ch(m->body[b])) {
+            b++;
+            continue;
+        }
+        int j = b;
+        while (j < to && name_ch(m->body[j])) {
+            j++;
+        }
+        const int take = j - b;
+        const char* pp = m->params;
+        for (int k = 0; k < m->nparam; k++) {
+            const int pn = (uint8_t) pp[0];
+            /* The length and then the first character before the call, as the
+             * expansion loop used to ask them. */
+            if (pn == take && pp[1] == m->body[b]
+                && same_full(pp + 1, &m->body[b], take)) {
+                if (!mark_room(m)) {
+                    return false;
+                }
+                m->marks[m->nmarks].off = b;
+                m->marks[m->nmarks].k = (uint8_t) k;
+                m->marks[m->nmarks].len = (uint8_t) take;
+                m->nmarks++;
+                break;
+            }
+            pp += pn + 1;
+        }
+        b = j;
+    }
+
+    return true;
+}
+
 static bool macro_line(const char* p, const char* e) {
     const char* q = p;
     while (q < e && *q != '\n') {
@@ -4541,11 +4630,20 @@ static bool macro_line(const char* p, const char* e) {
 
         return false;
     }
+    const int at = zz.defining->bodylen;
     for (int i = 0; i < n - 1; i++) {
-        zz.defining->body[zz.defining->bodylen + i] = p[i];
+        zz.defining->body[at + i] = p[i];
     }
-    zz.defining->body[zz.defining->bodylen + n - 1] = '\n';
-    zz.defining->bodylen += n;
+    zz.defining->body[at + n - 1] = '\n';
+    zz.defining->bodylen = at + n;
+
+    /* Only where a parameter could be found: a macro with none has nothing to
+     * mark and pays nothing for the feature. */
+    if (zz.defining->nparam != 0 && !macro_marks(zz.defining, at, at + n - 1)) {
+        zz.err = "out of memory for macros";
+
+        return false;
+    }
 
     return true;
 }
@@ -4642,98 +4740,38 @@ static bool macro_args(const macro* m, const char* p, const char* e,
 
 /* One line of the body, with its parameters replaced, ready to assemble.
  *
- * A line at a time rather than the whole body at once. The body used to be
- * expanded into a buffer and that buffer handed to a reader, which the line
- * loop then ran over as though it were a file -- and the reader was the
- * expensive part: 27 bytes of it saved and put back per invocation, a nested
- * run_lines, and a br_fill_lines called once to be told there is nothing more.
- * Nothing needed a reader. The lines are already lines.
+ * The places a parameter occurs were found when the body was read, so there is
+ * nothing to classify here: copy up to the next mark, copy the argument,
+ * carry on. What this replaces asked every parameter about every identifier of
+ * every line on every invocation, to rediscover something the body settles
+ * once -- 1,940 cycles a parameter.
+ *
+ * `mi` is where the caller has got to in the mark list, which is in body order,
+ * so the whole body is walked once across all its lines.
  *
  * Returns the length written, including the newline that ends it, or -1.
  * `bufp` and `capp` are the caller's, so the buffer is grown once and reused
  * for every line of the body and every later invocation at this depth. */
 __attribute__((noinline))
-static int macro_subst(const macro* m, const char* b, const char* bend,
-                       int base, char** bufp, int* capp) {
+static int macro_subst(const macro* m, int lo, int hi, int base,
+                       const macmark** mkp, const macmark* mkend,
+                       char** bufp, int* capp) {
     char* out = *bufp;
     int cap = *capp;
     int len = 0;
+    int cur = lo;
+    /* A local cursor, written back once. Through the caller's pointer it
+     * would be a load and a store on every mark, which is the fault the
+     * comment scan in the line loop carried for a long time. */
+    const macmark* mk = *mkp;
 
-    while (b < bend) {
-        const char* src = b;
-        /* Any name character starts a token, digits included.
-         *
-         * They were excluded, on the reasoning that a number is not a
-         * parameter -- and a parameter cannot be a number, which is now
-         * checked where they are read. But it can *begin* with a digit
-         * without being one, and the reference's own corpus has exactly that:
-         * `macro test 0123456789abcdef0123456789abcdef`, which is not a
-         * number in any radix and was never substituted here.
-         *
-         * A token that really is a number matches no parameter name and is
-         * copied through as it was. */
-        const bool ident = name_ch(*b);
-        const char* j = b;
-        if (ident) {
-            while (j < bend && name_ch(*j)) {
-                j++;
-            }
-        } else {
-            /* Everything up to the next identifier, in one go.
-             *
-             * A character that cannot start a parameter name cannot be
-             * substituted, so a run of them is copied through unchanged and
-             * there is nothing to decide in the middle of it. Taken one at a
-             * time, `  ld a, v` went round this loop eight times for nine
-             * characters -- two for the indent, two for the comma and space --
-             * and each turn costs a class lookup, a capacity test and the
-             * setup of a copy loop that then moves one byte. */
-            while (j < bend && !name_ch(*j)) {
-                j++;
-            }
-        }
-        const int take = (int) (j - b);
-        int need = take;
-        if (ident) {
-            /* Walked with pointers, not subscripts.
-             *
-             * `margp[k]` and `margn[k]` are three bytes wide apiece, and a
-             * subscript by a variable on something that is not a power of two
-             * is a call to __imulu on this machine. There were two of those
-             * per identifier in the body, and a two-parameter macro with a
-             * two-line body cost 18,600 cycles an invocation because of it.
-             * Stepping the two alongside the parameter list costs an
-             * increment each. */
-            const char* pp2 = m->params;
-            const char** ap = &zz.margp[base];
-            const int* an = &zz.margn[base];
-            for (int k = 0; k < m->nparam; k++) {
-                const int pn = (uint8_t) pp2[0];
-                /* Case-sensitively, which is what the reference does and what
-                 * this did not: `MACRO m v` with `V` in the body is "Unknown
-                 * identifier" there and was a substitution here. Everything
-                 * else about a macro is case-blind -- the name, the directive
-                 * -- so this had been assumed rather than measured.
-                 *
-                 * The length and then the first character before the call. A
-                 * body is mostly mnemonics and registers, and one compare says
-                 * `a` is not the parameter `v` without a function call to find
-                 * out. Every identifier in the body asks this of every
-                 * parameter. */
-                if (pn == take && pp2[1] == *b
-                    && same_full(pp2 + 1, b, take)) {
-                    src = *ap;
-                    need = *an;
-                    break;
-                }
-                pp2 += pn + 1;
-                ap++;
-                an++;
-            }
-        }
-        /* One spare, for the newline this line is finished with. */
-        if (len + need + 2 > cap) {
-            cap = (len + need + 2) * 2;
+    while (mk < mkend && mk->off < hi) {
+        const int span = mk->off - cur;
+        const int need = zz.margn[base + mk->k];
+        /* Two spare: the newline this line is finished with, and room for the
+         * tail copied after the loop to ask for its own. */
+        if (len + span + need + 2 > cap) {
+            cap = (len + span + need + 2) * 2;
             Z_SITE("macro expansion");
             char* grown = (char*) realloc(out, (size_t) cap);
             if (grown == NULL) {
@@ -4743,16 +4781,26 @@ static int macro_subst(const macro* m, const char* b, const char* bend,
             }
             out = grown;
         }
+        const char* b = m->body + cur;
         char* o = out + len;
-        for (int k = 0; k < need; k++) {
-            o[k] = src[k];
+        for (int i = 0; i < span; i++) {
+            o[i] = b[i];
+        }
+        len += span;
+        const char* const arg = zz.margp[base + mk->k];
+        o = out + len;
+        for (int i = 0; i < need; i++) {
+            o[i] = arg[i];
         }
         len += need;
-        b += take;
+        cur = mk->off + mk->len;
+        mk++;
     }
+    *mkp = mk;
 
-    if (len + 2 > cap) {
-        cap = len + 64;
+    const int span = hi - cur;
+    if (len + span + 2 > cap) {
+        cap = (len + span + 2) * 2;
         Z_SITE("macro expansion");
         char* grown = (char*) realloc(out, (size_t) cap);
         if (grown == NULL) {
@@ -4762,8 +4810,15 @@ static int macro_subst(const macro* m, const char* b, const char* bend,
         }
         out = grown;
     }
+    const char* b = m->body + cur;
+    char* o = out + len;
+    for (int i = 0; i < span; i++) {
+        o[i] = b[i];
+    }
+    len += span;
+
     /* The newline the line has to end on: every scan in assemble_line stops
-     * on one, and the trailing-text check below reads it. */
+     * on one, and the trailing-text check in macro_expand reads it. */
     out[len++] = '\n';
 
     *bufp = out;
@@ -4817,11 +4872,17 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
     scope_push(&sv);
 
     bool ok = true;
-    const char* b = m->body;
-    const char* const bend = b + m->bodylen;
+    /* Offsets into the body, not pointers, because the body may have been
+     * realloc'd since the marks were taken and an offset does not care. The
+     * mark cursor is a pointer, and the list is in body order, so it walks
+     * once across every line. */
+    const macmark* mk = m->marks;
+    const macmark* const mkend = m->marks + m->nmarks;
+    int b = 0;
+    const int bend = m->bodylen;
     while (b < bend) {
-        const char* le = b;
-        while (le < bend && *le != '\n') {
+        int le = b;
+        while (le < bend && m->body[le] != '\n') {
             le++;
         }
         /* A body with no parameters is assembled where it lies.
@@ -4835,10 +4896,11 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
         const char* ls;
         const char* lend;
         if (m->nparam == 0) {
-            ls = b;
-            lend = le + 1;
+            ls = m->body + b;
+            lend = m->body + le + 1;
         } else {
-            const int len = macro_subst(m, b, le, base, &buf, &cap);
+            const int len =
+                macro_subst(m, b, le, base, &mk, mkend, &buf, &cap);
             if (len < 0) {
                 ok = false;
                 break;
@@ -7574,6 +7636,7 @@ static void dz_free(void) {
     while (zz.macros != NULL) {
         macro* next = zz.macros->next;
         free(zz.macros->body);
+        free(zz.macros->marks);
         free(zz.macros);
         zz.macros = next;
     }

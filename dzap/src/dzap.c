@@ -1936,6 +1936,17 @@ static inline bool same_ci(const char* name, const char* s, int n) {
 
 /* A whole-name compare including the first character, which `same_ci` skips
  * because its caller has already matched it through the bucket. */
+/* The same, without the folding. Macro parameters are matched exactly. */
+static bool same_full(const char* name, const char* s, int n) {
+    for (int i = 0; i < n; i++) {
+        if (name[i] != s[i]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static bool same_ci_full(const char* name, const char* s, int n) {
     for (int i = 0; i < n; i++) {
         if ((name[i] | 0x20) != (s[i] | 0x20)) {
@@ -3707,8 +3718,12 @@ static bool macro_room(macro* m, int need) {
 }
 
 static const macro* macro_at(const dz* z, const char* s, int n) {
+    const char c0 = (char) (*s | 0x20);
     for (const macro* m = z->macros; m != NULL; m = m->next) {
-        if (m->namelen != (uint8_t) n) {
+        /* Length and first character before the call, for the same reason the
+         * substitution loop asks them: the list is walked once per invocation
+         * and most of it is not this macro. */
+        if (m->namelen != (uint8_t) n || (m->name[0] | 0x20) != c0) {
             continue;
         }
         if (same_ci_full(m->name, s, n)) {
@@ -3959,7 +3974,10 @@ static char* macro_text(dz* z, const macro* m, const char* p, const char* e,
     while (b < bend) {
         const char* src = b;
         int take = 1;
-        const bool ident = name_ch(*b) && !digit_ch(*b);
+        /* One class load, not two: a character that may start a name is one
+         * C_NAME admits and C_DIGIT does not, and both bits arrive together. */
+        const uint8_t cl = cclass[(uint8_t) *b];
+        const bool ident = (cl & (C_NAME | C_DIGIT)) == C_NAME;
         if (ident) {
             const char* j = b;
             while (j < bend && name_ch(*j)) {
@@ -3974,7 +3992,19 @@ static char* macro_text(dz* z, const macro* m, const char* p, const char* e,
             const int* an = argn;
             for (int k = 0; k < m->nparam; k++) {
                 const int pn = (uint8_t) pp2[0];
-                if (pn == take && same_ci_full(pp2 + 1, b, take)) {
+                /* Case-sensitively, which is what the reference does and what
+                 * this did not: `MACRO m v` with `V` in the body is "Unknown
+                 * identifier" there and was a substitution here. Everything
+                 * else about a macro is case-blind -- the name, the directive
+                 * -- so this had been assumed rather than measured.
+                 *
+                 * The length and then the first character before the call. A
+                 * body is mostly mnemonics and registers, and one compare says
+                 * `a` is not the parameter `v` without a function call to find
+                 * out. Every identifier in the body asks this of every
+                 * parameter. */
+                if (pn == take && pp2[1] == *b
+                    && same_full(pp2 + 1, b, take)) {
                     src = *ap;
                     need = *an;
                     break;

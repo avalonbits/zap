@@ -6,12 +6,13 @@ one against `ez80asm` to separate a missing feature from a user symbol that
 merely looks like one.
 
     247 sources in scope        (Errors_cputype excluded, as it always is)
-    115 byte-identical          81 before the mode suffixes, 98 before BLKB,
+    119 byte-identical          81 before the mode suffixes, 98 before BLKB,
                                 104 before the parser gaps, 110 before the
-                                remaining directives
+                                remaining directives, 115 before two bugs the
+                                Macro tests were sitting on
     119 rejected by both        the negative tests, working as intended --
                                 106 before the error checks
-     13 divergences             was 60
+      9 divergences             was 60
 
 The 60 are what follows. They are ranked by what they unblock, not by how many
 tests they fix, because those two orders are very different here.
@@ -138,15 +139,21 @@ and all read 113.
 
 ## What is left
 
-Thirteen sources, and they are four things:
+Nine sources, and they are three things:
 
-  - **The 24-bit evaluator**, above: five sources.
+  - **The 24-bit evaluator**, above: five sources --
+    `Value_operators/compound_all_operator_values_dx` and `_blkx`,
+    `Defines/compound`, `Labels/EQU_order_in_defines` and
+    `Macro/argument_replacement_equ`. One decision, not five pieces of work.
   - **`.cpu Z80` and `.cpu Z180`**, which ask for another machine's
     instruction set. Two sources, out of scope by the same rule that excludes
     Errors_cputype.
-  - **Four whole programs** -- BBC BASIC, Rokky, and two of the Lessons --
-    plus two Macro tests. Each needs looking at on its own; they are no longer
-    failing for a reason the corpus has already named.
+  - **Two whole programs**: `bbcbasicvez`, which zap rejects, and `rokky`,
+    which both assemble and disagree about. Neither is failing for a reason
+    the corpus has already named, so each needs looking at on its own -- and
+    the last two rounds say that is where the remaining bugs are. Fixing an
+    index displacement written as `05h` mended two of the Lessons programs
+    without either of them being the file that led to it.
 
 ## Not missing
 

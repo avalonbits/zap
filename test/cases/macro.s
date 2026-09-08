@@ -306,3 +306,23 @@ wide:
   db q
   ENDMACRO
   mixedNAME 7
+
+; A parameter name may begin with a digit without being a number. The
+; reference's own corpus has one -- `0123456789abcdef0123456789abcdef`, which
+; is not a number in any radix -- and it was never substituted here, because
+; the substitution scan took a digit as the start of a number rather than of a
+; token. A token that really is a number matches no parameter name and is
+; copied through as it was.
+  MACRO digitpar 0123456789abcdef0123456789abcdef
+  db 0123456789abcdef0123456789abcdef
+  db 0x1F
+  db 10
+  ENDMACRO
+  digitpar 5
+
+; And one that begins with a digit and ends like a radix suffix, which is a
+; name and not a literal because nothing parses it as one.
+  MACRO digitpar2 0abcz
+  db 0abcz
+  ENDMACRO
+  digitpar2 7

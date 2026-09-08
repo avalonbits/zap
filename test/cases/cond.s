@@ -74,3 +74,38 @@ ahead:
 
 ; And the whole of it inside an included file works the same way.
   INCLUDE "test/cases/inc/bytes2.inc"
+
+; A macro definition inside a branch that is not taken is skipped, not
+; captured. Both of these were wrong: the first assembled the body from the
+; branch that was not taken, and the second defined a macro the reference
+; never sees.
+  IF 1
+  MACRO condtaken
+  db 0x11
+  ENDMACRO
+  ELSE
+  MACRO condtaken
+  db 0x22
+  ENDMACRO
+  ENDIF
+  condtaken
+
+; And a macro invoked inside a branch that is not taken is not expanded.
+  MACRO condskipped
+  db 0x33
+  ENDMACRO
+  IF 0
+  condskipped
+  ENDIF
+  db 0x44
+
+; ASSUME takes an expression, not only a literal. `assume adl=one` with `one`
+; an EQU is what the reference's own Labels corpus writes.
+condone: EQU 1
+condzero: EQU 0
+  assume adl = condone
+  ld hl, 0x1234
+  assume adl = condzero
+  ld hl, 0x1234
+  assume adl = 0+1
+  ld hl, 0x1234

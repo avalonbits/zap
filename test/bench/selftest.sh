@@ -347,4 +347,39 @@ else
 fi
 rm -rf "$INCW"
 
+# time-one.sh takes a tree as well as a file, which is what measuring a change
+# against a real program needs: bbcbasic is twenty files and a 554-byte root,
+# and the single-file form cannot stage it.
+#
+# The two ways of naming it wrongly are checked here rather than by running the
+# emulator, because both are refused before it starts. Getting one of them
+# wrong quietly is the failure that matters: a directory staged without its
+# entry file named would assemble whatever `s.s` happened to be left in the
+# work directory, and report a time for it.
+TW=$(mktemp -d)
+mkdir -p "$TW/tree"
+printf '  nop\n' > "$TW/tree/top.s"
+printf '  nop\n' > "$TW/one.s"
+
+argcheck() {
+    local name="$1" want="$2"
+    shift 2
+    local out
+    out=$(test/bench/time-one.sh "$@" 2>&1)
+    if printf '%s' "$out" | grep -qa "$want"; then
+        echo "PASS  $name"
+    else
+        echo "FAIL  $name: got '$out', wanted '$want'"
+        status=1
+    fi
+}
+
+argcheck "a directory without its entry file is refused" \
+    "needs the entry file named" bin/zap.bin "$TW/tree"
+argcheck "a file with an entry file named is refused" \
+    "not a directory" bin/zap.bin "$TW/one.s" top.s
+argcheck "an entry file that is not in the tree is refused" \
+    "no nosuch.s in" bin/zap.bin "$TW/tree" nosuch.s
+rm -rf "$TW"
+
 exit $status

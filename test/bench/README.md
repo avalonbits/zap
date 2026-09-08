@@ -50,11 +50,13 @@ removing it helped.
 
 ## Baseline
 
-Recorded on fab-agon-emulator 1.2.4, zap at the commit that added this
-directory. `RATIO` is zap divided by ez80asm, so lower is better and 0.50 is the
-current goal.
+`RATIO` is zap divided by ez80asm, so lower is better. **The goal was 0.50x and
+it is met**: 0.18x on bbcbasic, 0.22x on rokky, 0.16x on synth.
 
-See `BASELINE.md`, which is regenerated rather than edited by hand.
+See `BASELINE.md`, which is regenerated rather than edited by hand, and which
+keeps the first table beside the current one -- along with ez80asm's own three
+figures, which have not moved and are the check that the speedup is real rather
+than a rig that drifted.
 
 ## isa_even and isa_real
 
@@ -82,3 +84,44 @@ target that stays within a displacement's reach as the output grows, so `jr`
 and `djnz` -- 10.3% of real instructions -- are covered by
 `test/cases/relative.s` instead, and `real` is optimistic by about that
 much.
+
+## Measuring one change: bbcbasic belongs beside them
+
+`test/bench/time-one.sh` times one binary on one source, which is what
+comparing two variants of a change takes -- build both, keep both, run them
+against the same input with no rebuild in between. Every "measured on its own"
+figure in the notes was taken that way, and until now every one of them was
+taken against a *generated* file.
+
+    test/bench/time-one.sh bin/zap.bin isa_real.s
+    test/bench/time-one.sh bin/zap.bin \
+        test/corpus/Z_PRG_Agon-bbc-basic-v/tests bbcbasicvez.s
+
+The second form stages a whole tree and names the entry file. Use it. The
+generated files were the right tool while the assembler was being *finished* --
+they contain every form, at known rates, so nothing could hide -- and they are
+the wrong tool on their own for deciding what to make faster, because **they
+do not look like code anyone writes**:
+
+| | bbcbasic | isa_real |
+|---|---|---|
+| source | 386 KB, 20 files | 256 KB, one file |
+| lines | 14,758 | 21,494 |
+| comment-only lines | 3,346, **23%** | **0** |
+| lines with a trailing comment | 2,224 | 0 |
+| cost | **197 cycles a byte** | 405 |
+
+Half the speed per byte, and most of the reason is on the first two rows: a
+comment byte is walked once and thrown away, and nearly a quarter of a real
+program is comment. A change that made comment scanning twice as slow would
+cost bbcbasic real time and `isa_real` **nothing at all**, because isa_real has
+no comments in it to scan. The reverse is just as true -- an operand-parsing
+win looks larger on isa_real than it will ever be on a real file.
+
+So run both. isa_real says what the change did to the instruction path;
+bbcbasic says what it did to a program. Where they disagree, understand it
+before taking the change -- that rule has already paid for itself twice, and it
+is the same rule `even` and `real` exist for one level down.
+
+rokky is the third, at 25 KB and 0.56s: short enough to iterate on, and a
+different shape again.

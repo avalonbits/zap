@@ -4103,3 +4103,48 @@ That is the fifth time three or four bytes of frame have decided a change in
 this function, and the first time the change looked like a clear win going in.
 The rule to take from it: **in `assemble_line`, a value that must survive to
 the return is more expensive than a store, however many stores.**
+
+## On hand-written assembly, and what it would actually buy
+
+Asked whether parts of this should be assembly, with a build flag defaulting
+to the fast version and a define selecting a C-only one. Three facts, so the
+decision is made against them rather than against a feeling about purity.
+
+**Inline assembly with operands is not available.** agondev's clang rejects
+register constraints -- `"={hl}"` is "invalid output constraint" -- so
+`__asm__` here is a bare instruction stream with no way to get a value in or
+out. Only the operandless form compiles.
+
+**A separate `.s` file does work.** The toolchain's makefile already picks up
+`$(SRCDIR)/*.s`, `*.asm` and `*.src` alongside the C, and a hand-written
+routine called through the ordinary convention builds and links. Verified.
+
+**So the unit is a function call, not an instruction.** That is the whole of
+the trade: about 20 cycles of call, return and argument marshalling before the
+routine does anything. It pays only where the run is long enough to earn it
+back, which rules out most of what looked tempting:
+
+    the space skips        0 to 3 characters, several times a line   never
+    the mnemonic scan      3 to 5 characters                          no
+    the operand name scan  1 to 8 characters                          no
+    the comment scan       19 characters on average in BBC BASIC      maybe
+
+The comment scan is the only candidate, and the arithmetic on it is: it is
+eight instructions a byte now, `cpir` is one instruction for the whole run.
+If `cpir` lands near 3 cycles a byte, a 19-byte comment goes from about 380
+cycles to about 80, and BBC BASIC has 5,570 lines carrying one -- **roughly
+0.09s, or 2.3%.** Nothing else in the file has a run long enough to be worth
+measuring.
+
+That is a real 2.3% and it is not nothing. What it costs is two
+implementations of the same scan and a test suite that has to build both, or
+the C path rots unnoticed -- and the C path is the one that makes this
+assembler portable to the next machine. **The recommendation is to hold it
+until something bigger has been taken first**: 2.3% behind a second build
+configuration is a worse trade than 4.9% for moving a struct, and the map
+above still has a 2,034-cycle instruction floor in it that no assembly routine
+addresses.
+
+If it is taken, take it once, for `cpir` on the comment scan, and let the
+build flag be `ZAP_ASM` with the C version compiled and tested by default in
+CI.

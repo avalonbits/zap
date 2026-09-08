@@ -149,3 +149,45 @@ f2:
   db '\';with a remark straight after
   db '\' ; and with a space first
   db '\'',0
+
+; A global minus a local, with both still ahead.
+;
+; The fixup goes on the global list, because that is where its target belongs,
+; and it is settled when the source runs out. By then the node the local points
+; at has been handed back to the allocator and belongs to some later scope's
+; label of the same name -- so the subtraction came out against the wrong
+; address with both addresses individually right. The local half is settled at
+; the end of its own scope now, where the node still means what it said.
+;
+; The later scopes below are what makes it bite: without a local in one of
+; them nothing reuses the slot and the wrong answer is the right one.
+subg1:
+  DL subahead-@sublocal
+  DW subahead-@sublocal
+  ld bc, subahead-@sublocal
+  DL subahead-@sublocal+1
+  DL subahead+@sublocal
+@sublocal:
+  db 1
+subg2:
+@subreuse:
+  db 2
+subg3:
+@subreuse2:
+  db 3
+subahead:
+  db 4
+
+; The same through a macro body, whose locals are discarded the same way.
+  MACRO submac
+  DL subafter-@subm
+@subm:
+  db 5
+  ENDMACRO
+subg4:
+  submac
+subg5:
+@subreuse3:
+  db 6
+subafter:
+  db 7

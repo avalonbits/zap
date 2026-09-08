@@ -779,6 +779,13 @@ typedef struct _dz {
     locundo* undo;          /* buckets an expansion took over. scope_push */
     int undo_used;
     int undo_cap;
+    /* Global fixups whose `sub` is a local, by index. See fix_add: the node a
+     * local fixup points at stops meaning that label when the scope ends, and
+     * a fixup that names a global *and* a local outlives the scope. Indices
+     * rather than pointers, because the list they point into is realloc'd. */
+    int* subfix;
+    int subfix_used;
+    int subfix_cap;
     /* One expansion buffer per level of nesting, kept and grown rather than
      * allocated per invocation: a malloc and a free were 2,200 cycles of the
      * 7,900 an expansion cost. The level in use is `depth`, which is why there
@@ -1111,7 +1118,46 @@ static bool patch_fixup(dz* z, const fixup* f) {
  * Emptying is three counters and an increment. The nodes and the names are
  * handed back to be written over, and the buckets are left exactly as they
  * are: the stamp is what makes them empty. */
+/* Folds the local half of every fixup that names a global and a local.
+ *
+ * `end - @loop` puts the fixup on the global list, because that is where its
+ * target belongs, and it is patched when the source runs out. By then the node
+ * `@loop` points at has been handed back to the allocator and belongs to some
+ * later scope's `@loop` -- so the subtraction came out against the wrong
+ * address, with both addresses individually right.
+ *
+ * That is not hypothetical: it is three bytes of Rokky, `ld bc, vdp_cls-@cmd`,
+ * where the local resolved against the last `@cmd` in the program. It cost
+ * nothing to spot and would have shipped, because both assemblers accepted the
+ * file and only 3 bytes of 31,520 differed.
+ *
+ * So the local half is settled here, where the node still means what it said,
+ * and folded into the addend. What is left is an ordinary global fixup. */
+static bool fold_subs(dz* z, int from) {
+    for (int i = from; i < z->subfix_used; i++) {
+        fixup* f = &z->fixups[z->subfix[i]];
+        if (f->sub == NULL) {
+            continue;
+        }
+        if (!f->sub->defined) {
+            z->line = f->line;
+            z->err = "unknown label";
+
+            return false;
+        }
+        f->addend += (f->width & FIX_SUB2) ? -f->sub->addr : f->sub->addr;
+        f->width &= (uint8_t) ~FIX_SUB2;
+        f->sub = NULL;
+    }
+    z->subfix_used = from;
+
+    return true;
+}
+
 static bool scope_end(dz* z) {
+    if (!fold_subs(z, 0)) {
+        return false;
+    }
     for (int i = 0; i < z->lfix_used; i++) {
         if (!patch_fixup(z, &z->lfixups[i])) {
             return false;
@@ -1369,6 +1415,25 @@ static bool fix_add(dz* z, const sym* target, const sym* sub, int addend,
         }
         *list = grown;
         *cap = want;
+    }
+
+    /* A fixup on the global list whose `sub` is a local has to be settled in
+     * two halves; scope_end does the local one. Recorded by index because the
+     * list is realloc'd out from under any pointer. */
+    if (list == &z->fixups && sub != NULL && sub->islocal) {
+        if (z->subfix_used == z->subfix_cap) {
+            Z_SITE("fixups");
+            const int want = z->subfix_cap == 0 ? 8 : z->subfix_cap + z->subfix_cap;
+            int* grown = (int*) realloc(z->subfix, (size_t) want * sizeof(int));
+            if (grown == NULL) {
+                z->err = "out of memory for labels";
+
+                return false;
+            }
+            z->subfix = grown;
+            z->subfix_cap = want;
+        }
+        z->subfix[z->subfix_used++] = *used;
     }
 
     fixup* f = &(*list)[(*used)++];
@@ -3756,6 +3821,7 @@ typedef struct {
     int locs_used;
     int locnames_used;
     int lfix_used;
+    int subfix_used;
     int undo_used;
     int scope_line;
     uint8_t gen;
@@ -3768,6 +3834,7 @@ static bool scope_push(dz* z, locsave* sv) {
     sv->locs_used = z->locs_used;
     sv->locnames_used = z->locnames_used;
     sv->lfix_used = z->lfix_used;
+    sv->subfix_used = z->subfix_used;
     sv->undo_used = z->undo_used;
     sv->gen = z->gen;
     /* The scope end a global label left pending belongs to the caller. Left
@@ -3799,8 +3866,12 @@ static bool scope_push(dz* z, locsave* sv) {
  * outstanding and belong to a scope that has not ended. */
 __attribute__((noinline))
 static bool scope_pop(dz* z, locsave* sv) {
-    bool ok = true;
-    for (int i = sv->lfix_used; i < z->lfix_used; i++) {
+    /* The body's locals go the same way a scope's do, so a fixup that names a
+     * global and one of them is settled in halves here too -- and only the
+     * ones this expansion added: the caller's are still outstanding and its
+     * locals are not defined yet. */
+    bool ok = fold_subs(z, sv->subfix_used);
+    for (int i = sv->lfix_used; ok && i < z->lfix_used; i++) {
         if (!patch_fixup(z, &z->lfixups[i])) {
             ok = false;
             break;
@@ -6642,6 +6713,9 @@ __attribute__((noinline)) static bool run(dz* z, const char* path) {
     z->undo = NULL;
     z->undo_used = 0;
     z->undo_cap = 0;
+    z->subfix = NULL;
+    z->subfix_used = 0;
+    z->subfix_cap = 0;
     for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
         z->expbuf[i] = NULL;
         z->expcap[i] = 0;
@@ -6728,6 +6802,7 @@ static void dz_free(dz* z) {
     free(z->fixups);
     free(z->lfixups);
     free(z->undo);
+    free(z->subfix);
     for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
         free(z->expbuf[i]);
     }

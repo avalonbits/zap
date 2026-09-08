@@ -5702,6 +5702,24 @@ static const insninfo* suffixed_mnemonic(const dz* z, const char* s, int n,
 __attribute__((noinline))
 static bool suffixed_insn(dz* z, const insninfo* insn, uint8_t suffix,
                           const char* p, const char* e, const char** stop) {
+#if defined(TRUNC) || defined(PTRUNC) || defined(LTRUNC) || defined(ETRUNC) \
+    || defined(MTRUNC)
+    /* A truncated build stops assemble_line part way, and this is a second
+     * copy of its tail. Rather than carry every cut twice, a suffixed
+     * instruction assembles to nothing in those builds: they exist to measure,
+     * and every variant then contains the same nothing, so no difference
+     * between two of them holds it. */
+    (void) z;
+    (void) insn;
+    (void) suffix;
+    (void) e;
+    while (*p != '\n') {
+        p++;
+    }
+    *stop = p;
+
+    return true;
+#else
     dop a;
     dop b;
     if (!parse_operand(z, &a, &p, e)) {
@@ -5728,6 +5746,7 @@ static bool suffixed_insn(dz* z, const insninfo* insn, uint8_t suffix,
     }
 
     return emit_row(z, row, &a, &b, suffix);
+#endif
 }
 
 /* ------------------------------------------------------------------ main */

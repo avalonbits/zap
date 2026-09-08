@@ -87,7 +87,11 @@ nlabels=$(printf '%s\n' "$labels" | wc -l)
 # Unique, which is what makes the file assemble at all: a second definition of
 # a name is an error, and the generator has no way to notice it produced one.
 ndistinct=$(printf '%s\n' "$labels" | sort -u | wc -l)
-if [ "$nlabels" -gt 400 ] && [ "$nlabels" -eq "$ndistinct" ]; then
+# The floor is a sanity check on the generator having produced anything at
+# all, not a target. It moves down as the file spends more of its byte budget
+# on things that are not labels: it was 400 when the mode suffixes arrived and
+# 400 scopes was exactly what the file then had.
+if [ "$nlabels" -gt 300 ] && [ "$nlabels" -eq "$ndistinct" ]; then
     echo "PASS  every generated label name is distinct"
 else
     echo "FAIL  every generated label name is distinct: $nlabels names, $ndistinct distinct"
@@ -211,6 +215,32 @@ rate "an ASSUME"         '^[[:space:]]+ASSUME ADL'                150 300
 rate "a macro invocation" '^[[:space:]]+(msave|mrest|mload|msum|mtri|mwait|mg[0-9]+)( |$)' \
                                                                    35  75
 rate "a macro definition" '^[[:space:]]+MACRO '                  1200 2600
+rate "a suffixed instruction" '^[[:space:]]+[a-z]+\.(s|l|is|il|sis|lis|sil|lil)( |$)' \
+                                                                   20  40
+
+# Every spelling, and both immediate widths. `.lil` is 82% of the corpus uses
+# and would be the whole of a lazy mix; the point of the feature is that the
+# suffix overrides the ADL mode rather than following it, and only a file with
+# both widths in it prices that.
+for spelling in '\.lil' '\.lis' '\.sis' '\.l ' '\.s '; do
+    n=$(printf '%s\n' "$isareal" | grep -cE "^[[:space:]]+[a-z]+$spelling" || true)
+    if [ "$n" -gt 0 ]; then
+        echo "PASS  isa_real uses the $spelling spelling ($n)"
+    else
+        echo "FAIL  isa_real uses the $spelling spelling: none"
+        status=1
+    fi
+done
+
+# And a suffixed instruction naming a label still ahead, which is the only
+# thing that patches a fixup at a width the mode would not have chosen.
+nfwd=$(printf '%s\n' "$isareal" | grep -cE '^[[:space:]]+ld\.sis hl, [a-z]' || true)
+if [ "$nfwd" -gt 0 ]; then
+    echo "PASS  isa_real has a short-immediate fixup ($nfwd)"
+else
+    echo "FAIL  isa_real has a short-immediate fixup: none"
+    status=1
+fi
 
 # Both arms of ASSUME. A file that only ever asserts the mode it is already in
 # never reaches the code that changes one.

@@ -71,10 +71,11 @@ static const char* emit(const char* src) {
     build_tables();
     build_cclass();
 
-    dz z;
-    memset(&z, 0, sizeof(z));
+    /* One assembly per process is what the CLI does; this runs hundreds, so
+     * the state is cleared here rather than declared here. */
+    memset(&zz, 0, sizeof(zz));
 
-    const bool ok = run(&z, path);
+    const bool ok = run(path);
     unlink(path);
 
     int n = 0;
@@ -82,10 +83,10 @@ static const char* emit(const char* src) {
     if (!ok) {
         n = snprintf(out, sizeof(out), "ERR");
     } else {
-        const int len = (int) (z.o - z.out);
+        const int len = (int) (zz.o - zz.out);
         for (int i = 0; i < len && n < (int) sizeof(out) - 4; i++) {
             n += snprintf(&out[n], sizeof(out) - (size_t) n, "%s%02X",
-                          i ? " " : "", z.out[i]);
+                          i ? " " : "", zz.out[i]);
         }
     }
     out[n] = 0;
@@ -95,7 +96,7 @@ static const char* emit(const char* src) {
      * the several hundred calls here, which is 11 MB by the end and a
      * LeakSanitizer failure that made this program's exit status useless --
      * so the runner's PASS and FAIL lines were the only signal it carried. */
-    dz_free(&z);
+    dz_free();
 
     return out;
 }
@@ -123,16 +124,15 @@ static int local_blocks(const char* src) {
     build_tables();
     build_cclass();
 
-    dz z;
-    memset(&z, 0, sizeof(z));
-    const bool ok = run(&z, path);
+    memset(&zz, 0, sizeof(zz));
+    const bool ok = run(path);
     unlink(path);
 
     int n = 0;
-    for (const locblock* b = z.locfirst; b != NULL; b = b->next) {
+    for (const locblock* b = zz.locfirst; b != NULL; b = b->next) {
         n++;
     }
-    dz_free(&z);
+    dz_free();
 
     return ok ? n : -1;
 }
@@ -567,21 +567,20 @@ int main(void) {
      * Driven directly rather than through a source large enough to force it,
      * which would be a 50 KB case file to exercise four lines. */
     {
-        dz z;
-        memset(&z, 0, sizeof(z));
-        z.cap = OUT_MIN;
-        z.out = (uint8_t*) malloc((size_t) z.cap);
-        z.o = z.out;
-        z.lim = z.out + z.cap - OUT_MAX_INSN;
+        memset(&zz, 0, sizeof(zz));
+        zz.cap = OUT_MIN;
+        zz.out = (uint8_t*) malloc((size_t) zz.cap);
+        zz.o = zz.out;
+        zz.lim = zz.out + zz.cap - OUT_MAX_INSN;
         for (int i = 0; i < 100; i++) {
-            *z.o++ = (uint8_t) i;
+            *zz.o++ = (uint8_t) i;
         }
 
-        const bool grew = out_grow(&z, 0);
+        const bool grew = out_grow(0);
         char got[64];
         snprintf(got, sizeof(got), "%d %d %d %d", grew ? 1 : 0,
-                 (int) (z.o - z.out), (int) (z.lim - z.out),
-                 z.out[99] == 99 && z.out[0] == 0);
+                 (int) (zz.o - zz.out), (int) (zz.lim - zz.out),
+                 zz.out[99] == 99 && zz.out[0] == 0);
         char want[64];
         snprintf(want, sizeof(want), "1 100 %d 1", OUT_MIN + OUT_STEP - OUT_MAX_INSN);
         check("out_grow carries the cursor and the limit", got, want);
@@ -589,8 +588,8 @@ int main(void) {
         /* And that the rebased limit still leaves room for a whole
          * instruction, which is the property the reserve relies on. */
         check("a grown buffer has room for the longest form",
-              (z.lim + OUT_MAX_INSN == z.out + z.cap) ? "yes" : "no", "yes");
-        free(z.out);
+              (zz.lim + OUT_MAX_INSN == zz.out + zz.cap) ? "yes" : "no", "yes");
+        free(zz.out);
     }
 
     /* Labels.
@@ -1534,8 +1533,7 @@ int main(void) {
      * scope and never reuses one -- which is invisible in the output and
      * fatal on the machine this is for. */
     {
-        dz z;
-        memset(&z, 0, sizeof(z));
+        memset(&zz, 0, sizeof(zz));
         char path[] = "/tmp/zap_scope_XXXXXX";
         int fd = mkstemp(path);
         /* Enough local names per scope to need more than one block, or the
@@ -1556,14 +1554,14 @@ int main(void) {
             check("a scope rewinds its local names", "write failed", "ok");
         } else {
             close(fd);
-            const bool ok = run(&z, path);
+            const bool ok = run(path);
             char got[64];
             snprintf(got, sizeof(got), "%d %d %d", ok ? 1 : 0,
-                     z.locnames == z.locnamfirst ? 1 : 0,
-                     z.locnamfirst != NULL ? 1 : 0);
+                     zz.locnames == zz.locnamfirst ? 1 : 0,
+                     zz.locnamfirst != NULL ? 1 : 0);
             check("a scope rewinds its local names to the first block",
                   got, "1 1 1");
-            dz_free(&z);
+            dz_free();
         }
         unlink(path);
     }

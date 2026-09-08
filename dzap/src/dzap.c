@@ -4423,7 +4423,7 @@ static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
              * Only if what ends the run also ends the item. `DB 1+2` has to go
              * through the evaluator, and deciding that costs one class lookup
              * on a character already in hand. */
-            const char* q = lit_value(p, e, &value);
+            const char* const q = lit_value(p, e, &value);
             if (q != NULL) {
                 p = q;
             } else {
@@ -4434,11 +4434,11 @@ static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
                         return false;
                     }
                     p = nm;
-                    /* Marked as having gone through the evaluator, because it
-                     * has: a name that is not defined yet has put a forward
-                     * reference in the slots, and the fixup below is what
-                     * reads it. */
-                    q = NULL;
+                    /* `q` is already NULL here -- lit_value declined -- which
+                     * is what the fixup below tests, and it means the same
+                     * thing for a name as for an expression: whatever this
+                     * was, it went through the atom and may have left a
+                     * forward reference in the slots. */
                 } else {
                     uint8_t fwdmask = 0;
                     if (!expr_value(z, &value, &p, e, &fwdmask)) {
@@ -4827,6 +4827,26 @@ static bool cond_skip(dz* z, const char* s, int n, const char* p,
     return true;
 }
 
+/* INCLUDE and INCBIN, in a function of their own for the sake of the frame.
+ *
+ * The name buffer is 80 bytes and has to live for as long as the file it opens
+ * does -- `br_open` keeps the pointer and `br_resume` reads it back. Left in
+ * directive_line that made the frame 140 bytes, past the 128 an `ix`
+ * displacement reaches, so five places in the *other* directives were paying a
+ * five-instruction address computation for a buffer they never touch. These
+ * two are one line in a thousand; everything else on that path is not. */
+__attribute__((noinline))
+static bool file_directive(dz* z, uint8_t kind, const char** pp, const char* e,
+                           const char** stop) {
+    char name[INCLUDE_NAME_MAX];
+    if (!file_name(z, pp, e, name, (int) sizeof(name))) {
+        return false;
+    }
+    *stop = *pp;
+
+    return kind == DIR_INCBIN ? incbin_file(z, name) : include_file(z, name);
+}
+
 /* A directive line, or a report that this was not one.
  *
  * Out of line and reached only where the mnemonic lookup failed, so an
@@ -4954,17 +4974,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
     }
 
     if (kind >= DIR_INCLUDE) {
-        /* A file name rather than a value, and the only argument that is not
-         * an expression. `name` lives in this frame for as long as the file it
-         * opens does -- see include_file. */
-        char name[INCLUDE_NAME_MAX];
-        if (!file_name(z, &p, e, name, (int) sizeof(name))) {
-            return false;
-        }
-        *stop = p;
-
-        return kind == DIR_INCBIN ? incbin_file(z, name)
-                                  : include_file(z, name);
+        return file_directive(z, kind, &p, e, stop);
     }
 
     if (kind <= DIR_DL) {

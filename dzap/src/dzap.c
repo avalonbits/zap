@@ -164,7 +164,9 @@ _Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
  * instruction knows in advance that it cannot need more than a handful. The
  * longest form here is two prefixes, an opcode, two displacements and two
  * three-byte immediates. */
-#define OUT_MAX_INSN 12
+/* Twelve was the longest instruction; a mode suffix puts one more byte in
+ * front of it. */
+#define OUT_MAX_INSN 13
 
 /* The longest file name INCLUDE and INCBIN will take. Fixed, because the name
  * is copied into a frame that has to outlive the line it came from, and into
@@ -1957,11 +1959,70 @@ static bool same_ci_full(const char* name, const char* s, int n) {
     return true;
 }
 
+/* The `.sis` / `.lil` after a mnemonic, as the S_* bit it selects.
+ *
+ * Two independent choices: whether the instruction runs in short or long mode,
+ * and whether its immediates and addresses are short or long. A three-letter
+ * suffix names both. The one- and two-letter forms name one and leave the
+ * other as the current ADL mode, which is why this is not a plain lookup:
+ * `.s` is `.sil` in ADL mode and `.sis` out of it.
+ *
+ *     .sis  0x40      .s   short instruction, immediates as they were
+ *     .lis  0x49      .l   long instruction, immediates as they were
+ *     .sil  0x52      .is  instruction as it was, short immediates
+ *     .lil  0x5B      .il  instruction as it was, long immediates
+ *
+ * All eight spellings appear in the corpus. */
+static bool suffix_bit(const char* t, int n, bool adl, uint8_t* out) {
+    const char c0 = (char) (t[0] | 0x20);
+    const char c1 = n > 1 ? (char) (t[1] | 0x20) : 0;
+    const char c2 = n > 2 ? (char) (t[2] | 0x20) : 0;
+
+    if (n == 1) {
+        if (c0 == 's') { *out = adl ? S_SIL : S_SIS; return true; }
+        if (c0 == 'l') { *out = adl ? S_LIL : S_LIS; return true; }
+
+        return false;
+    }
+    if (n == 2) {
+        if (c0 != 'i') {
+            return false;
+        }
+        if (c1 == 's') { *out = adl ? S_LIS : S_SIS; return true; }
+        if (c1 == 'l') { *out = adl ? S_LIL : S_SIL; return true; }
+
+        return false;
+    }
+    if (n == 3 && c1 == 'i') {
+        if (c0 == 's' && c2 == 's') { *out = S_SIS; return true; }
+        if (c0 == 's' && c2 == 'l') { *out = S_SIL; return true; }
+        if (c0 == 'l' && c2 == 's') { *out = S_LIS; return true; }
+        if (c0 == 'l' && c2 == 'l') { *out = S_LIL; return true; }
+    }
+
+    return false;
+}
+
+/* The byte a suffix puts in front of the instruction. */
+static uint8_t suffix_code(uint8_t bit) {
+    if (bit == S_SIS) return CODE_SIS;
+    if (bit == S_LIS) return CODE_LIS;
+    if (bit == S_SIL) return CODE_SIL;
+
+    return CODE_LIL;
+}
+
 /* Packing short names into a word and comparing them in one operation was
  * tried here and was 1.3% slower: bucketing by letter and length already
  * leaves one or two candidates, so the compare loop it replaced was two or
  * three characters long, and building the packed key cost more than that. */
-static const insninfo* mnemonic_of(const char* s, int n) {
+/* always_inline, and the reason is the same one match_row carries. The suffix
+ * reader looks a mnemonic up too, and that second caller was enough for the
+ * compiler to stop inlining it into assemble_line -- where it is the lookup
+ * every instruction line performs. Measured: isa_degenerate 4.86s to 5.16s,
+ * for a feature that never runs on that file. */
+__attribute__((always_inline))
+static inline const insninfo* mnemonic_of(const char* s, int n) {
 #ifdef MTRUNC
     /* The bucket and not the walk, so the two halves of the lookup can be told
      * apart. Built with -DTRUNC=4 -DTRUNC_NODIR, where nothing reads the
@@ -4792,71 +4853,6 @@ static bool cond_value(dz* z, int* out, const char** pp, const char* e) {
 
 /* Defined just below; cond_skip hands the conditional directives on to it. */
 __attribute__((noinline))
-static bool directive_line(dz* z, const char* s, int n, const char* p,
-                           const char* e, const char** stop);
-
-/* A line of a macro being defined: copied in as it stands, unless it is the
- * ENDMACRO that closes it.
- *
- * Nothing else on the line is looked at, which is what lets a body hold names
- * that do not exist yet and arguments that are not values. A MACRO here is
- * refused, as the reference refuses it. */
-__attribute__((noinline))
-static bool macro_capture(dz* z, const char* s, int n, const char* p,
-                          const char* e, const char** stop) {
-    const uint8_t kind = directive_of(s, n);
-    if (kind == DIR_ENDMACRO) {
-        z->defining = NULL;
-        z->line_mode = z->cond_emit ? LINE_ASSEMBLE : LINE_SKIP;
-        *stop = p;
-
-        return true;
-    }
-    if (kind == DIR_MACRO) {
-        z->err = "macros do not nest";
-
-        return false;
-    }
-    if (!macro_line(z, s, e)) {
-        return false;
-    }
-    while (p < e && *p != '\n') {
-        p++;
-    }
-    *stop = p;
-
-    return true;
-}
-
-/* A line inside a branch that is not being assembled.
- *
- * Nothing on it is looked at except whether it opens, switches or closes the
- * conditional: no label is defined, no EQU, no ORG, no INCLUDE, and no operand
- * is evaluated -- all of which the reference also skips.
- *
- * What the reference does and this does not is check that the mnemonic exists.
- * `IF 0 / garbage / ENDIF` is "Invalid mnemonic" there and assembles here, so
- * a typo inside a branch that is switched off goes unnoticed. That is a
- * widening rather than a byte difference -- there is no program the reference
- * accepts on which the two disagree -- and it is bought by not running a
- * mnemonic lookup on every skipped line. Recorded rather than hidden, because
- * it is a diagnostic the reference gives and this one does not.
- */
-__attribute__((noinline))
-static bool cond_skip(dz* z, const char* s, int n, const char* p,
-                      const char* e, const char** stop) {
-    const uint8_t kind = directive_of(s, n);
-    if (kind >= DIR_IF) {
-        return directive_line(z, s, n, p, e, stop);
-    }
-    while (p < e && *p != '\n') {
-        p++;
-    }
-    *stop = p;
-
-    return true;
-}
-
 /* INCLUDE and INCBIN, in a function of their own for the sake of the frame.
  *
  * The name buffer is 80 bytes and has to live for as long as the file it opens
@@ -4877,6 +4873,11 @@ static bool file_directive(dz* z, uint8_t kind, const char** pp, const char* e,
     return kind == DIR_INCBIN ? incbin_file(z, name) : include_file(z, name);
 }
 
+static const insninfo* suffixed_mnemonic(const dz* z, const char* s, int n,
+                                         uint8_t* suffix);
+static bool suffixed_insn(dz* z, const insninfo* insn, uint8_t suffix,
+                          const char* p, const char* e, const char** stop);
+
 /* A directive line, or a report that this was not one.
  *
  * Out of line and reached only where the mnemonic lookup failed, so an
@@ -4888,6 +4889,18 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
                            const char* e, const char** stop) {
     const uint8_t kind = directive_of(s, n);
     if (kind == DIR_NONE) {
+        /* An instruction with a mode suffix, asked here so that the ordinary
+         * path keeps the shape it had: assemble_line still ends at
+         * `return directive_line(...)` when the mnemonic table says no, and a
+         * directive still reaches its own dispatch in one call. Adding a hop
+         * in front of this instead cost 1.5% on isa_real, all of it paid by
+         * the 3,181 directive lines that are not suffixed instructions. */
+        uint8_t suffix = 0;
+        const insninfo* const insn = suffixed_mnemonic(z, s, n, &suffix);
+        if (insn != NULL) {
+            return suffixed_insn(z, insn, suffix, p, e, stop);
+        }
+
         /* A macro, or nothing this understands. Looked up last, after the
          * mnemonic table and the directives, so nothing that is either pays
          * for the walk -- and a macro has to be defined before it is used,
@@ -5168,7 +5181,12 @@ __attribute__((always_inline)) static inline const isa_row* match_row_cc(
     return NULL;
 }
 
-static const isa_row* match_row(const insninfo* insn,
+/* always_inline, and it has to be. It has two callers now -- the ordinary
+ * path and the suffixed one -- and a second caller is enough for the compiler
+ * to stop inlining it for the first: measured, that put isa_degenerate from
+ * 4.86s to 5.80s. The same fault as `same_ci`, the argument parser, sym_define
+ * and fwd_result before it. */
+__attribute__((always_inline)) static inline const isa_row* match_row(const insninfo* insn,
                                                          const dop* a,
                                                          const dop* b) {
     const uint8_t want = (uint8_t) (shl4[a->mode & 15] | (b->mode & 15));
@@ -5403,7 +5421,7 @@ static uint8_t* emit_imm(uint8_t* o, const dop* op, uint8_t cond, bool adl) {
 #define ETRUNC_AT(n) do { } while (0)
 #endif
 
-__attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row* row, dop* a, dop* b) {
+__attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row* row, dop* a, dop* b, uint8_t suffix) {
     if (!out_reserve(z)) {
         return false;
     }
@@ -5418,6 +5436,29 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
     ETRUNC_AT(1);
 
     uint8_t* o = z->o;
+
+    /* The suffix byte goes in front of everything, including the DD or FD an
+     * index register brings: `ld.lil ix, nn` is 5B DD 21 ...
+     *
+     * Whether the row takes this suffix is asked here rather than while the
+     * row is chosen, because the row is chosen by the shape of the operands
+     * and this is not one of them. `ld.lil a, b` matches the register-to-
+     * register row perfectly well and is still refused -- "Suffix not matching
+     * mnemonic / ADL mode" in the reference -- since a suffix only means
+     * something where the instruction touches memory, the stack or an
+     * address. Which rows those are is in the table already; the generator
+     * transcribed the field with the rest of the row. */
+    /* Nothing here survives into the ordinary path: emit_row is always
+     * inlined and its one hot caller passes a literal zero, so the whole of
+     * this folds away there. The suffixed copy lives in uncommon_line. */
+    if (suffix != 0) {
+        if ((row->flags & suffix) == 0) {
+            z->err = "this instruction takes no mode suffix";
+
+            return false;
+        }
+        *o++ = suffix_code(suffix);
+    }
 
     emitted out;
     out.prefix1 = 0;
@@ -5518,33 +5559,175 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
             *o++ = (uint8_t) d;
         }
     } else {
+        /* How wide an address is: the suffix says, if there is one, and the
+         * ADL mode says otherwise. `ld.lis hl, 0x1234` is two bytes of
+         * immediate in ADL mode and `ld.sil hl, 0x123456` is three out of it,
+         * so this cannot read the mode alone.
+         *
+         * Asked inside each branch rather than once above them. Hoisted, it is
+         * a live value across both and an instruction with no immediate --
+         * which is most of them -- computes it for nothing. */
+#define SFX_WIDE (suffix != 0 ? (suffix & (S_SIS | S_LIS)) == 0 : z->adl)
         if ((a->mode & IMM) != 0 && (row->condA & (IMM_N | IMM_MMN))) {
             if (a->fwd != NULL
                 && !fix_add(z, a->fwd, a->fwd2, a->imm,
                             (uint8_t) (((row->condA & IMM_N) ? 1
-                                                             : (z->adl ? 3 : 2))
+                                                             : (SFX_WIDE ? 3 : 2))
                                        | (a->fwd2_neg ? FIX_SUB2 : 0)),
                             (int) (o - z->out))) {
                 return false;
             }
-            o = emit_imm(o, a, row->condA, z->adl);
+            o = emit_imm(o, a, row->condA, SFX_WIDE);
         }
         if ((b->mode & IMM) != 0 && (row->condB & (IMM_N | IMM_MMN))) {
             if (b->fwd != NULL
                 && !fix_add(z, b->fwd, b->fwd2, b->imm,
                             (uint8_t) (((row->condB & IMM_N) ? 1
-                                                             : (z->adl ? 3 : 2))
+                                                             : (SFX_WIDE ? 3 : 2))
                                        | (b->fwd2_neg ? FIX_SUB2 : 0)),
                             (int) (o - z->out))) {
                 return false;
             }
-            o = emit_imm(o, b, row->condB, z->adl);
+            o = emit_imm(o, b, row->condB, SFX_WIDE);
         }
+#undef SFX_WIDE
     }
 
     z->o = o;
 
     return true;
+}
+
+static bool directive_line(dz* z, const char* s, int n, const char* p,
+                           const char* e, const char** stop);
+
+/* A line of a macro being defined: copied in as it stands, unless it is the
+ * ENDMACRO that closes it.
+ *
+ * Nothing else on the line is looked at, which is what lets a body hold names
+ * that do not exist yet and arguments that are not values. A MACRO here is
+ * refused, as the reference refuses it. */
+__attribute__((noinline))
+static bool macro_capture(dz* z, const char* s, int n, const char* p,
+                          const char* e, const char** stop) {
+    const uint8_t kind = directive_of(s, n);
+    if (kind == DIR_ENDMACRO) {
+        z->defining = NULL;
+        z->line_mode = z->cond_emit ? LINE_ASSEMBLE : LINE_SKIP;
+        *stop = p;
+
+        return true;
+    }
+    if (kind == DIR_MACRO) {
+        z->err = "macros do not nest";
+
+        return false;
+    }
+    if (!macro_line(z, s, e)) {
+        return false;
+    }
+    while (p < e && *p != '\n') {
+        p++;
+    }
+    *stop = p;
+
+    return true;
+}
+
+/* A line inside a branch that is not being assembled.
+ *
+ * Nothing on it is looked at except whether it opens, switches or closes the
+ * conditional: no label is defined, no EQU, no ORG, no INCLUDE, and no operand
+ * is evaluated -- all of which the reference also skips.
+ *
+ * What the reference does and this does not is check that the mnemonic exists.
+ * `IF 0 / garbage / ENDIF` is "Invalid mnemonic" there and assembles here, so
+ * a typo inside a branch that is switched off goes unnoticed. That is a
+ * widening rather than a byte difference -- there is no program the reference
+ * accepts on which the two disagree -- and it is bought by not running a
+ * mnemonic lookup on every skipped line. Recorded rather than hidden, because
+ * it is a diagnostic the reference gives and this one does not.
+ */
+__attribute__((noinline))
+static bool cond_skip(dz* z, const char* s, int n, const char* p,
+                      const char* e, const char** stop) {
+    const uint8_t kind = directive_of(s, n);
+    if (kind >= DIR_IF) {
+        return directive_line(z, s, n, p, e, stop);
+    }
+    while (p < e && *p != '\n') {
+        p++;
+    }
+    *stop = p;
+
+    return true;
+}
+
+
+/* A mnemonic with a mode suffix on it, or a report that this was not one.
+ *
+ * Reached only where the plain lookup failed, so an ordinary instruction pays
+ * nothing for any of it -- not a test, not a character. The token has already
+ * been scanned in one piece, because `.` is a mnemonic character: `.db` needs
+ * it and so does `ld.lil`, and telling them apart is a dot at a position other
+ * than the first.
+ *
+ * A dot the reader does not understand is left alone rather than refused. That
+ * is what sends `.db` and `.assume` to the directives, and it means a macro
+ * may be called `read.next` without this deciding otherwise. */
+__attribute__((noinline))
+static const insninfo* suffixed_mnemonic(const dz* z, const char* s, int n,
+                                         uint8_t* suffix) {
+    int i = 1;
+    while (i < n && s[i] != '.') {
+        i++;
+    }
+    if (i == n) {
+        return NULL;
+    }
+    if (!suffix_bit(&s[i + 1], n - i - 1, z->adl, suffix)) {
+        return NULL;
+    }
+    return mnemonic_of(s, i);
+}
+
+/* The rest of an instruction that carried a mode suffix.
+ *
+ * The tail is written out again here rather than shared with assemble_line.
+ * Sharing it would mean assemble_line calling into it, and that call is what
+ * this exists to avoid: a suffix is one line in a thousand and the ordinary
+ * path must not pay a call, a frame or a spill for it. It is twenty lines, it
+ * is cold, and emit_row folds its suffix handling away in the hot copy while
+ * keeping it here. */
+__attribute__((noinline))
+static bool suffixed_insn(dz* z, const insninfo* insn, uint8_t suffix,
+                          const char* p, const char* e, const char** stop) {
+    dop a;
+    dop b;
+    if (!parse_operand(z, &a, &p, e)) {
+        return false;
+    }
+    while (is_space_ch(*p)) {
+        p++;
+    }
+    if (*p == ',') {
+        p++;
+        if (!parse_operand(z, &b, &p, e)) {
+            return false;
+        }
+    } else {
+        b = dop_none;
+    }
+    *stop = p;
+
+    const isa_row* const row = match_row(insn, &a, &b);
+    if (row == NULL) {
+        z->err = "no such instruction form";
+
+        return false;
+    }
+
+    return emit_row(z, row, &a, &b, suffix);
 }
 
 /* ------------------------------------------------------------------ main */
@@ -5751,10 +5934,17 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
     TRUNC_AT(4, insn != NULL);
 #endif
     if (insn == NULL) {
-        /* A directive, or nothing this understands. Asked here and nowhere
-         * earlier, so an instruction line never tests for one: `DB` and its
-         * dozen relatives live entirely on the path that used to do nothing
-         * but set "unknown instruction". */
+        /* A directive, a macro, a suffixed instruction, or nothing this
+         * understands. All of them are asked here and nowhere earlier, so an
+         * instruction line never tests for any of them: `DB` and its dozen
+         * relatives, and `.lil` and its seven, live entirely on the path that
+         * used to do nothing but set "unknown instruction".
+         *
+         * And this stays a *tail* call. Written as `insn = something(...)`
+         * followed by a fall-through into the operands, everything this
+         * function holds has to survive the call, and that cost 6% on every
+         * benchmark -- including the ones with no suffix and no directive in
+         * them. Nothing returns to this line. */
         return directive_line(z, s, n, p, e, stop);
     }
 
@@ -5789,7 +5979,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
 
     TRUNC_AT(6, row != NULL);
 
-    return emit_row(z, row, &a, &b);
+    return emit_row(z, row, &a, &b, 0);
 
 #ifdef TRUNC
 trunc_done:

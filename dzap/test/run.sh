@@ -139,6 +139,38 @@ loc=$("$OUT/dzap" "$OUT/loc.s" "$OUT/loc.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an undefined local names the line that used it" \
     "$(printf '%s' "$loc" | grep -c 'line 3: unknown label')" 1
 
+# A mode suffix on an instruction whose row does not take one.
+#
+# The suffix means something only where the instruction touches memory, the
+# stack or an address, so `ld.lil hl, nn` assembles and `ld.lil a, b` does not
+# -- the reference calls that "Suffix not matching mnemonic / ADL mode". Both
+# are the same row table and the same operands; only the message tells them
+# apart, and the encoding tests would read every refusal here as ERR.
+printf '  ld.lil a, b\n' > "$OUT/sfx1.s"
+sfx1=$("$OUT/dzap" "$OUT/sfx1.s" "$OUT/sfx1.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a suffix on a register-only form is refused" \
+    "$(printf '%s' "$sfx1" | grep -c 'line 1: this instruction takes no mode suffix')" 1
+
+# Per row and not per mnemonic: `retn.lil` assembles, `retn.sis` does not.
+printf '  retn.sis\n' > "$OUT/sfx2.s"
+sfx2=$("$OUT/dzap" "$OUT/sfx2.s" "$OUT/sfx2.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a row may take some suffixes and not others" \
+    "$(printf '%s' "$sfx2" | grep -c 'line 1: this instruction takes no mode suffix')" 1
+
+# A dot the suffix reader does not understand is left alone rather than
+# refused, which is what sends `.db` to the directives and lets a macro be
+# called `read.next`. It arrives as an unknown instruction, not a bad suffix.
+printf '  ld.xyz hl, 0\n' > "$OUT/sfx3.s"
+sfx3=$("$OUT/dzap" "$OUT/sfx3.s" "$OUT/sfx3.bin" 2>&1 | tr -d '\r' || true)
+cli_check "an unreadable suffix is not read as one" \
+    "$(printf '%s' "$sfx3" | grep -c 'line 1: unknown instruction')" 1
+
+# And the dot that starts a directive is not a suffix: it is at the front.
+printf '  .db 1, 2\n' > "$OUT/sfx4.s"
+"$OUT/dzap" "$OUT/sfx4.s" "$OUT/sfx4.bin" > /dev/null 2>&1 || true
+cli_check "a leading dot still reaches the directives" \
+    "$(od -An -tx1 "$OUT/sfx4.bin" 2>/dev/null | tr -s ' ')" " 01 02"
+
 # A string whose last character is a backslash, which is not terminated.
 #
 # The scan steps two past an escape and no longer asks whether the second one

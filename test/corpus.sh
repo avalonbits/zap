@@ -3,8 +3,14 @@
 #
 # Assembles every source in the corpus with both zap and ez80asm and compares
 # the bytes. That is a stronger check than the reference's .expect files alone:
-# only 70 of the 247 in-scope sources ship an expected binary, and the
-# divergence where .org fills its gap eagerly was in one of the other 177.
+# only 70 of the 507 sources ship an expected binary, and the divergence where
+# .org fills its gap eagerly was in one of the other 437.
+#
+# Every directory, with nothing skipped. Errors_cputype was skipped for a long
+# time as "out of scope by design" -- zap refused .CPU -- and when the
+# directive was implemented, 250 of its 260 sources turned out to need nothing
+# else, and the ten that did pointed at two real gaps. A runner that does not
+# look at a thing cannot tell you what it would have found.
 #
 # Everything it needs is in the repository. The corpus is vendored in
 # test/corpus and the reference assembler in test/ref, so this runs with no
@@ -72,8 +78,8 @@ fi
 
 # Absolute, because every source is assembled from inside its own work
 # directory. A relative path silently resolves to nothing there, and the
-# runner reads "not found" as "ez80asm rejected it" -- 247 sources reported as
-# divergences with no error anywhere.
+# runner reads "not found" as "ez80asm rejected it" -- every source reported
+# as a divergence with no error anywhere.
 EZ=$(cd "$(dirname "$EZ")" && pwd)/$(basename "$EZ")
 
 OUT=$(mktemp -d)
@@ -116,9 +122,6 @@ total=0; same=0; rejected=0; differ=0
 
 for dir in "$CORPUS"/*/; do
     name=$(basename "$dir")
-    # Errors_cputype exercises -cpu selection across Z80/Z180/Z280. zap is
-    # eZ80-only, so those are out of scope by design rather than deferred.
-    [ "$name" = "Errors_cputype" ] && continue
     [ -d "$dir/tests" ] || continue
 
     for src in "$dir"/tests/*.s; do

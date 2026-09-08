@@ -435,35 +435,35 @@ static const isa_row rows_res[] = {
 };
 
 static const isa_row rows_res0[] = {
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0x80 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0x80 },
 };
 
 static const isa_row rows_res1[] = {
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0x88 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0x88 },
 };
 
 static const isa_row rows_res2[] = {
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0x90 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0x90 },
 };
 
 static const isa_row rows_res3[] = {
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0x98 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0x98 },
 };
 
 static const isa_row rows_res4[] = {
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xA0 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xA0 },
 };
 
 static const isa_row rows_res5[] = {
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xA8 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xA8 },
 };
 
 static const isa_row rows_res6[] = {
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xB0 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xB0 },
 };
 
 static const isa_row rows_res7[] = {
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xB8 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xB8 },
 };
 
 static const isa_row rows_ret[] = {
@@ -481,7 +481,7 @@ static const isa_row rows_retn[] = {
 
 static const isa_row rows_rl[] = {
     { R_HL, INDIRECT, RS_NONE, NOREQ, TR_NONE, TR_NONE, S_ANY, BIT_Z80, 0xCB, 0x16 },
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK|S_ANY, BIT_U80, 0xCB, 0x10 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK|S_ANY, BIT_U80, 0xCB, 0x10 },
     { RS_IXY, INDIRECT, RS_NONE, NOREQ, TR_NONE, TR_NONE, F_DISPA|F_DDFDOK|S_ANY, BIT_Z80, 0xCB, 0x16 },
     { RS_R, NOREQ, RS_NONE, NOREQ, TR_Z, TR_NONE, F_NONE, BIT_Z80, 0xCB, 0x10 },
 };
@@ -492,7 +492,7 @@ static const isa_row rows_rla[] = {
 
 static const isa_row rows_rlc[] = {
     { R_HL, INDIRECT, RS_NONE, NOREQ, TR_NONE, TR_NONE, S_ANY, BIT_Z80, 0xCB, 0x06 },
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK|S_ANY, BIT_U80, 0xCB, 0x00 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK|S_ANY, BIT_U80, 0xCB, 0x00 },
     { RS_IXY, INDIRECT, RS_NONE, NOREQ, TR_NONE, TR_NONE, F_DISPA|F_DDFDOK|S_ANY, BIT_Z80, 0xCB, 0x06 },
     { RS_R, NOREQ, RS_NONE, NOREQ, TR_Z, TR_NONE, F_NONE, BIT_Z80, 0xCB, 0x00 },
 };
@@ -507,7 +507,7 @@ static const isa_row rows_rld[] = {
 
 static const isa_row rows_rr[] = {
     { R_HL, INDIRECT, RS_NONE, NOREQ, TR_NONE, TR_NONE, S_ANY, BIT_Z80, 0xCB, 0x1E },
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK|S_ANY, BIT_U80, 0xCB, 0x18 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK|S_ANY, BIT_U80, 0xCB, 0x18 },
     { RS_IXY, INDIRECT, RS_NONE, NOREQ, TR_NONE, TR_NONE, F_DISPA|F_DDFDOK|S_ANY, BIT_Z80, 0xCB, 0x1E },
     { RS_R, NOREQ, RS_NONE, NOREQ, TR_Z, TR_NONE, F_NONE, BIT_Z80, 0xCB, 0x18 },
 };
@@ -518,7 +518,7 @@ static const isa_row rows_rra[] = {
 
 static const isa_row rows_rrc[] = {
     { R_HL, INDIRECT, RS_NONE, NOREQ, TR_NONE, TR_NONE, S_ANY, BIT_Z80, 0xCB, 0x0E },
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK|S_ANY, BIT_U80, 0xCB, 0x08 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK|S_ANY, BIT_U80, 0xCB, 0x08 },
     { RS_IXY, INDIRECT, RS_NONE, NOREQ, TR_NONE, TR_NONE, F_DISPA|F_DDFDOK|S_ANY, BIT_Z80, 0xCB, 0x0E },
     { RS_R, NOREQ, RS_NONE, NOREQ, TR_Z, TR_NONE, F_NONE, BIT_Z80, 0xCB, 0x08 },
 };
@@ -565,47 +565,47 @@ static const isa_row rows_set[] = {
 };
 
 static const isa_row rows_set0[] = {
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xC0 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xC0 },
 };
 
 static const isa_row rows_set1[] = {
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xC8 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xC8 },
 };
 
 static const isa_row rows_set2[] = {
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xD0 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xD0 },
 };
 
 static const isa_row rows_set3[] = {
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xD8 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xD8 },
 };
 
 static const isa_row rows_set4[] = {
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xE0 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xE0 },
 };
 
 static const isa_row rows_set5[] = {
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xE8 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xE8 },
 };
 
 static const isa_row rows_set6[] = {
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xF0 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xF0 },
 };
 
 static const isa_row rows_set7[] = {
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xF8 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK, BIT_U80, 0xCB, 0xF8 },
 };
 
 static const isa_row rows_sla[] = {
     { R_HL, INDIRECT, RS_NONE, NOREQ, TR_NONE, TR_NONE, S_ANY, BIT_Z80, 0xCB, 0x26 },
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK|S_ANY, BIT_U80, 0xCB, 0x20 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK|S_ANY, BIT_U80, 0xCB, 0x20 },
     { RS_IXY, INDIRECT, RS_NONE, NOREQ, TR_NONE, TR_NONE, F_DISPA|F_DDFDOK|S_ANY, BIT_Z80, 0xCB, 0x26 },
     { RS_R, NOREQ, RS_NONE, NOREQ, TR_Z, TR_NONE, F_NONE, BIT_Z80, 0xCB, 0x20 },
 };
 
 static const isa_row rows_sll[] = {
     { RS_R, NOREQ, RS_NONE, NOREQ, TR_Z, TR_NONE, F_NONE, BIT_U80, 0xCB, 0x30 },
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK|S_ANY, BIT_U80, 0xCB, 0x30 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK|S_ANY, BIT_U80, 0xCB, 0x30 },
     { RS_IXY, INDIRECT, RS_NONE, NOREQ, TR_Z, TR_NONE, F_DISPA|F_DDFDOK|S_ANY, BIT_U80, 0xCB, 0x36 },
     { R_HL, INDIRECT, RS_NONE, NOREQ, TR_NONE, TR_NONE, F_NONE, BIT_Z80, 0xCB, 0x36 },
 };
@@ -616,14 +616,14 @@ static const isa_row rows_slp[] = {
 
 static const isa_row rows_sra[] = {
     { R_HL, INDIRECT, RS_NONE, NOREQ, TR_NONE, TR_NONE, S_ANY, BIT_Z80, 0xCB, 0x2E },
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK|S_ANY, BIT_U80, 0xCB, 0x28 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK|S_ANY, BIT_U80, 0xCB, 0x28 },
     { RS_IXY, INDIRECT, RS_NONE, NOREQ, TR_NONE, TR_NONE, F_DISPA|F_DDFDOK|S_ANY, BIT_Z80, 0xCB, 0x2E },
     { RS_R, NOREQ, RS_NONE, NOREQ, TR_Z, TR_NONE, F_NONE, BIT_Z80, 0xCB, 0x28 },
 };
 
 static const isa_row rows_srl[] = {
     { R_HL, INDIRECT, RS_NONE, NOREQ, TR_NONE, TR_NONE, S_ANY, BIT_Z80, 0xCB, 0x3E },
-    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_Z, TR_Z, F_DISPA|F_DDFDOK|S_ANY, BIT_U80, 0xCB, 0x38 },
+    { RS_IXY, INDIRECT, RS_R, NOREQ, TR_NONE, TR_Z, F_DISPA|F_DDFDOK|S_ANY, BIT_U80, 0xCB, 0x38 },
     { RS_IXY, INDIRECT, RS_NONE, NOREQ, TR_NONE, TR_NONE, F_DISPA|F_DDFDOK|S_ANY, BIT_Z80, 0xCB, 0x3E },
     { RS_R, NOREQ, RS_NONE, NOREQ, TR_Z, TR_NONE, F_NONE, BIT_Z80, 0xCB, 0x38 },
 };

@@ -4221,3 +4221,57 @@ fifth of it" and bad for "the chain walk is 381 cycles".
 The measurements that have held up this round all came from *whole* programs
 built the ordinary way -- the comment file, the shape files, blank lines --
 where nothing is conditionally compiled away.
+
+## Attribution that holds up: vary the input, not the program
+
+`test/bench/attribute.sh`. One binary, seven sources, each 256 KiB, differing
+in exactly one feature. Nothing conditionally compiled, nothing moved in the
+generated code.
+
+    SOURCE        SECONDS    DELTA    LINES
+    isa_real         5.46        -        -
+    -equ             5.44    -0.02      399
+    -macro           5.00    -0.46      405
+    -cond            5.52    +0.06      897
+    -assume          5.48    +0.02       99
+    -suffix          5.42    -0.04      747
+    -data            5.56    +0.10     2001
+
+Two findings, and the second is the one that changes what to do next.
+
+### Macros are 8.4% of isa_real
+
+**0.46s on 426 invocations** -- about 20,000 cycles each. Nothing else in the
+table is outside the resolution of a single run.
+
+How much of that is inherent: an invocation is nine characters of source that
+expand into two or three assembled lines, and a line of isa_real costs about
+5,000 cycles. So roughly three quarters of the 20,000 is the expansion being
+assembled, which no amount of work on the macro path removes, and **the
+machinery is the remaining quarter -- on the order of 5,000 cycles an
+invocation, or 2% of the file.**
+
+This tool cannot separate those two, and the way to make it do so is to add a
+switch that keeps the definitions and writes each invocation out as the lines
+it expands to. Then the delta is the machinery alone. That is the next
+measurement to take, and it should be taken before anything is changed.
+
+### Three features are *negative*, and that is the useful part
+
+Leaving out the conditionals, the ASSUMEs or the data directives makes the
+file **slower**. The byte budget is held constant, so what fills the space is
+ordinary instructions -- and an ordinary instruction costs more than the line
+it replaced.
+
+    2,001 data lines out, and the file is 0.10s slower
+
+So the directive path is not a cost centre. The staged map said "directives,
+macros and conditionals are 27% of isa_real" and that reading sent a round of
+work at the directive dispatch; what the 27% actually contained was one
+feature worth 8.4% and a set of lines that are *cheaper than the instructions
+around them*. `DB 4` was made fast years ago and it stayed fast.
+
+**A feature that is cheaper than what would otherwise be on that line has a
+negative cost and there is nothing to win there.** That is not something a
+staged build can tell you at all -- it has no notion of what would have been
+in the space.

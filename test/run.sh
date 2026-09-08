@@ -658,6 +658,33 @@ else
     fi
 fi
 
+# The generator's omission switches produce sources that assemble.
+#
+# attribute.sh is built on these, and a file that does not assemble reports as
+# a missing figure rather than as a broken generator. One of them was broken
+# exactly that way: with the conditionals left out, finish() still closed a
+# block that had never been opened, and the stray ENDIF only appeared when the
+# byte budget happened to end inside the window -- which 256 KiB does not and
+# 32 KiB does. Four sizes, because the bug was a function of where the file
+# stopped.
+echo "=== test_isa_omit ==="
+omit_bad=0
+for sz in 32768 65536 131072; do
+    for feat in equ macro cond assume suffix data; do
+        ISA_OMIT="$feat" test/bench/gen_isa.sh real "$sz" > "$OUT/omit.s" 2>/dev/null
+        if ! "$OUT/zap" -ez80 "$OUT/omit.s" "$OUT/omit.bin" > "$OUT/omit.log" 2>&1; then
+            echo "      ISA_OMIT=$feat at $sz: $(tail -1 "$OUT/omit.log" | tr -d '\r')"
+            omit_bad=1
+        fi
+    done
+done
+if [ "$omit_bad" = 0 ]; then
+    echo "PASS  every ISA_OMIT source assembles, at three sizes"
+else
+    echo "FAIL  an ISA_OMIT source does not assemble"
+    status=1
+fi
+
 # The marginal-pricing flags in zap.c. The first three duplicate a table so
 # the walk over it does twice the work; the rest duplicate a call to a function
 # that is already out of line, so nothing is outlined by the measurement. Each one is only a measurement if the program

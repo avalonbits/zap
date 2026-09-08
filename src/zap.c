@@ -2487,6 +2487,11 @@ static bool numeric_token(const char* s, int n) {
 
 /* ------------------------------------------------------------- expressions */
 
+/* Defined with the directives, because that is where strings are written out.
+ * A character literal uses the same table; see the comment there. */
+static int str_escape(char c);
+
+
 /* The reference evaluates strictly left to right with no precedence at all:
  * it keeps a running total and folds each term into it as the term arrives.
  * `1+2*3` is 9 there and 7 nowhere, and matching that is the whole job -- an
@@ -2844,15 +2849,42 @@ static bool expr_term(dz* z, int* out, const char** pp, const char* e,
         }
         p++;
     } else if (*p == '\'') {
-        /* A character literal is its byte. The reference reads one character
-         * and the closing quote, and so does this. */
-        if (p[1] == '\n' || p[1] == 0 || p[2] != '\'') {
-            z->err = "expected a character";
+        /* A character literal is its byte: one character and the closing
+         * quote, or a backslash escape and the closing quote.
+         *
+         * The escapes are the string ones, which is one table for both and is
+         * what the reference has -- `'\n'` is 0x0A there and so is `"\n"`.
+         * They were missing here, so `ld a, '\a'` was "expected a character"
+         * against the reference's 3E 07, and `'\''` -- the apostrophe, which
+         * has no other spelling -- could not be written at all. */
+        if (p[1] == '\\' && !(p[2] == '\'' && p[3] != '\'')) {
+            /* An escape, unless the backslash *is* the character. `'\'` is the
+             * backslash itself in the reference -- its own corpus writes
+             * `'[' '\' ']'` for 5B 5C 5D -- and `'\''` is the apostrophe. The
+             * two start alike and only the fourth character tells them apart:
+             * a closing quote after the escaped quote means the apostrophe was
+             * meant, and anything else means the literal ended at the quote
+             * and the backslash was its content. */
+            const int esc = str_escape(p[2]);
+            if (esc < 0 || p[3] != '\'') {
+                z->err = "expected a character";
 
-            return false;
+                return false;
+            }
+            v = esc;
+            p += 4;
+        } else if (p[1] == '\\') {
+            v = 0x5C;
+            p += 3;
+        } else {
+            if (p[1] == '\n' || p[1] == 0 || p[2] != '\'') {
+                z->err = "expected a character";
+
+                return false;
+            }
+            v = (uint8_t) p[1];
+            p += 3;
         }
-        v = (uint8_t) p[1];
-        p += 3;
     } else {
         const char* const ts = p;
         while (p < e && num_ch(*p)) {
@@ -4232,11 +4264,18 @@ static bool macro_expand(dz* z, const macro* m, const char* p, const char* e,
 #define DIR_INCLUDE 10
 #define DIR_INCBIN  11
 #define DIR_ASSUME  12
-#define DIR_IF      13
-#define DIR_ELSE    14
-#define DIR_ENDIF   15
-#define DIR_MACRO    16
-#define DIR_ENDMACRO 17
+/* MACRO and ENDMACRO below the conditionals, and that ordering is load-bearing:
+ * a line inside a switched-off branch asks `kind >= DIR_IF` and nothing else,
+ * so anything at or above IF is handled while skipping and anything below is
+ * skipped. With MACRO above them, `IF 0 / MACRO m / ... / ENDMACRO / ENDIF`
+ * captured the body and defined the macro -- the reference skips it, and
+ * `IF 1 / macro m / db 0 / endmacro / ELSE / macro m / db 1 / endmacro / ENDIF`
+ * assembled the branch that was not taken. */
+#define DIR_MACRO    13
+#define DIR_ENDMACRO 14
+#define DIR_IF       15
+#define DIR_ELSE     16
+#define DIR_ENDIF    17
 
 /* How deep INCLUDE may go, and how much buffer a file below the first gets.
  *
@@ -4312,7 +4351,12 @@ static uint8_t directive_of(const char* s, int n) {
 /* One escape, after the backslash. Returns -1 for the ones the reference calls
  * "Illegal escape code in string" -- which is everything not listed, including
  * `\0` and `\x41`, both of which C programmers expect and neither of which the
- * reference takes. */
+ * reference takes.
+ *
+ * The same set inside a character literal: `'\n'` is 0x0A and `'\?'` is 0x3F.
+ * That is one table for both, which is what the reference has, and it was
+ * checked spelling by spelling rather than assumed -- `\?` had been left out
+ * of the string set on the strength of C not having needed it. */
 static int str_escape(char c) {
     switch (c) {
         case 'n':  return 0x0A;
@@ -4326,6 +4370,7 @@ static int str_escape(char c) {
         case '\\': return 0x5C;
         case '"':  return 0x22;
         case '\'': return 0x27;
+        case '?':  return 0x3F;
         default:   return -1;
     }
 }
@@ -4826,7 +4871,27 @@ static bool include_file(dz* z, const char* name) {
     z->line = 0;
     z->depth++;
 
-    const bool ok = run_lines(z);
+    /* A conditional belongs to the file it is written in.
+     *
+     * `IF 1 / INCLUDE "x.inc"` where x.inc has an IF of its own is ordinary --
+     * it is how a header switches on what its caller set -- and it was refused
+     * here as "conditionals do not nest", because the flag was one per
+     * assembly rather than one per file. Both halves of the rule are the
+     * reference's: an IF left open at the end of an included file is an error
+     * there, and so is an ENDIF in one that would close the caller's. */
+    const bool saved_cond = z->in_cond;
+    const bool saved_emit = z->cond_emit;
+    z->in_cond = false;
+    z->cond_emit = true;
+
+    bool ok = run_lines(z);
+    if (ok && z->in_cond) {
+        z->err = "IF left open at the end of the file";
+        ok = false;
+    }
+    z->in_cond = saved_cond;
+    z->cond_emit = saved_emit;
+    z->line_mode = saved_emit ? LINE_ASSEMBLE : LINE_SKIP;
 
     /* The child's buffer goes back whether it worked or not; on the way out of
      * a failure the message has already been kept, and z->path still names the
@@ -5079,13 +5144,32 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
          * is "Invalid ADL mode" there. */
         int mode = 0;
         const char* const after = lit_value(p, e, &mode);
-        if (after == NULL || (mode != 0 && mode != 1)) {
+        if (after != NULL) {
+            p = after;
+        } else {
+            /* Not only a literal: `assume adl=one` with `one` an EQU is what
+             * the reference's own Labels corpus writes, and it was refused
+             * here. A label still ahead is refused by both -- the mode decides
+             * the width of every immediate below it, so there is nothing
+             * sensible to do with one that is not known yet. */
+            fwd_reset(NULL);
+            uint8_t fwdmask = 0;
+            if (!expr_value(z, &mode, &p, e, &fwdmask)) {
+                return false;
+            }
+            if (expr_fwd != NULL) {
+                z->err = "a label here must be defined already";
+
+                return false;
+            }
+        }
+        if (mode != 0 && mode != 1) {
             z->err = "ADL is 0 or 1";
 
             return false;
         }
         z->adl = mode == 1;
-        *stop = after;
+        *stop = p;
 
         return true;
     }

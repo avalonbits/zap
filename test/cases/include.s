@@ -33,3 +33,16 @@ blob2:
   .INCLUDE "test/cases/inc/bytes2.inc"
   incbin "test/cases/inc/blob.bin"
   .INCBIN "test/cases/inc/blob.bin"
+
+; A conditional belongs to the file it is written in. `IF 1 / INCLUDE` where
+; the included file has an IF of its own is how a header switches on what its
+; caller set, and it was refused here as "conditionals do not nest".
+  IF 1
+  INCLUDE "test/cases/inc/cond.inc"
+  ELSE
+  db 0x55
+  ENDIF
+  IF 0
+  INCLUDE "test/cases/inc/cond.inc"
+  ENDIF
+  db 0x66

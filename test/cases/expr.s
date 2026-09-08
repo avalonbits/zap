@@ -118,3 +118,34 @@ f2:
   DL 0+$
   DL 1+2*3
   DL 100-1
+
+; Character-literal escapes, which are the string ones -- one table for both,
+; as the reference has it. These were missing, so `ld a, '\a'` was "expected a
+; character" against the reference's 3E 07, and the apostrophe, which has no
+; other spelling, could not be written at all.
+  ld a, '\a'
+  ld a, '\b'
+  ld a, '\e'
+  ld a, '\f'
+  ld a, '\n'
+  ld a, '\r'
+  ld a, '\t'
+  ld a, '\v'
+  ld a, '\\'
+  ld a, '\''
+  ld a, '\"'
+  ld a, '\?'
+  db ',', ';', '\''
+  db '\'' ; and a remark after one
+  db "a\?b"
+
+; And the backslash is the one character that is its own escape and also
+; itself: `'\'` is the backslash -- the reference's own corpus writes
+; `'[' '\' ']'` for 5B 5C 5D -- while `'\''` is the apostrophe. Only the
+; fourth character tells the two apart.
+  db '\'
+  db '[', '\', ']'
+  db '\'+1
+  db '\';with a remark straight after
+  db '\' ; and with a space first
+  db '\'',0

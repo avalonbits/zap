@@ -135,6 +135,58 @@ loc=$("$OUT/zap" "$OUT/loc.s" "$OUT/loc.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an undefined local names the line that used it" \
     "$(printf '%s' "$loc" | grep -c 'line 3: unknown label')" 1
 
+# A FILLBYTE that would change the fill of a reservation already written.
+#
+# The reference fills a reservation when it writes the file out, so the last
+# FILLBYTE wins for every one of them, backwards as well. One pass writes the
+# bytes where it meets them; reproducing that means remembering every reserved
+# range to go back over, for a case that appears nowhere in the reference's own
+# corpus, where every FILLBYTE precedes the reservations it is for.
+printf '  ds 2\n  fillbyte 0xAA\n  nop\n' > "$OUT/fb1.s"
+fb1=$("$OUT/zap" "$OUT/fb1.s" "$OUT/fb1.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a FILLBYTE that reaches backwards is refused" \
+    "$(printf '%s' "$fb1" | grep -c 'line 2: FILLBYTE must come before the space it fills')" 1
+
+# The same value twice is not a change, so it is allowed.
+printf '  fillbyte 0xAA\n  ds 2\n  fillbyte 0xAA\n  nop\n' > "$OUT/fb2.s"
+"$OUT/zap" "$OUT/fb2.s" "$OUT/fb2.bin" > /dev/null 2>&1 || true
+cli_check "the same FILLBYTE twice is not a change" \
+    "$(od -An -tx1 "$OUT/fb2.bin" 2>/dev/null | tr -s ' ')" " aa aa 00"
+
+# RELOCATE, whose three refusals the reference also makes.
+#
+# `$1000000` is the corpus's own spelling of the address one past the eZ80's
+# range. The `0x` spelling of the same number is *not* caught, and that is the
+# 24-bit ceiling showing through rather than anything about RELOCATE: the `0x`
+# fast path accumulates in the machine's word and truncates, where the `$`
+# prefix goes through the general parser and the wide value survives to be
+# checked. Recorded in .internal/completeness.md with the rest of the ceiling.
+printf '  .relocate $1000000\n  .endrelocate\n' > "$OUT/rl1.s"
+rl1=$("$OUT/zap" "$OUT/rl1.s" "$OUT/rl1.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a relocate address past 24 bits is refused" \
+    "$(printf '%s' "$rl1" | grep -c 'line 1: address outside the 24-bit range')" 1
+
+printf '  .relocate -1\n  .endrelocate\n' > "$OUT/rl2.s"
+rl2=$("$OUT/zap" "$OUT/rl2.s" "$OUT/rl2.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a negative relocate address is refused" \
+    "$(printf '%s' "$rl2" | grep -c 'line 1: address outside the 24-bit range')" 1
+
+printf '  .endrelocate\n' > "$OUT/rl3.s"
+rl3=$("$OUT/zap" "$OUT/rl3.s" "$OUT/rl3.bin" 2>&1 | tr -d '\r' || true)
+cli_check "ENDRELOCATE with none open is refused" \
+    "$(printf '%s' "$rl3" | grep -c 'line 1: no RELOCATE is open')" 1
+
+printf '  .relocate 0x50000\n  .relocate 0x60000\n' > "$OUT/rl4.s"
+rl4=$("$OUT/zap" "$OUT/rl4.s" "$OUT/rl4.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a nested RELOCATE is refused" \
+    "$(printf '%s' "$rl4" | grep -c 'line 2: RELOCATE does not nest')" 1
+
+# .CPU is a check, not a setting: this assembler has one instruction table.
+printf '  .cpu Z80\n  nop\n' > "$OUT/cpu1.s"
+cpu1=$("$OUT/zap" "$OUT/cpu1.s" "$OUT/cpu1.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a CPU that is not eZ80 is refused" \
+    "$(printf '%s' "$cpu1" | grep -c 'line 1: this assembler is eZ80 only')" 1
+
 # A negative count, which the reference reads as unsigned: `blkb -1` there is
 # sixteen megabytes of fill and a successful assembly. Refused here for the
 # reason DS's count is, and only the message tells the two refusals apart.

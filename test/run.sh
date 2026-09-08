@@ -257,13 +257,27 @@ blk1=$("$OUT/zap" "$OUT/blk1.s" "$OUT/blk1.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a negative block count is refused" \
     "$(printf '%s' "$blk1" | grep -c 'line 1: blk needs a positive number')" 1
 
-# A fill that names a label still ahead. The reference has a second pass and
-# resolves it; one pass cannot, because the fill is one value repeated n times
-# and a forward reference would need n fixups to patch a byte each.
+# A fill that names a label still ahead. It is one value repeated n times, so
+# there is nothing a per-byte fixup could usefully do: the run is written now
+# and filled in when the value is known, which is one record however long the
+# run is.
 printf '  blkb 2, ahead\nahead:\n  nop\n' > "$OUT/blk2.s"
-blk2=$("$OUT/zap" "$OUT/blk2.s" "$OUT/blk2.bin" 2>&1 | tr -d '\r' || true)
-cli_check "a fill still ahead is refused" \
-    "$(printf '%s' "$blk2" | grep -c 'line 1: a label here must be defined already')" 1
+"$OUT/zap" "$OUT/blk2.s" "$OUT/blk2.bin" > /dev/null 2>&1 || true
+cli_check "a fill still ahead is filled in afterwards" \
+    "$(od -An -tx1 "$OUT/blk2.bin" 2>/dev/null | tr -s ' ')" " 02 02 00"
+
+# The count is a different matter and is still refused: how many bytes there
+# are decides where everything after them lands.
+printf '  blkb ahead, 1\nahead: equ 2\n' > "$OUT/blk2b.s"
+blk2b=$("$OUT/zap" "$OUT/blk2b.s" "$OUT/blk2b.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a count still ahead is refused" \
+    "$(printf '%s' "$blk2b" | grep -c 'line 1: a label here must be defined already')" 1
+
+# And a fill nothing ever defines is found when the run is filled in.
+printf '  blkb 2, nosuch\n' > "$OUT/blk2c.s"
+blk2c=$("$OUT/zap" "$OUT/blk2c.s" "$OUT/blk2c.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a fill nothing defines is reported" \
+    "$(printf '%s' "$blk2c" | grep -c 'unknown label')" 1
 
 # BLKL is absent rather than approximated: it is four bytes wide and the
 # reference's own corpus fills it with 0x55555555, which the evaluator cannot

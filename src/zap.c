@@ -294,6 +294,16 @@ typedef struct {
     int line;
 } defexpr;
 
+/* A block of n units whose fill named something not yet defined. The bytes
+ * are written where they belong and the value is put in afterwards. */
+typedef struct {
+    const sym* sp;
+    int off;
+    int count;
+    uint8_t width;
+    int line;
+} fillpatch;
+
 /* One bucket as it was before an expansion took it over. See scope_push. */
 /* How deep INCLUDE and macro expansion may nest. Declared here because the
  * per-level expansion buffers are part of dz; the reasoning for the number is
@@ -800,6 +810,11 @@ typedef struct _dz {
     defexpr* defer;
     int defer_used;
     int defer_cap;
+    /* Blocks whose fill was not known when they were written. See the BLK
+     * directives. */
+    fillpatch* fillp;
+    int fillp_used;
+    int fillp_cap;
     /* One expansion buffer per level of nesting, kept and grown rather than
      * allocated per invocation: a malloc and a free were 2,200 cycles of the
      * 7,900 an expansion cost. The level in use is `depth`, which is why there
@@ -2762,11 +2777,11 @@ static inline bool fwd_result(dz* z, const sym** target, const sym** sub,
 static void fwd_reset(const sym* seed);
 
 __attribute__((noinline))
-static bool defer_expr(dz* z, const char* text, int n, dop* op) {
+static sym* defer_text(dz* z, const char* text, int n) {
     if (!sym_room(z)) {
         z->err = "out of memory for labels";
 
-        return false;
+        return NULL;
     }
     if (z->defer_used == z->defer_cap) {
         Z_SITE("deferred expressions");
@@ -2776,7 +2791,7 @@ static bool defer_expr(dz* z, const char* text, int n, dop* op) {
         if (grown == NULL) {
             z->err = "out of memory for labels";
 
-            return false;
+            return NULL;
         }
         z->defer = grown;
         z->defer_cap = want;
@@ -2785,7 +2800,7 @@ static bool defer_expr(dz* z, const char* text, int n, dop* op) {
     if (copy == NULL) {
         z->err = "out of memory for labels";
 
-        return false;
+        return NULL;
     }
     for (int i = 0; i < n; i++) {
         copy[i] = text[i];
@@ -2805,13 +2820,23 @@ static bool defer_expr(dz* z, const char* text, int n, dop* op) {
     d->text = copy;
     d->len = n;
     d->line = z->line;
+    z->err = NULL;
+    fwd_reset(NULL);
 
+    return sp;
+}
+
+/* The same for an operand, which carries the symbol as its forward
+ * reference and lets the emitter make an ordinary fixup out of it. */
+static bool defer_expr(dz* z, const char* text, int n, dop* op) {
+    sym* sp = defer_text(z, text, n);
+    if (sp == NULL) {
+        return false;
+    }
     op->fwd = sp;
     op->fwd2 = NULL;
     op->fwd2_neg = false;
     op->imm = 0;
-    z->err = NULL;
-    fwd_reset(NULL);
 
     return true;
 }
@@ -5692,6 +5717,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
         /* The fill, if one is given. FILLBYTE's value at the unit width if
          * not, which is 0xFF until something says otherwise. */
         int fill = z->fill;
+        const sym* pending = NULL;
         while (is_space_ch(*p)) {
             p++;
         }
@@ -5704,22 +5730,48 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
             if (flit != NULL) {
                 p = flit;
             } else {
+                const char* const fs = p;
                 fwd_reset(NULL);
                 uint8_t fwdmask = 0;
                 if (!expr_value(z, &fill, &p, e, &fwdmask)) {
                     return false;
                 }
-                if (expr_fwd != NULL) {
-                    /* The reference has a second pass and resolves it. One
-                     * pass cannot: the fill is one value repeated n times, so
-                     * a forward reference would need n fixups to patch a byte
-                     * each. Refused rather than emitted wrong, which is where
-                     * DS's count already stands. */
-                    z->err = "a label here must be defined already";
+                if (expr_fwd != NULL || expr_fwd_bad) {
+                    /* The fill names something ahead. It is one value repeated
+                     * n times, so there is nothing a per-byte fixup could
+                     * usefully do; the run is written now and filled in when
+                     * the value is known, which is one record however long it
+                     * is. The count is a different matter and is still
+                     * refused: how many bytes there are decides where
+                     * everything after them lands. */
+                    pending = defer_text(z, fs, (int) (p - fs));
+                    if (pending == NULL) {
+                        return false;
+                    }
+                    fill = 0;
+                }
+            }
+        }
+        if (pending != NULL && value > 0) {
+            if (z->fillp_used == z->fillp_cap) {
+                Z_SITE("deferred fills");
+                const int want = z->fillp_cap == 0 ? 4 : z->fillp_cap + z->fillp_cap;
+                fillpatch* grown =
+                    (fillpatch*) realloc(z->fillp, (size_t) want * sizeof(fillpatch));
+                if (grown == NULL) {
+                    z->err = "out of memory for labels";
 
                     return false;
                 }
+                z->fillp = grown;
+                z->fillp_cap = want;
             }
+            fillpatch* fp = &z->fillp[z->fillp_used++];
+            fp->sp = pending;
+            fp->off = (int) (z->o - z->out);
+            fp->count = value;
+            fp->width = (uint8_t) width;
+            fp->line = z->line;
         }
         if (!emit_block(z, value, width, fill)) {
             return false;
@@ -6728,8 +6780,34 @@ static bool resolve_deferred(dz* z) {
     return true;
 }
 
+/* Fills in the blocks whose value was not known when they were written. */
+static bool resolve_fills(dz* z) {
+    for (int i = 0; i < z->fillp_used; i++) {
+        const fillpatch* fp = &z->fillp[i];
+        if (!fp->sp->defined) {
+            z->line = fp->line;
+            z->err = "unknown label";
+
+            return false;
+        }
+        const int v = fp->sp->addr;
+        uint8_t* o = z->out + fp->off;
+        for (int n = fp->count; n != 0; n--) {
+            *o++ = (uint8_t) v;
+            if (fp->width > 1) {
+                *o++ = (uint8_t) (v >> 8);
+            }
+            if (fp->width > 2) {
+                *o++ = (uint8_t) (v >> 16);
+            }
+        }
+    }
+
+    return true;
+}
+
 static bool resolve_fixups(dz* z) {
-    if (!resolve_deferred(z)) {
+    if (!resolve_deferred(z) || !resolve_fills(z)) {
         return false;
     }
     for (int i = 0; i < z->fix_used; i++) {
@@ -6880,6 +6958,9 @@ __attribute__((noinline)) static bool run(dz* z, const char* path) {
     z->defer = NULL;
     z->defer_used = 0;
     z->defer_cap = 0;
+    z->fillp = NULL;
+    z->fillp_used = 0;
+    z->fillp_cap = 0;
     for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
         z->expbuf[i] = NULL;
         z->expcap[i] = 0;
@@ -6968,6 +7049,7 @@ static void dz_free(dz* z) {
     free(z->undo);
     free(z->subfix);
     free(z->defer);
+    free(z->fillp);
     for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
         free(z->expbuf[i]);
     }

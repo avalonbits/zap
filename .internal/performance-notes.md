@@ -3680,3 +3680,87 @@ an afternoon, and it will not be the evaluator that does it.
 Bounding them all is the fix and it is not free: the bound is a compare per
 character on scans that run over every operand in the file. That is a round of
 its own, with a number attached, and it should come before the width does.
+
+## The round with the number attached: bounding every scan
+
+Forty scans, `p < e` on each, and the whole price is **0.06s**:
+
+    isa_real   5.58 -> 5.64   392 -> 397 cycles a byte
+    isa_even   5.68 -> 5.74   399 -> 404
+
+Output byte-identical on both, and the corpus does not move -- 122 identical,
+6 disagreeing, the same six.
+
+**All 0.06 of it is the operand parser.** Measured in four groups, one build
+and one run each:
+
+    assemble_line          4 scans     5.58 -> 5.58     free
+    parse_operand          9 scans     5.58 -> 5.64     0.06
+    the evaluator          4 scans     5.64 -> 5.64     free
+    everything else       23 scans     5.64 -> 5.64     free
+
+That ordering is not an accident and it is the useful part of the result. A
+bound costs a compare per character, so it is priced by how many characters the
+scan runs over -- and `assemble_line`'s scans stop after one or two, while the
+operand parser's run over every operand in the file. The 23 in the directives,
+the macros and the conditionals are on paths one line in eight reaches, and
+none of them registered at all.
+
+`assemble_line` being free was the surprise. It was expected to cost the most,
+being the function every line enters. It costs nothing because its four scans
+are the leading-space skip and the mnemonic run, which are two characters and
+three, and because the loops were already computing the pointer the compare
+wants. **The frame went *down*, 116 bytes to 113**, which is the other half of
+why: 85 more instructions in the function and three fewer bytes of frame, on
+the right side of the 128-byte cliff either way.
+
+### What it bought
+
+`dec iy` in `assemble_line`: **3 to 0**. Across the whole translation unit, 8
+to 3, and the three that remain are not scans -- two are index arithmetic in
+`build_tables` and one is an argument push in `directive_line`.
+
+None of the three in `assemble_line` was producing wrong bytes. That is the
+finding restated: they were correct **by register allocation**, and the fault
+has appeared and vanished under changes that do not touch the loop. Removing
+the bound from two of the four scans by hand does not bring the rotation back
+either -- which is why a test that only counts `dec iy` cannot be the whole
+check, and why the source rule is the one that bites reliably.
+
+### The two checks
+
+* **`test_scan_bounds`** reads the source. A loop whose condition dereferences
+  a pointer must compare one of the pointers it dereferences against a limit.
+  A dereference is not its own bound, so `while (*p != '\n')` fails; two
+  pointers walked in step need only one bound between them, so
+  `while (q != qend && *t == *q)` passes. It needs no toolchain and no input,
+  which matters because **there is no input that fails on the host**.
+* **`test_codegen`** counts `dec iy` in `assemble_line` and requires zero. It
+  is a detector and not a cost, in the same way the `__setflag` budget beside
+  it is: a `dec iy` that comes back is the moment to open the assembly, not
+  proof that anything is wrong.
+
+Both fail against the parent commit -- forty sites and three respectively --
+which is how it is known they bite.
+
+### The rule this replaces
+
+The operand parser's preamble used to say the opposite: that the scans were
+unbounded and safe because the reader keeps a newline one byte past the last
+valid character. **Both halves of that were true and it was still the wrong
+rule.** The sentinel is what makes a scan *terminate* -- no character class
+contains a newline -- and it is why reading one character past the content is
+safe. It cannot help with a rotated loop, because a rotated loop does not run
+off the end; it skips the first character and stops early, inside the buffer,
+producing wrong bytes rather than a crash.
+
+Single tests -- `*p == ','` and its kind -- keep no bound and need none. There
+is no loop to rotate, and the sentinel covers the read.
+
+### What is now unblocked
+
+The evaluator's width. The section above stopped there because the widening
+could not be timed: the build it produced did not assemble, and the reason was
+four loops rotating in a function whose source was unchanged. With the bounds
+in, that particular way of failing is gone, and the width can be measured for
+what it costs rather than for what it disturbs.

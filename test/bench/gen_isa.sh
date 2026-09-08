@@ -117,8 +117,8 @@
 # anything measured against this one -- the baselines below are the ones that
 # count.
 #
-#   isa_real         5.46s   384 cycles/byte   21,806 lines
-#   isa_even         5.56s   391               22,117
+#   isa_real         5.24s   368 cycles/byte   21,806 lines
+#   isa_even         5.32s   374               22,117
 #   isa_degenerate   4.86s   342               22,530
 #   isa_memory       5.32s   374               28,040
 #
@@ -159,6 +159,11 @@
 # the target was set against a file that did not exercise these paths, and a
 # benchmark that leaves an expensive feature out to keep its number down is
 # measuring the wrong thing.
+#
+# A round of work on the directive path since then took 384 to 368 without
+# touching the file, so the gap is 18 rather than 34. isa_degenerate and
+# isa_memory did not move at all, which is the check that it was the directive
+# path: neither of them holds a directive.
 #
 # What isa_real now holds, per 21,806 lines:
 #

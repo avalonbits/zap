@@ -6,7 +6,7 @@ the two.
 
 | source | zap | ez80asm | ratio | |
 |---|---|---|---|---|
-| bbcbasic | 3.80s | 22.42s | **0.17x** | ez80asm `-m` |
+| bbcbasic | 3.78s | 22.42s | **0.17x** | ez80asm `-m` |
 | rokky | 0.52s | 2.50s | **0.21x** | |
 | synth | 6.86s | 45.64s | **0.15x** | ez80asm `-m` |
 

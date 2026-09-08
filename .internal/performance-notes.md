@@ -4298,3 +4298,72 @@ around them*. `DB 4` was made fast years ago and it stayed fast.
 negative cost and there is nothing to win there.** That is not something a
 staged build can tell you at all -- it has no notion of what would have been
 in the space.
+
+## Inside a macro invocation
+
+The machinery is 17,294 cycles on isa_real. Taking it apart needed two things
+the staged builds cannot do: a pair of files that assemble to identical bytes
+(see ISA_OMIT=macrocall), and inputs built to vary one property of the macro
+at a time.
+
+### What it scales with, measured on the Agon
+
+    a 1-line body, no parameters      7,815 cycles
+    a 3-line body, no parameters     10,248
+    per extra body line               1,217
+    extrapolated to a 0-line body     6,599   <- the fixed part
+    per parameter                     1,940
+    per link walked in the macro list   138
+
+Each figure is a pair of files, 5,000 invocations against the same expansions
+written out, each pair assembling to the same bytes.
+
+**The fixed part is 6,600 cycles and it is the largest of them.** For
+comparison, the `  nop` line an invocation expands to costs 2,286: expanding a
+macro costs about three times assembling what comes out of it.
+
+### Where the fixed part goes
+
+Host instruction counts, from diffing callgrind profiles of the invoked and
+the expanded file. 625 instructions an invocation, against 253 for the nop
+line:
+
+    macro_text      157      run_lines (nested)   43
+    assemble_line    81      macro_at             42
+    macro_run        70      scope_pop            36
+    directive_line   55      br_fill_lines        27
+                             scope_push           21
+                             br_destroy           19
+
+There is no single item to remove. `macro_text` is the biggest at a quarter,
+and that is with **no arguments and a five-character body** -- it is the
+argument scan, the capacity check and the token loop, not the copying.
+
+### The two cuts taken
+
+**A found macro moves to the front of the list.** Definitions are prepended,
+so the list runs backwards from the order a program writes them -- and a
+header of macros used throughout the file sat at the deep end. Forty macros,
+invoking the last-defined: **4.24s to 2.90s**. Nothing on isa_real, which
+rotates over six macros and makes a move-to-front list thrash; that is a
+property of the generator, not of programs, and one pointer swap on a hit is
+never worse.
+
+**A run of characters that cannot start a name is copied in one go.** 4.80 to
+4.72 on a three-parameter macro, 5.46 to 5.44 on isa_real.
+
+The second is worth recording for another reason: **the host said it was 8%
+worse.** `macro_text` went from 785,015 instructions to 850,017 under
+callgrind and the Agon came back faster. Fifth disagreement between the two
+machines in this file, and the fourth where the host was the misleading one.
+
+### What is left
+
+    isa_real   5.44        bbcbasic   3.78
+
+The macro machinery is still about 6,000 cycles an invocation and it is
+spread across eight functions with nothing over a quarter. Halving it means
+restructuring the path -- not expanding through a reader at all, say, but
+assembling the body from the macro record with a substitution cursor -- and
+that is a design change rather than a tuning one. The numbers above are what
+it would have to beat.

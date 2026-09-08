@@ -139,6 +139,21 @@ loc=$("$OUT/dzap" "$OUT/loc.s" "$OUT/loc.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an undefined local names the line that used it" \
     "$(printf '%s' "$loc" | grep -c 'line 3: unknown label')" 1
 
+# A global label in a macro body, which the reference refuses -- "No global
+# labels allowed in macro definition" -- and refuses at the invocation rather
+# than at the definition, so a body that is never used is never complained
+# about. Both halves need a message to be seen: the encoding tests would read
+# the refusal and the acceptance as ERR and 00, which is also what a macro that
+# was never expanded at all would give.
+printf 'g:\n  MACRO m\nglob:\n  nop\n  ENDMACRO\n  m\n' > "$OUT/gmac.s"
+gmac=$("$OUT/dzap" "$OUT/gmac.s" "$OUT/gmac.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a global label in an expanded macro is refused" \
+    "$(printf '%s' "$gmac" | grep -c 'no global labels allowed in a macro')" 1
+printf 'g:\n  MACRO m\nglob:\n  nop\n  ENDMACRO\n  nop\n' > "$OUT/gmac2.s"
+gmac2=$("$OUT/dzap" "$OUT/gmac2.s" "$OUT/gmac2.bin" 2>&1 | tr -d '\r' || true)
+cli_check "the same body, never invoked, is not" \
+    "$(printf '%s' "$gmac2" | grep -c 'no global labels')" 0
+
 # The reference itself, on everything in test/cases. Unit tests pin the cases a
 # refactor is likely to break; this pins the whole of what dzap claims to do
 # against the assembler it has to agree with, so a case nobody thought to write

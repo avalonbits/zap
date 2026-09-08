@@ -169,7 +169,6 @@ _Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
 /* The longest file name INCLUDE and INCBIN will take. Fixed, because the name
  * is copied into a frame that has to outlive the line it came from, and into
  * `dz.errpath` when an include fails. */
-#define INCLUDE_NAME_MAX 80
 
 /* ------------------------------------------------------------- symbols */
 
@@ -179,6 +178,30 @@ _Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
  * as soon as it refills, so a pointer into one is a pointer into the next
  * line by the time a forward reference is resolved.
  */
+#define INCLUDE_NAME_MAX 80
+
+/* How many parameters a macro may take. The reference's own corpus does not go
+ * past four; sixteen is more than any of it and keeps the argument spans on the
+ * stack rather than in another allocation. */
+#define MACRO_MAXPARAM 8
+
+typedef struct _macro macro;
+struct _macro {
+    macro* next;
+    const char* name;
+    uint8_t namelen;
+    uint8_t nparam;
+    const char* params;   /* the parameter names, each preceded by its length */
+    char* body;           /* the lines between MACRO and ENDMACRO */
+    int bodylen;
+    int bodycap;
+};
+
+/* What assemble_line does with a line before looking at it. */
+#define LINE_ASSEMBLE 0
+#define LINE_SKIP     1   /* a conditional is switched off */
+#define LINE_CAPTURE  2   /* copying it into a macro being defined */
+
 typedef struct symblock symblock;
 
 /* Names live in blocks of this size; see namblock below for why. Declared here
@@ -244,6 +267,23 @@ struct sym {
  * 10.8 characters against 11.8, and costs 32 KB; the smaller table is the
  * starting point and the trade is recorded rather than assumed. */
 #define NSYMB 2048
+
+/* One bucket as it was before an expansion took it over. See scope_push. */
+/* How deep INCLUDE and macro expansion may nest. Declared here because the
+ * per-level expansion buffers are part of dz; the reasoning for the number is
+ * where INCLUDE is. */
+/* How deep INCLUDE and macro expansion may nest -- shared, because an
+ * expansion is read the same way an included file is and re-enters the same
+ * loop. Declared up here because the per-level expansion buffers are fields
+ * of dz. */
+#define INCLUDE_MAXDEPTH 8
+
+#define UNDO_STEP 32
+typedef struct {
+    sym* head;
+    uint8_t b;
+    uint8_t gen;
+} locundo;
 
 typedef struct {
     sym* head;
@@ -553,6 +593,29 @@ typedef struct _dz {
     int org;
     bool org_set;
 
+    /* A macro: its name, the names of its parameters, and the text between MACRO
+     * and ENDMACRO.
+     *
+     * All three live in the name blocks, which never move, so a macro defined
+     * early is still readable after any number of later ones. Macros are few --
+     * the corpus's busiest file has eleven -- so the table is a list and the
+     * lookup is a walk. It is only ever reached where a mnemonic lookup has
+     * already failed. */
+    macro* macros;
+
+    /* What the line loop should do with the next line: assemble it, skip it
+     * because a conditional is switched off, or copy it into the macro being
+     * defined. One field and one branch per line, whichever it is. */
+    uint8_t line_mode;
+
+    /* The macro being defined, while line_mode says so. */
+    macro* defining;
+    /* Non-zero while a macro body is being expanded. The reference refuses a
+     * global label in a body -- "No global labels allowed in macro definition"
+     * -- and refuses it at the invocation, not at the definition, so a body
+     * that is never invoked is never complained about. */
+    uint8_t expanding;
+
     /* Conditional assembly, which is a flag and not a stack: the reference
      * says "Nested conditionals not supported" and means it, so one IF is all
      * there is to keep track of.
@@ -685,6 +748,16 @@ typedef struct _dz {
     int lfix_used;
     int lfix_cap;
     uint8_t gen;            /* which scope the local buckets belong to */
+    locundo* undo;          /* buckets an expansion took over. scope_push */
+    int undo_used;
+    int undo_cap;
+    /* One expansion buffer per level of nesting, kept and grown rather than
+     * allocated per invocation: a malloc and a free were 2,200 cycles of the
+     * 7,900 an expansion cost. The level in use is `depth`, which is why there
+     * is one each -- an outer expansion is still being read from while an
+     * inner one is built. */
+    char* expbuf[INCLUDE_MAXDEPTH];
+    int expcap[INCLUDE_MAXDEPTH];
 } dz;
 
 /* The fields touched on every line have to be reachable in one instruction.
@@ -1037,6 +1110,34 @@ static bool scope_end(dz* z) {
     return true;
 }
 
+/* Remembers one bucket, so that scope_pop can put it back. Out of line and
+ * reached at most once per bucket per expansion. */
+__attribute__((noinline))
+static bool undo_note(dz* z, int b) {
+    if (z->undo_used == z->undo_cap) {
+        /* Grown rather than capped. One entry per distinct bucket per level of
+         * nesting is at most 64 times the nesting limit, but a body with sixty
+         * local labels is legal -- the reference assembles one -- and a fixed
+         * table would refuse it. */
+        const int want = z->undo_cap == 0 ? UNDO_STEP : z->undo_cap + z->undo_cap;
+        Z_SITE("macro scope");
+        locundo* grown = (locundo*) realloc(z->undo, sizeof(locundo) * (size_t) want);
+        if (grown == NULL) {
+            z->err = "out of memory for macros";
+
+            return false;
+        }
+        z->undo = grown;
+        z->undo_cap = want;
+    }
+    locundo* u = &z->undo[z->undo_used++];
+    u->head = z->locs[b].head;
+    u->b = (uint8_t) b;
+    u->gen = z->locs[b].gen;
+
+    return true;
+}
+
 /* The entry for a local name in the current scope, made if there is not one.
  *
  * The bucket is empty unless its stamp is this scope's, whatever chain it
@@ -1078,6 +1179,12 @@ static sym* loc_intern(dz* z, const char* name, int len) {
             }
         }
     } else {
+        /* The bucket belonged to an older scope and is about to belong to this
+         * one. Inside an expansion the older scope is the caller's and is not
+         * finished with, so what is here is written down first. */
+        if (z->expanding != 0 && !undo_note(z, b)) {
+            return NULL;
+        }
         z->locs[b].gen = z->gen;
         z->locs[b].head = NULL;
     }
@@ -1820,6 +1927,18 @@ static inline bool same_ci(const char* name, const char* s, int n) {
      * the output cursor had when it was an offset and a capacity. */
     for (unsigned i = 1; i < (unsigned) n; i++) {
         if (name[i] != (s[i] | 0x20)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/* A whole-name compare including the first character, which `same_ci` skips
+ * because its caller has already matched it through the bucket. */
+static bool same_ci_full(const char* name, const char* s, int n) {
+    for (int i = 0; i < n; i++) {
+        if ((name[i] | 0x20) != (s[i] | 0x20)) {
             return false;
         }
     }
@@ -3427,6 +3546,519 @@ static bool line_fill(dz* z, buf_reader* r) {
     return false;
 }
 
+
+static bool run_lines(dz* z);
+
+/* The local-label scope a macro expansion runs in, set aside and put back.
+ *
+ * An expansion needs a scope of its own -- the reference gives it one, so a
+ * body defining `@loc` may be invoked twice, and a body naming `@a` does not
+ * see the caller's -- and the caller's has to survive, because the reference
+ * lets a local defined before an invocation be named after it.
+ *
+ * The scope is entered by advancing the generation stamp, which is what ends
+ * an ordinary scope: every bucket then belongs to an older generation and
+ * reads as empty. Leaving it is the stamp going back.
+ *
+ * What the stamp cannot undo is a bucket the body *wrote*, because claiming a
+ * bucket overwrites the head the caller had. Those are written down as they
+ * happen -- see undo_note -- and there are only ever as many as the body has
+ * distinct local names.
+ *
+ * The first version copied all 64 buckets out and back instead. It was correct
+ * and it cost 12,300 cycles an invocation against 770, because an indexed
+ * struct assignment in a loop is not a block move on this machine and memcpy
+ * of 256 bytes is not free either. isa_real spent 1.48 seconds in it.
+ *
+ * The slot and name arenas are shared with the caller rather than replaced.
+ * The hazard there was `scope_end` rewinding them to their first block on top
+ * of the caller's live slots, and it cannot arise: a scope only ends on a
+ * global label or an EQU, and the reference refuses both inside a macro body,
+ * which dzap now does too. So the body appends, and the counters rewind at the
+ * end to hand the space back. */
+typedef struct {
+    locblock* loccur;
+    namblock* locnames;
+    int locs_used;
+    int locnames_used;
+    int lfix_used;
+    int undo_used;
+    int scope_line;
+    uint8_t gen;
+} locsave;
+
+__attribute__((noinline))
+static bool scope_push(dz* z, locsave* sv) {
+    sv->loccur = z->loccur;
+    sv->locnames = z->locnames;
+    sv->locs_used = z->locs_used;
+    sv->locnames_used = z->locnames_used;
+    sv->lfix_used = z->lfix_used;
+    sv->undo_used = z->undo_used;
+    sv->gen = z->gen;
+    /* The scope end a global label left pending belongs to the caller. Left
+     * standing, the first local in the body would notice it -- the body counts
+     * its own line numbers, so the comparison that defers it never matches --
+     * and end the expansion's scope in the caller's name, clearing the flag.
+     * The caller's next local then would not open a scope at all, and the one
+     * above it would still hold whatever the previous scope defined. */
+    sv->scope_line = z->scope_line;
+    z->scope_line = 0;
+
+    if (++z->gen == 0) {
+        /* The stamp has wrapped, so a bucket left over from 256 scopes ago
+         * would read as belonging to this one. The undo log is what puts them
+         * back, and it records what it finds, so emptying them here is safe. */
+        for (int b = 0; b < NLOCB; b++) {
+            z->locs[b].gen = 0;
+            z->locs[b].head = NULL;
+        }
+        z->gen = 1;
+    }
+
+    return true;
+}
+
+/* Settles what the expansion referred to and puts the caller's scope back.
+ *
+ * Only the fixups the expansion added are resolved -- the caller's are still
+ * outstanding and belong to a scope that has not ended. */
+__attribute__((noinline))
+static bool scope_pop(dz* z, locsave* sv) {
+    bool ok = true;
+    for (int i = sv->lfix_used; i < z->lfix_used; i++) {
+        if (!patch_fixup(z, &z->lfixups[i])) {
+            ok = false;
+            break;
+        }
+    }
+
+    while (z->undo_used > sv->undo_used) {
+        const locundo* u = &z->undo[--z->undo_used];
+        z->locs[u->b].head = u->head;
+        z->locs[u->b].gen = u->gen;
+    }
+    z->gen = sv->gen;
+    z->scope_line = sv->scope_line;
+    z->lfix_used = sv->lfix_used;
+
+    /* The arena counters go back so the space is handed out again. The name
+     * blocks only rewind if the body did not need a new one: nam_take pushes a
+     * new block in front of the list, and rewinding past it would lose it. */
+    z->loccur = sv->loccur;
+    z->locs_used = sv->locs_used;
+    if (z->locnames == sv->locnames) {
+        z->locnames_used = sv->locnames_used;
+    }
+
+    return ok;
+}
+
+/* ---------------------------------------------------------------- macros */
+
+/* Macro bodies grow a line at a time and are not in the name blocks, because a
+ * block is fixed and a body is not known until ENDMACRO. One allocation per
+ * macro, doubled when it fills, freed with everything else. */
+static bool macro_room(macro* m, int need) {
+    if (m->bodylen + need <= m->bodycap) {
+        return true;
+    }
+    int want = m->bodycap < 256 ? 256 : m->bodycap + m->bodycap;
+    while (m->bodylen + need > want) {
+        want += want;
+    }
+        Z_SITE("macro bodies");
+    char* grown = (char*) realloc(m->body, (size_t) want);
+    if (grown == NULL) {
+        return false;
+    }
+    m->body = grown;
+    m->bodycap = want;
+
+    return true;
+}
+
+static const macro* macro_at(const dz* z, const char* s, int n) {
+    for (const macro* m = z->macros; m != NULL; m = m->next) {
+        if (m->namelen != (uint8_t) n) {
+            continue;
+        }
+        if (same_ci_full(m->name, s, n)) {
+            return m;
+        }
+    }
+
+    return NULL;
+}
+
+/* `MACRO name [param, param, ...]`.
+ *
+ * The name and the parameters are copied into the name blocks, which never
+ * move; the parameters go in as a length byte followed by the text, so walking
+ * them needs no second array and no terminator. */
+__attribute__((noinline))
+static bool macro_begin(dz* z, const char** pp) {
+    if (z->defining != NULL) {
+        /* "No macro definitions allowed inside a macro" there. */
+        z->err = "macros do not nest";
+
+        return false;
+    }
+    const char* p = *pp;
+    while (is_space_ch(*p)) {
+        p++;
+    }
+    const char* ns = p;
+    while (name_ch(*p)) {
+        p++;
+    }
+    const int nn = (int) (p - ns);
+    if (nn == 0 || nn > 255) {
+        z->err = "expected a macro name";
+
+        return false;
+    }
+
+    Z_SITE("macro table");
+    macro* m = (macro*) calloc(1, sizeof(macro));
+    if (m == NULL) {
+        z->err = "out of memory for macros";
+
+        return false;
+    }
+    /* One byte more than the name, for a terminator. Nothing else in the name
+     * blocks carries one -- a label is a pointer and a length -- but an
+     * expansion puts this name in `z->path`, where a failure inside the body
+     * reports it, and that is read as a string. Without the nul the message
+     * came out as the whole arena from the name onwards. */
+    char* nm = nam_take(&z->names, &z->names_used, nn + 1);
+    if (nm == NULL) {
+        free(m);
+        z->err = "out of memory for macros";
+
+        return false;
+    }
+    for (int i = 0; i < nn; i++) {
+        nm[i] = ns[i];
+    }
+    nm[nn] = 0;
+    m->name = nm;
+    m->namelen = (uint8_t) nn;
+
+    /* The parameters, each stored as a length and then its characters. */
+    for (;;) {
+        while (is_space_ch(*p)) {
+            p++;
+        }
+        if (*p == ',') {
+            p++;
+            continue;
+        }
+        if (!name_ch(*p)) {
+            break;
+        }
+        const char* ps = p;
+        while (name_ch(*p)) {
+            p++;
+        }
+        const int pn = (int) (p - ps);
+        if (pn > 255) {
+            z->err = "macro parameter name too long";
+
+            return false;
+        }
+        char* at = nam_take(&z->names, &z->names_used, pn + 1);
+        if (at == NULL) {
+            free(m);
+            z->err = "out of memory for macros";
+
+            return false;
+        }
+        if (m->params == NULL) {
+            m->params = at;
+        }
+        at[0] = (char) pn;
+        for (int i = 0; i < pn; i++) {
+            at[1 + i] = ps[i];
+        }
+        m->nparam++;
+    }
+
+    m->next = z->macros;
+    z->macros = m;
+    z->defining = m;
+    z->line_mode = LINE_CAPTURE;
+    *pp = p;
+
+    return true;
+}
+
+/* One line of a macro body, copied in as it stands. Nothing on it is parsed
+ * until the macro is invoked, which is why a body may hold names that do not
+ * exist yet and arguments that are not values. */
+static bool macro_line(dz* z, const char* p, const char* e) {
+    const char* q = p;
+    while (q < e && *q != '\n') {
+        q++;
+    }
+    const int n = (int) (q - p) + 1;
+    if (!macro_room(z->defining, n)) {
+        z->err = "out of memory for macros";
+
+        return false;
+    }
+    for (int i = 0; i < n - 1; i++) {
+        z->defining->body[z->defining->bodylen + i] = p[i];
+    }
+    z->defining->body[z->defining->bodylen + n - 1] = '\n';
+    z->defining->bodylen += n;
+
+    return true;
+}
+
+/* One expansion of a macro: the body with the arguments put in, assembled.
+ *
+ * Substitution is textual and by whole identifier, which is measured and not
+ * assumed. With `x` bound to `1+1`, the reference assembles `db 10-x` as ten --
+ * `10-1+1` read left to right -- and not as eight, and `db 2*x` as three and
+ * not four. It also leaves `xy` alone when the parameter is `x`, so it is
+ * whole names and not raw text.
+ *
+ * The expanded text is read the way an included file is read: a reader over
+ * memory, the parent one set aside, and the same `run_lines` re-entered. The
+ * comment on `br_open_mem` has said macro expansion needs it since before there
+ * were macros.
+ *
+ * Each expansion is its own scope for local labels, because the reference makes
+ * it one: a macro whose body defines `@a` may be invoked twice without a
+ * redefinition, and `@a` cannot be named after the expansion ends.
+ */
+__attribute__((noinline))
+/* The body with its parameters replaced, as a buffer the caller owns.
+ *
+ * Separate from the running of it because of the frame. `argp` and `argn` are
+ * sixteen pointers between them, and while they sat in the same function as
+ * the reader that is set aside and the scope that is saved, everything in
+ * there was past the 128 bytes an `ix` displacement reaches: thirty accesses
+ * went through a five-instruction address computation apiece. Split, both
+ * frames fit. */
+__attribute__((noinline))
+static char* macro_text(dz* z, const macro* m, const char* p, const char* e,
+                        const char** stop, int* outlen) {
+    /* The arguments, as spans of the invocation line. A macro takes as many as
+     * it declares and the reference counts them -- "0 provided, 1 expected". */
+    const char* argp[MACRO_MAXPARAM];
+    int argn[MACRO_MAXPARAM];
+    int nargs = 0;
+    for (;;) {
+        while (is_space_ch(*p)) {
+            p++;
+        }
+        if (p >= e || *p == '\n' || *p == ';') {
+            break;
+        }
+        if (*p == ',') {
+            p++;
+            continue;
+        }
+        if (nargs == MACRO_MAXPARAM) {
+            z->err = "too many macro arguments";
+
+            return NULL;
+        }
+        /* The end is carried forward rather than walked back from.
+         *
+         * `while (ae > as && is_space_ch(ae[-1])) ae--;` is the obvious way to
+         * write this and the compiler gets it wrong at -Oz: it commits the
+         * decrement before the test and then reads the byte off the pointer it
+         * has already moved, so the character examined is `ae[-2]`. A single
+         * character argument therefore saw the space in front of it, trimmed
+         * itself away, and expanded to nothing -- `mload 5` became `ld a,` and
+         * "no such instruction form", while `mload 65` was fine because the
+         * byte one further back was still part of the argument.
+         *
+         * Nothing on the host reproduces it; it took a benchmark that invokes
+         * macros to find, and reading the generated code to explain. Tracking
+         * the last non-space while scanning needs no backward index at all,
+         * and is one pass rather than two. */
+        const char* as = p;
+        const char* ae = p;
+        while (p < e && *p != '\n' && *p != ';' && *p != ',') {
+            if (!is_space_ch(*p)) {
+                ae = p + 1;
+            }
+            p++;
+        }
+        argp[nargs] = as;
+        argn[nargs] = (int) (ae - as);
+        nargs++;
+    }
+    *stop = p;
+    if (nargs != m->nparam) {
+        z->err = "wrong number of macro arguments";
+
+        return NULL;
+    }
+
+    /* The body with the names replaced. Built in one buffer sized as it goes;
+     * an expansion is short and this happens once per invocation. */
+    int cap = z->expcap[z->depth];
+    char* out = z->expbuf[z->depth];
+    if (cap < m->bodylen + 64) {
+        cap = m->bodylen + 64;
+        Z_SITE("macro expansion");
+        char* grown = (char*) realloc(out, (size_t) cap);
+        if (grown == NULL) {
+            z->err = "out of memory for macros";
+
+            return NULL;
+        }
+        out = grown;
+        z->expbuf[z->depth] = out;
+        z->expcap[z->depth] = cap;
+    }
+    /* Walked with pointers, not subscripts.
+     *
+     * `argp[k]` and `argn[k]` are three bytes wide apiece, and a subscript by a
+     * variable on something that is not a power of two is a call to __imulu on
+     * this machine. There were two of those per identifier in the body, and a
+     * two-parameter macro with a two-line body cost 18,600 cycles an invocation
+     * because of it. Stepping the two arrays alongside the parameter list costs
+     * an increment each. */
+    int len = 0;
+    const char* b = m->body;
+    const char* const bend = b + m->bodylen;
+    while (b < bend) {
+        const char* src = b;
+        int take = 1;
+        const bool ident = name_ch(*b) && !digit_ch(*b);
+        if (ident) {
+            const char* j = b;
+            while (j < bend && name_ch(*j)) {
+                j++;
+            }
+            take = (int) (j - b);
+        }
+        int need = take;
+        if (ident) {
+            const char* pp2 = m->params;
+            const char** ap = argp;
+            const int* an = argn;
+            for (int k = 0; k < m->nparam; k++) {
+                const int pn = (uint8_t) pp2[0];
+                if (pn == take && same_ci_full(pp2 + 1, b, take)) {
+                    src = *ap;
+                    need = *an;
+                    break;
+                }
+                pp2 += pn + 1;
+                ap++;
+                an++;
+            }
+        }
+        if (len + need + 1 > cap) {
+            cap = (len + need + 1) * 2;
+            char* grown = (char*) realloc(out, (size_t) cap);
+            if (grown == NULL) {
+                z->err = "out of memory for macros";
+
+                return NULL;
+            }
+            out = grown;
+            z->expbuf[z->depth] = out;
+            z->expcap[z->depth] = cap;
+        }
+        char* o = out + len;
+        for (int k = 0; k < need; k++) {
+            o[k] = src[k];
+        }
+        len += need;
+        b += take;
+    }
+
+    *outlen = len;
+
+    return out;
+}
+
+/* Reads the expanded body, in a scope of its own, exactly as an included file
+ * is read. Takes the buffer whatever built it. */
+__attribute__((noinline))
+static bool macro_run(dz* z, const macro* m, char* out, int len) {
+    const char* const saved_path = z->path;
+    const int saved_line = z->line;
+
+    /* The file the invocation came from is left open.
+     *
+     * An INCLUDE gives its parent's handle up, because MOS has few of them and
+     * the file being opened needs one. An expansion opens no file at all -- it
+     * reads a buffer -- so there is nothing to make room for, and giving the
+     * handle up costs a close, an open and a seek every time a macro is used.
+     * The open is the expensive one: it walks a FAT directory. Suspending here
+     * cost 1.48 seconds across the 426 invocations in isa_real, which is 64,000
+     * cycles an invocation against roughly 2,000 for the expansion itself.
+     *
+     * What it buys back is a handle held while the body runs. Only a reader
+     * over a file holds one, so the count is the number of INCLUDEs in the
+     * chain plus the files whose lines are mid-expansion -- bounded by the
+     * nesting limit, and a failure to open reports itself plainly. */
+    const buf_reader saved = z->rd;
+    /* The reader reads the buffer where it stands, and does not own it: it is
+     * kept for the next expansion at this depth. Copying it into a buffer of
+     * the reader's own was a malloc, a copy and a free an invocation. */
+    br_use_mem(&z->rd, out, len);
+    z->path = m->name;
+    z->line = 0;
+    z->depth++;
+    z->expanding++;
+
+    /* A scope of its own for the body, with the caller's kept and put back. */
+    locsave sv;
+    scope_push(z, &sv);
+    bool ok = run_lines(z);
+    if (!scope_pop(z, &sv)) {
+        ok = false;
+    }
+
+    br_destroy(&z->rd);
+    z->depth--;
+    z->expanding--;
+    z->rd = saved;
+    if (!ok) {
+        if (z->path != z->errpath) {
+            int i = 0;
+            while (i + 1 < (int) sizeof(z->errpath) && z->path[i] != 0) {
+                z->errpath[i] = z->path[i];
+                i++;
+            }
+            z->errpath[i] = 0;
+            z->path = z->errpath;
+        }
+
+        return false;
+    }
+    z->path = saved_path;
+    z->line = saved_line;
+
+    return true;
+}
+
+static bool macro_expand(dz* z, const macro* m, const char* p, const char* e,
+                         const char** stop) {
+    if (z->depth >= INCLUDE_MAXDEPTH) {
+        z->err = "macros nested too deeply";
+
+        return false;
+    }
+    int len = 0;
+    char* out = macro_text(z, m, p, e, stop, &len);
+    if (out == NULL) {
+        return false;
+    }
+
+    return macro_run(z, m, out, len);
+}
+
 /* ---------------------------------------------------------- directives */
 
 /* Which directive a token is, or none.
@@ -3453,17 +4085,14 @@ static bool line_fill(dz* z, buf_reader* r) {
 #define DIR_IF      10
 #define DIR_ELSE    11
 #define DIR_ENDIF   12
-
-/* Defined with the line loop, far below. An include re-enters it, and the
- * dispatch that does so is here. */
-static bool run_lines(dz* z);
+#define DIR_MACRO    13
+#define DIR_ENDMACRO 14
 
 /* How deep INCLUDE may go, and how much buffer a file below the first gets.
  *
  * The top-level file keeps BUF_KB, because that is what sets the longest line
  * a source may have. An included file gets less: four kilobytes is still far
  * more than any real line, and eight of them is 32 KB rather than 128. */
-#define INCLUDE_MAXDEPTH 8
 #define INCLUDE_BUF_KB   4
 
 /* Case-insensitive against a lower-case literal of known length. Deliberately
@@ -3507,6 +4136,7 @@ static uint8_t directive_of(const char* s, int n) {
             break;
         case 5:
             if (dir_is(s, "endif", 5)) return DIR_ENDIF;
+            if (dir_is(s, "macro", 5)) return DIR_MACRO;
             if (dir_is(s, "ascii", 5)) return DIR_DB;
             if (dir_is(s, "align", 5)) return DIR_ALIGN;
             break;
@@ -3516,6 +4146,9 @@ static uint8_t directive_of(const char* s, int n) {
             break;
         case 7:
             if (dir_is(s, "include", 7)) return DIR_INCLUDE;
+            break;
+        case 8:
+            if (dir_is(s, "endmacro", 8)) return DIR_ENDMACRO;
             break;
         default:
             break;
@@ -3918,7 +4551,8 @@ static bool include_file(dz* z, const char* name) {
      * reader whose `fh_` is not zero -- it reads that as "not suspended". A
      * copy made first carries the old handle back over the zero, so the resume
      * is refused and the handle it names has already been closed. */
-    if (!br_suspend(&z->rd)) {
+    const bool was_file = !z->rd.mem_;
+    if (was_file && !br_suspend(&z->rd)) {
         z->err = "cannot set the file aside";
 
         return false;
@@ -3927,7 +4561,9 @@ static bool include_file(dz* z, const char* name) {
     Z_SITE("include reader");
     if (br_open(&z->rd, name, INCLUDE_BUF_KB) == NULL) {
         z->rd = saved;
-        br_resume(&z->rd);
+        if (was_file) {
+            br_resume(&z->rd);
+        }
         z->err = "cannot open the file";
 
         return false;
@@ -4040,6 +4676,39 @@ __attribute__((noinline))
 static bool directive_line(dz* z, const char* s, int n, const char* p,
                            const char* e, const char** stop);
 
+/* A line of a macro being defined: copied in as it stands, unless it is the
+ * ENDMACRO that closes it.
+ *
+ * Nothing else on the line is looked at, which is what lets a body hold names
+ * that do not exist yet and arguments that are not values. A MACRO here is
+ * refused, as the reference refuses it. */
+__attribute__((noinline))
+static bool macro_capture(dz* z, const char* s, int n, const char* p,
+                          const char* e, const char** stop) {
+    const uint8_t kind = directive_of(s, n);
+    if (kind == DIR_ENDMACRO) {
+        z->defining = NULL;
+        z->line_mode = z->cond_emit ? LINE_ASSEMBLE : LINE_SKIP;
+        *stop = p;
+
+        return true;
+    }
+    if (kind == DIR_MACRO) {
+        z->err = "macros do not nest";
+
+        return false;
+    }
+    if (!macro_line(z, s, e)) {
+        return false;
+    }
+    while (p < e && *p != '\n') {
+        p++;
+    }
+    *stop = p;
+
+    return true;
+}
+
 /* A line inside a branch that is not being assembled.
  *
  * Nothing on it is looked at except whether it opens, switches or closes the
@@ -4080,7 +4749,32 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
                            const char* e, const char** stop) {
     const uint8_t kind = directive_of(s, n);
     if (kind == DIR_NONE) {
-        z->err = "unknown instruction";
+        /* A macro, or nothing this understands. Looked up last, after the
+         * mnemonic table and the directives, so nothing that is either pays
+         * for the walk -- and a macro has to be defined before it is used,
+         * which the reference requires too. */
+        const macro* m = macro_at(z, s, n);
+        if (m == NULL) {
+            z->err = "unknown instruction";
+
+            return false;
+        }
+
+        return macro_expand(z, m, p, e, stop);
+    }
+
+    if (kind == DIR_MACRO) {
+        if (!macro_begin(z, &p)) {
+            return false;
+        }
+        *stop = p;
+
+        return true;
+    }
+    if (kind == DIR_ENDMACRO) {
+        /* Only ever reached outside a definition, since inside one the line
+         * loop hands it to macro_capture instead. */
+        z->err = "no MACRO is open";
 
         return false;
     }
@@ -4101,6 +4795,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
                  * ELSE / c / ENDIF` assembles a and c in the reference. */
                 z->cond_emit = !z->cond_emit;
             }
+            z->line_mode = z->cond_emit ? LINE_ASSEMBLE : LINE_SKIP;
             *stop = p;
 
             return true;
@@ -4122,6 +4817,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
         }
         z->in_cond = true;
         z->cond_emit = cond != 0;
+        z->line_mode = z->cond_emit ? LINE_ASSEMBLE : LINE_SKIP;
         *stop = p;
 
         return true;
@@ -4805,12 +5501,15 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
     }
     TRUNC_AT(2, n);
 
-    /* Inside a branch that is not being assembled, nothing on this line
-     * happens except the directives that end it. Tested here, after the token
-     * and before the label, because a label in a switched-off branch must not
-     * be defined -- the reference does not define one either. */
-    if (!z->cond_emit) {
-        return cond_skip(z, s, n, p, e, stop);
+    /* A line that is not simply assembled: a conditional is switched off, or a
+     * macro is being defined and this belongs to its body. One field and one
+     * branch to find out, tested after the token and before the label --
+     * neither a switched-off branch nor a macro body may define one, and the
+     * reference defines neither. */
+    if (z->line_mode != LINE_ASSEMBLE) {
+        return z->line_mode == LINE_CAPTURE
+                   ? macro_capture(z, s, n, p, e, stop)
+                   : cond_skip(z, s, n, p, e, stop);
     }
 
     /* A label, if a colon follows the name.
@@ -4840,6 +5539,11 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
         } else {
             if (numeric_token(s, n)) {
                 z->err = "invalid label";
+
+                return false;
+            }
+            if (z->expanding != 0) {
+                z->err = "no global labels allowed in a macro";
 
                 return false;
             }
@@ -4997,7 +5701,13 @@ __attribute__((noinline)) static bool run_lines(dz* z) {
      * br_fill_lines never reads bpos_; it only resets it, so nothing needs the
      * offset kept up to date in between. */
     const char* p = z->rd.buf_;
-    const char* end = p;   /* empty, so the first pass fills */
+
+    /* Empty for a file, so the first pass through the loop fills it. A reader
+     * over memory -- which is what a macro expansion is -- has the whole of its
+     * content already and can never refill: `br_fill_lines` says so and returns
+     * false, which the loop reads as end of file. Without this an expansion
+     * assembles to nothing at all, quietly. */
+    const char* end = z->rd.mem_ ? p + z->rd.bsz_ : p;
 
     while (true) {
         buf_reader* r = &z->rd;
@@ -5092,6 +5802,17 @@ __attribute__((noinline)) static bool run(dz* z, const char* path) {
     z->adl = DZ_ADL;
     z->in_cond = false;
     z->cond_emit = true;
+    z->line_mode = LINE_ASSEMBLE;
+    z->macros = NULL;
+    z->defining = NULL;
+    z->expanding = 0;
+    z->undo = NULL;
+    z->undo_used = 0;
+    z->undo_cap = 0;
+    for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
+        z->expbuf[i] = NULL;
+        z->expcap[i] = 0;
+    }
     z->lim = z->out + z->cap - OUT_MAX_INSN;
     Z_SITE("symbol buckets");
     z->syms = (symslot*) calloc(NSYMB, sizeof(symslot));
@@ -5123,6 +5844,14 @@ __attribute__((noinline)) static bool run(dz* z, const char* path) {
      * one does. Before the globals, because a local that was never defined
      * should be reported against the line that used it rather than after a
      * global's failure somewhere else. */
+    if (z->defining != NULL) {
+        /* "Unfinished macro definition" there, and the same here: a body that
+         * never closes has swallowed the rest of the file. */
+        z->err = "a MACRO was never closed";
+
+        return false;
+    }
+
     if (z->in_cond) {
         /* "Missing ENDIF directive" there, and the same here: a conditional
          * that never closes has silently dropped whatever followed it. */
@@ -5165,6 +5894,16 @@ static void dz_free(dz* z) {
     free(z->syms);
     free(z->fixups);
     free(z->lfixups);
+    free(z->undo);
+    for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
+        free(z->expbuf[i]);
+    }
+    while (z->macros != NULL) {
+        macro* next = z->macros->next;
+        free(z->macros->body);
+        free(z->macros);
+        z->macros = next;
+    }
     while (z->names != NULL) {
         namblock* next = z->names->next;
         free(z->names);

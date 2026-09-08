@@ -74,7 +74,17 @@ buf_reader* br_open_mem(buf_reader* br, const char* text, int len) {
     for (int i = 0; i < len; i++) {
         buf[i] = text[i];
     }
+    br_take_mem(br, buf, len);
 
+    return br;
+}
+
+void br_take_mem(buf_reader* br, char* buf, int len) {
+    br_use_mem(br, buf, len);
+    br->owned_ = true;
+}
+
+void br_use_mem(buf_reader* br, char* buf, int len) {
     br->fh_ = 0;
     br->fname_ = NULL;
     br->fsz_ = len;
@@ -85,18 +95,18 @@ buf_reader* br_open_mem(buf_reader* br, const char* text, int len) {
     br->bsz_ = (uint24_t) len;
     br->bpos_ = 0;
     br->mem_ = true;
-    br->owned_ = true;
+    br->owned_ = false;
 
     /* The same sentinel the refilling reader writes. This one never refills,
      * so it is written once here. */
     buf[len > 0 ? len : 0] = '\n';
-
-    return br;
 }
 
 void br_close(buf_reader* br) {
     br_suspend(br);
-    free(br->buf_);
+    if (br->owned_) {
+        free(br->buf_);
+    }
     /* The inline fast path relies on buf_ never being NULL while bsz_ is
      * non-zero. */
     br->buf_ = NULL;
@@ -113,7 +123,9 @@ void br_destroy(buf_reader* br) {
     }
     br->fh_ = 0;
     if (br->buf_ != NULL) {
-        free(br->buf_);
+        if (br->owned_) {
+            free(br->buf_);
+        }
         br->buf_ = NULL;
     }
     br->cap_ = 0;

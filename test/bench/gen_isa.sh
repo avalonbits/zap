@@ -109,43 +109,88 @@
 # about that much.
 #
 # Deterministic: no randomness, no dependence on the environment. Changing this
-# script invalidates every timing taken with it, and it has now changed four
+# script invalidates every timing taken with it, and it has now changed five
 # times: labels, then local labels, then anonymous ones, then the length of a
-# label name. isa_real has gone from 19,399 lines to 22,068 to 22,458 to
-# 23,749 across them. Nothing measured against an earlier version of this file
-# is comparable with anything measured against this one -- the baselines below
-# are the ones that count.
+# label name, then macros, conditional assembly and ASSUME. isa_real has gone
+# from 19,399 lines to 22,068 to 22,458 to 23,749 to 21,806 across them.
+# Nothing measured against an earlier version of this file is comparable with
+# anything measured against this one -- the baselines below are the ones that
+# count.
 #
-#   isa_real         4.86s   342 cycles/byte   23,749 lines
-#   isa_even         5.00s   352               24,169
-#   isa_degenerate   4.92s   346               22,530
-#   isa_memory       5.48s   385               28,040
+#   isa_real         5.46s   384 cycles/byte   21,806 lines
+#   isa_even         5.56s   391               22,117
+#   isa_degenerate   4.86s   342               22,530
+#   isa_memory       5.32s   374               28,040
 #
-# The fourth change is worth understanding before reading those numbers, because
-# it moved them in the direction nobody expects. Shortening the names made the
-# per-byte figures **worse** -- isa_real from 332 to 342 cycles per byte -- and
-# the per-line figures better, 210 to 205 microseconds a line. Both are true and
-# neither is a regression: the file is sized in bytes, so 5.8% shorter label
-# text means 5.8% more lines inside the same 256 KiB, and a line costs more than
-# the characters of a name do. The label text got cheaper; there is just more
-# source in the file now.
+# isa_degenerate and isa_memory build their own bodies and take none of this,
+# so their figures move only when the assembler does -- which it has, hence 385
+# to 374 on the second of them.
 #
-# isa_memory builds its own names and is untouched by it -- it assembles to the
-# same md5 as before -- so its figure has moved only because the assembler has.
+# Two of the earlier changes are worth understanding before reading those
+# numbers, because both moved them in the direction nobody expects.
 #
-# What isa_real now holds, per 21,742 lines:
+# Shortening the names made the per-byte figures **worse** -- isa_real from 332
+# to 342 -- and the per-line figures better, 210 to 205 microseconds a line.
+# Both are true and neither is a regression: the file is sized in bytes, so
+# 5.8% shorter label text means 5.8% more lines inside the same 256 KiB, and a
+# line costs more than the characters of a name do.
 #
-#   global      454 definitions,    904 references
-#   local     1,359 definitions,    906 references
-#   anonymous   227 definitions,    678 references
-#   directives          2,272 lines, 10.4%
-#   EQU                   453 lines,  2.1%
+# The fifth change did the same thing in reverse and then some. A macro
+# invocation is nine characters of source that expand into two or three
+# assembled lines; both it and a conditional block buy more work per byte than
+# the instruction they displace. The line count fell 8% and the cycles per byte
+# rose from 356 to 384.
 #
-# 23.4% of its lines define or name a label and another 12.5% are a directive
+# Where that 28 went, measured by generating the same file with one feature
+# left out at a time:
+#
+#   conditional assembly   free, inside the resolution of the measurement
+#   ASSUME                 the same
+#   macros                 0.46s of 5.46, all of it
+#
+# Which is not the feature being slow so much as the feature being work: an
+# invocation assembles two more lines than the nine characters it occupies
+# would otherwise have bought. It did start out slow -- 6.48s when the macros
+# first went in, against 5.46 now -- and what came out of it is written up in
+# .internal/performance-notes.md.
+#
+# The three of them together are why isa_real no longer reads under 350. The
+# same file with the macros taken out reads 353. That is the honest position:
+# the target was set against a file that did not exercise these paths, and a
+# benchmark that leaves an expensive feature out to keep its number down is
+# measuring the wrong thing.
+#
+# What isa_real now holds, per 21,806 lines:
+#
+#   global      422 definitions,    843 references
+#   local     1,264 definitions,    843 references
+#   anonymous   211 definitions,    632 references
+#   directives          3,181 lines, 14.6%
+#   EQU                   421 lines,  1.9%
+#   macros       12 definitions,    426 invocations
+#   IF/ELSE/ENDIF       945 lines, 420 blocks, 105 with two arms
+#   ASSUME              105 lines,  52 mode switches and back
+#
+# 21.6% of its lines define or name a label and another 16.5% are a directive
 # or an EQU. Denser in both than real code, and meant to be, for the reason
 # that keeps coming up: a benchmark with almost none of a thing in it cannot
 # track what that thing costs. The corpus programs with realistic proportions
 # are in test/corpus.
+#
+# Against the rates the corpus has, over its 186,050 lines excluding z88dk:
+#
+#                  here            corpus
+#   IF          1 per   52     1 per   196
+#   ASSUME      1 per  208     1 per   707
+#   MACRO       1 per 1817     1 per 1,249
+#
+# The first two are three to four times denser, which is the same multiple the
+# labels and the other directives already carry. MACRO is the exception and is
+# left at roughly the corpus rate on purpose: every definition also lengthens
+# the list that each invocation walks, so inflating the count would price a
+# lookup no real program performs. The invocations are dense instead, one every
+# 51 lines, and the corpus offers no rate to copy for those -- it counts where
+# macros are written, not where they are used.
 #
 # The values those EQUs take, against the 9,772 in the corpus:
 #
@@ -549,9 +594,10 @@ function write_header(i,   kn, kf, j, t) {
     used[i] = length(fname[i]) + 36
 
     if (i == 1) {
-        t = "  ORG 0x040000"
-        emit(t)
-        used[i] += length(t) + 1
+        # The ORG, the ASSUME and the macro definitions, ahead of the INCLUDE
+        # lines below: the children are assembled where their INCLUDE sits, so
+        # a macro they invoke has to be defined before it.
+        used[i] += org_header()
     }
 
     kn = split(kidsof[i], kf, " ")
@@ -626,11 +672,67 @@ function equ_value(k,   band) {
 # The padding form appears later, once every 64 scopes; this is the other arm
 # of the same directive and it is the one every real program has. It costs
 # nothing to run and is here so that neither arm is absent.
-function org_header(   t) {
+#
+# Then the ASSUME every Agon program opens with, and the macros the body
+# invokes. Both go through emit(), because the include tree needs them in the
+# root header ahead of its INCLUDE lines: the children are assembled before the
+# root body is, so a macro defined down there would not exist when they run.
+function org_header(   t, i, nh, h, used) {
     t = "  ORG 0x040000"
-    print t
+    emit(t)
+    used = length(t) + 1
 
-    return length(t) + 1
+    # Not redundant with the default -- both assemblers already start in ADL
+    # mode -- but every real program states it, and the line has to be paid for
+    # somewhere. The mode switch itself appears in the body; see the island.
+    t = "  ASSUME ADL = 1"
+    emit(t)
+    used += length(t) + 1
+
+    # Six macros, sized like the corpus: over the 149 definitions in it the
+    # parameter counts run 0:57, 1:61, 2:20, 3:9, 4:2 and the bodies are one to
+    # three lines far more often than anything longer. These are 0, 0, 1, 2, 3
+    # and 0 parameters, with bodies of two, two, one, two, three and three.
+    #
+    # `mwait` holds a local label, which is the case worth having: an expansion
+    # gets a scope of its own, so the same body invoked in a hundred scopes
+    # defines `@spin` a hundred times without a redefinition, and none of them
+    # is visible to the caller.
+    # Semicolons between the macros, a bar between a header and its body and a
+    # slash between body lines: the headers and the bodies both contain spaces,
+    # so the list cannot be split on one.
+    nh = split("msave|push af/push bc" \
+               ";mrest|pop bc/pop af" \
+               ";mload v|ld a, v" \
+               ";msum v, w|ld a, v/add a, w" \
+               ";mtri v, w, x|ld a, v/add a, w/sub x" \
+               ";mwait|@spin:/dec bc/jp @spin", h, ";")
+    for (i = 1; i <= nh; i++) {
+        used += macro_def(h[i])
+    }
+
+    return used
+}
+
+# One macro, written from a "name params|line/line" spec. Returns its bytes.
+function macro_def(spec,   head, body, nb, b, j, t, used) {
+    head = spec
+    body = spec
+    sub(/\|.*$/, "", head)
+    sub(/^[^|]*\|/, "", body)
+    t = "  MACRO " head
+    emit(t)
+    used = length(t) + 1
+    nb = split(body, b, "/")
+    for (j = 1; j <= nb; j++) {
+        t = (substr(b[j], length(b[j]), 1) == ":") ? b[j] : "  " b[j]
+        emit(t)
+        used += length(t) + 1
+    }
+    emit("  ENDMACRO")
+    used += 11
+
+    return used
 }
 
 # `outfile` is empty for the modes that write one stream to stdout, and names a
@@ -644,7 +746,7 @@ function emit(t) {
     }
 }
 
-function out(line,   used, k, t) {
+function out(line,   used, k, t, m) {
     used = 0
     k = ln % 32
     if (k == 0) {
@@ -683,12 +785,80 @@ function out(line,   used, k, t) {
         t = "eq" lbl ": EQU " equ_value(lbl)
         used += length(t) + 1
         emit(t)
+    } else if (k == 5) {
+        # A macro invocation, once a scope. The corpus counts definitions and
+        # not invocations, so there is no rate to copy here; one per 32 lines
+        # is the same reasoning as everything else in this cycle -- dense
+        # enough that the path shows up in a measurement.
+        #
+        # Six of them in rotation, so no single body and no single parameter
+        # count stands for the feature, and so that the walk down the macro
+        # list reaches the far end of it as often as the near end.
+        m = lbl % 6
+        if (m == 0)      t = "  msave"
+        else if (m == 1) t = "  mload " (lbl % 251)
+        else if (m == 2) t = "  msum " (lbl % 97) ", " (lbl % 31)
+        else if (m == 3) t = "  mwait"
+        else if (m == 4) t = "  mtri " (lbl % 61) ", " (lbl % 29) ", " (lbl % 13)
+        else             t = "  mrest"
+        used += length(t) + 1
+        emit(t)
+    } else if (k == 9) {
+        # A conditional block, lines 9 to 13 of the scope. Nothing inside it
+        # defines a label: an unassembled definition would leave whatever
+        # referred to it unresolved, and the condition is false half the time
+        # by construction.
+        #
+        # `eq` was defined at line 1 of this scope, so the condition is a
+        # symbol and an expression rather than a literal -- which is what real
+        # code puts there, and it means the value has to be evaluated before
+        # the block can be skipped or kept.
+        t = "  IF eq" lbl " & 1"
+        used += length(t) + 1
+        emit(t)
+    } else if (k == 13) {
+        used += 8
+        emit("  ENDIF")
+    } else if (k == 17 && lbl % 8 == 0) {
+        # A mode switch and back, with two instructions inside that encode
+        # differently on either side of it: `ld hl, nn` is three bytes in Z80
+        # mode and four in ADL. The island is closed before this line is
+        # printed, so nothing else in the file depends on where it fell.
+        #
+        # Twice per eight scopes is one ASSUME every 128 lines, against one
+        # every 707 in the corpus. Denser on purpose, for the usual reason.
+        emit("  ASSUME ADL = 0")
+        emit("  ld hl, 0x1234")
+        emit("  ld a, 5")
+        emit("  ASSUME ADL = 1")
+        used += 17 + 16 + 11 + 17
+    } else if (k == 29 && lbl % 64 == 0) {
+        # A macro defined mid-file and used once, which is the other half of
+        # the feature: the six in the header are all captured before a line of
+        # the body is read, and capture is a per-line cost of its own.
+        #
+        # One every 64 scopes is one definition every 2,048 lines, against one
+        # every 1,249 in the corpus -- the one rate here that is *not* inflated,
+        # because each definition also lengthens the list every invocation
+        # walks, and that cost belongs at its real size.
+        used += macro_def("mg" lbl " v|ld hl, v/ld (hl), 0")
+        t = "  mg" lbl " 0x" sprintf("%04X", (lbl * 13) % 65536)
+        used += length(t) + 1
+        emit(t)
     } else if (k == 7) {
         t = "  DB " (lbl % 251) ", " ((lbl * 3) % 251) ", 0x" \
             sprintf("%02X", (lbl * 7) % 256) ", -1"
         used += length(t) + 1
         emit(t)
     } else if (k == 11) {
+        # Every fourth scope splits the block in two here, which is close to
+        # the share the corpus has: 35 ELSE against 951 IF, so most conditionals
+        # have only the one arm. Whichever arm is not taken is skipped, and the
+        # two arms cost different things, so both need to appear.
+        if (lbl % 4 == 0) {
+            used += 7
+            emit("  ELSE")
+        }
         # A word list with a name in it, so the directive takes a fixup at a
         # width an instruction never asks for.
         t = "  DW 0x" sprintf("%04X", (lbl * 11) % 65536) ", eq" lbl
@@ -774,6 +944,15 @@ function out(line,   used, k, t) {
 # only if this scope had not already reached the line that defines it, because
 # a second definition in one scope is an error.
 function finish(   k) {
+    # A conditional block closed first, if the budget ran out inside one. The
+    # IF goes in at line 9 and the ENDIF at 13, so a file that stopped anywhere
+    # between them has an open block -- and every label below would be inside
+    # it, which is how a truncated file stops assembling.
+    k = ln % 32
+    if (k >= 10 && k <= 13) {
+        emit("  ENDIF")
+    }
+
     # An anonymous one first, unconditionally: a forward reference to one is
     # cheap to leave outstanding and impossible to redefine, so emitting one
     # that nothing needs costs a line and emitting none where one is needed

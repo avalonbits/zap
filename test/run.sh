@@ -279,13 +279,57 @@ blk2c=$("$OUT/zap" "$OUT/blk2c.s" "$OUT/blk2c.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a fill nothing defines is reported" \
     "$(printf '%s' "$blk2c" | grep -c 'unknown label')" 1
 
-# BLKL is absent rather than approximated: it is four bytes wide and the
-# reference's own corpus fills it with 0x55555555, which the evaluator cannot
-# hold. It reports what an unimplemented directive reports.
-printf '  blkl 1, 0\n' > "$OUT/blk3.s"
-blk3=$("$OUT/zap" "$OUT/blk3.s" "$OUT/blk3.bin" 2>&1 | tr -d '\r' || true)
-cli_check "blkl is not pretended to work" \
-    "$(printf '%s' "$blk3" | grep -c 'line 1: unknown instruction')" 1
+# A constant added to a label that is still ahead has to fit the machine's
+# word, and this is the one quantity on the expression path that does not
+# widen with the evaluator.
+#
+# The fixup record is sixteen bytes and every one of them is spoken for --
+# widening the addend would cost a multiply on every index into the list --
+# so it is checked instead of truncated. The bound is written out as a
+# constant rather than derived from `int`, which is three bytes on the Agon
+# and four here: derived, this would refuse on one machine and accept on the
+# other, which is the failure the widening exists to remove. That is why this
+# check can bite on the host at all.
+printf '  dw32 later + 0x55555555\nlater: EQU 1\n' > "$OUT/wide1.s"
+wide1=$("$OUT/zap" "$OUT/wide1.s" "$OUT/wide1.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a constant too large to add to a label is refused" \
+    "$(printf '%s' "$wide1" | grep -c 'line 1: that constant is too large')" 1
+
+# The same bound on the other path that folds a constant into an addend: a
+# global minus a local, settled when the scope ends rather than where it was
+# written.
+printf 'g:\n  dw32 ahead - @loc\n@loc: EQU 0x7FFFFFF\nh:\n  nop\nahead: EQU 1\n' \
+    > "$OUT/wide2.s"
+wide2=$("$OUT/zap" "$OUT/wide2.s" "$OUT/wide2.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a folded local half too large to add is refused" \
+    "$(printf '%s' "$wide2" | grep -c 'that constant is too large')" 1
+
+# The third thing the machine's word was costing, and the one nobody was
+# looking for.
+#
+# `relocate 0x1000000` is "Address outside 24-bit range" in the reference and
+# was accepted here: the range test read `value > 0xFFFFFF`, which a 24-bit
+# int can never satisfy, so half of it was dead code on the Agon and live on
+# the host. The `$1000000` spelling of the same number went through the
+# general parser and *was* caught, which is how it was noticed at all.
+#
+# Two spellings, because they take different paths to the same value and only
+# one of them was ever wrong.
+for spell in 0x1000000 '$1000000'; do
+    printf '  relocate %s\n  nop\n  endrelocate\n' "$spell" > "$OUT/rel24.s"
+    rel24=$("$OUT/zap" "$OUT/rel24.s" "$OUT/rel24.bin" 2>&1 | tr -d '\r' || true)
+    cli_check "relocate $spell is outside the 24-bit range" \
+        "$(printf '%s' "$rel24" | grep -c 'address outside the 24-bit range')" 1
+done
+
+# DW32 and BLKL do not exist below the width they need, so the directives and
+# the evaluator ship together. The bytes are in test/cases/data.s, compared
+# against the reference; this says the names resolve at all, which a build
+# with the directives renumbered wrongly would not.
+printf '  dw32 1\n  blkl 1, 2\n' > "$OUT/blk3.s"
+"$OUT/zap" "$OUT/blk3.s" "$OUT/blk3.bin" > /dev/null 2>&1 || true
+cli_check "dw32 and blkl are four bytes each" \
+    "$(xxd -p "$OUT/blk3.bin" 2>/dev/null | tr -d '\n')" "0100000002000000"
 
 # A mode suffix on an instruction whose row does not take one.
 #
@@ -451,7 +495,7 @@ else
     if "$CC_EZ80" -mllvm -z80-gas-style -mllvm -z80-print-zero-offset \
         -nostdinc -isystem "$HOME/agondev/include" -target ez80-none-elf \
         -DAGONDEV -Oz -Isrc -S -o "$OUT/zap.s" src/zap.c \
-        > /dev/null 2>&1; then
+        > "$OUT/zap.s.log" 2>&1; then
         # The flag repairs left in the line assembler, as a detector for a
         # change that has no other signature -- not as a cost.
         #
@@ -473,34 +517,59 @@ else
             status=1
         fi
 
-        # The rotated-scan tell, in the one function every line goes through.
+        # The rotated-scan shape, in the one function every line goes through.
         #
-        # test_scan_bounds above says the source carries a bound. This says
-        # the bound did its work: `dec iy` before a loop head is what the
-        # rotation looks like once it is code, and it is the only place the
-        # fault is ever visible -- the host build is correct whether the loop
-        # is rotated or not.
+        # test_scan_bounds above says the source carries a bound. This says the
+        # bound did its work, and it is the only place the fault is ever
+        # visible: the host build is correct whether the loop is rotated or
+        # not.
         #
-        # Zero, not a budget. It was three before the scans were bounded and
-        # none of the three was a scan of a wrongly rotated kind -- they were
-        # correct by register allocation, which is exactly the thing that
-        # stops being true when something unrelated moves. A `dec iy` that
-        # comes back is not proof of a fault; it is the moment to open the
-        # assembly and look, which is what this exists to force.
+        # The shape and not just `dec iy`. This counted the instruction alone
+        # for one round and it was too blunt -- deleting an unnecessary
+        # temporary moved the register allocation, `hex_digits`'s digit
+        # counter landed in `iy`, and a loop that walks nothing at all read as
+        # a rotated scan. What the fault actually looks like is a
+        # pre-decremented pointer read one past:
+        #
+        #     dec  iy
+        #   .LBB8_239:
+        #     lea  bc, iy + 0
+        #     inc  bc
+        #     ld   e, (iy + 1)      <- the first character is never examined
+        #     ...
+        #     jr   nz, .LBB8_239
+        #
+        # So: a `dec iy` with a read of `(iy + 1)` close behind it. On the
+        # commit before the scans were bounded that is 2, and a counter in
+        # `iy` is 0 because nothing indexes through it.
         #
         # parse_operand is always_inline, so its scans are counted here too.
         ndec=$(awk '/^_assemble_line:$/ { go = 1; next }
                     go && /^_[a-z_0-9]+:$/ { exit }
-                    go && /dec[ \t]+iy/ { n++ }
+                    !go { next }
+                    /dec[ \t]+iy/ { watch = 12; next }
+                    watch > 0 {
+                        if ($0 ~ /\(iy \+ 1\)/) { n++; watch = 0; next }
+                        watch--
+                    }
                     END { print n + 0 }' "$OUT/zap.s")
         if [ "$ndec" = 0 ]; then
             echo "PASS  assemble_line has no rotated scan"
         else
-            echo "FAIL  assemble_line has $ndec dec iy; check the scans in the assembly"
+            echo "FAIL  assemble_line has $ndec rotated scans; read the assembly"
             status=1
         fi
     else
-        echo "SKIP  the target build failed; the codegen is not checked"
+        # A FAIL and not a SKIP. The toolchain is present -- the branch above
+        # checked -- so this is the target build genuinely not building, and
+        # that is the only place some things can be said at all: `int` is three
+        # bytes there and four here, so a _Static_assert about a width fires
+        # on one machine and is vacuous on the other. Reported as a skip, the
+        # evaluator could be narrowed back below what DW32 needs and every
+        # check here would still pass.
+        echo "FAIL  the target build failed"
+        sed 's/^/      /' "$OUT/zap.s.log" 2>/dev/null | head -20
+        status=1
     fi
 fi
 

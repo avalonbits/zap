@@ -96,11 +96,19 @@ outside 24-bit range" in the reference and is accepted here, because the `0x`
 fast path accumulates in the machine's word and truncates. The `$1000000`
 spelling of the same number goes through the general parser and *is* caught.
 
+That third one came out with the other two and was not aimed at. The test was
+`value > 0xFFFFFF`, which a 24-bit int cannot satisfy -- **dead code on the
+Agon and live on the host**, which is why only one of the two spellings ever
+failed. Both are refused now, and test/run.sh checks both.
+
 Between them that is four corpus sources -- `compound_all_operator_values_dx`,
 `compound_all_operator_values_blkx`, `Defines/compound`,
 `Macro/argument_replacement_equ` -- plus one negative test. Widening the
 evaluator is a performance question with a measurable answer, and nobody has
 measured it yet. That is the decision, not the directives.
+
+**Since resolved.** The answer was 1.8%, both directives are in, and all four
+sources are identical. See section 5.
 
 `.CPU` is 262 uses in the corpus and 260 of them are in `Errors_cputype`, which
 is out of scope because zap is eZ80-only. The other two are `Opcodes/z180_new`
@@ -139,39 +147,46 @@ tests: the two on the label path each take assemble_line from 110 bytes to 113,
 which is near the 128 an `ix` displacement reaches. Three placements were tried
 and all read 113.
 
+## 5. The evaluator's width, DW32 and BLKL -- DONE
+
+Four sources, and one number, arrived at in three steps across three rounds.
+
+It was recorded as a decision with a measurable answer nobody had measured.
+The first attempt to measure it produced a build that **did not assemble**:
+`in0 a, (5)`, which does not touch the evaluator, came out as "unexpected text
+after the instruction" on the Agon and correctly on the host, because adding
+one function between `expr_value` and the two it calls moved the register
+allocation and rotated four of `assemble_line`'s unbounded scans. That was the
+rotation being measured, not the width.
+
+Bounding every scan removed it, for 0.06s. Then the width could be asked
+properly, and the answer is **1.8%** -- 5.64s to 5.74s on isa_real, after
+three rounds of getting it down from the naive widening's 7.4%.
+
+What is wide: an expression, and a symbol's value. What is not: an address, a
+count, an immediate, a displacement, and a fixup's addend. The reference keeps
+32 bits in a label and truncates at the *emitter*, on the width the directive
+asked for, and that is now reproduced exactly.
+
+`DW32` and `BLKL` came with it, because they are the same change: they are
+four bytes wide and no care at the emitter recovers a bit the evaluator has
+already dropped.
+
+The full decomposition -- including the two things that measured and were not
+kept, and a new way for the Agon and the host to disagree about correct C --
+is in .internal/performance-notes.md.
+
 ## What is left
 
-Six sources, and they are two things:
+Two sources, and one thing:
 
-  - **The 24-bit evaluator**, above: four sources --
-    `Value_operators/compound_all_operator_values_dx` and `_blkx`,
-    `Defines/compound` and `Macro/argument_replacement_equ`.
-
-    This was recorded as a decision with a measurable answer nobody had
-    measured. It has been measured, and the answer is not a number of cycles:
-    the widened build does not assemble. `in0 a, (5)`, which does not touch the
-    evaluator, comes out as "unexpected text after the instruction" on the
-    Agon and correctly on the host, because adding one function between
-    `expr_value` and the two it calls moved the register allocation and
-    rotated four more of `assemble_line`'s unbounded scans -- the fault this
-    project has now met five times. `dec iy` in that function goes from 3 to 7.
-
-    So the scans there were correct by register allocation rather than by
-    construction, and that had to be fixed before the width could be. **It
-    has been**: every character scan in the file now carries a bound, `dec iy`
-    in `assemble_line` is zero rather than three, and the source rule is
-    checked by `test_scan_bounds`. It cost 0.06s of isa_real's 5.64, all of it
-    in the operand parser.
-
-    The width is therefore unblocked, and is a measurement nobody has taken
-    yet -- the first attempt measured the rotation and not the width. See
-    .internal/performance-notes.md.
   - **`.cpu Z80` and `.cpu Z180`**, which ask for another machine's
-    instruction set. Two sources, out of scope by the same rule that excludes
+    instruction set. Out of scope by the same rule that excludes
     Errors_cputype.
 
-That is the whole of it. Nothing is left that is a bug rather than a decision
-or a scope line.
+That is the whole of it. **Every source in the corpus that is in scope now
+assembles byte-identically**, and nothing is left that is a bug rather than a
+scope line.
 Every whole program in the corpus now assembles byte-identically. The last two
 were Rokky, whose bug was a global minus a local resolving against the wrong
 local -- three bytes in 31,520 with both assemblers accepting the file -- and

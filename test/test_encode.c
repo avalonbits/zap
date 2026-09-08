@@ -530,14 +530,29 @@ int main(void) {
         check("hex_digits assembles a run and rejects a bad one", got,
               "1 000042 1 123456 1 AABBCC 0 5A5A5A");
 
-        /* Seven digits: the value keeps the low three bytes and the rest are
-         * dropped, but a bad digit among them still has to be rejected. */
-        const bool e = hex_digits("1234567", 7, &v);
-        const int v7 = v;
-        const bool f = hex_digits("z234567", 7, &v);
-        snprintf(got, sizeof(got), "%d %06X %d", e, v7, f);
-        check("hex_digits drops digits past three bytes but still checks them",
-              got, "1 234567 0");
+        /* A run wider than the machine's word is declined, not truncated, and
+         * declining has to leave the value alone -- the caller reads it only
+         * when the answer is true, but a fast path that scribbles on its
+         * out-parameter before saying no is one debugging session away from
+         * mattering.
+         *
+         * Seven digits is 28 bits and is declined for the same reason eight
+         * is. What reads these is num_parse, through the evaluator; the bytes
+         * that come out are in test/cases/data.s, against the reference. */
+        const bool g = hex_digits("1234567", 7, &v);
+        const bool h = hex_digits("55555555", 8, &v);
+        snprintf(got, sizeof(got), "%d %d %06X", g, h, v);
+        check("hex_digits declines a run wider than the machine", got,
+              "0 0 5A5A5A");
+
+        /* And a bad digit inside the machine's word is still rejected, which
+         * is what says the decline above is about the width and not about
+         * having stopped checking. */
+        v = 0x5A5A5A;
+        const bool e = hex_digits("12z456", 6, &v);
+        snprintf(got, sizeof(got), "%d %06X", e, v);
+        check("hex_digits still rejects a bad digit within the word", got,
+              "0 5A5A5A");
     }
 
     /* Growing the output buffer.

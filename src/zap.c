@@ -89,6 +89,40 @@
 #include "agon/mos.h"
 #endif
 
+/* The word an expression is evaluated in.
+ *
+ * Four bytes, and the eZ80's is three, so this is deliberately wider than the
+ * machine -- which is the opposite of what the rest of this file does. Every
+ * other quantity here is the machine's word on purpose: an address, a count,
+ * an immediate and a displacement all fit in 24 bits and paying for 32 would
+ * be paying on every line.
+ *
+ * An expression is the one place they do not. `DW32` and `BLKL` are four bytes
+ * wide, the reference fills them with `0x55555555`, `~0` and `-2147483648`,
+ * and no amount of care at the emitter recovers a bit the evaluator has
+ * already dropped. The reference evaluates in 32 bits, so this is also the
+ * width that agrees with it wherever the two would otherwise differ.
+ *
+ * It costs **0.10s of isa_real's 5.74**, 1.8%, and it cost 0.42 before three
+ * rounds of taking it off the paths that do not need it: the fast literal
+ * readers decline anything wider than the machine and let num_parse have it,
+ * and the emitters narrow once when the width is three or less. See
+ * .internal/performance-notes.md, which has the decomposition and the two
+ * things that measured and were not kept.
+ *
+ * The evaluator is not on the path most operands take: a register, a plain
+ * literal and a bare name each have a reader of their own that never enters
+ * it, and keeping those readers narrow is most of why the price is 1.8% and
+ * not 7.4%.
+ *
+ * Narrowing this is a one-line edit and would look like free speed, which is
+ * why the assertion is here rather than in a comment. It fires on the target
+ * and not on the host, where `int` is already four bytes -- and that asymmetry
+ * is the whole reason the width was a question at all. */
+typedef value evalue;
+_Static_assert(sizeof(evalue) >= 4,
+               "DW32 and BLKL need an evaluator wider than the eZ80 word");
+
 /* The mode the machine starts in. `ASSUME ADL=n` moves it, and may move it
  * again: the reference lets a file switch back and forth, and the width of an
  * immediate follows wherever it is at that line. */
@@ -276,7 +310,20 @@ struct sym {
      * ldir and this is written once per distinct label. */
     bool islocal;
 
-    int addr;
+    /* The value, which for an ordinary label is an address and for an EQU is
+     * whatever was written. Four bytes and not the machine's three, because
+     * the reference keeps four: `X: equ 0x55555555` then `dw32 X` is
+     * 55555555 there, and `dl X` is 555555 with a "Value truncated to 24 bit"
+     * warning -- so the truncation happens at the emitter, on the width the
+     * directive asked for, and not when the name was defined.
+     *
+     * It costs a byte a symbol, which is the one place this file spends
+     * memory rather than saving it. The alternative was to narrow here and it
+     * is worse than it looks: `int` is three bytes on the Agon and four on the
+     * host, so a truncating symbol would give **different bytes on the two
+     * machines** for any EQU above 24 bits, which is the failure mode
+     * everything else in this file is arranged to avoid. */
+    evalue addr;
 };
 
 /* Buckets keyed by first character, last character and length.
@@ -534,7 +581,17 @@ typedef struct {
      * and one constant, and that is what an expression over a forward label
      * comes to when the label appears once and only `+` and `-` connect it --
      * which is what 38% of the corpus's expressions look like. Anything else
-     * is refused, because a fixup with one addend cannot represent it. */
+     * is refused, because a fixup with one addend cannot represent it.
+     *
+     * Three bytes on the Agon, and the only quantity on the expression path
+     * that is not four. The record is sixteen bytes and every one of them is
+     * spoken for -- see the assert below -- so widening this would cost a
+     * multiply on every index into the list to buy `dw32 later + 0x55555555`,
+     * which nobody writes. It is *checked* rather than truncated: an addend
+     * outside the machine word is refused by fix_add, against the same
+     * constants on the host and on the Agon, so the two cannot disagree.
+     *
+     * The symbol's own value is four bytes and is where a wide EQU lives. */
     int addend;
 
     uint8_t width;      /* 1, 2 or 3 bytes, or 0 for a relative displacement,
@@ -546,6 +603,18 @@ typedef struct {
 
 #define FIX_SUB2  0x80
 #define FIX_WIDTH 0x7F
+
+/* The range an addend has to fit, written out rather than derived from `int`,
+ * which is three bytes on the Agon and four on the host. Deriving it would
+ * make this refuse on one machine and accept on the other -- the failure this
+ * whole widening exists to remove.
+ *
+ * Typed, and that is not decoration. Comparing an `evalue` against a bare
+ * `int` constant compiled to a test of the wrong part of the value on the
+ * Agon and refused `call @skip` -- an addend of zero -- while the host build
+ * was correct. Both sides of every comparison here are the same width. */
+#define ADDEND_MIN ((evalue) -0x800000L)
+#define ADDEND_MAX ((evalue)  0x7FFFFFL)
 
 /* Sixteen bytes, and the fourth byte of it is the point: `&list[i]` on a
  * thirteen-byte record is a call to __imulu, because the eZ80's multiply is
@@ -1109,7 +1178,7 @@ static bool patch_fixup(dz* z, const fixup* f) {
         return false;
     }
 
-    int val = sp->addr + f->addend;
+    evalue val = sp->addr + f->addend;
     if (f->sub != NULL) {
         if (!f->sub->defined) {
             z->line = f->line;
@@ -1125,7 +1194,7 @@ static bool patch_fixup(dz* z, const fixup* f) {
     if (w == 0) {
         /* The byte after the displacement byte, which is where a relative
          * jump is measured from. */
-        const int d = val - (z->org + f->off + 1);
+        const evalue d = val - (z->org + f->off + 1);
         if (d < -128 || d > 127) {
             z->line = f->line;
             z->err = "relative jump too far";
@@ -1137,12 +1206,23 @@ static bool patch_fixup(dz* z, const fixup* f) {
         return true;
     }
 
-    at[0] = (uint8_t) val;
-    if (w > 1) {
+    /* Same split as emit_data, and this loop runs once per forward reference
+     * in the file -- 843 of them in isa_real, every one of them three bytes. */
+    if (w > 3) {
+        at[0] = (uint8_t) val;
         at[1] = (uint8_t) (val >> 8);
+        at[2] = (uint8_t) (val >> 16);
+        at[3] = (uint8_t) (val >> 24);
+
+        return true;
+    }
+    const int v = (int) val;
+    at[0] = (uint8_t) v;
+    if (w > 1) {
+        at[1] = (uint8_t) (v >> 8);
     }
     if (w > 2) {
-        at[2] = (uint8_t) (val >> 16);
+        at[2] = (uint8_t) (v >> 16);
     }
 
     return true;
@@ -1187,7 +1267,19 @@ static bool fold_subs(dz* z, int from) {
 
             return false;
         }
-        f->addend += (f->width & FIX_SUB2) ? -f->sub->addr : f->sub->addr;
+        const evalue sa = f->sub->addr;
+        const evalue folded =
+            (evalue) f->addend + ((f->width & FIX_SUB2) ? -sa : sa);
+        if (folded < ADDEND_MIN || folded > ADDEND_MAX) {
+            /* The local half of a global-minus-local, settled here. It is an
+             * address difference in every real case and fits; an EQU wide
+             * enough to leave the machine word does not, and says so. */
+            z->line = f->line;
+            z->err = "that constant is too large to add to a label";
+
+            return false;
+        }
+        f->addend = (int) folded;
         f->width &= (uint8_t) ~FIX_SUB2;
         f->sub = NULL;
     }
@@ -1421,6 +1513,10 @@ static inline sym* loc_define(dz* z, const char* name, int len, int addr) {
 /* Remembers a reference to a label that is not defined yet. The name is
  * copied for the same reason a definition's is: the line it came from is
  * gone by the time this is resolved. */
+/* `addend` is the machine's word and not the evaluator's, which is what keeps
+ * the mixed-width compare off the instruction path entirely: an operand's
+ * immediate is an `int` and cannot be out of range. The one caller that can
+ * hand over something wider is emit_data, and it checks before it calls. */
 static bool fix_add(dz* z, const sym* target, const sym* sub, int addend,
                     uint8_t width, int off) {
 #ifdef NOFIX
@@ -2501,14 +2597,31 @@ static const dop dop_none = {
  * the end says whether any was rejected, with no branch per digit.
  *
  * Little-endian, which the eZ80 is and the host is. The emitter already writes
- * the low byte first for the same reason. Digits past the third byte are
- * dropped, which is what the old accumulator did too once it overflowed.
+ * the low byte first for the same reason. A run longer than the machine's word
+ * is declined rather than truncated, and the reason is at the test.
  *
  * Taking the run rather than the whole token is what lets `0x1234` and
  * `1234h` share this. They used to be different code: the prefixed form came
  * here and the suffixed form fell through to num_parse, which on the honest
  * corpus is 46% of every immediate in isa_real. */
 static inline bool hex_digits(const char* d, int n, int* out) {
+    /* Six digits, which is the machine's word, and anything longer is handed
+     * to num_parse instead of read here.
+     *
+     * This used to keep four bytes so that `dw32 0x55555555` could come
+     * through the fast path. It cost **0.10s of isa_real** -- every literal
+     * in the file assembled into a wider union and moved out through a wider
+     * variable, to buy the one form in the corpus that needs it. Declining is
+     * free: lit_value returns NULL and the caller falls to the evaluator,
+     * whose atom reaches num_parse, which has been 32-bit all along and reads
+     * every radix. The fast path exists for what is common, and an eight-digit
+     * hex literal is not.
+     *
+     * Six and not seven: seven digits is 28 bits and does not fit either. */
+    if (n > 6) {
+        return false;
+    }
+
     union {
         int v;
         uint8_t b[sizeof(int)];
@@ -2551,13 +2664,6 @@ static inline bool hex_digits(const char* d, int n, int* out) {
         u.b[2] = c;
     }
 
-    /* Digits past the third byte are dropped from the value but must still be
-     * rejected if they are not hex, or a literal the reference refuses would
-     * assemble here. Only a literal of more than six digits reaches this. */
-    while (j > 0) {
-        bad |= hexval[(uint8_t) d[--j]];
-    }
-
     if ((bad & 0xF0) != 0) {
         return false;
     }
@@ -2594,12 +2700,24 @@ static bool numeric_token(const char* s, int n) {
         return false;
     }
 
+    /* The fast reader first, and num_parse for whatever it declines --
+     * *falling through* rather than returning its answer.
+     *
+     * Returning it was right while hex_digits read everything the reference
+     * calls a hex literal. It stopped being right when hex_digits began to
+     * decline a run wider than the machine's word: `0x55555555` was then
+     * "not a number", so the operand parser took it for a label, interned it
+     * and made it a forward reference to a name nothing ever defines. The
+     * fast path declining has to mean "ask the slow one", never "no". */
     int v = 0;
     if (n >= 3 && s[0] == '0' && (s[1] | 0x20) == 'x') {
-        return hex_digits(s + 2, n - 2, &v);
-    }
-    if (n >= 2 && (s[n - 1] | 0x20) == 'h') {
-        return hex_digits(s, n - 1, &v);
+        if (hex_digits(s + 2, n - 2, &v)) {
+            return true;
+        }
+    } else if (n >= 2 && (s[n - 1] | 0x20) == 'h') {
+        if (hex_digits(s, n - 1, &v)) {
+            return true;
+        }
     }
     value gv = 0;
 
@@ -2881,9 +2999,9 @@ static void fwd_reset(const sym* seed) {
     expr_fwd_bad = false;
 }
 
-static bool expr_value(dz* z, int* out, const char** pp, const char* e,
+static bool expr_value(dz* z, evalue* out, const char** pp, const char* e,
                        uint8_t* fwdmask);
-static bool expr_climb(dz* z, int* total, const char** pp, const char* e,
+static bool expr_climb(dz* z, evalue* total, const char** pp, const char* e,
                        uint8_t minprec, int depth, uint8_t* fwdmask);
 
 /* A bare token inside an expression: a number in any radix the reference takes,
@@ -2894,7 +3012,9 @@ static bool expr_climb(dz* z, int* total, const char** pp, const char* e,
  * expression would need the fixup to carry the rest of the sum, which is the
  * next stage and is refused here rather than guessed at. 35.7% of the corpus's
  * expressions need nothing more than this. */
-static bool expr_atom(dz* z, int* out, const char* ns, int nn) {
+static bool expr_atom(dz* z, evalue* out, const char* ns, int nn) {
+    /* The machine's word: a run this declines falls through to num_parse
+     * below, which is where a literal wider than the machine is read. */
     int v = 0;
     if (nn >= 3 && ns[0] == '0' && (ns[1] | 0x20) == 'x') {
         if (hex_digits(ns + 2, nn - 2, &v)) {
@@ -2922,7 +3042,10 @@ static bool expr_atom(dz* z, int* out, const char* ns, int nn) {
      * outside the loop, because `acc * 10` is a call to __imulu here, and the
      * same 24-bit wrap on a value too big to fit, so that `DB 20000000` and
      * `DS 20000000` cannot disagree with each other. */
-    if (digit_ch(ns[0])) {
+    if (digit_ch(ns[0]) && nn <= 6) {
+        /* Six digits, for the reason at hex_digits: inside the machine's word,
+         * so this is narrow arithmetic and anything longer falls to num_parse
+         * below rather than being read twice as wide. */
         int acc = ns[0] - '0';
         int k = 1;
         for (; k < nn; k++) {
@@ -2988,7 +3111,7 @@ static bool expr_atom(dz* z, int* out, const char* ns, int nn) {
 
         return false;
     }
-    *out = (int) gv;
+    *out = gv;
 
     return true;
 }
@@ -2996,7 +3119,7 @@ static bool expr_atom(dz* z, int* out, const char* ns, int nn) {
 /* One term, with any unary operators in front of it. `fwdmask` comes back
  * holding the slots this term put a forward reference into, so its caller
  * knows which signs its operator has to flip. */
-static bool expr_term(dz* z, int* out, const char** pp, const char* e,
+static bool expr_term(dz* z, evalue* out, const char** pp, const char* e,
                       uint8_t* fwdmask) {
     const char* p = *pp;
     while (p < e && is_space_ch(*p)) {
@@ -3025,7 +3148,7 @@ static bool expr_term(dz* z, int* out, const char** pp, const char* e,
     }
 
     const uint8_t fwd_before = fwd_live();
-    int v = 0;
+    evalue v = 0;
     if (*p == '[' || *p == '(') {
         /* Both group, and they are the same code because they mean the same
          * thing. A parenthesis reaching here has already been decided not to
@@ -3138,7 +3261,7 @@ static bool expr_term(dz* z, int* out, const char** pp, const char* e,
  * power -- which makes the recursive call below return after a single term and
  * turns the climb into the reference's left-to-right fold. One algorithm, two
  * tables; the compatible answer is not a second code path to keep in step. */
-static bool expr_climb(dz* z, int* total, const char** pp, const char* e,
+static bool expr_climb(dz* z, evalue* total, const char** pp, const char* e,
                        uint8_t minprec, int depth, uint8_t* fwdmask) {
     const char* p = *pp;
     if (depth > EXPR_MAXDEPTH) {
@@ -3177,7 +3300,7 @@ static bool expr_climb(dz* z, int* total, const char** pp, const char* e,
          * the `*` joins two constants and is perfectly fine; asking only "is
          * there a forward reference about" refused it. */
         uint8_t rhs_mask = 0;
-        int t = 0;
+        evalue t = 0;
         if (!expr_term(z, &t, &p, e, &rhs_mask)) {
             return false;
         }
@@ -3228,9 +3351,9 @@ static bool expr_climb(dz* z, int* total, const char** pp, const char* e,
 }
 
 /* A whole expression: a term, then everything that binds to it. */
-static bool expr_value(dz* z, int* out, const char** pp, const char* e,
+static bool expr_value(dz* z, evalue* out, const char** pp, const char* e,
                        uint8_t* fwdmask) {
-    int total = 0;
+    evalue total = 0;
     if (!expr_term(z, &total, pp, e, fwdmask)) {
         return false;
     }
@@ -3440,9 +3563,16 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
                     p = ds;
                     fwd_reset(NULL);
                     uint8_t dmask = 0;
-                    if (!expr_value(z, &d, &p, e, &dmask)) {
+                    /* Narrowed where it lands, like every value an operand
+                     * carries: a displacement is one signed byte and the
+                     * range test below is what enforces it. The evaluator is
+                     * wider than the machine; nothing an operand holds is.
+                     * See evalue. */
+                    evalue dv32 = 0;
+                    if (!expr_value(z, &dv32, &p, e, &dmask)) {
                         return false;
                     }
+                    d = (int) dv32;
                     if (expr_fwd != NULL) {
                         z->err = "a label here must be defined already";
 
@@ -3557,9 +3687,11 @@ full_expression:
             p = s;
             fwd_reset(NULL);
             uint8_t fwdmask = 0;
-            if (!expr_value(z, &total, &p, e, &fwdmask)) {
+            evalue wide = 0;
+            if (!expr_value(z, &wide, &p, e, &fwdmask)) {
                 return false;
             }
+            total = (int) wide;
             if (!fwd_finish(z, op)) {
                 /* Every way fwd_finish can refuse is a shape the reference
                  * assembles -- a negated label, a complemented one, a third
@@ -3636,7 +3768,7 @@ full_expression:
              * as not, so it arrives here only because the register path
              * rewinds to it. */
             got = hex_digits(ns, nn - 1, &v);
-                } else if (nn > 0 && digit_ch(ns[0])) {
+        } else if (nn > 0 && digit_ch(ns[0])) {
             /* First digit outside the loop, for the reason given at the
              * displacement above: a one-digit literal then needs no multiply,
              * and `im 2`, `rst 0`, `bit 3` and the rest of the small decimals
@@ -3735,9 +3867,11 @@ full_expression:
                 op->fwd = NULL;
                 p = q;
                 uint8_t fwdmask = fwd_live();
-                if (!expr_climb(z, &total, &p, e, 1, 0, &fwdmask)) {
+                evalue wide = total;
+                if (!expr_climb(z, &wide, &p, e, 1, 0, &fwdmask)) {
                     return false;
                 }
+                total = (int) wide;
                 if (!fwd_finish(z, op)) {
                     /* Same as the branch above: an expression a fixup cannot
                      * hold is kept as text rather than refused. This is the
@@ -3806,7 +3940,7 @@ have_value:
 
 /* Defined with the directives below, and used by both. */
 __attribute__((always_inline))
-static inline const char* lit_value(const char* p, const char* e, int* out);
+static inline const char* lit_value(const char* p, const char* e, evalue* out);
 
 /* ----------------------------------------------------------------- equ */
 
@@ -3899,7 +4033,7 @@ static bool equ_line(dz* z, const char* name, int nlen, const char* p,
      * only. */
     named->defined = false;
 
-    int value = 0;
+    evalue value = 0;
     const char* const lit = lit_value(p, e, &value);
     if (lit != NULL) {
         p = lit;
@@ -4088,16 +4222,17 @@ static bool scope_pop(dz* z, locsave* sv) {
 #define DIR_DB    1   /* one byte per value, and strings */
 #define DIR_DW    2   /* two */
 #define DIR_DL    3   /* three; the eZ80 word */
+#define DIR_DW32  4   /* four, which is wider than the machine */
 /* ASCIZ is the data list plus one terminating zero, so it is not a width and
  * cannot live in the range above. */
-#define DIR_ASCIZ 4
-#define DIR_DS    5   /* reserve, filled with FILLBYTE's value */
-#define DIR_ALIGN 6
-#define DIR_ORG   7
-#define DIR_FILLBYTE 8
-#define DIR_RELOCATE 9
-/* BLKB, BLKW and BLKP: n units of a fill value, written out. Consecutive and
- * in width order, so the width is `kind - DIR_BLKB + 1`.
+#define DIR_ASCIZ 5
+#define DIR_DS    6   /* reserve, filled with FILLBYTE's value */
+#define DIR_ALIGN 7
+#define DIR_ORG   8
+#define DIR_FILLBYTE 9
+#define DIR_RELOCATE 10
+/* BLKB, BLKW, BLKP and BLKL: n units of a fill value, written out. Consecutive
+ * and in width order, so the width is `kind - DIR_BLKB + 1`.
  *
  * Not the same directive as DS, which is why they are not the same number.
  * `blkb` was an alias for DS here and it is wrong twice: DS reserves 0xFF and
@@ -4105,23 +4240,21 @@ static bool scope_pop(dz* z, locsave* sv) {
  * BLKB writes the fill it is given and is never dropped. `blkb 1, 1` came out
  * as 0xFF and `blkb 1, 255` at the end of a file came out as nothing.
  *
- * BLKL is absent rather than approximated. It is four bytes and the corpus
- * fills it with `0x55555555` and `-2147483648`, which the expression evaluator
- * cannot hold: it works in the machine's own word, which is 24 bits here, and
- * that is a deliberate choice paid for on every operand in the file. A BLKL
- * that quietly wrote the low three bytes and a sign would be wrong for half of
- * the reference's own cases, and "unknown instruction" is the honest answer
- * until the evaluator's width is a decision someone has made. */
-#define DIR_BLKB  10
-#define DIR_BLKW  11
-#define DIR_BLKP  12
+ * BLKL was absent for as long as the evaluator was the machine's word. It is
+ * four bytes and the corpus fills it with `0x55555555` and `-2147483648`, and
+ * a BLKL that quietly wrote the low three bytes and a sign would have been
+ * wrong for half of the reference's own cases. See evalue for what changed. */
+#define DIR_BLKB  11
+#define DIR_BLKW  12
+#define DIR_BLKP  13
+#define DIR_BLKL  14
 /* Below INCLUDE, because these three are tested by name and the file
  * directives are tested as a range. */
-#define DIR_CPU         13
-#define DIR_ENDRELOCATE 14
-#define DIR_ASSUME      15
-#define DIR_INCLUDE 16
-#define DIR_INCBIN  17
+#define DIR_CPU         15
+#define DIR_ENDRELOCATE 16
+#define DIR_ASSUME      17
+#define DIR_INCLUDE 18
+#define DIR_INCBIN  19
 /* MACRO and ENDMACRO below the conditionals, and that ordering is load-bearing:
  * a line inside a switched-off branch asks `kind >= DIR_IF` and nothing else,
  * so anything at or above IF is handled while skipping and anything below is
@@ -4129,11 +4262,11 @@ static bool scope_pop(dz* z, locsave* sv) {
  * captured the body and defined the macro -- the reference skips it, and
  * `IF 1 / macro m / db 0 / endmacro / ELSE / macro m / db 1 / endmacro / ENDIF`
  * assembled the branch that was not taken. */
-#define DIR_MACRO    18
-#define DIR_ENDMACRO 19
-#define DIR_IF       20
-#define DIR_ELSE     21
-#define DIR_ENDIF    22
+#define DIR_MACRO    20
+#define DIR_ENDMACRO 21
+#define DIR_IF       22
+#define DIR_ELSE     23
+#define DIR_ENDIF    24
 
 /* ---------------------------------------------------------------- macros */
 
@@ -4644,10 +4777,12 @@ static uint8_t directive_of(const char* s, int n) {
             if (dir_is(s, "byte", 4)) return DIR_DB;
             if (dir_is(s, "defw", 4)) return DIR_DW;
             if (dir_is(s, "dw24", 4)) return DIR_DL;
+            if (dir_is(s, "dw32", 4)) return DIR_DW32;
             if (dir_is(s, "defs", 4)) return DIR_DS;
             if (dir_is(s, "blkb", 4)) return DIR_BLKB;
             if (dir_is(s, "blkw", 4)) return DIR_BLKW;
             if (dir_is(s, "blkp", 4)) return DIR_BLKP;
+            if (dir_is(s, "blkl", 4)) return DIR_BLKL;
             break;
         case 3:
             if (dir_is(s, "org", 3)) return DIR_ORG;
@@ -4785,7 +4920,7 @@ static bool emit_string(dz* z, const char** pp, const char* e) {
  * time in this file that `&p` has been the expensive part of a helper. NULL
  * means it was not a literal and nothing moved. */
 __attribute__((always_inline))
-static inline const char* lit_value(const char* p, const char* e, int* out) {
+static inline const char* lit_value(const char* p, const char* e, evalue* out) {
     const char* q = p;
 
     /* A sign, which the operand parser has always taken and these did not.
@@ -4815,16 +4950,29 @@ static inline const char* lit_value(const char* p, const char* e, int* out) {
         return NULL;
     }
 
-    int value = 0;
+    evalue value = 0;
+    int hv = 0;
     bool got;
     if (nn >= 3 && d[0] == '0' && (d[1] | 0x20) == 'x') {
-        got = hex_digits(d + 2, nn - 2, &value);
+        got = hex_digits(d + 2, nn - 2, &hv);
+        value = hv;
     } else if (nn >= 2 && (d[nn - 1] | 0x20) == 'h') {
-        got = hex_digits(d, nn - 1, &value);
+        got = hex_digits(d, nn - 1, &hv);
+        value = hv;
     } else {
         /* First digit outside the loop, as the operand parser does it: a
          * one-digit value then needs no multiply, and `d * 10` is a call to
-         * __imulu here. */
+         * __imulu here.
+         *
+         * Six digits and no more, which is the same rule hex_digits keeps and
+         * for the same reason: 999,999 is inside the machine's word, so `acc`
+         * is an `int` and `acc * 10` is __imulu rather than the wider helper.
+         * A longer run is declined and num_parse reads it. Seven digits is
+         * 9,999,999 and the word holds 8,388,607, so seven is already too
+         * many. */
+        if (nn > 6) {
+            return NULL;
+        }
         int acc = d[0] - '0';
         unsigned k = 1;
         for (; k < (unsigned) nn; k++) {
@@ -4913,7 +5061,7 @@ static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
                 return false;
             }
         } else {
-            int value = 0;
+            evalue value = 0;
 
             /* A plain literal, read here rather than through the evaluator.
              *
@@ -4965,20 +5113,46 @@ static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
                 if (!fwd_result(z, &target, &sub, &subneg)) {
                     return false;
                 }
-                if (!fix_add(z, target, sub, value,
+                if (value < ADDEND_MIN || value > ADDEND_MAX) {
+                    /* See fixup.addend. The alternative is three bytes of the
+                     * constant and a silently wrong fourth, which is worse
+                     * than saying so. This is the only place a value wider
+                     * than the machine can reach a fixup: an instruction's
+                     * immediate is three bytes by the time it gets here. */
+                    z->err = "that constant is too large to add to a label";
+
+                    return false;
+                }
+                if (!fix_add(z, target, sub, (int) value,
                              (uint8_t) (width | (subneg ? FIX_SUB2 : 0)),
                              (int) (z->o - z->out))) {
                     return false;
                 }
                 value = 0;
             }
+            /* Written in the machine's word unless the directive is wider
+             * than the machine.
+             *
+             * `value >> 8` on the evaluator's word is a call to __lshru, and
+             * DB, DW and DL are 3,181 lines of isa_real between them. Narrowed
+             * first, they keep the shifts the eZ80 has. Splitting the write
+             * this way is 0.20s of the 0.42 the widening cost -- see
+             * .internal/performance-notes.md. */
             uint8_t* o = z->o;
-            *o++ = (uint8_t) value;
-            if (width > 1) {
+            if (width > 3) {
+                *o++ = (uint8_t) value;
                 *o++ = (uint8_t) (value >> 8);
-            }
-            if (width > 2) {
                 *o++ = (uint8_t) (value >> 16);
+                *o++ = (uint8_t) (value >> 24);
+            } else {
+                const int v = (int) value;
+                *o++ = (uint8_t) v;
+                if (width > 1) {
+                    *o++ = (uint8_t) (v >> 8);
+                }
+                if (width > 2) {
+                    *o++ = (uint8_t) (v >> 16);
+                }
             }
             z->o = o;
         }
@@ -5035,7 +5209,7 @@ static bool emit_fill(dz* z, int n) {
  * rather than all ones: `blkw 1` is FF 00 and not FF FF, which is the value
  * 0x00FF written as a word. Measured, not assumed. */
 /* n and width are both positive here; the caller has checked the count. */
-static bool emit_block(dz* z, int n, int width, int fill) {
+static bool emit_block(dz* z, int n, int width, evalue fill) {
     if (n <= 0) {
         return true;
     }
@@ -5043,14 +5217,28 @@ static bool emit_block(dz* z, int n, int width, int fill) {
         return false;
     }
 
+    /* Narrowed once, outside the loop, for the reason emit_data splits its
+     * write: three of the four widths fit the machine and only BLKL does not. */
     uint8_t* o = z->o;
-    while (n-- != 0) {
-        *o++ = (uint8_t) fill;
-        if (width > 1) {
+    if (width > 3) {
+        while (n-- != 0) {
+            *o++ = (uint8_t) fill;
             *o++ = (uint8_t) (fill >> 8);
+            *o++ = (uint8_t) (fill >> 16);
+            *o++ = (uint8_t) (fill >> 24);
+        }
+        z->o = o;
+
+        return true;
+    }
+    const int f = (int) fill;
+    while (n-- != 0) {
+        *o++ = (uint8_t) f;
+        if (width > 1) {
+            *o++ = (uint8_t) (f >> 8);
         }
         if (width > 2) {
-            *o++ = (uint8_t) (fill >> 16);
+            *o++ = (uint8_t) (f >> 16);
         }
     }
     z->o = o;
@@ -5278,11 +5466,11 @@ static bool include_file(dz* z, const char* name) {
  * identifier" in the reference too, which has a second pass and could have
  * waited: deciding what to assemble cannot be deferred by either of us.
  */
-static bool cond_value(dz* z, int* out, const char** pp, const char* e) {
+static bool cond_value(dz* z, evalue* out, const char** pp, const char* e) {
     const char* p = *pp;
     fwd_reset(NULL);
     uint8_t fwdmask = 0;
-    int lhs = 0;
+    evalue lhs = 0;
     if (!expr_value(z, &lhs, &p, e, &fwdmask)) {
         return false;
     }
@@ -5312,7 +5500,7 @@ static bool cond_value(dz* z, int* out, const char** pp, const char* e) {
             }
         } else {
             fwd_reset(NULL);
-            int rhs = 0;
+            evalue rhs = 0;
             if (!expr_value(z, &rhs, &p, e, &fwdmask)) {
                 return false;
             }
@@ -5472,7 +5660,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
         while (p < e && is_space_ch(*p)) {
             p++;
         }
-        int cond = 0;
+        evalue cond = 0;
         if (!cond_value(z, &cond, &p, e)) {
             return false;
         }
@@ -5551,7 +5739,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
         /* Read as a number, not as one character: the reference takes
          * `adl=01` and means one by it. Only the two values, though -- `adl=2`
          * is "Invalid ADL mode" there. */
-        int mode = 0;
+        evalue mode = 0;
         const char* const after = lit_value(p, e, &mode);
         if (after != NULL) {
             p = after;
@@ -5587,7 +5775,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
         return file_directive(z, kind, &p, e, stop);
     }
 
-    if (kind <= DIR_DL) {
+    if (kind <= DIR_DW32) {
         if (!emit_data(z, kind, &p, e)) {
             return false;
         }
@@ -5596,7 +5784,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
         return true;
     }
 
-    /* After the data list and not before it, so that DB, DW and DL reach
+    /* After the data list and not before it, so that DB, DW, DL and DW32 reach
      * theirs on the one comparison they always did. */
     if (kind == DIR_ASCIZ) {
         return asciz_line(z, &p, e, stop);
@@ -5608,7 +5796,11 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
     while (p < e && is_space_ch(*p)) {
         p++;
     }
-    int value = 0;
+    /* The evaluator's word, narrowed at each use below. A count, an address
+     * and a fill byte are all the machine's, but they arrive through the
+     * evaluator and one of them -- BLKL's fill -- is four bytes wide. See
+     * evalue. */
+    evalue value = 0;
 
     /* A plain number, read here rather than through the evaluator, for the
      * same reason a data item is: `DS 4` measured 5,603 cycles a line against
@@ -5647,7 +5839,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
 
             return false;
         }
-        if (!emit_fill(z, value)) {
+        if (!emit_fill(z, (int) value)) {
             return false;
         }
         /* `DS 3,1,2` is three bytes in the reference: the arguments after the
@@ -5713,7 +5905,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
          * this directive and nothing else has to know. */
         z->reloc_org = z->org;
         z->reloc = true;
-        z->org = value - (int) (z->o - z->out);
+        z->org = (int) value - (int) (z->o - z->out);
         *stop = p;
 
         return true;
@@ -5721,7 +5913,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
 
     if (kind >= DIR_BLKB) {
         /* Everything at or above DIR_INCLUDE has returned by here, so this is
-         * BLKB, BLKW or BLKP, and the width follows from which. */
+         * BLKB, BLKW, BLKP or BLKL, and the width follows from which. */
         if (value < 0) {
             /* Refused for the reason DS is: the reference reads the count as
              * unsigned, so a negative one is sixteen megabytes of fill and a
@@ -5735,7 +5927,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
 
         /* The fill, if one is given. FILLBYTE's value at the unit width if
          * not, which is 0xFF until something says otherwise. */
-        int fill = z->fill;
+        evalue fill = z->fill;
         const sym* pending = NULL;
         while (p < e && is_space_ch(*p)) {
             p++;
@@ -6782,7 +6974,7 @@ static bool resolve_deferred(dz* z) {
     for (int i = 0; i < z->defer_used; i++) {
         defexpr* d = &z->defer[i];
         const char* p = d->text;
-        int v = 0;
+        evalue v = 0;
         uint8_t mask = 0;
         fwd_reset(NULL);
         z->line = d->line;
@@ -6811,15 +7003,23 @@ static bool resolve_fills(dz* z) {
 
             return false;
         }
-        const int v = fp->sp->addr;
+        const evalue v = fp->sp->addr;
         uint8_t* o = z->out + fp->off;
+        const int nv = (int) v;
         for (int n = fp->count; n != 0; n--) {
-            *o++ = (uint8_t) v;
-            if (fp->width > 1) {
+            if (fp->width > 3) {
+                *o++ = (uint8_t) v;
                 *o++ = (uint8_t) (v >> 8);
+                *o++ = (uint8_t) (v >> 16);
+                *o++ = (uint8_t) (v >> 24);
+                continue;
+            }
+            *o++ = (uint8_t) nv;
+            if (fp->width > 1) {
+                *o++ = (uint8_t) (nv >> 8);
             }
             if (fp->width > 2) {
-                *o++ = (uint8_t) (v >> 16);
+                *o++ = (uint8_t) (nv >> 16);
             }
         }
     }

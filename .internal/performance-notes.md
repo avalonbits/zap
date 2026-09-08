@@ -3772,3 +3772,124 @@ could not be timed: the build it produced did not assemble, and the reason was
 four loops rotating in a function whose source was unchanged. With the bounds
 in, that particular way of failing is gone, and the width can be measured for
 what it costs rather than for what it disturbs.
+
+## The evaluator's width, measured at last
+
+The round before this one removed what was blocking it. Here is the number.
+
+**7.4% for the naive widening, 1.8% for the one that shipped.**
+
+    isa_real   5.64 -> 6.06 naive -> 5.74 shipped
+
+Byte-identical output at every step, on all four benchmarks, and on the Agon
+as well as the host -- which for this change is not a formality. `int` is
+three bytes there and four here, so **the width is invisible to every host
+test there is**, and the whole point of it is what happens on the machine
+where the two differ.
+
+### What is wide, and what is not
+
+`evalue` is four bytes and is what an expression is evaluated in. A symbol's
+value is four bytes too, because the reference keeps 32 bits in a label and
+truncates at the *emitter*, on the width the directive asked for: `X: equ
+0x55555555` then `dw32 X` is 55555555 and `dl X` is 555555 with a warning.
+
+Everything an operand carries stays the machine's word -- an address, a
+count, an immediate, a displacement. So does a fixup's addend, and that one
+is forced: the record is sixteen bytes, indexing it is a shift rather than a
+call to __imulu, and there is no spare byte. It is checked rather than
+truncated.
+
+### Where the 0.42 went, and how 0.34 came back
+
+Four measurements, one build and one run each.
+
+    the whole widening                          5.64 -> 6.06   +0.42
+    - narrow the data emitters below width 4    6.06 -> 5.86   -0.20
+    - hex_digits declines a run wider than
+      the machine, num_parse reads it           5.86 -> 5.74   -0.12
+    - the decimal fast readers do the same      5.74 -> 5.72   -0.02
+                                                       shipped  +0.10
+
+The shipped figure is 5.74 and not 5.72, and the two hundredths between them
+are a redundant temporary that was taken *out* after the run above. It held
+hex_digits's answer on its way into a variable of the same type, so the cast
+beside it said something false; removing it moved the register allocation and
+cost 0.02s. Kept out. Two hundredths is the resolution of this measurement and
+a variable that does nothing is a permanent tax on whoever reads it next.
+
+That removal is also what showed the `dec iy` check was too blunt -- see below.
+
+    isa_real         5.64 -> 5.74   397 -> 404 cycles a byte
+    isa_even         5.74 -> 5.84   404 -> 411
+    isa_degenerate   5.24 -> 5.34   368 -> 375
+    isa_memory       5.72 -> 5.80   402 -> 408
+
+Two lessons, and they are the same lesson.
+
+**The emitters.** `value >> 8` on a four-byte word is a call to __lshru. DB,
+DW and DL are 3,181 lines of isa_real between them and every one of them was
+paying it to serve DW32. Narrowing the value once, when the width is three or
+less, is 0.20s: the eZ80 has those shifts.
+
+**The fast readers.** `lit_value` and `hex_digits` exist so that a plain
+literal never enters the evaluator, and making them wide made every literal
+in the file pay for the one form in the corpus that needs the width. They now
+**decline** anything longer than six digits and return NULL, and the caller
+falls to the evaluator, whose atom reaches `num_parse` -- which has been
+32-bit since it was written and reads every radix. That is 0.12 and 0.02, and
+it costs no duplicated code at all: declining is one compare.
+
+A fast path that declines is not a fast path that is wrong. What made it wrong
+for an afternoon was `numeric_token`, which *returned* hex_digits's answer
+rather than falling through to num_parse -- so `0x55555555` became "not a
+number", the operand parser took it for a label, and `ld hl, 0x1234567` was a
+forward reference to a name nothing defines. **The fast path declining has to
+mean "ask the slow one", never "no".**
+
+### What did not work
+
+**Splitting the decimal accumulator into a narrow loop and a wide one**, so
+`acc * 10` is __imulu under seven digits and __lmulu beyond. 0.02s -- the
+resolution of the measurement -- for two copies of the same four lines. Out.
+The decline above gets the same 0.02 with no second copy.
+
+**Narrowing `sym.addr` back to the machine's word.** 0.02s, and it buys a
+symbol table a byte a node smaller. Not taken, and this is the one place in
+this file where a measurement lost to something else: narrow, an EQU above 24
+bits gives different bytes on the Agon and on the host, and there is no price
+at which that is worth having.
+
+### A new way for the two machines to disagree
+
+Comparing an `evalue` against a bare `int` constant:
+
+    if (addend < -0x800000 || addend > 0x7FFFFF)
+
+compiled on the Agon to a test of the wrong part of the value, and refused
+`call @skip` -- an addend of zero -- while the host build was correct. The
+constants are now cast to `evalue`, and the check itself moved off the
+instruction path entirely: an operand's immediate is an `int` and cannot be
+out of range, so only `emit_data` asks.
+
+That is the third distinct way this project has found for correct C to mean
+different things on the two machines, after the rotated scans and the helper
+calls. **Mixed-width arithmetic is the one to watch now**, and it did not
+exist here before this change: everything was one width.
+
+### Testing something the host cannot see
+
+A `_Static_assert` on `sizeof(evalue)` can only fire where `int` is three
+bytes. `test/run.sh` already builds for the target in `test_codegen`, and
+that step reported a failed build as **SKIP** -- so the evaluator could have
+been narrowed back below what DW32 needs and every check would still have
+passed. A failed target build with the toolchain present is now a FAIL, with
+the compiler's message printed.
+
+The bytes were checked on the machine too, which is the only complete answer:
+
+    test/bench/gen_isa.sh is not what this needs -- the source is the two
+    Value_operators corpus files plus the DW32 and BLKL section of
+    test/cases/data.s, assembled with -ez80 on the emulator and md5'd against
+    ez80asm's own output. cf00ff08 both. Without -ez80, the Agon and the host
+    agree at 7aa2203a, which is the other half of the claim.

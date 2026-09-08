@@ -7255,21 +7255,32 @@ __attribute__((noinline)) static bool run_lines(dz* z) {
          * one byte -- sixteen instructions to discover there is no trailing
          * space, on every line of the source. One compare replaces them. */
         if (*stop != '\n') {
-            while (stop < end && is_space_ch(*stop)) {
-                stop++;
+            /* Walked with a local, and `stop` written once at the end.
+             *
+             * `stop` has had its address taken -- assemble_line reports
+             * through it -- so the compiler cannot keep it in a register and
+             * stored it to the frame **on every character of every comment**:
+             * `ld (ix - 3), hl` inside the loop, plus two `lea` and a
+             * push/pop pair to move the pointer at all. A comment byte cost
+             * 48 cycles. A local that is never addressed costs about a third
+             * of that, and comments are 28% of the bytes in BBC BASIC. */
+            const char* q = stop;
+            while (q < end && is_space_ch(*q)) {
+                q++;
             }
-            if (*stop == ';') {
+            if (*q == ';') {
                 /* A remark after the instruction. Its body is never looked at
-                 * -- the search for the newline below walks it once and that
+                 * -- the search for the newline here walks it once and that
                  * is all a comment ever costs. */
-                while (stop < end && *stop != '\n') {
-                    stop++;
+                while (q < end && *q != '\n') {
+                    q++;
                 }
-            } else if (*stop != '\n') {
+            } else if (*q != '\n') {
                 z->err = "unexpected text after the instruction";
 
                 return false;
             }
+            stop = q;
         }
         /* A line that was only a remark stops at the semicolon, so the rest
          * of it is walked here. This is the whole cost of a comment: one pass

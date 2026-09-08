@@ -35,3 +35,15 @@ fillval: EQU 0xAA
   fillbyte 0x12AA
   nop
   ds 2
+
+; A fill that names something still ahead. It is one value repeated n times,
+; so there is nothing a per-byte fixup could usefully do: the run is written
+; where it belongs and filled in when the value is known. The count is a
+; different matter and is still refused -- how many bytes there are decides
+; where everything after them lands.
+  blkb 2, fillahead
+  blkw 2, fillahead
+  blkp 2, fillahead
+  blkb 2, fillahead+1
+  blkb 2, fillahead*2
+fillahead: EQU 0x40

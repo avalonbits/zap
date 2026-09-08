@@ -6,14 +6,18 @@ one against `ez80asm` to separate a missing feature from a user symbol that
 merely looks like one.
 
     247 sources in scope        (Errors_cputype excluded, as it always is)
-     81 byte-identical
+     98 byte-identical          was 81 before the mode suffixes
     106 rejected by both        the negative tests, working as intended
-     60 divergences
+     43 divergences             was 60
 
 The 60 are what follows. They are ranked by what they unblock, not by how many
 tests they fix, because those two orders are very different here.
 
-## 1. Instruction mode suffixes -- `.SIS` `.LIS` `.SIL` `.LIL`
+## 1. Instruction mode suffixes -- `.SIS` `.LIS` `.SIL` `.LIL`  -- DONE
+
+Landed. Seventeen more sources are byte-identical, fifteen of them whole
+programs, and the four benchmarks did not move by a hundredth of a second.
+What the section said before it was done:
 
 **This one feature is the only thing standing between dzap and every real
 program in the corpus.** BBC BASIC, Rokky and all nineteen AgonBits Lessons
@@ -38,6 +42,12 @@ The short spellings `.S` and `.L` are in the corpus too -- `jp.l`, `ret.l`,
 
 The width override is the substantive part: the suffix has to reach the row
 match and the emitter, not just add a byte.
+
+**What it left behind.** Rokky and three of the Lessons now assemble and
+disagree on bytes rather than failing outright, and BBC BASIC gets from line
+30 of its init file to line 245. Three sources now stop at "bad displacement",
+which nothing reached before. Those are the new frontier and are not in the
+tiers below, which were written when the suffixes hid them.
 
 ## 2. Directives
 

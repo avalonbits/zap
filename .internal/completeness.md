@@ -6,13 +6,13 @@ one against `ez80asm` to separate a missing feature from a user symbol that
 merely looks like one.
 
     247 sources in scope        (Errors_cputype excluded, as it always is)
-    119 byte-identical          81 before the mode suffixes, 98 before BLKB,
+    120 byte-identical          81 before the mode suffixes, 98 before BLKB,
                                 104 before the parser gaps, 110 before the
                                 remaining directives, 115 before two bugs the
-                                Macro tests were sitting on
+                                Macro tests were sitting on, 119 before Rokky
     119 rejected by both        the negative tests, working as intended --
                                 106 before the error checks
-      9 divergences             was 60
+      8 divergences             was 60
 
 The 60 are what follows. They are ranked by what they unblock, not by how many
 tests they fix, because those two orders are very different here.
@@ -148,12 +148,22 @@ Nine sources, and they are three things:
   - **`.cpu Z80` and `.cpu Z180`**, which ask for another machine's
     instruction set. Two sources, out of scope by the same rule that excludes
     Errors_cputype.
-  - **Two whole programs**: `bbcbasicvez`, which zap rejects, and `rokky`,
-    which both assemble and disagree about. Neither is failing for a reason
-    the corpus has already named, so each needs looking at on its own -- and
-    the last two rounds say that is where the remaining bugs are. Fixing an
-    index displacement written as `05h` mended two of the Lessons programs
-    without either of them being the file that led to it.
+  - **One whole program**: `bbcbasicvez`, which zap rejects. Not failing for
+    a reason the corpus has already named, so it needs looking at on its own
+    -- and the last three rounds say that is where the remaining bugs are.
+    Rokky's was a global minus a local resolving against the wrong local, and
+    it was three bytes in 31,520 with both assemblers accepting the file.
+
+## One refusal that is left, and is not in the corpus
+
+`@local - global`, with both still ahead, is "unknown label" here. The mirror
+of it -- `global - @local` -- was Rokky's bug and is fixed; this one puts the
+fixup on the *local* list, because that is where its target belongs, and the
+global half is not known when the scope ends. Settling it would mean the
+fixup carrying "negate the target", and the width byte has no bit spare.
+
+It is a refusal rather than wrong bytes, no source in the corpus writes it,
+and it read the same before the Rokky fix as after.
 
 ## Not missing
 

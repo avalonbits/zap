@@ -109,16 +109,17 @@
 # about that much.
 #
 # Deterministic: no randomness, no dependence on the environment. Changing this
-# script invalidates every timing taken with it, and it has now changed five
+# script invalidates every timing taken with it, and it has now changed six
 # times: labels, then local labels, then anonymous ones, then the length of a
-# label name, then macros, conditional assembly and ASSUME. isa_real has gone
-# from 19,399 lines to 22,068 to 22,458 to 23,749 to 21,806 across them.
+# label name, then macros, conditional assembly and ASSUME, then instruction
+# mode suffixes. isa_real has gone from 19,399 lines to 22,068 to 22,458 to
+# 23,749 to 21,806 to 21,494 across them.
 # Nothing measured against an earlier version of this file is comparable with
 # anything measured against this one -- the baselines below are the ones that
 # count.
 #
-#   isa_real         5.24s   368 cycles/byte   21,806 lines
-#   isa_even         5.32s   374               22,117
+#   isa_real         5.28s   371 cycles/byte   21,494 lines
+#   isa_even         5.34s   376               21,719
 #   isa_degenerate   4.86s   342               22,530
 #   isa_memory       5.32s   374               28,040
 #
@@ -165,6 +166,13 @@
 # isa_memory did not move at all, which is the check that it was the directive
 # path: neither of them holds a directive.
 #
+# The mode suffixes then put it to 371. That is the whole price of 797 of them
+# -- three cycles a byte, or about 925 cycles an instruction over what the
+# unsuffixed form costs, which is the detour through the directive path and the
+# second mnemonic lookup. The suffix is the densest thing the corpus has of
+# everything added since the directives, at one line in 82, and it is the
+# cheapest of them to assemble.
+#
 # What isa_real now holds, per 21,806 lines:
 #
 #   global      422 definitions,    843 references
@@ -175,6 +183,7 @@
 #   macros       12 definitions,    426 invocations
 #   IF/ELSE/ENDIF       945 lines, 420 blocks, 105 with two arms
 #   ASSUME              105 lines,  52 mode switches and back
+#   mode suffixes       797 instructions, all eight spellings
 #
 # 21.6% of its lines define or name a label and another 16.5% are a directive
 # or an EQU. Denser in both than real code, and meant to be, for the reason
@@ -188,6 +197,7 @@
 #   IF          1 per   52     1 per   196
 #   ASSUME      1 per  208     1 per   707
 #   MACRO       1 per 1817     1 per 1,249
+#   a suffix    1 per   26     1 per    82
 #
 # The first two are three to four times denser, which is the same multiple the
 # labels and the other directives already carry. MACRO is the exception and is
@@ -837,6 +847,45 @@ function out(line,   used, k, t, m) {
         emit("  ld a, 5")
         emit("  ASSUME ADL = 1")
         used += 17 + 16 + 11 + 17
+    } else if (k == 22) {
+        # An instruction carrying a mode suffix.
+        #
+        # The corpus has one every 82 lines, which is denser than anything else
+        # here started out -- one IF every 196, one macro invocation every 198,
+        # one ASSUME every 707. Agon programs call MOS, MOS is reached by
+        # `RST.LIL $08`, and half of every suffix in the corpus is that one
+        # line. Two slots a scope is about three times the corpus rate, which
+        # is the band the labels and the directives already sit in.
+        #
+        # Weighted the way the corpus is: .lil is 82% of its uses, and the
+        # rest are .sis, .lis, .l and .s. The two immediate widths are both
+        # here because the suffix overrides the ADL mode rather than following
+        # it, and that is the substantive half of the feature.
+        m = lbl % 8
+        if (m == 0)      t = "  rst.lil 8"
+        else if (m == 1) t = "  ld.lil hl, 0x" sprintf("%06X", (lbl * 37) % 16777216)
+        else if (m == 2) t = "  push.lil bc"
+        else if (m == 3) t = "  ld.sis hl, 0x" sprintf("%04X", (lbl * 11) % 65536)
+        else if (m == 4) t = "  inc.lil hl"
+        else if (m == 5) t = "  pop.lil de"
+        else if (m == 6) t = "  add.lil hl, bc"
+        else             t = "  ret.lil"
+        used += length(t) + 1
+        emit(t)
+    } else if (k == 26) {
+        # The second one, holding the shapes the first does not: the short
+        # spellings, whose meaning depends on the mode they are read in, and a
+        # label operand -- including one still ahead, so a fixup is patched at
+        # a width the ADL mode would not have chosen.
+        m = lbl % 6
+        if (m == 0)      t = "  rst.lis 0x38"
+        else if (m == 1) t = "  call.lil " lname(lbl)
+        else if (m == 2) t = "  ld.l hl, 0x" sprintf("%06X", (lbl * 53) % 16777216)
+        else if (m == 3) t = "  ld.sis hl, " lname(lbl + 1)
+        else if (m == 4) t = "  jp.lil " lname(lbl)
+        else             t = "  ld.s hl, 0x" sprintf("%04X", (lbl * 7) % 65536)
+        used += length(t) + 1
+        emit(t)
     } else if (k == 29 && lbl % 64 == 0) {
         # A macro defined mid-file and used once, which is the other half of
         # the feature: the six in the header are all captured before a line of

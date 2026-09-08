@@ -4244,17 +4244,40 @@ Two findings, and the second is the one that changes what to do next.
 **0.46s on 426 invocations** -- about 20,000 cycles each. Nothing else in the
 table is outside the resolution of a single run.
 
-How much of that is inherent: an invocation is nine characters of source that
-expand into two or three assembled lines, and a line of isa_real costs about
-5,000 cycles. So roughly three quarters of the 20,000 is the expansion being
-assembled, which no amount of work on the macro path removes, and **the
-machinery is the remaining quarter -- on the order of 5,000 cycles an
-invocation, or 2% of the file.**
+**The reasoning that followed here was wrong by three and a half times**, and
+it is left in because the shape of the mistake is the useful part: an
+invocation expands to two or three lines, a line of isa_real costs about 5,000
+cycles, therefore most of the 20,000 must be the expansion being assembled and
+the machinery is "on the order of 5,000 cycles an invocation". Every step of
+that is defensible and the conclusion is off by a factor.
 
-This tool cannot separate those two, and the way to make it do so is to add a
-switch that keeps the definitions and writes each invocation out as the lines
-it expands to. Then the delta is the machinery alone. That is the next
-measurement to take, and it should be taken before anything is changed.
+### The machinery, measured
+
+`ISA_OMIT=macrocall` keeps the definitions, the scopes and every assembled
+line, and writes each invocation out as the lines it would have expanded to.
+One file reaches the program through `macro_text`, `macro_run` and a nested
+reader; the other has it written down.
+
+    invoked     5.46
+    expanded    5.08   -0.38   405 calls   17,294 cycles a call
+
+**17,294 cycles, and 7.0% of isa_real.** The inherent part -- the expansion
+being assembled -- is the small half, not the large one.
+
+Two things make that subtraction mean something. The files assemble to
+**byte-identical output**, which `test/run.sh` checks, because if it stopped
+being true the number would still print and would quietly be a comparison of
+two different programs. And it is built to a fixed **line** count rather than a
+byte budget: an expansion is thirty-odd characters where the invocation was
+nine, so under a byte budget the expanded file would hold five per cent fewer
+scopes, and five per cent of isa_real is bigger than the thing being measured.
+The one confound left is that the expanded file is 4,252 bytes larger and has
+to read them, which is about 0.003s and is printed beside the figure.
+
+**17,294 cycles to expand a body of one to three lines is the largest
+attackable number in the assembler.** It is `macro_text` building the
+substituted text, `macro_run` opening a reader over it, and the scope push and
+pop around it. That is where the next round goes.
 
 ### Three features are *negative*, and that is the useful part
 

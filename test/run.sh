@@ -685,6 +685,36 @@ else
     status=1
 fi
 
+# The macro machinery measurement rests on one property: the file with the
+# invocations and the file with them written out must assemble to the *same
+# bytes*. If they ever stop doing so, the number attribute.sh prints stops
+# being the cost of macro_text, macro_run and a nested reader and becomes a
+# comparison of two different programs -- and it would still print, and still
+# look like a number.
+#
+# Small, because the property does not depend on the size, and a line count
+# rather than a byte budget for the reason gen_isa.sh gives.
+echo "=== test_macro_expansion ==="
+ISA_LINES=600 test/bench/gen_isa.sh real > "$OUT/mw.s" 2>/dev/null
+ISA_LINES=600 ISA_OMIT=macrocall test/bench/gen_isa.sh real > "$OUT/mc.s" 2>/dev/null
+rm -f "$OUT/mw.bin" "$OUT/mc.bin"
+"$OUT/zap" -ez80 "$OUT/mw.s" "$OUT/mw.bin" > /dev/null 2>&1 || true
+"$OUT/zap" -ez80 "$OUT/mc.s" "$OUT/mc.bin" > /dev/null 2>&1 || true
+ninv=$(grep -cE '^  (msave|mload|msum|mwait|mtri|mrest|mg)' "$OUT/mw.s" || true)
+nexp=$(grep -cE '^  (msave|mload|msum|mwait|mtri|mrest|mg)' "$OUT/mc.s" || true)
+if [ ! -f "$OUT/mw.bin" ] || [ ! -f "$OUT/mc.bin" ]; then
+    echo "FAIL  one of the macro attribution sources does not assemble"
+    status=1
+elif [ "$ninv" -lt 5 ] || [ "$nexp" -ne 0 ]; then
+    echo "FAIL  macrocall left $nexp invocations of $ninv"
+    status=1
+elif cmp -s "$OUT/mw.bin" "$OUT/mc.bin"; then
+    echo "PASS  a macro written out assembles to the same bytes as its call"
+else
+    echo "FAIL  a macro written out assembles to different bytes from its call"
+    status=1
+fi
+
 # The marginal-pricing flags in zap.c. The first three duplicate a table so
 # the walk over it does twice the work; the rest duplicate a call to a function
 # that is already out of line, so nothing is outlined by the measurement. Each one is only a measurement if the program

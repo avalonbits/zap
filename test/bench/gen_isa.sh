@@ -245,7 +245,24 @@ MODE="${1:?usage: gen_isa.sh <even|real|degenerate|memory|include> [bytes]}"
 # difference between two of these the cost of the feature rather than the cost
 # of a shorter file, and it is the same shape gen_comments.sh uses.
 #
-# Offered: equ, macro, cond, assume, suffix, data.
+# Offered: equ, macro, cond, assume, suffix, data, macrocall.
+#
+# `macrocall` is the odd one and is what prices the macro *machinery*.
+# Everything stays -- the definitions, the same number of scopes, the same
+# lines assembled -- and each invocation is written out as the lines it would
+# have expanded to. So the two files assemble the same program and one of them
+# reaches it through macro_text, macro_run and a nested reader while the other
+# does not.
+#
+# It has to be used with ISA_LINES, not with a byte budget. An expansion is
+# thirty-odd characters where the invocation was nine, so under a byte budget
+# the file with the expansions written out would hold about five per cent
+# fewer scopes -- and five per cent of isa_real is twice the size of the thing
+# being measured. Fixing the line count instead makes the two files identical
+# except for the one slot.
+#
+#   ISA_LINES=21000 test/bench/gen_isa.sh real > with.s
+#   ISA_LINES=21000 ISA_OMIT=macrocall test/bench/gen_isa.sh real > without.s
 #
 # NOT offered: labels. Every reference, every DL and DW operand, every scope
 # boundary and the whole of finish() are built on them, so a file without them
@@ -254,6 +271,13 @@ MODE="${1:?usage: gen_isa.sh <even|real|degenerate|memory|include> [bytes]}"
 # taking them out by hand and never repeated because the answer moved the file
 # rather than the assembler.
 ISA_OMIT="${ISA_OMIT:-}"
+
+# Stop after this many instruction lines rather than after a byte budget.
+#
+# `real` only. The point is a pair of files with the same structure and a
+# different size, which is the opposite of what the byte budget gives and is
+# what comparing two ways of writing the same program needs.
+ISA_LINES="${ISA_LINES:-0}"
 
 # `include` writes a directory rather than a stream, because ten files cannot
 # come out of one pipe. Everything else takes the byte budget as $2.
@@ -286,7 +310,7 @@ out0:3 lea:3 lddr:3 in0:3 sra:2 ldi:2 in:2 rrd:1 rld:1 reti:1 out:1"
     for cc in "" "nz, " "z, " "nc, " "c, " "po, " "pe, " "p, " "m, "; do
         printf '  call %s0x040000\n' "$cc"
     done
-} | sed 's/[[:space:]]*$//' | sort -u | awk -v mode="$MODE" -v total="$TOTAL" -v w="$WEIGHTS" -v incdir="$INCDIR" -v omit="$ISA_OMIT" '
+} | sed 's/[[:space:]]*$//' | sort -u | awk -v mode="$MODE" -v total="$TOTAL" -v w="$WEIGHTS" -v incdir="$INCDIR" -v omit="$ISA_OMIT" -v lines="$ISA_LINES" '
 BEGIN {
     # Label names, sized like the corpus rather than like a generator.
     #
@@ -486,7 +510,7 @@ END {
     # and reproducible but does not repeat a short cycle.
     step = 7919
     pos = 0
-    while (bytes < total) {
+    while (lines > 0 ? ln < lines : bytes < total) {
         pos = (pos + step) % cum
         lo = 0; hi = k - 1
         while (lo < hi) { mid = int((lo + hi) / 2); if (pos < edge[mid]) hi = mid; else lo = mid + 1 }
@@ -786,6 +810,38 @@ function macro_def(spec,   head, body, nb, b, j, t, used) {
 # `outfile` is empty for the modes that write one stream to stdout, and names a
 # file for the include tree. Every print below goes through emit() so that the
 # two cases share one body.
+# One macro body, written out with the arguments of this scope substituted.
+#
+# Kept beside the invocations it stands in for, and the two must be edited
+# together: the whole of ISA_OMIT=macrocall is that the lines here are the
+# lines the expansion would have produced.
+function body(m,   t, used) {
+    used = 0
+    if (m == 0) {
+        used += say("  push af") + say("  push bc")
+    } else if (m == 1) {
+        used += say("  ld a, " (lbl % 251))
+    } else if (m == 2) {
+        used += say("  ld a, " (lbl % 97)) + say("  add a, " (lbl % 31))
+    } else if (m == 3) {
+        used += say("@spin:") + say("  dec bc") + say("  jp @spin")
+    } else if (m == 4) {
+        used += say("  ld a, " (lbl % 61)) + say("  add a, " (lbl % 29)) \
+                + say("  sub " (lbl % 13))
+    } else {
+        used += say("  pop bc") + say("  pop af")
+    }
+
+    return used
+}
+
+# Emits a line and returns the bytes it took, so a caller can add them up.
+function say(t) {
+    emit(t)
+
+    return length(t) + 1
+}
+
 # Whether a feature was left out. See ISA_OMIT above.
 function off(f) {
     return index(" " omit " ", " " f " ") > 0
@@ -848,14 +904,24 @@ function out(line,   used, k, t, m) {
         # count stands for the feature, and so that the walk down the macro
         # list reaches the far end of it as often as the near end.
         m = lbl % 6
-        if (m == 0)      t = "  msave"
-        else if (m == 1) t = "  mload " (lbl % 251)
-        else if (m == 2) t = "  msum " (lbl % 97) ", " (lbl % 31)
-        else if (m == 3) t = "  mwait"
-        else if (m == 4) t = "  mtri " (lbl % 61) ", " (lbl % 29) ", " (lbl % 13)
-        else             t = "  mrest"
-        used += length(t) + 1
-        emit(t)
+        if (off("macrocall")) {
+            # The same lines, written out. The bodies are the ones the header
+            # defines and the arguments are the ones the invocation passes, so
+            # what is assembled is what the expansion would have been -- and
+            # `@spin` lands in the caller scope rather than in a scope of its
+            # own, which is where an expansion would have put it. Nothing else
+            # in the scope is called that.
+            used += body(m)
+        } else {
+            if (m == 0)      t = "  msave"
+            else if (m == 1) t = "  mload " (lbl % 251)
+            else if (m == 2) t = "  msum " (lbl % 97) ", " (lbl % 31)
+            else if (m == 3) t = "  mwait"
+            else if (m == 4) t = "  mtri " (lbl % 61) ", " (lbl % 29) ", " (lbl % 13)
+            else             t = "  mrest"
+            used += length(t) + 1
+            emit(t)
+        }
     } else if (k == 9 && !off("cond")) {
         # A conditional block, lines 9 to 13 of the scope. Nothing inside it
         # defines a label: an unassembled definition would leave whatever

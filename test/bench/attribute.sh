@@ -48,6 +48,16 @@ cp "$BIN" "$WORK/zap.bin"
 
 FEATURES="equ macro cond assume suffix data"
 
+# The macro machinery, priced separately, and it needs a pair of files built to
+# a line count rather than a byte budget -- see ISA_OMIT in gen_isa.sh. 12,750
+# lines is about 256 KiB, so the figure sits beside the others.
+#
+# The two files assemble to **byte-identical output**, which is what makes the
+# difference between them the machinery and nothing else. test/run.sh checks
+# that, because if it ever stopped being true this number would quietly become
+# a comparison of two different programs.
+MACRO_LINES=12750
+
 # Counted on the baseline, so the table can say how many lines carry the
 # feature that was removed.
 count_of() {
@@ -91,3 +101,32 @@ for f in $FEATURES; do
         printf "%-12s %8.2f %8+.2f %8d %10.0f\n", f, t, -d, n, c
     }'
 done
+
+# The macro machinery, against a pair built to a line count. Printed apart
+# from the table above because its baseline is a different file: 12,750 lines
+# rather than 262,144 bytes, and the two are only about the same size.
+echo
+echo "the macro machinery, at a fixed line count rather than a fixed size"
+echo
+ISA_LINES="$MACRO_LINES" test/bench/gen_isa.sh real > "$WORK/mw.s"
+ISA_LINES="$MACRO_LINES" ISA_OMIT=macrocall test/bench/gen_isa.sh real > "$WORK/mc.s"
+ninv=$(grep -cE '^  (msave|mload|msum|mwait|mtri|mrest|mg)' "$WORK/mw.s")
+
+printf '%-12s %8s %8s %8s %10s\n' SOURCE SECONDS DELTA CALLS 'CYCLES/CALL'
+mw=$(test/bench/time-one.sh "$WORK/zap.bin" "$WORK/mw.s" 2>/dev/null)
+mc=$(test/bench/time-one.sh "$WORK/zap.bin" "$WORK/mc.s" 2>/dev/null)
+if [ -z "$mw" ] || [ -z "$mc" ]; then
+    echo "one of the macro runs produced no figure" >&2
+else
+    printf '%-12s %8s %8s %8s %10s\n' 'invoked' "$mw" '-' "$ninv" '-'
+    awk -v t="$mc" -v b="$mw" -v n="$ninv" 'BEGIN {
+        d = b - t
+        printf "%-12s %8.2f %8+.2f %8d %10.0f\n", "expanded", t, -d, n,
+               (n > 0) ? (d * 18432000 / n) : 0
+    }'
+    # The one confound, stated rather than hidden: the file with the
+    # expansions written out is bigger, and those bytes have to be read.
+    aw=$(wc -c < "$WORK/mw.s"); ac=$(wc -c < "$WORK/mc.s")
+    echo
+    echo "  the expanded file is $((ac - aw)) bytes larger, which it has to read"
+fi

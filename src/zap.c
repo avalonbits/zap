@@ -904,6 +904,11 @@ typedef struct _dz {
      * inner one is built. */
     char* expbuf[INCLUDE_MAXDEPTH];
     int expcap[INCLUDE_MAXDEPTH];
+
+    /* The arguments of the invocation being expanded at each depth. Here
+     * rather than in a frame; see macro_args. */
+    const char* margp[INCLUDE_MAXDEPTH * MACRO_MAXPARAM];
+    int margn[INCLUDE_MAXDEPTH * MACRO_MAXPARAM];
 } dz;
 
 /* The one of these there is, at a fixed address.
@@ -4563,21 +4568,24 @@ static bool macro_line(const char* p, const char* e) {
  * redefinition, and `@a` cannot be named after the expansion ends.
  */
 __attribute__((noinline))
-/* The body with its parameters replaced, as a buffer the caller owns.
+/* Defined with the line loop, and called from the macro expansion below --
+ * which assembles the body itself rather than handing it to a reader. */
+static bool assemble_line(const char* p, const char* e, const char** stop);
+
+/* The invocation's arguments, as spans of the line that carried them.
  *
- * Separate from the running of it because of the frame. `argp` and `argn` are
- * sixteen pointers between them, and while they sat in the same function as
- * the reader that is set aside and the scope that is saved, everything in
- * there was past the 128 bytes an `ix` displacement reaches: thirty accesses
- * went through a five-instruction address computation apiece. Split, both
- * frames fit. */
+ * Kept in `dz` rather than in a frame. Eight pointers and eight lengths is 48
+ * bytes on the Agon, and while they sat in the same frame as the scope save
+ * and the body loop everything in there was past the 128 bytes an `ix`
+ * displacement reaches -- thirty accesses through a five-instruction address
+ * computation apiece. Indexed by depth times MACRO_MAXPARAM, which is eight
+ * and therefore a shift rather than a call to __imulu.
+ *
+ * A macro takes as many arguments as it declares and the reference counts
+ * them -- "0 provided, 1 expected". */
 __attribute__((noinline))
-static char* macro_text(const macro* m, const char* p, const char* e,
-                        const char** stop, int* outlen) {
-    /* The arguments, as spans of the invocation line. A macro takes as many as
-     * it declares and the reference counts them -- "0 provided, 1 expected". */
-    const char* argp[MACRO_MAXPARAM];
-    int argn[MACRO_MAXPARAM];
+static bool macro_args(const macro* m, const char* p, const char* e,
+                       const char** stop, int base) {
     int nargs = 0;
     for (;;) {
         while (p < e && is_space_ch(*p)) {
@@ -4593,7 +4601,7 @@ static char* macro_text(const macro* m, const char* p, const char* e,
         if (nargs == MACRO_MAXPARAM) {
             zz.err = "too many macro arguments";
 
-            return NULL;
+            return false;
         }
         /* The end is carried forward rather than walked back from.
          *
@@ -4618,48 +4626,41 @@ static char* macro_text(const macro* m, const char* p, const char* e,
             }
             p++;
         }
-        argp[nargs] = as;
-        argn[nargs] = (int) (ae - as);
+        zz.margp[base + nargs] = as;
+        zz.margn[base + nargs] = (int) (ae - as);
         nargs++;
     }
     *stop = p;
     if (nargs != m->nparam) {
         zz.err = "wrong number of macro arguments";
 
-        return NULL;
+        return false;
     }
 
-    /* The body with the names replaced. Built in one buffer sized as it goes;
-     * an expansion is short and this happens once per invocation. */
-    int cap = zz.expcap[zz.depth];
-    char* out = zz.expbuf[zz.depth];
-    if (cap < m->bodylen + 64) {
-        cap = m->bodylen + 64;
-        Z_SITE("macro expansion");
-        char* grown = (char*) realloc(out, (size_t) cap);
-        if (grown == NULL) {
-            zz.err = "out of memory for macros";
+    return true;
+}
 
-            return NULL;
-        }
-        out = grown;
-        zz.expbuf[zz.depth] = out;
-        zz.expcap[zz.depth] = cap;
-    }
-    /* Walked with pointers, not subscripts.
-     *
-     * `argp[k]` and `argn[k]` are three bytes wide apiece, and a subscript by a
-     * variable on something that is not a power of two is a call to __imulu on
-     * this machine. There were two of those per identifier in the body, and a
-     * two-parameter macro with a two-line body cost 18,600 cycles an invocation
-     * because of it. Stepping the two arrays alongside the parameter list costs
-     * an increment each. */
+/* One line of the body, with its parameters replaced, ready to assemble.
+ *
+ * A line at a time rather than the whole body at once. The body used to be
+ * expanded into a buffer and that buffer handed to a reader, which the line
+ * loop then ran over as though it were a file -- and the reader was the
+ * expensive part: 27 bytes of it saved and put back per invocation, a nested
+ * run_lines, and a br_fill_lines called once to be told there is nothing more.
+ * Nothing needed a reader. The lines are already lines.
+ *
+ * Returns the length written, including the newline that ends it, or -1.
+ * `bufp` and `capp` are the caller's, so the buffer is grown once and reused
+ * for every line of the body and every later invocation at this depth. */
+__attribute__((noinline))
+static int macro_subst(const macro* m, const char* b, const char* bend,
+                       int base, char** bufp, int* capp) {
+    char* out = *bufp;
+    int cap = *capp;
     int len = 0;
-    const char* b = m->body;
-    const char* const bend = b + m->bodylen;
+
     while (b < bend) {
         const char* src = b;
-        int take = 1;
         /* Any name character starts a token, digits included.
          *
          * They were excluded, on the reasoning that a number is not a
@@ -4670,8 +4671,7 @@ static char* macro_text(const macro* m, const char* p, const char* e,
          * number in any radix and was never substituted here.
          *
          * A token that really is a number matches no parameter name and is
-         * copied through as it was, which is what happened before -- one
-         * character at a time rather than all at once. */
+         * copied through as it was. */
         const bool ident = name_ch(*b);
         const char* j = b;
         if (ident) {
@@ -4692,12 +4692,21 @@ static char* macro_text(const macro* m, const char* p, const char* e,
                 j++;
             }
         }
-        take = (int) (j - b);
+        const int take = (int) (j - b);
         int need = take;
         if (ident) {
+            /* Walked with pointers, not subscripts.
+             *
+             * `margp[k]` and `margn[k]` are three bytes wide apiece, and a
+             * subscript by a variable on something that is not a power of two
+             * is a call to __imulu on this machine. There were two of those
+             * per identifier in the body, and a two-parameter macro with a
+             * two-line body cost 18,600 cycles an invocation because of it.
+             * Stepping the two alongside the parameter list costs an
+             * increment each. */
             const char* pp2 = m->params;
-            const char** ap = argp;
-            const int* an = argn;
+            const char** ap = &zz.margp[base];
+            const int* an = &zz.margn[base];
             for (int k = 0; k < m->nparam; k++) {
                 const int pn = (uint8_t) pp2[0];
                 /* Case-sensitively, which is what the reference does and what
@@ -4722,17 +4731,17 @@ static char* macro_text(const macro* m, const char* p, const char* e,
                 an++;
             }
         }
-        if (len + need + 1 > cap) {
-            cap = (len + need + 1) * 2;
+        /* One spare, for the newline this line is finished with. */
+        if (len + need + 2 > cap) {
+            cap = (len + need + 2) * 2;
+            Z_SITE("macro expansion");
             char* grown = (char*) realloc(out, (size_t) cap);
             if (grown == NULL) {
                 zz.err = "out of memory for macros";
 
-                return NULL;
+                return -1;
             }
             out = grown;
-            zz.expbuf[zz.depth] = out;
-            zz.expcap[zz.depth] = cap;
         }
         char* o = out + len;
         for (int k = 0; k < need; k++) {
@@ -4742,54 +4751,140 @@ static char* macro_text(const macro* m, const char* p, const char* e,
         b += take;
     }
 
-    *outlen = len;
+    if (len + 2 > cap) {
+        cap = len + 64;
+        Z_SITE("macro expansion");
+        char* grown = (char*) realloc(out, (size_t) cap);
+        if (grown == NULL) {
+            zz.err = "out of memory for macros";
 
-    return out;
+            return -1;
+        }
+        out = grown;
+    }
+    /* The newline the line has to end on: every scan in assemble_line stops
+     * on one, and the trailing-text check below reads it. */
+    out[len++] = '\n';
+
+    *bufp = out;
+    *capp = cap;
+
+    return len;
 }
 
-/* Reads the expanded body, in a scope of its own, exactly as an included file
- * is read. Takes the buffer whatever built it. */
+/* Assembles the body, a line at a time, in a scope of its own.
+ *
+ * There is no reader and no nested line loop. The body is already a run of
+ * lines -- macro_line stored it that way -- so each one is substituted into a
+ * buffer and handed straight to assemble_line, which is what the line loop
+ * would have done with it after opening a reader over memory to find the
+ * newlines that were never lost.
+ *
+ * What that removes, per invocation, is the 27-byte reader saved and put back,
+ * br_use_mem, br_destroy, a nested run_lines and the br_fill_lines it calls
+ * once to be told the buffer is spent. The measurements are in
+ * .internal/performance-notes.md.
+ *
+ * The file the invocation came from is left open, as it was before: an
+ * INCLUDE gives its parent's handle up because MOS has few of them, and an
+ * expansion opens no file at all. */
 __attribute__((noinline))
-static bool macro_run(const macro* m, char* out, int len) {
+static bool macro_expand(const macro* m, const char* p, const char* e,
+                         const char** stop) {
+    if (zz.depth >= INCLUDE_MAXDEPTH) {
+        zz.err = "macros nested too deeply";
+
+        return false;
+    }
+    const int base = zz.depth * MACRO_MAXPARAM;
+    if (!macro_args(m, p, e, stop, base)) {
+        return false;
+    }
+
     const char* const saved_path = zz.path;
     const int saved_line = zz.line;
-
-    /* The file the invocation came from is left open.
-     *
-     * An INCLUDE gives its parent's handle up, because MOS has few of them and
-     * the file being opened needs one. An expansion opens no file at all -- it
-     * reads a buffer -- so there is nothing to make room for, and giving the
-     * handle up costs a close, an open and a seek every time a macro is used.
-     * The open is the expensive one: it walks a FAT directory. Suspending here
-     * cost 1.48 seconds across the 426 invocations in isa_real, which is 64,000
-     * cycles an invocation against roughly 2,000 for the expansion itself.
-     *
-     * What it buys back is a handle held while the body runs. Only a reader
-     * over a file holds one, so the count is the number of INCLUDEs in the
-     * chain plus the files whose lines are mid-expansion -- bounded by the
-     * nesting limit, and a failure to open reports itself plainly. */
-    const buf_reader saved = zz.rd;
-    /* The reader reads the buffer where it stands, and does not own it: it is
-     * kept for the next expansion at this depth. Copying it into a buffer of
-     * the reader's own was a malloc, a copy and a free an invocation. */
-    br_use_mem(&zz.rd, out, len);
     zz.path = m->name;
     zz.line = 0;
-    zz.depth++;
     zz.expanding++;
+
+    char* buf = zz.expbuf[zz.depth];
+    int cap = zz.expcap[zz.depth];
+    const int slot = zz.depth;
+    zz.depth++;
 
     /* A scope of its own for the body, with the caller's kept and put back. */
     locsave sv;
     scope_push(&sv);
-    bool ok = run_lines();
+
+    bool ok = true;
+    const char* b = m->body;
+    const char* const bend = b + m->bodylen;
+    while (b < bend) {
+        const char* le = b;
+        while (le < bend && *le != '\n') {
+            le++;
+        }
+        /* A body with no parameters is assembled where it lies.
+         *
+         * Nothing in it can be substituted, so the copy has nothing to do:
+         * macro_line already stored the line with the newline that ends it,
+         * and assemble_line reads a span rather than a buffer of its own.
+         * Half the macros in a real header take no arguments -- a save, a
+         * restore, a wait -- and they now cost no buffer, no copy and no
+         * call. */
+        const char* ls;
+        const char* lend;
+        if (m->nparam == 0) {
+            ls = b;
+            lend = le + 1;
+        } else {
+            const int len = macro_subst(m, b, le, base, &buf, &cap);
+            if (len < 0) {
+                ok = false;
+                break;
+            }
+            ls = buf;
+            lend = buf + len;
+        }
+        zz.line++;
+
+        const char* st = ls;
+        if (!assemble_line(ls, lend, &st)) {
+            ok = false;
+            break;
+        }
+        /* Whatever ended the line, exactly as the line loop decides it. The
+         * check is written out again here rather than shared: sharing means
+         * run_lines calling into it, and that loop runs on every line of every
+         * file. suffixed_insn duplicates assemble_line's tail for the same
+         * reason. */
+        if (*st != '\n') {
+            const char* q = st;
+            while (q < lend && is_space_ch(*q)) {
+                q++;
+            }
+            if (*q == ';') {
+                while (q < lend && *q != '\n') {
+                    q++;
+                }
+            } else if (*q != '\n') {
+                zz.err = "unexpected text after the instruction";
+                ok = false;
+                break;
+            }
+        }
+        b = le + 1;
+    }
+
     if (!scope_pop(&sv)) {
         ok = false;
     }
 
-    br_destroy(&zz.rd);
+    zz.expbuf[slot] = buf;
+    zz.expcap[slot] = cap;
     zz.depth--;
     zz.expanding--;
-    zz.rd = saved;
+
     if (!ok) {
         if (zz.path != zz.errpath) {
             int i = 0;
@@ -4807,22 +4902,6 @@ static bool macro_run(const macro* m, char* out, int len) {
     zz.line = saved_line;
 
     return true;
-}
-
-static bool macro_expand(const macro* m, const char* p, const char* e,
-                         const char** stop) {
-    if (zz.depth >= INCLUDE_MAXDEPTH) {
-        zz.err = "macros nested too deeply";
-
-        return false;
-    }
-    int len = 0;
-    char* out = macro_text(m, p, e, stop, &len);
-    if (out == NULL) {
-        return false;
-    }
-
-    return macro_run(m, out, len);
 }
 
 /* ---------------------------------------------------------- directives */

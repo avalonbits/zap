@@ -118,7 +118,7 @@
 # anything measured against this one -- the baselines below are the ones that
 # count.
 #
-#   isa_real         5.44s   383 cycles/byte   21,494 lines
+#   isa_real         5.38s   378 cycles/byte   21,494 lines
 #   isa_even         5.88s   413               21,719
 #   isa_degenerate   5.42s   381               22,530
 #   isa_memory       5.86s   412               28,040

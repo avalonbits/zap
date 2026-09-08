@@ -3573,3 +3573,65 @@ was a substitution here. Macro parameters are matched case-sensitively there;
 the directive, the name and the invocation are all case-blind, so this had been
 assumed to match rather than measured -- which is the fault this project keeps
 finding, and the reason the rule is to measure every one of them.
+
+## Pricing the mode suffixes, and a round that found nothing worth doing
+
+The suffixes went into `isa_real` and `isa_even` at one every 26 lines, three
+times the corpus rate of one in 82. 797 of them cost **three cycles a byte**:
+
+    isa_real   368 -> 371        isa_even   374 -> 376
+
+which is about 925 cycles an instruction over what the unsuffixed form costs --
+the detour through `directive_line` and the second mnemonic lookup. The feature
+that unblocked seventeen corpus sources is the cheapest of everything added
+since the directives, and the densest in real code.
+
+### The map, retaken
+
+    isa_real  5.28s = 371 cycles a byte
+
+    read the line + dispatch       0.58     11%
+    scan the mnemonic              0.28      5%
+    label path and line_mode       0.46      9%
+    mnemonic_of                    0.50      9%
+    directives, macros, suffixes   1.42     27%
+    parse both operands            1.42     27%
+    match_row                      0.28      5%
+    emit_row                       0.34      6%
+
+**This round found nothing worth changing, and that is the result.** What was
+looked at and what it was worth, so the next round does not repeat it:
+
+  - **The `dop` clear.** Two 21-byte `ldir`s a line looked like an obvious
+    target. `ldir` is about two cycles a byte, so the pair is ~120 cycles a
+    line and shrinking `dop` to 18 bytes would save six. 0.007s.
+  - **`hex_digits` out of line.** Called for every `0x` and trailing-h operand,
+    which is 3,651 lines of 21,494. Inlining it saves perhaps 0.02s.
+  - **The symbol allocator's `__imulu`.** `z->blocks->nodes[z->syms_used++]`
+    multiplies by 11. A pointer cursor removes it, for ~1,900 definitions and
+    about 0.016s.
+  - **The expansion buffer's `__imulu`.** `z->expbuf[z->depth]` is two library
+    multiplies an invocation, 426 of them. 0.007s.
+  - **The `dz` layout.** Checked rather than assumed: `o` is at 30, `out` 27,
+    `lim` 33, `line` 78, `err` 81, `adl` 50, `line_mode` 43. Everything the
+    line loop touches is inside the 127 bytes an `iy` displacement reaches, and
+    the fields added for macros and suffixes went after the 256-byte bucket
+    array, which was already past it.
+  - **`run_lines`' loop and the operand register path.** Read in the generated
+    assembly. The loop is thirty instructions and a call; a register operand
+    returns as soon as `reg_of_text` matches, without reaching the value path.
+    Neither holds anything.
+
+### What is left, and its ceiling
+
+Macros are the biggest single item: taking them out of the same file reads
+4.84s against 5.28, so 426 invocations are **0.44s, 8.3% of the run for 2% of
+the lines**. About 19,000 cycles each. The previous round took a one-line
+expansion from 23.16s per 10,000 to 5.26s, and what is left is mostly the two
+or three lines a body actually assembles -- a line inside an expansion costs
+3,300 cycles against 2,200 for the same line in a file, and the remaining fixed
+overhead is about 4,000. Halving the whole of it is worth 4%, and reaching that
+means making an expansion nearly free, which has already had a round.
+
+The other 27% is the operands, which the notes above record as having resisted
+two rounds, and `mnemonic_of` at 9% has now resisted three.

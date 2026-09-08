@@ -6,13 +6,15 @@ the two.
 
 | source | zap | ez80asm | ratio | |
 |---|---|---|---|---|
-| bbcbasic | 3.98s | 22.42s | **0.18x** | ez80asm `-m` |
-| rokky | 0.56s | 2.50s | **0.22x** | |
-| synth | 7.30s | 45.64s | **0.16x** | ez80asm `-m` |
+| bbcbasic | 3.80s | 22.42s | **0.17x** | ez80asm `-m` |
+| rokky | 0.52s | 2.50s | **0.21x** | |
+| synth | 6.86s | 45.64s | **0.15x** | ez80asm `-m` |
 
-bbcbasic moved from 4.12s when a comment stopped being walked through an
-out-parameter; see .internal/performance-notes.md. rokky is 6% comment by
-byte against BBC BASIC's 28%, and did not move.
+Two changes moved these from 4.12 / 0.56 / 7.30: a comment stopped being
+walked through an out-parameter, and the assembler's state moved to a fixed
+address. Both are in .internal/performance-notes.md. The first is worth 3.4%
+on bbcbasic and nothing on rokky, which is 6% comment by byte against BBC
+BASIC's 28%; the second is worth about 4.5% everywhere.
 
 Lower is better. **The goal was 0.50x and it is met with room to spare** --
 between four and six times faster than the reference rather than the two the

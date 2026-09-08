@@ -4056,3 +4056,95 @@ Two structural changes are worth pricing before any more tuning:
   `stop`.** That out-parameter is what made the comment loop cost what it did,
   and it costs an argument, a `pea`, and two or three indirect stores on every
   line as well.
+
+## The two structural changes, and only one of them was right
+
+Both were written up at the end of the last round as worth pricing. One is
+**4.9%** and the other is **minus 1.8%**, and the prediction did not
+distinguish them.
+
+### The state at a fixed address -- kept
+
+`dz` was a local in main, reached everywhere through a `dz*` parameter, so
+every `z->field` was two loads: `ld iy, (ix + 6)` to fetch the pointer out of
+the frame, then an offset load through it. A file-scope object is addressed
+absolutely, so the first load goes and the register pair holding the base
+goes with it.
+
+    (ix + 6) fetches      463 -> 114
+    assemble_line       4,549 -> 4,465 instructions, frame 114 -> 111 bytes
+    zap.bin            69,694 -> 67,610 bytes
+
+    isa_real             5.74 -> 5.46   404 -> 384 cycles a byte   -4.9%
+    bbcbasic             3.98 -> 3.80                              -4.5%
+
+The binary got *smaller*, which is the tell that it was real: 349 pointer
+fetches stopped being emitted.
+
+### assemble_line returning where it stopped -- reverted
+
+The argument was good and the measurement disagrees with it. The out-parameter
+does cost an argument, a `pea` and two or three indirect stores a line, and
+removing it took `run_lines` from 150 instructions to 123. It measured
+
+    isa_real             5.46 -> 5.56   +1.8%
+    bbcbasic             3.80 -> 3.90   +2.6%
+
+on both, twice, and it is out.
+
+**assemble_line's frame went 111 bytes to 115** and that is the whole of it.
+A store through a pointer the caller already put in a register is cheaper than
+a value that has to be alive in *this* function at every one of its exits, and
+this function has thirty of them. Removing the local that held it and
+returning `p` directly at each site changed nothing -- still 115, still 5.56 --
+which says the cost is the convention and not the variable.
+
+That is the fifth time three or four bytes of frame have decided a change in
+this function, and the first time the change looked like a clear win going in.
+The rule to take from it: **in `assemble_line`, a value that must survive to
+the return is more expensive than a store, however many stores.**
+
+## On hand-written assembly, and what it would actually buy
+
+Asked whether parts of this should be assembly, with a build flag defaulting
+to the fast version and a define selecting a C-only one. Three facts, so the
+decision is made against them rather than against a feeling about purity.
+
+**Inline assembly with operands is not available.** agondev's clang rejects
+register constraints -- `"={hl}"` is "invalid output constraint" -- so
+`__asm__` here is a bare instruction stream with no way to get a value in or
+out. Only the operandless form compiles.
+
+**A separate `.s` file does work.** The toolchain's makefile already picks up
+`$(SRCDIR)/*.s`, `*.asm` and `*.src` alongside the C, and a hand-written
+routine called through the ordinary convention builds and links. Verified.
+
+**So the unit is a function call, not an instruction.** That is the whole of
+the trade: about 20 cycles of call, return and argument marshalling before the
+routine does anything. It pays only where the run is long enough to earn it
+back, which rules out most of what looked tempting:
+
+    the space skips        0 to 3 characters, several times a line   never
+    the mnemonic scan      3 to 5 characters                          no
+    the operand name scan  1 to 8 characters                          no
+    the comment scan       19 characters on average in BBC BASIC      maybe
+
+The comment scan is the only candidate, and the arithmetic on it is: it is
+eight instructions a byte now, `cpir` is one instruction for the whole run.
+If `cpir` lands near 3 cycles a byte, a 19-byte comment goes from about 380
+cycles to about 80, and BBC BASIC has 5,570 lines carrying one -- **roughly
+0.09s, or 2.3%.** Nothing else in the file has a run long enough to be worth
+measuring.
+
+That is a real 2.3% and it is not nothing. What it costs is two
+implementations of the same scan and a test suite that has to build both, or
+the C path rots unnoticed -- and the C path is the one that makes this
+assembler portable to the next machine. **The recommendation is to hold it
+until something bigger has been taken first**: 2.3% behind a second build
+configuration is a worse trade than 4.9% for moving a struct, and the map
+above still has a 2,034-cycle instruction floor in it that no assembly routine
+addresses.
+
+If it is taken, take it once, for `cpir` on the comment scan, and let the
+build flag be `ZAP_ASM` with the C version compiled and tested by default in
+CI.

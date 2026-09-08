@@ -906,6 +906,21 @@ typedef struct _dz {
     int expcap[INCLUDE_MAXDEPTH];
 } dz;
 
+/* The one of these there is, at a fixed address.
+ *
+ * It was a local in main, reached everywhere through a `dz*` parameter -- so
+ * every `zz.field` was `ld iy, (ix + 6)` to fetch the pointer out of the frame
+ * and then an offset load through it, and there are 463 of those pointer
+ * fetches in this translation unit with a handful on every line. A file-scope
+ * object is addressed absolutely: the field's address is a constant the
+ * assembler writes into the instruction, there is no base register to hold and
+ * `iy` is freed for the line pointer that wants it.
+ *
+ * There is exactly one assembly per process, so this loses nothing that was
+ * being used. Zero-initialised by being static, which is what the memset in
+ * main did. */
+static dz zz;
+
 /* The fields touched on every line have to be reachable in one instruction.
  *
  * dz is reached through a pointer and `iy` displacement is a signed byte, so a
@@ -1014,16 +1029,16 @@ static char* nam_take(namblock** head, int* used, int len) {
     return at;
 }
 
-static bool sym_room(dz* z) {
-    if (z->syms_used == SYMS_STEP) {
+static bool sym_room(void) {
+    if (zz.syms_used == SYMS_STEP) {
         Z_SITE("symbol blocks");
         symblock* b = (symblock*) malloc(sizeof(symblock));
         if (b == NULL) {
             return false;
         }
-        b->next = z->blocks;
-        z->blocks = b;
-        z->syms_used = 0;
+        b->next = zz.blocks;
+        zz.blocks = b;
+        zz.syms_used = 0;
     }
 
     return true;
@@ -1031,14 +1046,14 @@ static bool sym_room(dz* z) {
 
 /* Case-sensitive, unlike a mnemonic: the reference refuses `jp foo` against a
  * label written FOO. */
-static const sym* sym_at(const dz* z, int b, const char* name, int len) {
-    for (const sym* sp = z->syms[b].head; sp != NULL; sp = sp->next) {
+static const sym* sym_at(int b, const char* name, int len) {
+    for (const sym* sp = zz.syms[b].head; sp != NULL; sp = sp->next) {
         if (sp->len != (uint8_t) len) {
             continue;
         }
         /* The pointer walk, which the local lookup has always used and this
          * one measured worse at -- when the name had to be computed as
-         * `&z->names[sp->nameoff]` and three live pointers would not fit where
+         * `&zz.names[sp->nameoff]` and three live pointers would not fit where
          * two and an index did. The name is a pointer in the node now, so the
          * third one is free. */
         const char* t = sp->name;
@@ -1057,7 +1072,7 @@ static const sym* sym_at(const dz* z, int b, const char* name, int len) {
 }
 
 /* The entry for a name, made if there is not one. */
-static sym* sym_intern(dz* z, const char* name, int len) {
+static sym* sym_intern(const char* name, int len) {
     /* Hashed once. It was hashed twice: sym_find computed the bucket to search
      * and this computed it again to insert, so every name a source mentioned
      * for the first time was walked twice by the hash -- which is the whole
@@ -1071,36 +1086,36 @@ static sym* sym_intern(dz* z, const char* name, int len) {
      * end before failing. Doubles the chain walk; the real entry is still
      * found, so the output does not change. */
     char* dtext;
-    if (sym_at(z, b, name, len) == NULL && sym_room(z)
-        && (dtext = nam_take(&z->names, &z->names_used, len)) != NULL) {
+    if (sym_at(b, name, len) == NULL && sym_room()
+        && (dtext = nam_take(&zz.names, &zz.names_used, len)) != NULL) {
         for (int i = 0; i < len; i++) {
             dtext[i] = name[i];
         }
         dtext[len - 1] = (char) (name[len - 1] == 'z' ? 'y' : 'z');
-        sym* dec = &z->blocks->nodes[z->syms_used++];
+        sym* dec = &zz.blocks->nodes[zz.syms_used++];
         dec->name = dtext;
         dec->len = (uint8_t) len;
         dec->defined = false;
         dec->islocal = false;
         dec->addr = 0;
-        dec->next = z->syms[b].head;
-        z->syms[b].head = dec;
+        dec->next = zz.syms[b].head;
+        zz.syms[b].head = dec;
     }
 #endif
 
-    sym* found = (sym*) sym_at(z, b, name, len);
+    sym* found = (sym*) sym_at(b, name, len);
     if (found != NULL) {
         return found;
     }
-    if (!sym_room(z)) {
-        z->err = "out of memory for labels";
+    if (!sym_room()) {
+        zz.err = "out of memory for labels";
 
         return NULL;
     }
 
-    char* text = nam_take(&z->names, &z->names_used, len);
+    char* text = nam_take(&zz.names, &zz.names_used, len);
     if (text == NULL) {
-        z->err = "out of memory for labels";
+        zz.err = "out of memory for labels";
 
         return NULL;
     }
@@ -1108,7 +1123,7 @@ static sym* sym_intern(dz* z, const char* name, int len) {
         text[i] = name[i];
     }
 
-    sym* sp = &z->blocks->nodes[z->syms_used++];
+    sym* sp = &zz.blocks->nodes[zz.syms_used++];
     sp->name = text;
     sp->len = (uint8_t) len;
     sp->defined = false;
@@ -1118,8 +1133,8 @@ static sym* sym_intern(dz* z, const char* name, int len) {
     sp->islocal = false;
     sp->addr = 0;
 
-    sp->next = z->syms[b].head;
-    z->syms[b].head = sp;
+    sp->next = zz.syms[b].head;
+    zz.syms[b].head = sp;
 
     return sp;
 }
@@ -1141,9 +1156,9 @@ static inline int loc_bucket(const char* name, int len) {
 
 /* Room for one more local node and its name. Blocks are threaded once and
  * then reused: after a scope ends loccur walks the same list again. */
-static bool loc_room(dz* z) {
-    if (z->locs_used == LOCS_STEP || z->loccur == NULL) {
-        locblock* next = z->loccur != NULL ? z->loccur->next : z->locfirst;
+static bool loc_room(void) {
+    if (zz.locs_used == LOCS_STEP || zz.loccur == NULL) {
+        locblock* next = zz.loccur != NULL ? zz.loccur->next : zz.locfirst;
         if (next == NULL) {
             Z_SITE("local label blocks");
             next = (locblock*) malloc(sizeof(locblock));
@@ -1151,14 +1166,14 @@ static bool loc_room(dz* z) {
                 return false;
             }
             next->next = NULL;
-            if (z->loccur != NULL) {
-                z->loccur->next = next;
+            if (zz.loccur != NULL) {
+                zz.loccur->next = next;
             } else {
-                z->locfirst = next;
+                zz.locfirst = next;
             }
         }
-        z->loccur = next;
-        z->locs_used = 0;
+        zz.loccur = next;
+        zz.locs_used = 0;
     }
 
     return true;
@@ -1167,13 +1182,13 @@ static bool loc_room(dz* z) {
 /* Patches one reference, now that the address behind it is known. Shared by
  * the end of a scope, which settles that scope's local references, and the end
  * of the source, which settles every global one. */
-static bool patch_fixup(dz* z, const fixup* f) {
+static bool patch_fixup(const fixup* f) {
     const sym* sp = f->target;
     if (!sp->defined) {
         /* Reported against the line that used it, which is long gone; the
          * fixup carries the number for exactly this. */
-        z->line = f->line;
-        z->err = "unknown label";
+        zz.line = f->line;
+        zz.err = "unknown label";
 
         return false;
     }
@@ -1181,8 +1196,8 @@ static bool patch_fixup(dz* z, const fixup* f) {
     evalue val = sp->addr + f->addend;
     if (f->sub != NULL) {
         if (!f->sub->defined) {
-            z->line = f->line;
-            z->err = "unknown label";
+            zz.line = f->line;
+            zz.err = "unknown label";
 
             return false;
         }
@@ -1190,14 +1205,14 @@ static bool patch_fixup(dz* z, const fixup* f) {
     }
 
     const uint8_t w = (uint8_t) (f->width & FIX_WIDTH);
-    uint8_t* at = z->out + f->off;
+    uint8_t* at = zz.out + f->off;
     if (w == 0) {
         /* The byte after the displacement byte, which is where a relative
          * jump is measured from. */
-        const evalue d = val - (z->org + f->off + 1);
+        const evalue d = val - (zz.org + f->off + 1);
         if (d < -128 || d > 127) {
-            z->line = f->line;
-            z->err = "relative jump too far";
+            zz.line = f->line;
+            zz.err = "relative jump too far";
 
             return false;
         }
@@ -1255,15 +1270,15 @@ static bool patch_fixup(dz* z, const fixup* f) {
  *
  * So the local half is settled here, where the node still means what it said,
  * and folded into the addend. What is left is an ordinary global fixup. */
-static bool fold_subs(dz* z, int from) {
-    for (int i = from; i < z->subfix_used; i++) {
-        fixup* f = &z->fixups[z->subfix[i]];
+static bool fold_subs(int from) {
+    for (int i = from; i < zz.subfix_used; i++) {
+        fixup* f = &zz.fixups[zz.subfix[i]];
         if (f->sub == NULL) {
             continue;
         }
         if (!f->sub->defined) {
-            z->line = f->line;
-            z->err = "unknown label";
+            zz.line = f->line;
+            zz.err = "unknown label";
 
             return false;
         }
@@ -1274,8 +1289,8 @@ static bool fold_subs(dz* z, int from) {
             /* The local half of a global-minus-local, settled here. It is an
              * address difference in every real case and fits; an EQU wide
              * enough to leave the machine word does not, and says so. */
-            z->line = f->line;
-            z->err = "that constant is too large to add to a label";
+            zz.line = f->line;
+            zz.err = "that constant is too large to add to a label";
 
             return false;
         }
@@ -1283,36 +1298,36 @@ static bool fold_subs(dz* z, int from) {
         f->width &= (uint8_t) ~FIX_SUB2;
         f->sub = NULL;
     }
-    z->subfix_used = from;
+    zz.subfix_used = from;
 
     return true;
 }
 
-static bool scope_end(dz* z) {
-    if (!fold_subs(z, 0)) {
+static bool scope_end(void) {
+    if (!fold_subs(0)) {
         return false;
     }
-    for (int i = 0; i < z->lfix_used; i++) {
-        if (!patch_fixup(z, &z->lfixups[i])) {
+    for (int i = 0; i < zz.lfix_used; i++) {
+        if (!patch_fixup(&zz.lfixups[i])) {
             return false;
         }
     }
-    z->lfix_used = 0;
-    z->locs_used = LOCS_STEP;   /* forces loc_room back to the first block */
-    z->loccur = NULL;
+    zz.lfix_used = 0;
+    zz.locs_used = LOCS_STEP;   /* forces loc_room back to the first block */
+    zz.loccur = NULL;
     /* Back to the first block rather than freeing them: a scope ends on every
      * global label, and the blocks are the same size every time. */
-    z->locnames = z->locnamfirst;
-    z->locnames_used = 0;
-    if (++z->gen == 0) {
+    zz.locnames = zz.locnamfirst;
+    zz.locnames_used = 0;
+    if (++zz.gen == 0) {
         /* The stamp has wrapped, so a slot left over from 256 scopes ago would
          * read as belonging to this one. Once every 256 scopes, empty them
          * properly. */
         for (int b = 0; b < NLOCB; b++) {
-            z->locs[b].gen = 0;
-            z->locs[b].head = NULL;
+            zz.locs[b].gen = 0;
+            zz.locs[b].head = NULL;
         }
-        z->gen = 1;
+        zz.gen = 1;
     }
 
     return true;
@@ -1321,27 +1336,27 @@ static bool scope_end(dz* z) {
 /* Remembers one bucket, so that scope_pop can put it back. Out of line and
  * reached at most once per bucket per expansion. */
 __attribute__((noinline))
-static bool undo_note(dz* z, int b) {
-    if (z->undo_used == z->undo_cap) {
+static bool undo_note(int b) {
+    if (zz.undo_used == zz.undo_cap) {
         /* Grown rather than capped. One entry per distinct bucket per level of
          * nesting is at most 64 times the nesting limit, but a body with sixty
          * local labels is legal -- the reference assembles one -- and a fixed
          * table would refuse it. */
-        const int want = z->undo_cap == 0 ? UNDO_STEP : z->undo_cap + z->undo_cap;
+        const int want = zz.undo_cap == 0 ? UNDO_STEP : zz.undo_cap + zz.undo_cap;
         Z_SITE("macro scope");
-        locundo* grown = (locundo*) realloc(z->undo, sizeof(locundo) * (size_t) want);
+        locundo* grown = (locundo*) realloc(zz.undo, sizeof(locundo) * (size_t) want);
         if (grown == NULL) {
-            z->err = "out of memory for macros";
+            zz.err = "out of memory for macros";
 
             return false;
         }
-        z->undo = grown;
-        z->undo_cap = want;
+        zz.undo = grown;
+        zz.undo_cap = want;
     }
-    locundo* u = &z->undo[z->undo_used++];
-    u->head = z->locs[b].head;
+    locundo* u = &zz.undo[zz.undo_used++];
+    u->head = zz.locs[b].head;
     u->b = (uint8_t) b;
-    u->gen = z->locs[b].gen;
+    u->gen = zz.locs[b].gen;
 
     return true;
 }
@@ -1351,7 +1366,7 @@ static bool undo_note(dz* z, int b) {
  * The bucket is empty unless its stamp is this scope's, whatever chain it
  * still holds from an earlier one -- those nodes have been handed back to the
  * allocator and may already be something else. */
-static sym* loc_intern(dz* z, const char* name, int len) {
+static sym* loc_intern(const char* name, int len) {
     /* A scope a global label opened has to have started before this, and this
      * is the first moment it can matter: nothing but a local can tell the
      * difference. Asked here rather than on every line of the source, where it
@@ -1361,17 +1376,17 @@ static sym* loc_intern(dz* z, const char* name, int len) {
      * the deferral -- `two: jp @l` reads its operand in the scope `two` is
      * closing, not the one it opens, so the line the label was on is what has
      * to be compared and not merely whether there was one. */
-    if (z->scope_line != 0 && z->scope_line != z->line) {
-        z->scope_line = 0;
-        if (!scope_end(z)) {
+    if (zz.scope_line != 0 && zz.scope_line != zz.line) {
+        zz.scope_line = 0;
+        if (!scope_end()) {
             return NULL;
         }
     }
 
     DUP_HASH_CALL(name, len);
     const int b = loc_bucket(name, len);
-    if (z->locs[b].gen == z->gen) {
-        for (sym* sp = z->locs[b].head; sp != NULL; sp = (sym*) sp->next) {
+    if (zz.locs[b].gen == zz.gen) {
+        for (sym* sp = zz.locs[b].head; sp != NULL; sp = (sym*) sp->next) {
             if (sp->len != (uint8_t) len) {
                 continue;
             }
@@ -1390,40 +1405,40 @@ static sym* loc_intern(dz* z, const char* name, int len) {
         /* The bucket belonged to an older scope and is about to belong to this
          * one. Inside an expansion the older scope is the caller's and is not
          * finished with, so what is here is written down first. */
-        if (z->expanding != 0 && !undo_note(z, b)) {
+        if (zz.expanding != 0 && !undo_note(b)) {
             return NULL;
         }
-        z->locs[b].gen = z->gen;
-        z->locs[b].head = NULL;
+        zz.locs[b].gen = zz.gen;
+        zz.locs[b].head = NULL;
     }
 
-    if (!loc_room(z)) {
-        z->err = "out of memory for labels";
+    if (!loc_room()) {
+        zz.err = "out of memory for labels";
 
         return NULL;
     }
 
-    char* text = nam_take(&z->locnames, &z->locnames_used, len);
+    char* text = nam_take(&zz.locnames, &zz.locnames_used, len);
     if (text == NULL) {
-        z->err = "out of memory for labels";
+        zz.err = "out of memory for labels";
 
         return NULL;
     }
-    if (z->locnamfirst == NULL) {
-        z->locnamfirst = z->locnames;
+    if (zz.locnamfirst == NULL) {
+        zz.locnamfirst = zz.locnames;
     }
     for (int i = 0; i < len; i++) {
         text[i] = name[i];
     }
 
-    sym* sp = &z->loccur->nodes[z->locs_used++];
+    sym* sp = &zz.loccur->nodes[zz.locs_used++];
     sp->name = text;
     sp->len = (uint8_t) len;
     sp->defined = false;
     sp->islocal = true;
     sp->addr = 0;
-    sp->next = z->locs[b].head;
-    z->locs[b].head = sp;
+    sp->next = zz.locs[b].head;
+    zz.locs[b].head = sp;
 
     return sp;
 }
@@ -1433,13 +1448,13 @@ static sym* loc_intern(dz* z, const char* name, int len) {
  * function already has it in hand. A pointer and a bool come back in the same
  * register here, so saying more costs nothing. */
 __attribute__((always_inline))
-static inline sym* sym_define(dz* z, const char* name, int len, int addr) {
-    sym* sp = sym_intern(z, name, len);
+static inline sym* sym_define(const char* name, int len, int addr) {
+    sym* sp = sym_intern(name, len);
     if (sp == NULL) {
         return NULL;
     }
     if (sp->defined) {
-        z->err = "label defined twice";
+        zz.err = "label defined twice";
 
         return NULL;
     }
@@ -1455,13 +1470,13 @@ static inline sym* sym_define(dz* z, const char* name, int len, int addr) {
  * @b` jumps to itself, while `two: jp @l` still reads `@l` in the scope `two`
  * is closing. And `@f` on the same line means the *next* one, which falls out
  * of resolving the pending symbol before a new one is made for what follows. */
-static bool anon_define(dz* z, int addr) {
-    z->anon_prev = addr;
-    z->anon_has_prev = true;
-    if (z->anon_fwd != NULL) {
-        z->anon_fwd->defined = true;
-        z->anon_fwd->addr = addr;
-        z->anon_fwd = NULL;
+static bool anon_define(int addr) {
+    zz.anon_prev = addr;
+    zz.anon_has_prev = true;
+    if (zz.anon_fwd != NULL) {
+        zz.anon_fwd->defined = true;
+        zz.anon_fwd->addr = addr;
+        zz.anon_fwd = NULL;
     }
 
     return true;
@@ -1470,37 +1485,37 @@ static bool anon_define(dz* z, int addr) {
 /* The symbol every `@f` since the last `@@` is waiting on, made if there is
  * not one. Nameless and in no bucket: nothing ever looks it up, and the only
  * thing that finds it again is this field. */
-static sym* anon_next(dz* z) {
-    if (z->anon_fwd == NULL) {
-        if (!sym_room(z)) {
-            z->err = "out of memory for labels";
+static sym* anon_next(void) {
+    if (zz.anon_fwd == NULL) {
+        if (!sym_room()) {
+            zz.err = "out of memory for labels";
 
             return NULL;
         }
-        sym* sp = &z->blocks->nodes[z->syms_used++];
+        sym* sp = &zz.blocks->nodes[zz.syms_used++];
         sp->next = NULL;
         sp->name = NULL;
         sp->len = 0;
         sp->defined = false;
         sp->islocal = false;
         sp->addr = 0;
-        z->anon_fwd = sp;
+        zz.anon_fwd = sp;
     }
 
-    return z->anon_fwd;
+    return zz.anon_fwd;
 }
 
 /* Defines a local in the current scope. Same shape as sym_define, against the
  * other table. */
 /* Hands the symbol back, and stays inlined, for the reasons above. */
 __attribute__((always_inline))
-static inline sym* loc_define(dz* z, const char* name, int len, int addr) {
-    sym* sp = loc_intern(z, name, len);
+static inline sym* loc_define(const char* name, int len, int addr) {
+    sym* sp = loc_intern(name, len);
     if (sp == NULL) {
         return NULL;
     }
     if (sp->defined) {
-        z->err = "label defined twice";
+        zz.err = "label defined twice";
 
         return NULL;
     }
@@ -1517,7 +1532,7 @@ static inline sym* loc_define(dz* z, const char* name, int len, int addr) {
  * the mixed-width compare off the instruction path entirely: an operand's
  * immediate is an `int` and cannot be out of range. The one caller that can
  * hand over something wider is emit_data, and it checks before it calls. */
-static bool fix_add(dz* z, const sym* target, const sym* sub, int addend,
+static bool fix_add(const sym* target, const sym* sub, int addend,
                     uint8_t width, int off) {
 #ifdef NOFIX
     /* Prices the fixup list on its own: the immediate bytes are still written,
@@ -1533,13 +1548,13 @@ static bool fix_add(dz* z, const sym* target, const sym* sub, int addend,
      * is on the node rather than on the operand that carried it here: the
      * operand is copied twice a line with an ldir and this is written once per
      * distinct label. */
-    fixup** list = &z->fixups;
-    int* used = &z->fix_used;
-    int* cap = &z->fix_cap;
+    fixup** list = &zz.fixups;
+    int* used = &zz.fix_used;
+    int* cap = &zz.fix_cap;
     if (target->islocal) {
-        list = &z->lfixups;
-        used = &z->lfix_used;
-        cap = &z->lfix_cap;
+        list = &zz.lfixups;
+        used = &zz.lfix_used;
+        cap = &zz.lfix_cap;
     }
 
     if (*used == *cap) {
@@ -1547,7 +1562,7 @@ static bool fix_add(dz* z, const sym* target, const sym* sub, int addend,
         const int want = *cap + FIX_STEP;
         fixup* grown = (fixup*) realloc(*list, (size_t) want * sizeof(fixup));
         if (grown == NULL) {
-            z->err = "out of memory for labels";
+            zz.err = "out of memory for labels";
 
             return false;
         }
@@ -1558,20 +1573,20 @@ static bool fix_add(dz* z, const sym* target, const sym* sub, int addend,
     /* A fixup on the global list whose `sub` is a local has to be settled in
      * two halves; scope_end does the local one. Recorded by index because the
      * list is realloc'd out from under any pointer. */
-    if (list == &z->fixups && sub != NULL && sub->islocal) {
-        if (z->subfix_used == z->subfix_cap) {
+    if (list == &zz.fixups && sub != NULL && sub->islocal) {
+        if (zz.subfix_used == zz.subfix_cap) {
             Z_SITE("fixups");
-            const int want = z->subfix_cap == 0 ? 8 : z->subfix_cap + z->subfix_cap;
-            int* grown = (int*) realloc(z->subfix, (size_t) want * sizeof(int));
+            const int want = zz.subfix_cap == 0 ? 8 : zz.subfix_cap + zz.subfix_cap;
+            int* grown = (int*) realloc(zz.subfix, (size_t) want * sizeof(int));
             if (grown == NULL) {
-                z->err = "out of memory for labels";
+                zz.err = "out of memory for labels";
 
                 return false;
             }
-            z->subfix = grown;
-            z->subfix_cap = want;
+            zz.subfix = grown;
+            zz.subfix_cap = want;
         }
-        z->subfix[z->subfix_used++] = *used;
+        zz.subfix[zz.subfix_used++] = *used;
     }
 
     fixup* f = &(*list)[(*used)++];
@@ -1580,7 +1595,7 @@ static bool fix_add(dz* z, const sym* target, const sym* sub, int addend,
     f->addend = addend;
     f->width = width;
     f->off = off;
-    f->line = z->line;
+    f->line = zz.line;
 
     return true;
 }
@@ -1591,7 +1606,7 @@ static bool fix_add(dz* z, const sym* target, const sym* sub, int addend,
  * instruction is allowed. A directive can ask for a whole string or a `DS` of
  * thousands, and growing 32 KB at a time until it fits would be a loop and a
  * realloc per step. */
-static bool out_grow(dz* z, int need) {
+static bool out_grow(int need) {
         Z_SITE("output buffer");
     /* Doubled, not stepped.
      *
@@ -1606,45 +1621,45 @@ static bool out_grow(dz* z, int need) {
      * byte of source, against the fifth that the initial size below is
      * reckoned from -- the constant was set when the only thing a source could
      * hold was instructions. That is what made this reachable. */
-    int want = z->cap + (z->cap < OUT_STEP ? OUT_STEP : z->cap);
-    const int least = (int) (z->o - z->out) + need + OUT_MAX_INSN;
+    int want = zz.cap + (zz.cap < OUT_STEP ? OUT_STEP : zz.cap);
+    const int least = (int) (zz.o - zz.out) + need + OUT_MAX_INSN;
     if (want < least) {
         want = least;
     }
-    uint8_t* grown = (uint8_t*) realloc(z->out, (size_t) want);
+    uint8_t* grown = (uint8_t*) realloc(zz.out, (size_t) want);
     if (grown == NULL) {
         return false;
     }
 
     /* realloc is allowed to move the buffer, so the cursor and the limit are
      * both relative to a base that may no longer be there. */
-    z->o = grown + (z->o - z->out);
-    z->out = grown;
-    z->cap = want;
-    z->lim = grown + want - OUT_MAX_INSN;
+    zz.o = grown + (zz.o - zz.out);
+    zz.out = grown;
+    zz.cap = want;
+    zz.lim = grown + want - OUT_MAX_INSN;
 
     return true;
 }
 
 /* One `if`, not a loop: OUT_STEP is 32 KB and an instruction is at most 12
  * bytes, so one growth always leaves room. */
-static bool out_reserve(dz* z) {
-    if (z->o <= z->lim) {
+static bool out_reserve(void) {
+    if (zz.o <= zz.lim) {
         return true;
     }
 
-    return out_grow(z, 0);
+    return out_grow(0);
 }
 
 /* Room for `n` bytes, for the directives, which are the only things that write
  * more than an instruction's worth at once. Also one `if`, because out_grow
  * takes the amount and asks for it all in one go. */
-static bool out_reserve_n(dz* z, int n) {
-    if (z->o + n <= z->lim) {
+static bool out_reserve_n(int n) {
+    if (zz.o + n <= zz.lim) {
         return true;
     }
 
-    return out_grow(z, n);
+    return out_grow(n);
 }
 
 /* ------------------------------------------------------------- mnemonics */
@@ -2862,18 +2877,18 @@ static void fwd_negate(uint8_t mask) {
  * enough for the compiler to outline it -- a call with three out-parameters on
  * every forward reference. Fourth time this file has met that. */
 __attribute__((always_inline))
-static inline bool fwd_result(dz* z, const sym** target, const sym** sub,
+static inline bool fwd_result(const sym** target, const sym** sub,
                               bool* subneg) {
     *sub = NULL;
     *subneg = false;
     if (expr_fwd_bad) {
-        z->err = "a label here must be defined already";
+        zz.err = "a label here must be defined already";
 
         return false;
     }
     if (expr_fwd2 == NULL) {
         if (expr_fwd_neg) {
-            z->err = "a label cannot be negated";
+            zz.err = "a label cannot be negated";
 
             return false;
         }
@@ -2892,7 +2907,7 @@ static inline bool fwd_result(dz* z, const sym** target, const sym** sub,
     } else {
         /* Both subtracted. A fixup adds its first symbol, so there is nowhere
          * for `-a - b` to go. */
-        z->err = "a label cannot be negated";
+        zz.err = "a label cannot be negated";
 
         return false;
     }
@@ -2925,28 +2940,28 @@ static inline bool fwd_result(dz* z, const sym** target, const sym** sub,
 static void fwd_reset(const sym* seed);
 
 __attribute__((noinline))
-static sym* defer_text(dz* z, const char* text, int n) {
-    if (!sym_room(z)) {
-        z->err = "out of memory for labels";
+static sym* defer_text(const char* text, int n) {
+    if (!sym_room()) {
+        zz.err = "out of memory for labels";
 
         return NULL;
     }
-    if (z->defer_used == z->defer_cap) {
+    if (zz.defer_used == zz.defer_cap) {
         Z_SITE("deferred expressions");
-        const int want = z->defer_cap == 0 ? 8 : z->defer_cap + z->defer_cap;
+        const int want = zz.defer_cap == 0 ? 8 : zz.defer_cap + zz.defer_cap;
         defexpr* grown =
-            (defexpr*) realloc(z->defer, (size_t) want * sizeof(defexpr));
+            (defexpr*) realloc(zz.defer, (size_t) want * sizeof(defexpr));
         if (grown == NULL) {
-            z->err = "out of memory for labels";
+            zz.err = "out of memory for labels";
 
             return NULL;
         }
-        z->defer = grown;
-        z->defer_cap = want;
+        zz.defer = grown;
+        zz.defer_cap = want;
     }
-    char* copy = nam_take(&z->names, &z->names_used, n + 1);
+    char* copy = nam_take(&zz.names, &zz.names_used, n + 1);
     if (copy == NULL) {
-        z->err = "out of memory for labels";
+        zz.err = "out of memory for labels";
 
         return NULL;
     }
@@ -2955,7 +2970,7 @@ static sym* defer_text(dz* z, const char* text, int n) {
     }
     copy[n] = 0;
 
-    sym* sp = &z->blocks->nodes[z->syms_used++];
+    sym* sp = &zz.blocks->nodes[zz.syms_used++];
     sp->next = NULL;
     sp->name = NULL;
     sp->len = 0;
@@ -2963,12 +2978,12 @@ static sym* defer_text(dz* z, const char* text, int n) {
     sp->islocal = false;
     sp->addr = 0;
 
-    defexpr* d = &z->defer[z->defer_used++];
+    defexpr* d = &zz.defer[zz.defer_used++];
     d->sp = sp;
     d->text = copy;
     d->len = n;
-    d->line = z->line;
-    z->err = NULL;
+    d->line = zz.line;
+    zz.err = NULL;
     fwd_reset(NULL);
 
     return sp;
@@ -2976,8 +2991,8 @@ static sym* defer_text(dz* z, const char* text, int n) {
 
 /* The same for an operand, which carries the symbol as its forward
  * reference and lets the emitter make an ordinary fixup out of it. */
-static bool defer_expr(dz* z, const char* text, int n, dop* op) {
-    sym* sp = defer_text(z, text, n);
+static bool defer_expr(const char* text, int n, dop* op) {
+    sym* sp = defer_text(text, n);
     if (sp == NULL) {
         return false;
     }
@@ -2989,7 +3004,7 @@ static bool defer_expr(dz* z, const char* text, int n, dop* op) {
     return true;
 }
 
-static bool fwd_finish(dz* z, dop* op) {
+static bool fwd_finish(dop* op) {
     if (expr_fwd == NULL) {
         return true;
     }
@@ -2997,7 +3012,7 @@ static bool fwd_finish(dz* z, dop* op) {
     const sym* target = NULL;
     const sym* sub = NULL;
     bool subneg = false;
-    if (!fwd_result(z, &target, &sub, &subneg)) {
+    if (!fwd_result(&target, &sub, &subneg)) {
         return false;
     }
     op->fwd = target;
@@ -3016,9 +3031,9 @@ static void fwd_reset(const sym* seed) {
     expr_fwd_bad = false;
 }
 
-static bool expr_value(dz* z, evalue* out, const char** pp, const char* e,
+static bool expr_value(evalue* out, const char** pp, const char* e,
                        uint8_t* fwdmask);
-static bool expr_climb(dz* z, evalue* total, const char** pp, const char* e,
+static bool expr_climb(evalue* total, const char** pp, const char* e,
                        uint8_t minprec, int depth, uint8_t* fwdmask);
 
 /* A bare token inside an expression: a number in any radix the reference takes,
@@ -3029,7 +3044,7 @@ static bool expr_climb(dz* z, evalue* total, const char** pp, const char* e,
  * expression would need the fixup to carry the rest of the sum, which is the
  * next stage and is refused here rather than guessed at. 35.7% of the corpus's
  * expressions need nothing more than this. */
-static bool expr_atom(dz* z, evalue* out, const char* ns, int nn) {
+static bool expr_atom(evalue* out, const char* ns, int nn) {
     /* The machine's word: a run this declines falls through to num_parse
      * below, which is where a literal wider than the machine is read. */
     int v = 0;
@@ -3083,17 +3098,17 @@ static bool expr_atom(dz* z, evalue* out, const char* ns, int nn) {
         if (ns[0] == '@') {
             const char k = nn == 2 ? (char) (ns[1] | 0x20) : 0;
             if (k == 'b' || k == 'p') {
-                if (!z->anon_has_prev) {
-                    z->err = "no anonymous label above this one";
+                if (!zz.anon_has_prev) {
+                    zz.err = "no anonymous label above this one";
 
                     return false;
                 }
-                *out = z->anon_prev;
+                *out = zz.anon_prev;
 
                 return true;
             }
             if (k == 'f' || k == 'n') {
-                sp = anon_next(z);
+                sp = anon_next();
                 if (sp == NULL) {
                     return false;
                 }
@@ -3102,9 +3117,9 @@ static bool expr_atom(dz* z, evalue* out, const char* ns, int nn) {
 
                 return true;
             }
-            sp = loc_intern(z, ns, nn);
+            sp = loc_intern(ns, nn);
         } else {
-            sp = sym_intern(z, ns, nn);
+            sp = sym_intern(ns, nn);
         }
         if (sp == NULL) {
             return false;
@@ -3124,7 +3139,7 @@ static bool expr_atom(dz* z, evalue* out, const char* ns, int nn) {
 
     value gv = 0;
     if (!num_parse(ns, nn, &gv)) {
-        z->err = "expected a value";
+        zz.err = "expected a value";
 
         return false;
     }
@@ -3136,7 +3151,7 @@ static bool expr_atom(dz* z, evalue* out, const char* ns, int nn) {
 /* One term, with any unary operators in front of it. `fwdmask` comes back
  * holding the slots this term put a forward reference into, so its caller
  * knows which signs its operator has to flip. */
-static bool expr_term(dz* z, evalue* out, const char** pp, const char* e,
+static bool expr_term(evalue* out, const char** pp, const char* e,
                       uint8_t* fwdmask) {
     const char* p = *pp;
     while (p < e && is_space_ch(*p)) {
@@ -3158,7 +3173,7 @@ static bool expr_term(dz* z, evalue* out, const char** pp, const char* e,
             p++;
         }
         if (*p == '-' || *p == '+' || *p == '~' || exop[(uint8_t) *p] != 0) {
-            z->err = "a unary operator needs a value";
+            zz.err = "a unary operator needs a value";
 
             return false;
         }
@@ -3173,14 +3188,14 @@ static bool expr_term(dz* z, evalue* out, const char** pp, const char* e,
          * inside an expression there is nothing left for it to be. */
         const bool square = *p == '[';
         if (expr_depth >= EXPR_MAXDEPTH) {
-            z->err = "expression nested too deeply";
+            zz.err = "expression nested too deeply";
 
             return false;
         }
         expr_depth++;
         p++;
         uint8_t inner = 0;
-        if (!expr_value(z, &v, &p, e, &inner)) {
+        if (!expr_value(&v, &p, e, &inner)) {
             return false;
         }
         expr_depth--;
@@ -3188,7 +3203,7 @@ static bool expr_term(dz* z, evalue* out, const char** pp, const char* e,
             p++;
         }
         if (*p != (square ? ']' : ')')) {
-            z->err = square ? "expected ]" : "expected )";
+            zz.err = square ? "expected ]" : "expected )";
 
             return false;
         }
@@ -3212,7 +3227,7 @@ static bool expr_term(dz* z, evalue* out, const char** pp, const char* e,
              * and the backslash was its content. */
             const int esc = str_escape(p[2]);
             if (esc < 0 || p[3] != '\'') {
-                z->err = "expected a character";
+                zz.err = "expected a character";
 
                 return false;
             }
@@ -3223,7 +3238,7 @@ static bool expr_term(dz* z, evalue* out, const char** pp, const char* e,
             p += 3;
         } else {
             if (p[1] == '\n' || p[1] == 0 || p[2] != '\'') {
-                z->err = "expected a character";
+                zz.err = "expected a character";
 
                 return false;
             }
@@ -3237,7 +3252,7 @@ static bool expr_term(dz* z, evalue* out, const char** pp, const char* e,
         }
         const int n = (int) (p - ts);
         if (n == 0) {
-            z->err = "expected a value";
+            zz.err = "expected a value";
 
             return false;
         }
@@ -3245,8 +3260,8 @@ static bool expr_term(dz* z, evalue* out, const char** pp, const char* e,
             /* The address of the instruction being assembled. `$` on its own;
              * with hex digits after it, it is the radix prefix instead, and
              * the scan above has already taken them. */
-            v = z->org + (int) (z->o - z->out);
-        } else if (!expr_atom(z, &v, ts, n)) {
+            v = zz.org + (int) (zz.o - zz.out);
+        } else if (!expr_atom(&v, ts, n)) {
             return false;
         }
     }
@@ -3278,11 +3293,11 @@ static bool expr_term(dz* z, evalue* out, const char** pp, const char* e,
  * power -- which makes the recursive call below return after a single term and
  * turns the climb into the reference's left-to-right fold. One algorithm, two
  * tables; the compatible answer is not a second code path to keep in step. */
-static bool expr_climb(dz* z, evalue* total, const char** pp, const char* e,
+static bool expr_climb(evalue* total, const char** pp, const char* e,
                        uint8_t minprec, int depth, uint8_t* fwdmask) {
     const char* p = *pp;
     if (depth > EXPR_MAXDEPTH) {
-        z->err = "expression nested too deeply";
+        zz.err = "expression nested too deeply";
 
         return false;
     }
@@ -3303,7 +3318,7 @@ static bool expr_climb(dz* z, evalue* total, const char** pp, const char* e,
             /* Doubled or nothing: the reference refuses a single one rather
              * than reading it as a comparison, so `1<4` is an error. */
             if (*p != c) {
-                z->err = "expected << or >>";
+                zz.err = "expected << or >>";
 
                 return false;
             }
@@ -3318,10 +3333,10 @@ static bool expr_climb(dz* z, evalue* total, const char** pp, const char* e,
          * there a forward reference about" refused it. */
         uint8_t rhs_mask = 0;
         evalue t = 0;
-        if (!expr_term(z, &t, &p, e, &rhs_mask)) {
+        if (!expr_term(&t, &p, e, &rhs_mask)) {
             return false;
         }
-        if (!expr_climb(z, &t, &p, e, (uint8_t) (prec + 1), depth + 1,
+        if (!expr_climb(&t, &p, e, (uint8_t) (prec + 1), depth + 1,
                         &rhs_mask)) {
             return false;
         }
@@ -3349,7 +3364,7 @@ static bool expr_climb(dz* z, evalue* total, const char** pp, const char* e,
                  * this deliberately does not match: there is no byte sequence
                  * to agree with. */
                 if (t == 0) {
-                    z->err = "division by zero";
+                    zz.err = "division by zero";
 
                     return false;
                 }
@@ -3368,13 +3383,13 @@ static bool expr_climb(dz* z, evalue* total, const char** pp, const char* e,
 }
 
 /* A whole expression: a term, then everything that binds to it. */
-static bool expr_value(dz* z, evalue* out, const char** pp, const char* e,
+static bool expr_value(evalue* out, const char** pp, const char* e,
                        uint8_t* fwdmask) {
     evalue total = 0;
-    if (!expr_term(z, &total, pp, e, fwdmask)) {
+    if (!expr_term(&total, pp, e, fwdmask)) {
         return false;
     }
-    if (!expr_climb(z, &total, pp, e, 1, 0, fwdmask)) {
+    if (!expr_climb(&total, pp, e, 1, 0, fwdmask)) {
         return false;
     }
     *out = total;
@@ -3427,7 +3442,7 @@ static bool expr_value(dz* z, evalue* out, const char** pp, const char* e,
 #define PTRUNC_AT(n) do { } while (0)
 #endif
 
-__attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, const char** pp, const char* e) {
+__attribute__((always_inline)) static inline bool parse_operand(dop* op, const char** pp, const char* e) {
     *op = dop_none;
 
     const char* p = *pp;
@@ -3586,12 +3601,12 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
                      * wider than the machine; nothing an operand holds is.
                      * See evalue. */
                     evalue dv32 = 0;
-                    if (!expr_value(z, &dv32, &p, e, &dmask)) {
+                    if (!expr_value(&dv32, &p, e, &dmask)) {
                         return false;
                     }
                     d = (int) dv32;
                     if (expr_fwd != NULL) {
-                        z->err = "a label here must be defined already";
+                        zz.err = "a label here must be defined already";
 
                         return false;
                     }
@@ -3601,7 +3616,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
                     /* "Index register offset exceeded" there. One signed byte
                      * is what the instruction has room for, so anything else
                      * would be emitted truncated and silently wrong. */
-                    z->err = "index offset out of range";
+                    zz.err = "index offset out of range";
 
                     return false;
                 }
@@ -3612,7 +3627,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
 
             if ((op->mode & INDIRECT) != 0) {
                 if (*p != ')') {
-                    z->err = "expected )";
+                    zz.err = "expected )";
 
                     return false;
                 }
@@ -3729,16 +3744,16 @@ full_expression:
             fwd_reset(NULL);
             uint8_t fwdmask = 0;
             evalue wide = 0;
-            if (!expr_value(z, &wide, &p, e, &fwdmask)) {
+            if (!expr_value(&wide, &p, e, &fwdmask)) {
                 return false;
             }
             total = (int) wide;
-            if (!fwd_finish(z, op)) {
+            if (!fwd_finish(op)) {
                 /* Every way fwd_finish can refuse is a shape the reference
                  * assembles -- a negated label, a complemented one, a third
                  * symbol, any operator but plus and minus -- so all of them
                  * are kept as text rather than refused. */
-                if (!defer_expr(z, s, (int) (p - s), op)) {
+                if (!defer_expr(s, (int) (p - s), op)) {
                     return false;
                 }
                 total = 0;
@@ -3752,7 +3767,7 @@ full_expression:
             /* The address of the instruction being assembled. `$` alone; with
              * hex digits after it the scan has already taken them and it is
              * the radix prefix instead. */
-            v = z->org + (int) (z->o - z->out);
+            v = zz.org + (int) (zz.o - zz.out);
             got = true;
         } else if (ns[0] == '@') {
             /* `@f` and `@n` are the next anonymous label, `@b` and `@p` the
@@ -3765,19 +3780,19 @@ full_expression:
             if (k2 == 'b' || k2 == 'p') {
                 /* Backward is not a reference at all: the address is already
                  * known, so this is the same as a label defined above. */
-                if (!z->anon_has_prev) {
-                    z->err = "no anonymous label above this one";
+                if (!zz.anon_has_prev) {
+                    zz.err = "no anonymous label above this one";
 
                     return false;
                 }
-                v = z->anon_prev;
+                v = zz.anon_prev;
             } else {
                 const sym* sp;
                 if (k2 == 'f' || k2 == 'n') {
-                    sp = anon_next(z);
+                    sp = anon_next();
                 } else {
 #ifdef DUP_LOCINTERN
-                    if (loc_intern(z, ns, nn) == NULL) {
+                    if (loc_intern(ns, nn) == NULL) {
                         return false;
                     }
 #endif
@@ -3786,7 +3801,7 @@ full_expression:
                      * against the number formats either. Going straight to the
                      * lookup also keeps `@abch` from being read as hexadecimal
                      * by the trailing-h rule below. */
-                    sp = loc_intern(z, ns, nn);
+                    sp = loc_intern(ns, nn);
                 }
                 if (sp == NULL) {
                     return false;
@@ -3854,11 +3869,11 @@ full_expression:
              * carried on the operand for the emitter to record, because where
              * the bytes land is not known until the row is chosen. */
 #ifdef DUP_INTERN
-            if (sym_intern(z, ns, nn) == NULL) {
+            if (sym_intern(ns, nn) == NULL) {
                 return false;
             }
 #endif
-            const sym* sp = sym_intern(z, ns, nn);
+            const sym* sp = sym_intern(ns, nn);
             if (sp == NULL) {
                 return false;
             }
@@ -3880,7 +3895,7 @@ full_expression:
         if (!got) {
             value gv = 0;
             if (nn <= 0 || !num_parse(ns, nn, &gv)) {
-                z->err = "expected a value";
+                zz.err = "expected a value";
 
                 return false;
             }
@@ -3909,17 +3924,17 @@ full_expression:
                 p = q;
                 uint8_t fwdmask = fwd_live();
                 evalue wide = total;
-                if (!expr_climb(z, &wide, &p, e, 1, 0, &fwdmask)) {
+                if (!expr_climb(&wide, &p, e, 1, 0, &fwdmask)) {
                     return false;
                 }
                 total = (int) wide;
-                if (!fwd_finish(z, op)) {
+                if (!fwd_finish(op)) {
                     /* Same as the branch above: an expression a fixup cannot
                      * hold is kept as text rather than refused. This is the
                      * site that matters in practice, because an operand that
                      * begins with a name reaches the expression through here
                      * and not through `full_expression`. */
-                    if (!defer_expr(z, s, (int) (p - s), op)) {
+                    if (!defer_expr(s, (int) (p - s), op)) {
                         return false;
                     }
                     total = 0;
@@ -3936,7 +3951,7 @@ have_value:
         }
         if ((op->mode & INDIRECT) != 0) {
             if (*p != ')') {
-                z->err = "expected )";
+                zz.err = "expected )";
 
                 return false;
             }
@@ -4028,7 +4043,7 @@ static bool is_equ_at(const char* p) {
  * that is not defined yet, and patching reads the value the same way it reads
  * an address. Nothing here had to know about it. */
 __attribute__((noinline))
-static bool equ_line(dz* z, const char* name, int nlen, const char* p,
+static bool equ_line(const char* name, int nlen, const char* p,
                      const char* e, const char** stop) {
     /* Steps over the EQU itself. is_equ_at only answered whether one is here,
      * and telling it to also report where it ended meant taking the address of
@@ -4056,13 +4071,13 @@ static bool equ_line(dz* z, const char* name, int nlen, const char* p,
         if (nlen == 2 && name[1] == '@') {
             /* An anonymous label has no name to attach a value to, and the
              * reference refuses this too. */
-            z->err = "invalid label";
+            zz.err = "invalid label";
 
             return false;
         }
-        named = loc_intern(z, name, nlen);
+        named = loc_intern(name, nlen);
     } else {
-        named = sym_intern(z, name, nlen);
+        named = sym_intern(name, nlen);
     }
     if (named == NULL) {
         return false;
@@ -4081,11 +4096,11 @@ static bool equ_line(dz* z, const char* name, int nlen, const char* p,
     } else {
         fwd_reset(NULL);
         uint8_t fwdmask = 0;
-        if (!expr_value(z, &value, &p, e, &fwdmask)) {
+        if (!expr_value(&value, &p, e, &fwdmask)) {
             return false;
         }
         if (expr_fwd != NULL) {
-            z->err = "a label here must be defined already";
+            zz.err = "a label here must be defined already";
 
             return false;
         }
@@ -4111,7 +4126,7 @@ static bool equ_line(dz* z, const char* name, int nlen, const char* p,
  * over-long line through an out-parameter, and holding that across the call
  * inside `run` took its frame from 13 bytes to 16 -- in the function that
  * holds the line loop. Here it costs nothing, because this is entered once per
- * 16 KB of source. A failure is told from an end of file by `z->err`, which
+ * 16 KB of source. A failure is told from an end of file by `zz.err`, which
  * exists either way.
  *
  * The check itself is new. The reader has always said when one line does not
@@ -4119,23 +4134,23 @@ static bool equ_line(dz* z, const char* name, int nlen, const char* p,
  * *successfully* and writing whatever came before -- unreachable until a
  * directive could put 16 KB on one line, and wrong the whole time regardless. */
 __attribute__((noinline))
-static bool line_fill(dz* z, buf_reader* r) {
+static bool line_fill(buf_reader* r) {
     bool too_long = false;
     if (br_fill_lines(r, &too_long)) {
         return true;
     }
     if (too_long) {
-        /* z->line counts the lines already assembled, so this names the one
+        /* zz.line counts the lines already assembled, so this names the one
          * before the offending line. That is still where to start looking. */
-        z->line++;
-        z->err = "line too long";
+        zz.line++;
+        zz.err = "line too long";
     }
 
     return false;
 }
 
 
-static bool run_lines(dz* z);
+static bool run_lines(void);
 
 /* The local-label scope a macro expansion runs in, set aside and put back.
  *
@@ -4177,33 +4192,33 @@ typedef struct {
 } locsave;
 
 __attribute__((noinline))
-static bool scope_push(dz* z, locsave* sv) {
-    sv->loccur = z->loccur;
-    sv->locnames = z->locnames;
-    sv->locs_used = z->locs_used;
-    sv->locnames_used = z->locnames_used;
-    sv->lfix_used = z->lfix_used;
-    sv->subfix_used = z->subfix_used;
-    sv->undo_used = z->undo_used;
-    sv->gen = z->gen;
+static bool scope_push(locsave* sv) {
+    sv->loccur = zz.loccur;
+    sv->locnames = zz.locnames;
+    sv->locs_used = zz.locs_used;
+    sv->locnames_used = zz.locnames_used;
+    sv->lfix_used = zz.lfix_used;
+    sv->subfix_used = zz.subfix_used;
+    sv->undo_used = zz.undo_used;
+    sv->gen = zz.gen;
     /* The scope end a global label left pending belongs to the caller. Left
      * standing, the first local in the body would notice it -- the body counts
      * its own line numbers, so the comparison that defers it never matches --
      * and end the expansion's scope in the caller's name, clearing the flag.
      * The caller's next local then would not open a scope at all, and the one
      * above it would still hold whatever the previous scope defined. */
-    sv->scope_line = z->scope_line;
-    z->scope_line = 0;
+    sv->scope_line = zz.scope_line;
+    zz.scope_line = 0;
 
-    if (++z->gen == 0) {
+    if (++zz.gen == 0) {
         /* The stamp has wrapped, so a bucket left over from 256 scopes ago
          * would read as belonging to this one. The undo log is what puts them
          * back, and it records what it finds, so emptying them here is safe. */
         for (int b = 0; b < NLOCB; b++) {
-            z->locs[b].gen = 0;
-            z->locs[b].head = NULL;
+            zz.locs[b].gen = 0;
+            zz.locs[b].head = NULL;
         }
-        z->gen = 1;
+        zz.gen = 1;
     }
 
     return true;
@@ -4214,35 +4229,35 @@ static bool scope_push(dz* z, locsave* sv) {
  * Only the fixups the expansion added are resolved -- the caller's are still
  * outstanding and belong to a scope that has not ended. */
 __attribute__((noinline))
-static bool scope_pop(dz* z, locsave* sv) {
+static bool scope_pop(locsave* sv) {
     /* The body's locals go the same way a scope's do, so a fixup that names a
      * global and one of them is settled in halves here too -- and only the
      * ones this expansion added: the caller's are still outstanding and its
      * locals are not defined yet. */
-    bool ok = fold_subs(z, sv->subfix_used);
-    for (int i = sv->lfix_used; ok && i < z->lfix_used; i++) {
-        if (!patch_fixup(z, &z->lfixups[i])) {
+    bool ok = fold_subs(sv->subfix_used);
+    for (int i = sv->lfix_used; ok && i < zz.lfix_used; i++) {
+        if (!patch_fixup(&zz.lfixups[i])) {
             ok = false;
             break;
         }
     }
 
-    while (z->undo_used > sv->undo_used) {
-        const locundo* u = &z->undo[--z->undo_used];
-        z->locs[u->b].head = u->head;
-        z->locs[u->b].gen = u->gen;
+    while (zz.undo_used > sv->undo_used) {
+        const locundo* u = &zz.undo[--zz.undo_used];
+        zz.locs[u->b].head = u->head;
+        zz.locs[u->b].gen = u->gen;
     }
-    z->gen = sv->gen;
-    z->scope_line = sv->scope_line;
-    z->lfix_used = sv->lfix_used;
+    zz.gen = sv->gen;
+    zz.scope_line = sv->scope_line;
+    zz.lfix_used = sv->lfix_used;
 
     /* The arena counters go back so the space is handed out again. The name
      * blocks only rewind if the body did not need a new one: nam_take pushes a
      * new block in front of the list, and rewinding past it would lose it. */
-    z->loccur = sv->loccur;
-    z->locs_used = sv->locs_used;
-    if (z->locnames == sv->locnames) {
-        z->locnames_used = sv->locnames_used;
+    zz.loccur = sv->loccur;
+    zz.locs_used = sv->locs_used;
+    if (zz.locnames == sv->locnames) {
+        zz.locnames_used = sv->locnames_used;
     }
 
     return ok;
@@ -4339,9 +4354,9 @@ static bool macro_room(macro* m, int need) {
     return true;
 }
 
-static const macro* macro_at(const dz* z, const char* s, int n) {
+static const macro* macro_at(const char* s, int n) {
     const char c0 = (char) (*s | 0x20);
-    for (const macro* m = z->macros; m != NULL; m = m->next) {
+    for (const macro* m = zz.macros; m != NULL; m = m->next) {
         /* Length and first character before the call, for the same reason the
          * substitution loop asks them: the list is walked once per invocation
          * and most of it is not this macro. */
@@ -4362,10 +4377,10 @@ static const macro* macro_at(const dz* z, const char* s, int n) {
  * move; the parameters go in as a length byte followed by the text, so walking
  * them needs no second array and no terminator. */
 __attribute__((noinline))
-static bool macro_begin(dz* z, const char** pp, const char* e) {
-    if (z->defining != NULL) {
+static bool macro_begin(const char** pp, const char* e) {
+    if (zz.defining != NULL) {
         /* "No macro definitions allowed inside a macro" there. */
-        z->err = "macros do not nest";
+        zz.err = "macros do not nest";
 
         return false;
     }
@@ -4379,14 +4394,14 @@ static bool macro_begin(dz* z, const char** pp, const char* e) {
     }
     const int nn = (int) (p - ns);
     if (nn == 0 || nn > 255) {
-        z->err = "expected a macro name";
+        zz.err = "expected a macro name";
 
         return false;
     }
 
-    if (macro_at(z, ns, nn) != NULL) {
+    if (macro_at(ns, nn) != NULL) {
         /* "Macro already defined" there, and case-blind, as the lookup is. */
-        z->err = "that macro is already defined";
+        zz.err = "that macro is already defined";
 
         return false;
     }
@@ -4394,19 +4409,19 @@ static bool macro_begin(dz* z, const char** pp, const char* e) {
     Z_SITE("macro table");
     macro* m = (macro*) calloc(1, sizeof(macro));
     if (m == NULL) {
-        z->err = "out of memory for macros";
+        zz.err = "out of memory for macros";
 
         return false;
     }
     /* One byte more than the name, for a terminator. Nothing else in the name
      * blocks carries one -- a label is a pointer and a length -- but an
-     * expansion puts this name in `z->path`, where a failure inside the body
+     * expansion puts this name in `zz.path`, where a failure inside the body
      * reports it, and that is read as a string. Without the nul the message
      * came out as the whole arena from the name onwards. */
-    char* nm = nam_take(&z->names, &z->names_used, nn + 1);
+    char* nm = nam_take(&zz.names, &zz.names_used, nn + 1);
     if (nm == NULL) {
         free(m);
-        z->err = "out of memory for macros";
+        zz.err = "out of memory for macros";
 
         return false;
     }
@@ -4440,7 +4455,7 @@ static bool macro_begin(dz* z, const char** pp, const char* e) {
              * it -- which also means nothing else will ever free it. This path
              * leaked before ASan was pointed at it. */
             free(m);
-            z->err = "macro parameter name too long";
+            zz.err = "macro parameter name too long";
 
             return false;
         }
@@ -4455,14 +4470,14 @@ static bool macro_begin(dz* z, const char** pp, const char* e) {
         if (numeric_token(ps, pn) || mnemonic_of(ps, pn) != NULL
             || directive_of(ps, pn) != DIR_NONE || is_equ_at(ps)) {
             free(m);
-            z->err = "a macro parameter may not be a number or a mnemonic";
+            zz.err = "a macro parameter may not be a number or a mnemonic";
 
             return false;
         }
-        char* at = nam_take(&z->names, &z->names_used, pn + 1);
+        char* at = nam_take(&zz.names, &zz.names_used, pn + 1);
         if (at == NULL) {
             free(m);
-            z->err = "out of memory for macros";
+            zz.err = "out of memory for macros";
 
             return false;
         }
@@ -4476,10 +4491,10 @@ static bool macro_begin(dz* z, const char** pp, const char* e) {
         m->nparam++;
     }
 
-    m->next = z->macros;
-    z->macros = m;
-    z->defining = m;
-    z->line_mode = LINE_CAPTURE;
+    m->next = zz.macros;
+    zz.macros = m;
+    zz.defining = m;
+    zz.line_mode = LINE_CAPTURE;
     *pp = p;
 
     return true;
@@ -4488,22 +4503,22 @@ static bool macro_begin(dz* z, const char** pp, const char* e) {
 /* One line of a macro body, copied in as it stands. Nothing on it is parsed
  * until the macro is invoked, which is why a body may hold names that do not
  * exist yet and arguments that are not values. */
-static bool macro_line(dz* z, const char* p, const char* e) {
+static bool macro_line(const char* p, const char* e) {
     const char* q = p;
     while (q < e && *q != '\n') {
         q++;
     }
     const int n = (int) (q - p) + 1;
-    if (!macro_room(z->defining, n)) {
-        z->err = "out of memory for macros";
+    if (!macro_room(zz.defining, n)) {
+        zz.err = "out of memory for macros";
 
         return false;
     }
     for (int i = 0; i < n - 1; i++) {
-        z->defining->body[z->defining->bodylen + i] = p[i];
+        zz.defining->body[zz.defining->bodylen + i] = p[i];
     }
-    z->defining->body[z->defining->bodylen + n - 1] = '\n';
-    z->defining->bodylen += n;
+    zz.defining->body[zz.defining->bodylen + n - 1] = '\n';
+    zz.defining->bodylen += n;
 
     return true;
 }
@@ -4535,7 +4550,7 @@ __attribute__((noinline))
  * went through a five-instruction address computation apiece. Split, both
  * frames fit. */
 __attribute__((noinline))
-static char* macro_text(dz* z, const macro* m, const char* p, const char* e,
+static char* macro_text(const macro* m, const char* p, const char* e,
                         const char** stop, int* outlen) {
     /* The arguments, as spans of the invocation line. A macro takes as many as
      * it declares and the reference counts them -- "0 provided, 1 expected". */
@@ -4554,7 +4569,7 @@ static char* macro_text(dz* z, const macro* m, const char* p, const char* e,
             continue;
         }
         if (nargs == MACRO_MAXPARAM) {
-            z->err = "too many macro arguments";
+            zz.err = "too many macro arguments";
 
             return NULL;
         }
@@ -4587,27 +4602,27 @@ static char* macro_text(dz* z, const macro* m, const char* p, const char* e,
     }
     *stop = p;
     if (nargs != m->nparam) {
-        z->err = "wrong number of macro arguments";
+        zz.err = "wrong number of macro arguments";
 
         return NULL;
     }
 
     /* The body with the names replaced. Built in one buffer sized as it goes;
      * an expansion is short and this happens once per invocation. */
-    int cap = z->expcap[z->depth];
-    char* out = z->expbuf[z->depth];
+    int cap = zz.expcap[zz.depth];
+    char* out = zz.expbuf[zz.depth];
     if (cap < m->bodylen + 64) {
         cap = m->bodylen + 64;
         Z_SITE("macro expansion");
         char* grown = (char*) realloc(out, (size_t) cap);
         if (grown == NULL) {
-            z->err = "out of memory for macros";
+            zz.err = "out of memory for macros";
 
             return NULL;
         }
         out = grown;
-        z->expbuf[z->depth] = out;
-        z->expcap[z->depth] = cap;
+        zz.expbuf[zz.depth] = out;
+        zz.expcap[zz.depth] = cap;
     }
     /* Walked with pointers, not subscripts.
      *
@@ -4676,13 +4691,13 @@ static char* macro_text(dz* z, const macro* m, const char* p, const char* e,
             cap = (len + need + 1) * 2;
             char* grown = (char*) realloc(out, (size_t) cap);
             if (grown == NULL) {
-                z->err = "out of memory for macros";
+                zz.err = "out of memory for macros";
 
                 return NULL;
             }
             out = grown;
-            z->expbuf[z->depth] = out;
-            z->expcap[z->depth] = cap;
+            zz.expbuf[zz.depth] = out;
+            zz.expcap[zz.depth] = cap;
         }
         char* o = out + len;
         for (int k = 0; k < need; k++) {
@@ -4700,9 +4715,9 @@ static char* macro_text(dz* z, const macro* m, const char* p, const char* e,
 /* Reads the expanded body, in a scope of its own, exactly as an included file
  * is read. Takes the buffer whatever built it. */
 __attribute__((noinline))
-static bool macro_run(dz* z, const macro* m, char* out, int len) {
-    const char* const saved_path = z->path;
-    const int saved_line = z->line;
+static bool macro_run(const macro* m, char* out, int len) {
+    const char* const saved_path = zz.path;
+    const int saved_line = zz.line;
 
     /* The file the invocation came from is left open.
      *
@@ -4718,61 +4733,61 @@ static bool macro_run(dz* z, const macro* m, char* out, int len) {
      * over a file holds one, so the count is the number of INCLUDEs in the
      * chain plus the files whose lines are mid-expansion -- bounded by the
      * nesting limit, and a failure to open reports itself plainly. */
-    const buf_reader saved = z->rd;
+    const buf_reader saved = zz.rd;
     /* The reader reads the buffer where it stands, and does not own it: it is
      * kept for the next expansion at this depth. Copying it into a buffer of
      * the reader's own was a malloc, a copy and a free an invocation. */
-    br_use_mem(&z->rd, out, len);
-    z->path = m->name;
-    z->line = 0;
-    z->depth++;
-    z->expanding++;
+    br_use_mem(&zz.rd, out, len);
+    zz.path = m->name;
+    zz.line = 0;
+    zz.depth++;
+    zz.expanding++;
 
     /* A scope of its own for the body, with the caller's kept and put back. */
     locsave sv;
-    scope_push(z, &sv);
-    bool ok = run_lines(z);
-    if (!scope_pop(z, &sv)) {
+    scope_push(&sv);
+    bool ok = run_lines();
+    if (!scope_pop(&sv)) {
         ok = false;
     }
 
-    br_destroy(&z->rd);
-    z->depth--;
-    z->expanding--;
-    z->rd = saved;
+    br_destroy(&zz.rd);
+    zz.depth--;
+    zz.expanding--;
+    zz.rd = saved;
     if (!ok) {
-        if (z->path != z->errpath) {
+        if (zz.path != zz.errpath) {
             int i = 0;
-            while (i + 1 < (int) sizeof(z->errpath) && z->path[i] != 0) {
-                z->errpath[i] = z->path[i];
+            while (i + 1 < (int) sizeof(zz.errpath) && zz.path[i] != 0) {
+                zz.errpath[i] = zz.path[i];
                 i++;
             }
-            z->errpath[i] = 0;
-            z->path = z->errpath;
+            zz.errpath[i] = 0;
+            zz.path = zz.errpath;
         }
 
         return false;
     }
-    z->path = saved_path;
-    z->line = saved_line;
+    zz.path = saved_path;
+    zz.line = saved_line;
 
     return true;
 }
 
-static bool macro_expand(dz* z, const macro* m, const char* p, const char* e,
+static bool macro_expand(const macro* m, const char* p, const char* e,
                          const char** stop) {
-    if (z->depth >= INCLUDE_MAXDEPTH) {
-        z->err = "macros nested too deeply";
+    if (zz.depth >= INCLUDE_MAXDEPTH) {
+        zz.err = "macros nested too deeply";
 
         return false;
     }
     int len = 0;
-    char* out = macro_text(z, m, p, e, stop, &len);
+    char* out = macro_text(m, p, e, stop, &len);
     if (out == NULL) {
         return false;
     }
 
-    return macro_run(z, m, out, len);
+    return macro_run(m, out, len);
 }
 
 /* ---------------------------------------------------------- directives */
@@ -4896,7 +4911,7 @@ static int str_escape(char c) {
  * character, most of them `ld (ix - 111), hl` and back. A string is one call
  * per item against that. */
 __attribute__((noinline))
-static bool emit_string(dz* z, const char** pp, const char* e) {
+static bool emit_string(const char** pp, const char* e) {
     const char* p = *pp + 1;                      /* past the opening quote */
     /* No bound on the step past an escape. The buffer ends in a newline one
      * byte past the last valid character, so a backslash in the last position
@@ -4907,20 +4922,20 @@ static bool emit_string(dz* z, const char** pp, const char* e) {
         q += (*q == '\\') ? 2 : 1;
     }
     if (q >= e || *q != '"') {
-        z->err = "string not terminated";
+        zz.err = "string not terminated";
 
         return false;
     }
-    if (!out_reserve_n(z, (int) (q - p))) {
+    if (!out_reserve_n((int) (q - p))) {
         return false;
     }
 
-    uint8_t* o = z->o;
+    uint8_t* o = zz.o;
     while (p < q) {
         if (*p == '\\') {
             const int v = str_escape(p[1]);
             if (v < 0) {
-                z->err = "bad escape in string";
+                zz.err = "bad escape in string";
 
                 return false;
             }
@@ -4930,7 +4945,7 @@ static bool emit_string(dz* z, const char** pp, const char* e) {
             *o++ = (uint8_t) *p++;
         }
     }
-    z->o = o;
+    zz.o = o;
     *pp = q + 1;
 
     return true;
@@ -5083,7 +5098,7 @@ static const char* name_item(const char* p, const char* e) {
  * on it reads 5.42s on isa_real and so does leaving it alone, because the call
  * lands on the 3,181 directive lines rather than on all 21,494. Left as it is,
  * rather than forced inline on a rule that does not apply here. */
-static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
+static bool emit_data(uint8_t width, const char** pp, const char* e) {
     const char* p = *pp;
     for (;;) {
         while (p < e && is_space_ch(*p)) {
@@ -5094,11 +5109,11 @@ static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
                 /* The reference says "String type not allowed", and means it:
                  * a string is bytes and DW would have to invent a padding
                  * rule. */
-                z->err = "a string needs DB";
+                zz.err = "a string needs DB";
 
                 return false;
             }
-            if (!emit_string(z, &p, e)) {
+            if (!emit_string(&p, e)) {
                 return false;
             }
         } else {
@@ -5128,7 +5143,7 @@ static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
                 fwd_reset(NULL);
                 const char* const nm = name_item(p, e);
                 if (nm != NULL) {
-                    if (!expr_atom(z, &value, p, (int) (nm - p))) {
+                    if (!expr_atom(&value, p, (int) (nm - p))) {
                         return false;
                     }
                     p = nm;
@@ -5139,19 +5154,19 @@ static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
                      * forward reference in the slots. */
                 } else {
                     uint8_t fwdmask = 0;
-                    if (!expr_value(z, &value, &p, e, &fwdmask)) {
+                    if (!expr_value(&value, &p, e, &fwdmask)) {
                         return false;
                     }
                 }
             }
-            if (!out_reserve_n(z, width)) {
+            if (!out_reserve_n(width)) {
                 return false;
             }
             if (q == NULL && expr_fwd != NULL) {
                 const sym* target = NULL;
                 const sym* sub = NULL;
                 bool subneg = false;
-                if (!fwd_result(z, &target, &sub, &subneg)) {
+                if (!fwd_result(&target, &sub, &subneg)) {
                     return false;
                 }
                 if (value < ADDEND_MIN || value > ADDEND_MAX) {
@@ -5160,13 +5175,13 @@ static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
                      * than saying so. This is the only place a value wider
                      * than the machine can reach a fixup: an instruction's
                      * immediate is three bytes by the time it gets here. */
-                    z->err = "that constant is too large to add to a label";
+                    zz.err = "that constant is too large to add to a label";
 
                     return false;
                 }
-                if (!fix_add(z, target, sub, (int) value,
+                if (!fix_add(target, sub, (int) value,
                              (uint8_t) (width | (subneg ? FIX_SUB2 : 0)),
-                             (int) (z->o - z->out))) {
+                             (int) (zz.o - zz.out))) {
                     return false;
                 }
                 value = 0;
@@ -5179,7 +5194,7 @@ static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
              * first, they keep the shifts the eZ80 has. Splitting the write
              * this way is 0.20s of the 0.42 the widening cost -- see
              * .internal/performance-notes.md. */
-            uint8_t* o = z->o;
+            uint8_t* o = zz.o;
             if (width > 3) {
                 *o++ = (uint8_t) value;
                 *o++ = (uint8_t) (value >> 8);
@@ -5195,7 +5210,7 @@ static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
                     *o++ = (uint8_t) (v >> 16);
                 }
             }
-            z->o = o;
+            zz.o = o;
         }
 
         while (p < e && is_space_ch(*p)) {
@@ -5213,26 +5228,26 @@ static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
 
 /* Fills `n` bytes with 0xFF, which is what `DS` reserves and what `ALIGN` pads
  * with. Not zero -- that was measured, and it is what an erased ROM reads as. */
-static bool emit_fill(dz* z, int n) {
+static bool emit_fill(int n) {
     if (n <= 0) {
         return true;
     }
-    if (!out_reserve_n(z, n)) {
+    if (!out_reserve_n(n)) {
         return false;
     }
 
     /* A run that starts where the last one ended is the same run. `DS 4` twice
      * at the end of a file is eight bytes to drop, not four. */
-    const int at = (int) (z->o - z->out);
-    z->fill_len = (at == z->fill_end) ? z->fill_len + n : n;
+    const int at = (int) (zz.o - zz.out);
+    zz.fill_len = (at == zz.fill_end) ? zz.fill_len + n : n;
 
-    z->filled = true;
-    uint8_t* o = z->o;
+    zz.filled = true;
+    uint8_t* o = zz.o;
     while (n-- != 0) {
-        *o++ = z->fill;
+        *o++ = zz.fill;
     }
-    z->o = o;
-    z->fill_end = (int) (z->o - z->out);
+    zz.o = o;
+    zz.fill_end = (int) (zz.o - zz.out);
 
     return true;
 }
@@ -5250,17 +5265,17 @@ static bool emit_fill(dz* z, int n) {
  * rather than all ones: `blkw 1` is FF 00 and not FF FF, which is the value
  * 0x00FF written as a word. Measured, not assumed. */
 /* n and width are both positive here; the caller has checked the count. */
-static bool emit_block(dz* z, int n, int width, evalue fill) {
+static bool emit_block(int n, int width, evalue fill) {
     if (n <= 0) {
         return true;
     }
-    if (!out_reserve_n(z, n * width)) {
+    if (!out_reserve_n(n * width)) {
         return false;
     }
 
     /* Narrowed once, outside the loop, for the reason emit_data splits its
      * write: three of the four widths fit the machine and only BLKL does not. */
-    uint8_t* o = z->o;
+    uint8_t* o = zz.o;
     if (width > 3) {
         while (n-- != 0) {
             *o++ = (uint8_t) fill;
@@ -5268,7 +5283,7 @@ static bool emit_block(dz* z, int n, int width, evalue fill) {
             *o++ = (uint8_t) (fill >> 16);
             *o++ = (uint8_t) (fill >> 24);
         }
-        z->o = o;
+        zz.o = o;
 
         return true;
     }
@@ -5282,7 +5297,7 @@ static bool emit_block(dz* z, int n, int width, evalue fill) {
             *o++ = (uint8_t) (f >> 16);
         }
     }
-    z->o = o;
+    zz.o = o;
 
     /* Nothing to do about a reservation still pending. The drop at the end of
      * the file only fires when the run ends exactly where the output does, and
@@ -5303,14 +5318,14 @@ static bool emit_block(dz* z, int n, int width, evalue fill) {
  *
  * Double quotes only: the reference calls `INCLUDE 'x.inc'` and `INCLUDE x.inc`
  * both a "String format error", so a bare word is not a file name there. */
-static bool file_name(dz* z, const char** pp, const char* e,
+static bool file_name(const char** pp, const char* e,
                       char* out, int cap) {
     const char* p = *pp;
     while (p < e && is_space_ch(*p)) {
         p++;
     }
     if (*p != '"') {
-        z->err = "expected a quoted file name";
+        zz.err = "expected a quoted file name";
 
         return false;
     }
@@ -5319,19 +5334,19 @@ static bool file_name(dz* z, const char** pp, const char* e,
     int n = 0;
     while (p < e && *p != '"' && *p != '\n') {
         if (n + 1 >= cap) {
-            z->err = "file name too long";
+            zz.err = "file name too long";
 
             return false;
         }
         out[n++] = *p++;
     }
     if (*p != '"') {
-        z->err = "string not terminated";
+        zz.err = "string not terminated";
 
         return false;
     }
     if (n == 0) {
-        z->err = "expected a file name";
+        zz.err = "expected a file name";
 
         return false;
     }
@@ -5347,36 +5362,36 @@ static bool file_name(dz* z, const char** pp, const char* e,
  * emit_fill with a file in place of the 0xFF. The size is known before a byte
  * is read, so the room is asked for once and the read goes directly to the
  * cursor rather than through a staging buffer. */
-static bool incbin_file(dz* z, const char* name) {
+static bool incbin_file(const char* name) {
     const uint8_t fh = mos_fopen(name, FA_READ);
     if (fh == 0) {
-        z->err = "cannot open the file";
+        zz.err = "cannot open the file";
 
         return false;
     }
     FIL* fil = mos_getfil(fh);
     if (fil == NULL) {
         mos_fclose(fh);
-        z->err = "cannot open the file";
+        zz.err = "cannot open the file";
 
         return false;
     }
     const int n = (int) fil->obj.objsize;
-    if (n < 0 || !out_reserve_n(z, n)) {
+    if (n < 0 || !out_reserve_n(n)) {
         mos_fclose(fh);
-        z->err = "out of memory";
+        zz.err = "out of memory";
 
         return false;
     }
     if (n > 0) {
-        const unsigned got = mos_fread(fh, (char*) z->o, (unsigned) n);
+        const unsigned got = mos_fread(fh, (char*) zz.o, (unsigned) n);
         if ((int) got != n) {
             mos_fclose(fh);
-            z->err = "cannot read the file";
+            zz.err = "cannot read the file";
 
             return false;
         }
-        z->o += n;
+        zz.o += n;
     }
     mos_fclose(fh);
 
@@ -5401,45 +5416,45 @@ static bool incbin_file(dz* z, const char* name) {
  * `sub/b.inc`. Measured, because it is the sort of thing every assembler
  * decides differently. */
 __attribute__((noinline))
-static bool include_file(dz* z, const char* name) {
-    if (z->depth >= INCLUDE_MAXDEPTH) {
+static bool include_file(const char* name) {
+    if (zz.depth >= INCLUDE_MAXDEPTH) {
         /* A file that includes itself, most likely. Each level costs a frame
          * for this, one for the line loop and one for assemble_line, which is
          * 111 bytes on its own; the machine has no memory protection and would
          * simply stop. */
-        z->err = "includes nested too deeply";
+        zz.err = "includes nested too deeply";
 
         return false;
     }
 
-    const char* const saved_path = z->path;
-    const int saved_line = z->line;
+    const char* const saved_path = zz.path;
+    const int saved_line = zz.line;
 
     /* Suspended *before* the copy is taken, and that order is the whole of it.
      * br_suspend closes the handle and zeroes `fh_`, and br_resume refuses a
      * reader whose `fh_` is not zero -- it reads that as "not suspended". A
      * copy made first carries the old handle back over the zero, so the resume
      * is refused and the handle it names has already been closed. */
-    const bool was_file = !z->rd.mem_;
-    if (was_file && !br_suspend(&z->rd)) {
-        z->err = "cannot set the file aside";
+    const bool was_file = !zz.rd.mem_;
+    if (was_file && !br_suspend(&zz.rd)) {
+        zz.err = "cannot set the file aside";
 
         return false;
     }
-    const buf_reader saved = z->rd;
+    const buf_reader saved = zz.rd;
     Z_SITE("include reader");
-    if (br_open(&z->rd, name, INCLUDE_BUF_KB) == NULL) {
-        z->rd = saved;
+    if (br_open(&zz.rd, name, INCLUDE_BUF_KB) == NULL) {
+        zz.rd = saved;
         if (was_file) {
-            br_resume(&z->rd);
+            br_resume(&zz.rd);
         }
-        z->err = "cannot open the file";
+        zz.err = "cannot open the file";
 
         return false;
     }
-    z->path = name;
-    z->line = 0;
-    z->depth++;
+    zz.path = name;
+    zz.line = 0;
+    zz.depth++;
 
     /* A conditional belongs to the file it is written in.
      *
@@ -5449,49 +5464,49 @@ static bool include_file(dz* z, const char* name) {
      * assembly rather than one per file. Both halves of the rule are the
      * reference's: an IF left open at the end of an included file is an error
      * there, and so is an ENDIF in one that would close the caller's. */
-    const bool saved_cond = z->in_cond;
-    const bool saved_emit = z->cond_emit;
-    z->in_cond = false;
-    z->cond_emit = true;
+    const bool saved_cond = zz.in_cond;
+    const bool saved_emit = zz.cond_emit;
+    zz.in_cond = false;
+    zz.cond_emit = true;
 
-    bool ok = run_lines(z);
-    if (ok && z->in_cond) {
-        z->err = "IF left open at the end of the file";
+    bool ok = run_lines();
+    if (ok && zz.in_cond) {
+        zz.err = "IF left open at the end of the file";
         ok = false;
     }
-    z->in_cond = saved_cond;
-    z->cond_emit = saved_emit;
-    z->line_mode = saved_emit ? LINE_ASSEMBLE : LINE_SKIP;
+    zz.in_cond = saved_cond;
+    zz.cond_emit = saved_emit;
+    zz.line_mode = saved_emit ? LINE_ASSEMBLE : LINE_SKIP;
 
     /* The child's buffer goes back whether it worked or not; on the way out of
-     * a failure the message has already been kept, and z->path still names the
+     * a failure the message has already been kept, and zz.path still names the
      * file it happened in, which is what the report wants. */
-    br_destroy(&z->rd);
-    z->depth--;
-    z->rd = saved;
+    br_destroy(&zz.rd);
+    zz.depth--;
+    zz.rd = saved;
     if (!ok) {
-        /* `z->path` names this file and points into this frame, which goes
+        /* `zz.path` names this file and points into this frame, which goes
          * away as soon as this returns. The report happens after every frame
          * has unwound, so it is copied somewhere that outlives them. */
-        if (z->path != z->errpath) {
+        if (zz.path != zz.errpath) {
             int i = 0;
-            while (i + 1 < (int) sizeof(z->errpath) && z->path[i] != 0) {
-                z->errpath[i] = z->path[i];
+            while (i + 1 < (int) sizeof(zz.errpath) && zz.path[i] != 0) {
+                zz.errpath[i] = zz.path[i];
                 i++;
             }
-            z->errpath[i] = 0;
-            z->path = z->errpath;
+            zz.errpath[i] = 0;
+            zz.path = zz.errpath;
         }
 
         return false;
     }
-    if (!br_resume(&z->rd)) {
-        z->err = "cannot reopen the file";
+    if (!br_resume(&zz.rd)) {
+        zz.err = "cannot reopen the file";
 
         return false;
     }
-    z->path = saved_path;
-    z->line = saved_line;
+    zz.path = saved_path;
+    zz.line = saved_line;
 
     return true;
 }
@@ -5507,16 +5522,16 @@ static bool include_file(dz* z, const char* name) {
  * identifier" in the reference too, which has a second pass and could have
  * waited: deciding what to assemble cannot be deferred by either of us.
  */
-static bool cond_value(dz* z, evalue* out, const char** pp, const char* e) {
+static bool cond_value(evalue* out, const char** pp, const char* e) {
     const char* p = *pp;
     fwd_reset(NULL);
     uint8_t fwdmask = 0;
     evalue lhs = 0;
-    if (!expr_value(z, &lhs, &p, e, &fwdmask)) {
+    if (!expr_value(&lhs, &p, e, &fwdmask)) {
         return false;
     }
     if (expr_fwd != NULL) {
-        z->err = "a label here must be defined already";
+        zz.err = "a label here must be defined already";
 
         return false;
     }
@@ -5542,11 +5557,11 @@ static bool cond_value(dz* z, evalue* out, const char** pp, const char* e) {
         } else {
             fwd_reset(NULL);
             evalue rhs = 0;
-            if (!expr_value(z, &rhs, &p, e, &fwdmask)) {
+            if (!expr_value(&rhs, &p, e, &fwdmask)) {
                 return false;
             }
             if (expr_fwd != NULL) {
-                z->err = "a label here must be defined already";
+                zz.err = "a label here must be defined already";
 
                 return false;
             }
@@ -5571,20 +5586,20 @@ __attribute__((noinline))
  * five-instruction address computation for a buffer they never touch. These
  * two are one line in a thousand; everything else on that path is not. */
 __attribute__((noinline))
-static bool file_directive(dz* z, uint8_t kind, const char** pp, const char* e,
+static bool file_directive(uint8_t kind, const char** pp, const char* e,
                            const char** stop) {
     char name[INCLUDE_NAME_MAX];
-    if (!file_name(z, pp, e, name, (int) sizeof(name))) {
+    if (!file_name(pp, e, name, (int) sizeof(name))) {
         return false;
     }
     *stop = *pp;
 
-    return kind == DIR_INCBIN ? incbin_file(z, name) : include_file(z, name);
+    return kind == DIR_INCBIN ? incbin_file(name) : include_file(name);
 }
 
-static const insninfo* suffixed_mnemonic(const dz* z, const char* s, int n,
+static const insninfo* suffixed_mnemonic(const char* s, int n,
                                          uint8_t* suffix);
-static bool suffixed_insn(dz* z, const insninfo* insn, uint8_t suffix,
+static bool suffixed_insn(const insninfo* insn, uint8_t suffix,
                           const char* p, const char* e, const char** stop);
 
 /* `ASCIZ`: the data list at one byte a value, and then one zero. Not a zero
@@ -5602,15 +5617,15 @@ static bool suffixed_insn(dz* z, const insninfo* insn, uint8_t suffix,
  * rounds ago. It is written the way that is easiest to read, since none of the
  * others is faster. */
 __attribute__((noinline))
-static bool asciz_line(dz* z, const char** pp, const char* e,
+static bool asciz_line(const char** pp, const char* e,
                        const char** stop) {
-    if (!emit_data(z, 1, pp, e)) {
+    if (!emit_data(1, pp, e)) {
         return false;
     }
-    if (!out_reserve(z)) {
+    if (!out_reserve()) {
         return false;
     }
-    *z->o++ = 0;
+    *zz.o++ = 0;
     *stop = *pp;
 
     return true;
@@ -5623,7 +5638,7 @@ static bool asciz_line(dz* z, const char** pp, const char* e,
  * character. The whole feature sits on the error path of something that used to
  * do nothing but set a message. */
 __attribute__((noinline))
-static bool directive_line(dz* z, const char* s, int n, const char* p,
+static bool directive_line(const char* s, int n, const char* p,
                            const char* e, const char** stop) {
     const uint8_t kind = directive_of(s, n);
     if (kind == DIR_NONE) {
@@ -5634,7 +5649,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
          * in front of this instead cost 1.5% on isa_real, all of it paid by
          * the 3,181 directive lines that are not suffixed instructions. */
         uint8_t suffix = 0;
-        const insninfo* const insn = suffixed_mnemonic(z, s, n, &suffix);
+        const insninfo* const insn = suffixed_mnemonic(s, n, &suffix);
         if (insn != NULL) {
             if (cpu_mask != CPU_EZ80) {
                 /* A mode suffix says which of two address widths one
@@ -5646,30 +5661,30 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
                  * NULL for a token that is not a suffixed mnemonic at all --
                  * `read.next` may be a macro. Refusing there would report this
                  * as "unknown instruction" and lose which of the two it was. */
-                z->err = "no mode suffix on this CPU";
+                zz.err = "no mode suffix on this CPU";
 
                 return false;
             }
 
-            return suffixed_insn(z, insn, suffix, p, e, stop);
+            return suffixed_insn(insn, suffix, p, e, stop);
         }
 
         /* A macro, or nothing this understands. Looked up last, after the
          * mnemonic table and the directives, so nothing that is either pays
          * for the walk -- and a macro has to be defined before it is used,
          * which the reference requires too. */
-        const macro* m = macro_at(z, s, n);
+        const macro* m = macro_at(s, n);
         if (m == NULL) {
-            z->err = "unknown instruction";
+            zz.err = "unknown instruction";
 
             return false;
         }
 
-        return macro_expand(z, m, p, e, stop);
+        return macro_expand(m, p, e, stop);
     }
 
     if (kind == DIR_MACRO) {
-        if (!macro_begin(z, &p, e)) {
+        if (!macro_begin(&p, e)) {
             return false;
         }
         *stop = p;
@@ -5679,28 +5694,28 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
     if (kind == DIR_ENDMACRO) {
         /* Only ever reached outside a definition, since inside one the line
          * loop hands it to macro_capture instead. */
-        z->err = "no MACRO is open";
+        zz.err = "no MACRO is open";
 
         return false;
     }
 
     if (kind >= DIR_IF) {
         if (kind == DIR_ENDIF || kind == DIR_ELSE) {
-            if (!z->in_cond) {
+            if (!zz.in_cond) {
                 /* "Missing IF directive" there, and the same here. */
-                z->err = "no IF is open";
+                zz.err = "no IF is open";
 
                 return false;
             }
             if (kind == DIR_ENDIF) {
-                z->in_cond = false;
-                z->cond_emit = true;
+                zz.in_cond = false;
+                zz.cond_emit = true;
             } else {
                 /* ELSE toggles, and toggles again: `IF 1 / a / ELSE / b /
                  * ELSE / c / ENDIF` assembles a and c in the reference. */
-                z->cond_emit = !z->cond_emit;
+                zz.cond_emit = !zz.cond_emit;
             }
-            z->line_mode = z->cond_emit ? LINE_ASSEMBLE : LINE_SKIP;
+            zz.line_mode = zz.cond_emit ? LINE_ASSEMBLE : LINE_SKIP;
             *stop = p;
 
             return true;
@@ -5708,8 +5723,8 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
 
         /* IF. Nesting is refused because the reference refuses it, and that is
          * what makes this a flag rather than a stack. */
-        if (z->in_cond) {
-            z->err = "conditionals do not nest";
+        if (zz.in_cond) {
+            zz.err = "conditionals do not nest";
 
             return false;
         }
@@ -5717,12 +5732,12 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
             p++;
         }
         evalue cond = 0;
-        if (!cond_value(z, &cond, &p, e)) {
+        if (!cond_value(&cond, &p, e)) {
             return false;
         }
-        z->in_cond = true;
-        z->cond_emit = cond != 0;
-        z->line_mode = z->cond_emit ? LINE_ASSEMBLE : LINE_SKIP;
+        zz.in_cond = true;
+        zz.cond_emit = cond != 0;
+        zz.line_mode = zz.cond_emit ? LINE_ASSEMBLE : LINE_SKIP;
         *stop = p;
 
         return true;
@@ -5753,17 +5768,17 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
         const int cn = (int) (p - cs);
         if (cn == 4 && same_ci_full("ez80", cs, 4)) {
             cpu_mask = CPU_EZ80;
-            z->adl = ZAP_ADL;
+            zz.adl = ZAP_ADL;
         } else if (cn == 3 && same_ci_full("z80", cs, 3)) {
             cpu_mask = CPU_Z80;
-            z->adl = false;
+            zz.adl = false;
         } else if (cn == 4 && same_ci_full("z180", cs, 4)) {
             cpu_mask = CPU_Z180;
-            z->adl = false;
+            zz.adl = false;
         } else {
             /* "Unsupported CPU type" there. The Z280 has a bit in the table
              * and no rows tagged with it, so it is not offered. */
-            z->err = "unsupported CPU type";
+            zz.err = "unsupported CPU type";
 
             return false;
         }
@@ -5773,14 +5788,14 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
     }
 
     if (kind == DIR_ENDRELOCATE) {
-        if (!z->reloc) {
+        if (!zz.reloc) {
             /* "Missing RELOCATE directive" there. */
-            z->err = "no RELOCATE is open";
+            zz.err = "no RELOCATE is open";
 
             return false;
         }
-        z->org = z->reloc_org;
-        z->reloc = false;
+        zz.org = zz.reloc_org;
+        zz.reloc = false;
         *stop = p;
 
         return true;
@@ -5795,7 +5810,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
              * Z80 and the Z180 have no ADL to select, so `ADL=0` is refused
              * as well, though it names the mode they are already in.
              * Measured, all six ways. */
-            z->err = "no ADL mode on this CPU";
+            zz.err = "no ADL mode on this CPU";
 
             return false;
         }
@@ -5803,7 +5818,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
             p++;
         }
         if (!dir_is(p, "adl", 3) || (cclass[(uint8_t) p[3]] & C_MNEM) != 0) {
-            z->err = "expected ADL";
+            zz.err = "expected ADL";
 
             return false;
         }
@@ -5812,7 +5827,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
             p++;
         }
         if (*p != '=') {
-            z->err = "expected = after ADL";
+            zz.err = "expected = after ADL";
 
             return false;
         }
@@ -5835,32 +5850,32 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
              * sensible to do with one that is not known yet. */
             fwd_reset(NULL);
             uint8_t fwdmask = 0;
-            if (!expr_value(z, &mode, &p, e, &fwdmask)) {
+            if (!expr_value(&mode, &p, e, &fwdmask)) {
                 return false;
             }
             if (expr_fwd != NULL) {
-                z->err = "a label here must be defined already";
+                zz.err = "a label here must be defined already";
 
                 return false;
             }
         }
         if (mode != 0 && mode != 1) {
-            z->err = "ADL is 0 or 1";
+            zz.err = "ADL is 0 or 1";
 
             return false;
         }
-        z->adl = mode == 1;
+        zz.adl = mode == 1;
         *stop = p;
 
         return true;
     }
 
     if (kind >= DIR_INCLUDE) {
-        return file_directive(z, kind, &p, e, stop);
+        return file_directive(kind, &p, e, stop);
     }
 
     if (kind <= DIR_DW32) {
-        if (!emit_data(z, kind, &p, e)) {
+        if (!emit_data(kind, &p, e)) {
             return false;
         }
         *stop = p;
@@ -5871,7 +5886,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
     /* After the data list and not before it, so that DB, DW, DL and DW32 reach
      * theirs on the one comparison they always did. */
     if (kind == DIR_ASCIZ) {
-        return asciz_line(z, &p, e, stop);
+        return asciz_line(&p, e, stop);
     }
 
     /* DS and ALIGN both take one value that has to be known now -- the
@@ -5902,11 +5917,11 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
     } else {
         fwd_reset(NULL);
         uint8_t fwdmask = 0;
-        if (!expr_value(z, &value, &p, e, &fwdmask)) {
+        if (!expr_value(&value, &p, e, &fwdmask)) {
             return false;
         }
         if (expr_fwd != NULL) {
-            z->err = "a label here must be defined already";
+            zz.err = "a label here must be defined already";
 
             return false;
         }
@@ -5919,11 +5934,11 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
          * program rather than a feature, and there is no byte sequence worth
          * agreeing with. Same position as division by zero. */
         if (value < 0) {
-            z->err = "ds needs a positive number";
+            zz.err = "ds needs a positive number";
 
             return false;
         }
-        if (!emit_fill(z, (int) value)) {
+        if (!emit_fill((int) value)) {
             return false;
         }
         /* `DS 3,1,2` is three bytes in the reference: the arguments after the
@@ -5954,21 +5969,21 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
          * one with the same value is not a change and is allowed. Blocks are
          * unaffected either way -- BLKB writes data, and takes the value in
          * force where it stands, in both assemblers. */
-        if (z->filled && (uint8_t) value != z->fill) {
-            z->err = "FILLBYTE must come before the space it fills";
+        if (zz.filled && (uint8_t) value != zz.fill) {
+            zz.err = "FILLBYTE must come before the space it fills";
 
             return false;
         }
-        z->fill = (uint8_t) value;
+        zz.fill = (uint8_t) value;
         *stop = p;
 
         return true;
     }
 
     if (kind == DIR_RELOCATE) {
-        if (z->reloc) {
+        if (zz.reloc) {
             /* "Nested relocate not allowed" there. */
-            z->err = "RELOCATE does not nest";
+            zz.err = "RELOCATE does not nest";
 
             return false;
         }
@@ -5978,7 +5993,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
              * space is exactly that, so this is the reference being right
              * rather than a quirk to reproduce. `$1000000` is one past it and
              * `-1` is the other end. */
-            z->err = "address outside the 24-bit range";
+            zz.err = "address outside the 24-bit range";
 
             return false;
         }
@@ -5987,9 +6002,9 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
          * every address is measured from -- a label, `$`, an EQU taking `$`,
          * and the target of every fixup -- so displacing it is the whole of
          * this directive and nothing else has to know. */
-        z->reloc_org = z->org;
-        z->reloc = true;
-        z->org = (int) value - (int) (z->o - z->out);
+        zz.reloc_org = zz.org;
+        zz.reloc = true;
+        zz.org = (int) value - (int) (zz.o - zz.out);
         *stop = p;
 
         return true;
@@ -6003,7 +6018,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
              * unsigned, so a negative one is sixteen megabytes of fill and a
              * successful assembly. On a 512 KB machine that is a way to lose
              * the program rather than a feature. */
-            z->err = "blk needs a positive number";
+            zz.err = "blk needs a positive number";
 
             return false;
         }
@@ -6011,7 +6026,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
 
         /* The fill, if one is given. FILLBYTE's value at the unit width if
          * not, which is 0xFF until something says otherwise. */
-        evalue fill = z->fill;
+        evalue fill = zz.fill;
         const sym* pending = NULL;
         while (p < e && is_space_ch(*p)) {
             p++;
@@ -6028,7 +6043,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
                 const char* const fs = p;
                 fwd_reset(NULL);
                 uint8_t fwdmask = 0;
-                if (!expr_value(z, &fill, &p, e, &fwdmask)) {
+                if (!expr_value(&fill, &p, e, &fwdmask)) {
                     return false;
                 }
                 if (expr_fwd != NULL || expr_fwd_bad) {
@@ -6039,7 +6054,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
                      * is. The count is a different matter and is still
                      * refused: how many bytes there are decides where
                      * everything after them lands. */
-                    pending = defer_text(z, fs, (int) (p - fs));
+                    pending = defer_text(fs, (int) (p - fs));
                     if (pending == NULL) {
                         return false;
                     }
@@ -6048,27 +6063,27 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
             }
         }
         if (pending != NULL && value > 0) {
-            if (z->fillp_used == z->fillp_cap) {
+            if (zz.fillp_used == zz.fillp_cap) {
                 Z_SITE("deferred fills");
-                const int want = z->fillp_cap == 0 ? 4 : z->fillp_cap + z->fillp_cap;
+                const int want = zz.fillp_cap == 0 ? 4 : zz.fillp_cap + zz.fillp_cap;
                 fillpatch* grown =
-                    (fillpatch*) realloc(z->fillp, (size_t) want * sizeof(fillpatch));
+                    (fillpatch*) realloc(zz.fillp, (size_t) want * sizeof(fillpatch));
                 if (grown == NULL) {
-                    z->err = "out of memory for labels";
+                    zz.err = "out of memory for labels";
 
                     return false;
                 }
-                z->fillp = grown;
-                z->fillp_cap = want;
+                zz.fillp = grown;
+                zz.fillp_cap = want;
             }
-            fillpatch* fp = &z->fillp[z->fillp_used++];
+            fillpatch* fp = &zz.fillp[zz.fillp_used++];
             fp->sp = pending;
-            fp->off = (int) (z->o - z->out);
+            fp->off = (int) (zz.o - zz.out);
             fp->count = value;
             fp->width = (uint8_t) width;
-            fp->line = z->line;
+            fp->line = zz.line;
         }
-        if (!emit_block(z, value, width, fill)) {
+        if (!emit_block(value, width, fill)) {
             return false;
         }
 
@@ -6086,47 +6101,47 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
          * to its address. That is not a guess -- two ORGs with nothing between
          * them write the 64 KB gap in the reference, so the second is already
          * behaving as a pad even though nothing has been emitted. */
-        if (!z->org_set && z->o == z->out) {
-            z->org = value;
+        if (!zz.org_set && zz.o == zz.out) {
+            zz.org = value;
         } else {
-            const int here = z->org + (int) (z->o - z->out);
+            const int here = zz.org + (int) (zz.o - zz.out);
             if (value < here) {
                 /* "New address lower than current PC address" there, and the
                  * same here: an ORG that goes backwards would have to unwrite
                  * bytes that are already placed. */
-                z->err = "org goes backwards";
+                zz.err = "org goes backwards";
 
                 return false;
             }
-            if (!emit_fill(z, value - here)) {
+            if (!emit_fill(value - here)) {
                 return false;
             }
             /* Padding to an address is not reserving space: the reference
              * writes it out even at the end of a file, where it drops a DS.
              * Forgetting the run is what says so. */
-            z->fill_len = 0;
+            zz.fill_len = 0;
         }
-        z->org_set = true;
+        zz.org_set = true;
         *stop = p;
 
         return true;
     }
 
     if (value <= 0) {
-        z->err = "align needs a positive number";
+        zz.err = "align needs a positive number";
 
         return false;
     }
     if ((value & (value - 1)) != 0) {
-        z->err = "align needs a power of two";
+        zz.err = "align needs a power of two";
 
         return false;
     }
     /* Pad to the next multiple. `-addr & (n - 1)` is the distance to it, and
      * the AND is a call to __iand on a 24-bit value -- once per ALIGN, which
      * is a price a directive can pay. */
-    const int addr = z->org + (int) (z->o - z->out);
-    if (!emit_fill(z, (-addr) & (value - 1))) {
+    const int addr = zz.org + (int) (zz.o - zz.out);
+    if (!emit_fill((-addr) & (value - 1))) {
         return false;
     }
     *stop = p;
@@ -6399,7 +6414,7 @@ static uint8_t* emit_imm(uint8_t* o, const dop* op, uint8_t cond, bool adl) {
  *   3  + the prefix, opcode and displacement bytes are written
  *   4  + the immediate or the relative, and the fixup it may need
  *
- * The output is wrong in the first two, which is the point, and `z->o` does not
+ * The output is wrong in the first two, which is the point, and `zz.o` does not
  * advance -- safe here only because these two sources contain no relative jump
  * whose reach depends on it. */
 #ifdef ETRUNC
@@ -6414,12 +6429,12 @@ static uint8_t* emit_imm(uint8_t* o, const dop* op, uint8_t cond, bool adl) {
 #define ETRUNC_AT(n) do { } while (0)
 #endif
 
-__attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row* row, dop* a, dop* b, uint8_t suffix) {
-    if (!out_reserve(z)) {
+__attribute__((always_inline)) static inline bool emit_row(const isa_row* row, dop* a, dop* b, uint8_t suffix) {
+    if (!out_reserve()) {
         return false;
     }
 
-    /* One cursor for the whole instruction rather than z->out[z->pos++] per
+    /* One cursor for the whole instruction rather than zz.out[zz.pos++] per
      * byte. put() reloaded both the output base and the position, added them,
      * stored the byte and stored the position back, for every byte written --
      * twenty-three loads of those two fields in this function alone. The
@@ -6428,7 +6443,7 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
      * write-back can move the buffer. */
     ETRUNC_AT(1);
 
-    uint8_t* o = z->o;
+    uint8_t* o = zz.o;
 
     /* The suffix byte goes in front of everything, including the DD or FD an
      * index register brings: `ld.lil ix, nn` is 5B DD 21 ...
@@ -6446,7 +6461,7 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
      * this folds away there. The suffixed copy lives in uncommon_line. */
     if (suffix != 0) {
         if ((row->flags & suffix) == 0) {
-            z->err = "this instruction takes no mode suffix";
+            zz.err = "this instruction takes no mode suffix";
 
             return false;
         }
@@ -6536,16 +6551,16 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
             /* Forward: the displacement is not known, so a zero goes down and
              * the fixup carries the address it will be measured from. Whether
              * it is in reach is decided when it is patched. */
-            if (!fix_add(z, rel->fwd, rel->fwd2, rel->imm,
+            if (!fix_add(rel->fwd, rel->fwd2, rel->imm,
                          rel->fwd2_neg ? FIX_SUB2 : 0,
-                         (int) (o - z->out))) {
+                         (int) (o - zz.out))) {
                 return false;
             }
             *o++ = 0;
         } else {
-            const int d = rel->imm - (z->org + (int) (o - z->out) + 1);
+            const int d = rel->imm - (zz.org + (int) (o - zz.out) + 1);
             if (d < -128 || d > 127) {
-                z->err = "relative jump too far";
+                zz.err = "relative jump too far";
 
                 return false;
             }
@@ -6560,25 +6575,25 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
          * Asked inside each branch rather than once above them. Hoisted, it is
          * a live value across both and an instruction with no immediate --
          * which is most of them -- computes it for nothing. */
-#define SFX_WIDE (suffix != 0 ? (suffix & (S_SIS | S_LIS)) == 0 : z->adl)
+#define SFX_WIDE (suffix != 0 ? (suffix & (S_SIS | S_LIS)) == 0 : zz.adl)
         if ((a->mode & IMM) != 0 && (row->condA & (IMM_N | IMM_MMN))) {
             if (a->fwd != NULL
-                && !fix_add(z, a->fwd, a->fwd2, a->imm,
+                && !fix_add(a->fwd, a->fwd2, a->imm,
                             (uint8_t) (((row->condA & IMM_N) ? 1
                                                              : (SFX_WIDE ? 3 : 2))
                                        | (a->fwd2_neg ? FIX_SUB2 : 0)),
-                            (int) (o - z->out))) {
+                            (int) (o - zz.out))) {
                 return false;
             }
             o = emit_imm(o, a, row->condA, SFX_WIDE);
         }
         if ((b->mode & IMM) != 0 && (row->condB & (IMM_N | IMM_MMN))) {
             if (b->fwd != NULL
-                && !fix_add(z, b->fwd, b->fwd2, b->imm,
+                && !fix_add(b->fwd, b->fwd2, b->imm,
                             (uint8_t) (((row->condB & IMM_N) ? 1
                                                              : (SFX_WIDE ? 3 : 2))
                                        | (b->fwd2_neg ? FIX_SUB2 : 0)),
-                            (int) (o - z->out))) {
+                            (int) (o - zz.out))) {
                 return false;
             }
             o = emit_imm(o, b, row->condB, SFX_WIDE);
@@ -6586,12 +6601,12 @@ __attribute__((always_inline)) static inline bool emit_row(dz* z, const isa_row*
 #undef SFX_WIDE
     }
 
-    z->o = o;
+    zz.o = o;
 
     return true;
 }
 
-static bool directive_line(dz* z, const char* s, int n, const char* p,
+static bool directive_line(const char* s, int n, const char* p,
                            const char* e, const char** stop);
 
 /* A line of a macro being defined: copied in as it stands, unless it is the
@@ -6601,22 +6616,22 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
  * that do not exist yet and arguments that are not values. A MACRO here is
  * refused, as the reference refuses it. */
 __attribute__((noinline))
-static bool macro_capture(dz* z, const char* s, int n, const char* p,
+static bool macro_capture(const char* s, int n, const char* p,
                           const char* e, const char** stop) {
     const uint8_t kind = directive_of(s, n);
     if (kind == DIR_ENDMACRO) {
-        z->defining = NULL;
-        z->line_mode = z->cond_emit ? LINE_ASSEMBLE : LINE_SKIP;
+        zz.defining = NULL;
+        zz.line_mode = zz.cond_emit ? LINE_ASSEMBLE : LINE_SKIP;
         *stop = p;
 
         return true;
     }
     if (kind == DIR_MACRO) {
-        z->err = "macros do not nest";
+        zz.err = "macros do not nest";
 
         return false;
     }
-    if (!macro_line(z, s, e)) {
+    if (!macro_line(s, e)) {
         return false;
     }
     while (p < e && *p != '\n') {
@@ -6642,11 +6657,11 @@ static bool macro_capture(dz* z, const char* s, int n, const char* p,
  * it is a diagnostic the reference gives and this one does not.
  */
 __attribute__((noinline))
-static bool cond_skip(dz* z, const char* s, int n, const char* p,
+static bool cond_skip(const char* s, int n, const char* p,
                       const char* e, const char** stop) {
     const uint8_t kind = directive_of(s, n);
     if (kind >= DIR_IF) {
-        return directive_line(z, s, n, p, e, stop);
+        return directive_line(s, n, p, e, stop);
     }
     while (p < e && *p != '\n') {
         p++;
@@ -6669,7 +6684,7 @@ static bool cond_skip(dz* z, const char* s, int n, const char* p,
  * is what sends `.db` and `.assume` to the directives, and it means a macro
  * may be called `read.next` without this deciding otherwise. */
 __attribute__((noinline))
-static const insninfo* suffixed_mnemonic(const dz* z, const char* s, int n,
+static const insninfo* suffixed_mnemonic(const char* s, int n,
                                          uint8_t* suffix) {
     int i = 1;
     while (i < n && s[i] != '.') {
@@ -6678,7 +6693,7 @@ static const insninfo* suffixed_mnemonic(const dz* z, const char* s, int n,
     if (i == n) {
         return NULL;
     }
-    if (!suffix_bit(&s[i + 1], n - i - 1, z->adl, suffix)) {
+    if (!suffix_bit(&s[i + 1], n - i - 1, zz.adl, suffix)) {
         return NULL;
     }
     return mnemonic_of(s, i);
@@ -6693,7 +6708,7 @@ static const insninfo* suffixed_mnemonic(const dz* z, const char* s, int n,
  * is cold, and emit_row folds its suffix handling away in the hot copy while
  * keeping it here. */
 __attribute__((noinline))
-static bool suffixed_insn(dz* z, const insninfo* insn, uint8_t suffix,
+static bool suffixed_insn(const insninfo* insn, uint8_t suffix,
                           const char* p, const char* e, const char** stop) {
 #if defined(TRUNC) || defined(PTRUNC) || defined(LTRUNC) || defined(ETRUNC) \
     || defined(MTRUNC)
@@ -6714,7 +6729,7 @@ static bool suffixed_insn(dz* z, const insninfo* insn, uint8_t suffix,
 #else
     dop a;
     dop b;
-    if (!parse_operand(z, &a, &p, e)) {
+    if (!parse_operand(&a, &p, e)) {
         return false;
     }
     while (p < e && is_space_ch(*p)) {
@@ -6722,7 +6737,7 @@ static bool suffixed_insn(dz* z, const insninfo* insn, uint8_t suffix,
     }
     if (*p == ',') {
         p++;
-        if (!parse_operand(z, &b, &p, e)) {
+        if (!parse_operand(&b, &p, e)) {
             return false;
         }
     } else {
@@ -6732,12 +6747,12 @@ static bool suffixed_insn(dz* z, const insninfo* insn, uint8_t suffix,
 
     const isa_row* const row = match_row(insn, &a, &b);
     if (row == NULL) {
-        z->err = "no such instruction form";
+        zz.err = "no such instruction form";
 
         return false;
     }
 
-    return emit_row(z, row, &a, &b, suffix);
+    return emit_row(row, &a, &b, suffix);
 #endif
 }
 
@@ -6760,14 +6775,14 @@ static bool suffixed_insn(dz* z, const insninfo* insn, uint8_t suffix,
  * no numbered form -- `bit`, which writes no result, or `ld` -- simply fails
  * the lookup, which is why this asks the table rather than a list of names. */
 __attribute__((noinline))
-static bool third_operand(dz* z, const insninfo* insn, dop* a, dop* b,
+static bool third_operand(const insninfo* insn, dop* a, dop* b,
                           const char* p, const char* e, const char** stop) {
     char nm[8];
     const int n = insn->len;
     if (n + 1 > (int) sizeof(nm) || !a->noreg || (a->mode & IMM) == 0
         || (a->mode & INDIRECT) != 0 || a->fwd != NULL
         || (unsigned) a->imm > 7) {
-        z->err = "no such instruction form";
+        zz.err = "no such instruction form";
 
         return false;
     }
@@ -6778,25 +6793,25 @@ static bool third_operand(dz* z, const insninfo* insn, dop* a, dop* b,
 
     const insninfo* const alt = mnemonic_of(nm, n + 1);
     if (alt == NULL) {
-        z->err = "no such instruction form";
+        zz.err = "no such instruction form";
 
         return false;
     }
 
     dop c;
-    if (!parse_operand(z, &c, &p, e)) {
+    if (!parse_operand(&c, &p, e)) {
         return false;
     }
     *stop = p;
 
     const isa_row* const row = match_row(alt, b, &c);
     if (row == NULL) {
-        z->err = "no such instruction form";
+        zz.err = "no such instruction form";
 
         return false;
     }
 
-    return emit_row(z, row, b, &c, 0);
+    return emit_row(row, b, &c, 0);
 }
 
 /* ------------------------------------------------------------------ main */
@@ -6865,7 +6880,7 @@ static bool third_operand(dz* z, const insninfo* insn, dop* a, dop* b,
 #define TRUNC_AT(n, v) do { } while (0)
 #endif
 
-__attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const char* e, const char** stop) {
+__attribute__((noinline)) static bool assemble_line(const char* p, const char* e, const char** stop) {
     /* Bounded, like every scan in the file, and this one was bounded first:
      * it was correct until labels were added around it, nothing about labels
      * touches it, and unbounded it then broke *every line on the Agon* while
@@ -6895,7 +6910,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
     }
     int n = (int) (p - s);
     if (n == 0) {
-        z->err = "expected an instruction";
+        zz.err = "expected an instruction";
 
         return false;
     }
@@ -6906,10 +6921,10 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
      * branch to find out, tested after the token and before the label --
      * neither a switched-off branch nor a macro body may define one, and the
      * reference defines neither. */
-    if (z->line_mode != LINE_ASSEMBLE) {
-        return z->line_mode == LINE_CAPTURE
-                   ? macro_capture(z, s, n, p, e, stop)
-                   : cond_skip(z, s, n, p, e, stop);
+    if (zz.line_mode != LINE_ASSEMBLE) {
+        return zz.line_mode == LINE_CAPTURE
+                   ? macro_capture(s, n, p, e, stop)
+                   : cond_skip(s, n, p, e, stop);
     }
 
     /* A label, if a colon follows the name.
@@ -6922,7 +6937,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
      * and so is `foo:` alone. */
     if (*p == ':') {
         LTRUNC_AT(1);
-        const int addr = z->org + (int) (z->o - z->out);
+        const int addr = zz.org + (int) (zz.o - zz.out);
         /* "Label too long" there, at sixty-five characters. The `@` of a
          * local counts towards it, which is why this is asked once for both
          * rather than after the two are told apart.
@@ -6941,7 +6956,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
          * so they are written where the definition is, which is where they
          * are easiest to find. */
         if ((unsigned) n > LABEL_MAX) {
-            z->err = "label too long";
+            zz.err = "label too long";
 
             return false;
         }
@@ -6949,18 +6964,18 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
             /* `@@` is an anonymous label, not a local: it has no name to
              * collide with, so writing it twice is not a redefinition. */
             if (n == 2 && s[1] == '@') {
-                if (z->expanding != 0) {
+                if (zz.expanding != 0) {
                     /* "No anonymous labels allowed in macro definition"
                      * there, and refused at the invocation rather than at the
                      * definition, exactly as a global label in a body is. */
-                    z->err = "no anonymous labels allowed in a macro";
+                    zz.err = "no anonymous labels allowed in a macro";
 
                     return false;
                 }
-                if (!anon_define(z, addr)) {
+                if (!anon_define(addr)) {
                     return false;
                 }
-            } else if (loc_define(z, s, n, addr) == NULL) {
+            } else if (loc_define(s, n, addr) == NULL) {
                 /* A local. It is not tested against the number formats: the
                  * reference returns before that check for a local, so `@123:`
                  * and `@0ffh:` are labels there and have to be here. */
@@ -6968,22 +6983,22 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
             }
         } else {
             if (numeric_token(s, n)) {
-                z->err = "invalid label";
+                zz.err = "invalid label";
 
                 return false;
             }
-            if (z->expanding != 0) {
-                z->err = "no global labels allowed in a macro";
+            if (zz.expanding != 0) {
+                zz.err = "no global labels allowed in a macro";
 
                 return false;
             }
-            if (sym_define(z, s, n, addr) == NULL) {
+            if (sym_define(s, n, addr) == NULL) {
                 return false;
             }
             /* A global ends the scope before it starts a new one -- but not
              * until this line is done with, because the rest of it still
              * belongs to the scope being closed. */
-            z->scope_line = z->line;
+            zz.scope_line = zz.line;
         }
         LTRUNC_AT(2);
         p++;
@@ -7011,7 +7026,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
          * benchmark, including the ones with no EQU in them. One hash lookup
          * per EQU line against a spill on every line in the file. */
         if (is_equ_at(p)) {
-            return equ_line(z, s, n, p, e, stop);
+            return equ_line(s, n, p, e, stop);
         }
 
         s = p;
@@ -7020,7 +7035,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
         }
         n = (int) (p - s);
         if (n == 0) {
-            z->err = "expected an instruction";
+            zz.err = "expected an instruction";
 
             return false;
         }
@@ -7047,14 +7062,14 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
          * function holds has to survive the call, and that cost 6% on every
          * benchmark -- including the ones with no suffix and no directive in
          * them. Nothing returns to this line. */
-        return directive_line(z, s, n, p, e, stop);
+        return directive_line(s, n, p, e, stop);
     }
 
     TRUNC_AT(4, insn != NULL);
 
     dop a;
     dop b;
-    if (!parse_operand(z, &a, &p, e)) {
+    if (!parse_operand(&a, &p, e)) {
         return false;
     }
     while (p < e && is_space_ch(*p)) {
@@ -7062,7 +7077,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
     }
     if (*p == ',') {
         p++;
-        if (!parse_operand(z, &b, &p, e)) {
+        if (!parse_operand(&b, &p, e)) {
             return false;
         }
         /* A third operand, which only RES and SET have. See third_operand.
@@ -7074,7 +7089,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
          * and nothing else. Written with the scan here instead it was 0.04s
          * of isa_real. */
         if (*p == ',') {
-            return third_operand(z, insn, &a, &b, p + 1, e, stop);
+            return third_operand(insn, &a, &b, p + 1, e, stop);
         }
     } else {
         b = dop_none;
@@ -7085,14 +7100,14 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
 
     const isa_row* row = match_row(insn, &a, &b);
     if (row == NULL) {
-        z->err = "no such instruction form";
+        zz.err = "no such instruction form";
 
         return false;
     }
 
     TRUNC_AT(6, row != NULL);
 
-    return emit_row(z, row, &a, &b, 0);
+    return emit_row(row, &a, &b, 0);
 
 #ifdef TRUNC
 trunc_done:
@@ -7123,19 +7138,19 @@ trunc_done:
  * Everything is defined by now, so the evaluator is simply run again over the
  * copy. A forward reference that survives even this is one to a name nothing
  * ever defined, and is reported against the line that wrote it. */
-static bool resolve_deferred(dz* z) {
-    for (int i = 0; i < z->defer_used; i++) {
-        defexpr* d = &z->defer[i];
+static bool resolve_deferred(void) {
+    for (int i = 0; i < zz.defer_used; i++) {
+        defexpr* d = &zz.defer[i];
         const char* p = d->text;
         evalue v = 0;
         uint8_t mask = 0;
         fwd_reset(NULL);
-        z->line = d->line;
-        if (!expr_value(z, &v, &p, d->text + d->len, &mask)) {
+        zz.line = d->line;
+        if (!expr_value(&v, &p, d->text + d->len, &mask)) {
             return false;
         }
         if (expr_fwd != NULL || expr_fwd_bad) {
-            z->err = "unknown label";
+            zz.err = "unknown label";
 
             return false;
         }
@@ -7147,17 +7162,17 @@ static bool resolve_deferred(dz* z) {
 }
 
 /* Fills in the blocks whose value was not known when they were written. */
-static bool resolve_fills(dz* z) {
-    for (int i = 0; i < z->fillp_used; i++) {
-        const fillpatch* fp = &z->fillp[i];
+static bool resolve_fills(void) {
+    for (int i = 0; i < zz.fillp_used; i++) {
+        const fillpatch* fp = &zz.fillp[i];
         if (!fp->sp->defined) {
-            z->line = fp->line;
-            z->err = "unknown label";
+            zz.line = fp->line;
+            zz.err = "unknown label";
 
             return false;
         }
         const evalue v = fp->sp->addr;
-        uint8_t* o = z->out + fp->off;
+        uint8_t* o = zz.out + fp->off;
         const int nv = (int) v;
         for (int n = fp->count; n != 0; n--) {
             if (fp->width > 3) {
@@ -7180,12 +7195,12 @@ static bool resolve_fills(dz* z) {
     return true;
 }
 
-static bool resolve_fixups(dz* z) {
-    if (!resolve_deferred(z) || !resolve_fills(z)) {
+static bool resolve_fixups(void) {
+    if (!resolve_deferred() || !resolve_fills()) {
         return false;
     }
-    for (int i = 0; i < z->fix_used; i++) {
-        if (!patch_fixup(z, &z->fixups[i])) {
+    for (int i = 0; i < zz.fix_used; i++) {
+        if (!patch_fixup(&zz.fixups[i])) {
             return false;
         }
     }
@@ -7205,7 +7220,7 @@ static bool resolve_fixups(dz* z) {
  * popped when a file ends -- puts a test for "is there a parent file" in the
  * hottest code in the assembler, to answer a question only an INCLUDE can ask.
  */
-__attribute__((noinline)) static bool run_lines(dz* z) {
+__attribute__((noinline)) static bool run_lines(void) {
     /* The cursor is a pointer, not an offset into the buffer.
      *
      * Every line used to turn `bpos_` into a pointer to start, and the pointer
@@ -7213,20 +7228,20 @@ __attribute__((noinline)) static bool run_lines(dz* z) {
      * subtract and a store on the way out, for a value only this loop uses.
      * br_fill_lines never reads bpos_; it only resets it, so nothing needs the
      * offset kept up to date in between. */
-    const char* p = z->rd.buf_;
+    const char* p = zz.rd.buf_;
 
     /* Empty for a file, so the first pass through the loop fills it. A reader
      * over memory -- which is what a macro expansion is -- has the whole of its
      * content already and can never refill: `br_fill_lines` says so and returns
      * false, which the loop reads as end of file. Without this an expansion
      * assembles to nothing at all, quietly. */
-    const char* end = z->rd.mem_ ? p + z->rd.bsz_ : p;
+    const char* end = zz.rd.mem_ ? p + zz.rd.bsz_ : p;
 
     while (true) {
-        buf_reader* r = &z->rd;
+        buf_reader* r = &zz.rd;
         if (p >= end) {
-            if (!line_fill(z, r)) {
-                if (z->err != NULL) {
+            if (!line_fill(r)) {
+                if (zz.err != NULL) {
                     return false;
                 }
 
@@ -7239,8 +7254,8 @@ __attribute__((noinline)) static bool run_lines(dz* z) {
         /* The buffer holds whole lines, so this one's newline is in it. */
         const char* stop = p;
 
-        z->line++;
-        if (!assemble_line(z, p, end, &stop)) {
+        zz.line++;
+        if (!assemble_line(p, end, &stop)) {
             return false;
         }
 
@@ -7276,7 +7291,7 @@ __attribute__((noinline)) static bool run_lines(dz* z) {
                     q++;
                 }
             } else if (*q != '\n') {
-                z->err = "unexpected text after the instruction";
+                zz.err = "unexpected text after the instruction";
 
                 return false;
             }
@@ -7301,84 +7316,84 @@ __attribute__((noinline)) static bool run_lines(dz* z) {
     return true;
 }
 
-__attribute__((noinline)) static bool run(dz* z, const char* path) {
+__attribute__((noinline)) static bool run(const char* path) {
     Z_SITE("source reader");
-    if (br_open(&z->rd, path, BUF_KB) == NULL) {
-        z->err = "cannot open source";
+    if (br_open(&zz.rd, path, BUF_KB) == NULL) {
+        zz.err = "cannot open source";
 
         return false;
     }
 
-    z->cap = (int) (z->rd.fsz_ >> OUT_SHIFT);
-    if (z->cap < OUT_MIN) {
-        z->cap = OUT_MIN;
+    zz.cap = (int) (zz.rd.fsz_ >> OUT_SHIFT);
+    if (zz.cap < OUT_MIN) {
+        zz.cap = OUT_MIN;
     }
     Z_SITE("output buffer");
-    z->out = (uint8_t*) malloc((size_t) z->cap);
-    if (z->out == NULL) {
-        z->err = "out of memory";
+    zz.out = (uint8_t*) malloc((size_t) zz.cap);
+    if (zz.out == NULL) {
+        zz.err = "out of memory";
 
         return false;
     }
-    z->o = z->out;
-    z->org = ZAP_ORG;
-    z->org_set = false;
-    z->fill = 0xFF;
-    z->filled = false;
-    z->reloc = false;
-    z->reloc_org = 0;
-    z->adl = ZAP_ADL;
+    zz.o = zz.out;
+    zz.org = ZAP_ORG;
+    zz.org_set = false;
+    zz.fill = 0xFF;
+    zz.filled = false;
+    zz.reloc = false;
+    zz.reloc_org = 0;
+    zz.adl = ZAP_ADL;
     /* Reset with the rest, and it has to be: `cpu_mask` is a file-scope
      * static so that match_row need not carry it, and the unit tests assemble
      * many sources in one process. Without this, one `.cpu Z80` would decide
      * what every later test in the same run could encode. */
     cpu_mask = CPU_EZ80;
-    z->in_cond = false;
-    z->cond_emit = true;
-    z->line_mode = LINE_ASSEMBLE;
-    z->macros = NULL;
-    z->defining = NULL;
-    z->expanding = 0;
-    z->undo = NULL;
-    z->undo_used = 0;
-    z->undo_cap = 0;
-    z->subfix = NULL;
-    z->subfix_used = 0;
-    z->subfix_cap = 0;
-    z->defer = NULL;
-    z->defer_used = 0;
-    z->defer_cap = 0;
-    z->fillp = NULL;
-    z->fillp_used = 0;
-    z->fillp_cap = 0;
+    zz.in_cond = false;
+    zz.cond_emit = true;
+    zz.line_mode = LINE_ASSEMBLE;
+    zz.macros = NULL;
+    zz.defining = NULL;
+    zz.expanding = 0;
+    zz.undo = NULL;
+    zz.undo_used = 0;
+    zz.undo_cap = 0;
+    zz.subfix = NULL;
+    zz.subfix_used = 0;
+    zz.subfix_cap = 0;
+    zz.defer = NULL;
+    zz.defer_used = 0;
+    zz.defer_cap = 0;
+    zz.fillp = NULL;
+    zz.fillp_used = 0;
+    zz.fillp_cap = 0;
     for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
-        z->expbuf[i] = NULL;
-        z->expcap[i] = 0;
+        zz.expbuf[i] = NULL;
+        zz.expcap[i] = 0;
     }
-    z->lim = z->out + z->cap - OUT_MAX_INSN;
+    zz.lim = zz.out + zz.cap - OUT_MAX_INSN;
     Z_SITE("symbol buckets");
-    z->syms = (symslot*) calloc(NSYMB, sizeof(symslot));
-    if (z->syms == NULL) {
-        z->err = "out of memory";
+    zz.syms = (symslot*) calloc(NSYMB, sizeof(symslot));
+    if (zz.syms == NULL) {
+        zz.err = "out of memory";
 
         return false;
     }
     /* One block up front, so sym_define never has to ask whether there is
      * one; it only ever asks whether the newest is full. */
     Z_SITE("symbol blocks");
-    z->blocks = (symblock*) malloc(sizeof(symblock));
-    if (z->blocks == NULL) {
-        z->err = "out of memory";
+    zz.blocks = (symblock*) malloc(sizeof(symblock));
+    if (zz.blocks == NULL) {
+        zz.err = "out of memory";
 
         return false;
     }
-    z->blocks->next = NULL;
-    z->syms_used = 0;
-    z->line = 0;
-    z->path = path;
-    z->depth = 0;
+    zz.blocks->next = NULL;
+    zz.syms_used = 0;
+    zz.line = 0;
+    zz.path = path;
+    zz.depth = 0;
 
-    if (!run_lines(z)) {
+    if (!run_lines()) {
         return false;
     }
 
@@ -7386,27 +7401,27 @@ __attribute__((noinline)) static bool run(dz* z, const char* path) {
      * one does. Before the globals, because a local that was never defined
      * should be reported against the line that used it rather than after a
      * global's failure somewhere else. */
-    if (z->defining != NULL) {
+    if (zz.defining != NULL) {
         /* "Unfinished macro definition" there, and the same here: a body that
          * never closes has swallowed the rest of the file. */
-        z->err = "a MACRO was never closed";
+        zz.err = "a MACRO was never closed";
 
         return false;
     }
 
-    if (z->in_cond) {
+    if (zz.in_cond) {
         /* "Missing ENDIF directive" there, and the same here: a conditional
          * that never closes has silently dropped whatever followed it. */
-        z->err = "an IF was never closed";
+        zz.err = "an IF was never closed";
 
         return false;
     }
 
-    if (!scope_end(z)) {
+    if (!scope_end()) {
         return false;
     }
 
-    if (!resolve_fixups(z)) {
+    if (!resolve_fixups()) {
         return false;
     }
 
@@ -7418,8 +7433,8 @@ __attribute__((noinline)) static bool run(dz* z, const char* path) {
      * After the fixups, not before: a forward reference is patched by offset,
      * and shortening the output first would move nothing but would leave the
      * question of whether it could. */
-    if (z->fill_len != 0 && (int) (z->o - z->out) == z->fill_end) {
-        z->o -= z->fill_len;
+    if (zz.fill_len != 0 && (int) (zz.o - zz.out) == zz.fill_end) {
+        zz.o -= zz.fill_len;
     }
 
     return true;
@@ -7431,49 +7446,49 @@ __attribute__((noinline)) static bool run(dz* z, const char* path) {
  * the success path each freed their own list, and the block list was added to
  * one of them. The sanitiser found it; a machine with 512 KB and no leak
  * checker would have found it later and less clearly. */
-static void dz_free(dz* z) {
-    free(z->out);
-    free(z->syms);
-    free(z->fixups);
-    free(z->lfixups);
-    free(z->undo);
-    free(z->subfix);
-    free(z->defer);
-    free(z->fillp);
+static void dz_free(void) {
+    free(zz.out);
+    free(zz.syms);
+    free(zz.fixups);
+    free(zz.lfixups);
+    free(zz.undo);
+    free(zz.subfix);
+    free(zz.defer);
+    free(zz.fillp);
     for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
-        free(z->expbuf[i]);
+        free(zz.expbuf[i]);
     }
-    while (z->macros != NULL) {
-        macro* next = z->macros->next;
-        free(z->macros->body);
-        free(z->macros);
-        z->macros = next;
+    while (zz.macros != NULL) {
+        macro* next = zz.macros->next;
+        free(zz.macros->body);
+        free(zz.macros);
+        zz.macros = next;
     }
-    while (z->names != NULL) {
-        namblock* next = z->names->next;
-        free(z->names);
-        z->names = next;
+    while (zz.names != NULL) {
+        namblock* next = zz.names->next;
+        free(zz.names);
+        zz.names = next;
     }
     /* The local blocks are rewound rather than freed at the end of a scope, so
      * `locnames` may be pointing part way down a list that is still whole.
      * Freed from the first, which is the only pointer that always names the
      * head. */
-    while (z->locnamfirst != NULL) {
-        namblock* next = z->locnamfirst->next;
-        free(z->locnamfirst);
-        z->locnamfirst = next;
+    while (zz.locnamfirst != NULL) {
+        namblock* next = zz.locnamfirst->next;
+        free(zz.locnamfirst);
+        zz.locnamfirst = next;
     }
-    while (z->blocks != NULL) {
-        symblock* next = z->blocks->next;
-        free(z->blocks);
-        z->blocks = next;
+    while (zz.blocks != NULL) {
+        symblock* next = zz.blocks->next;
+        free(zz.blocks);
+        zz.blocks = next;
     }
-    while (z->locfirst != NULL) {
-        locblock* next = z->locfirst->next;
-        free(z->locfirst);
-        z->locfirst = next;
+    while (zz.locfirst != NULL) {
+        locblock* next = zz.locfirst->next;
+        free(zz.locfirst);
+        zz.locfirst = next;
     }
-    br_destroy(&z->rd);
+    br_destroy(&zz.rd);
 }
 
 /* `-ez80`, spelled out rather than compared with same_ci.
@@ -7542,23 +7557,17 @@ int main(int argc, char* argv[]) {
     build_tables();
     build_cclass();
 
-    /* Zeroed rather than field by field, because the reader inside it is
-     * freed on both paths below and br_open leaves it untouched when it
-     * fails. */
-    dz z;
-    memset(&z, 0, sizeof(z));
-
     printf("Assembling %s\r\n", in);
     const clock_t begin = clock();
-    const bool ok = run(&z, in);
+    const bool ok = run(in);
     const clock_t end = clock();
 
     if (!ok) {
-        /* z.path, not `in`: an error inside an included file has to name
+        /* zz.path, not `in`: an error inside an included file has to name
          * that file, and the line number is already that file's. */
-        printf("%s line %d: %s\r\n", z.path != NULL ? z.path : in, z.line,
-               z.err ? z.err : "out of memory for the output");
-        dz_free(&z);
+        printf("%s line %d: %s\r\n", zz.path != NULL ? zz.path : in, zz.line,
+               zz.err ? zz.err : "out of memory for the output");
+        dz_free();
 
         return 1;
     }
@@ -7566,13 +7575,13 @@ int main(int argc, char* argv[]) {
     const uint8_t fh = mos_fopen(out, FA_WRITE | FA_CREATE_ALWAYS);
     if (fh == 0) {
         printf("Cannot write %s\r\n", out);
-        dz_free(&z);
+        dz_free();
 
         return 1;
     }
-    const int written = (int) (z.o - z.out);
+    const int written = (int) (zz.o - zz.out);
     if (written > 0) {
-        mos_fwrite(fh, (char*) z.out, (uint24_t) written);
+        mos_fwrite(fh, (char*) zz.out, (uint24_t) written);
     }
     mos_fclose(fh);
 
@@ -7586,7 +7595,7 @@ int main(int argc, char* argv[]) {
     printf("Done in %u.%02u seconds\r\n", (unsigned) (cs / 100),
            (unsigned) (cs % 100));
 
-    dz_free(&z);
+    dz_free();
 
     return 0;
 }

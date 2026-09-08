@@ -107,7 +107,7 @@ Between them that is four corpus sources -- `compound_all_operator_values_dx`,
 evaluator is a performance question with a measurable answer, and nobody has
 measured it yet. That is the decision, not the directives.
 
-**Since resolved.** The answer was 1.4%, both directives are in, and all four
+**Since resolved.** The answer was 1.8%, both directives are in, and all four
 sources are identical. See section 5.
 
 `.CPU` is 262 uses in the corpus and 260 of them are in `Errors_cputype`, which
@@ -160,8 +160,8 @@ allocation and rotated four of `assemble_line`'s unbounded scans. That was the
 rotation being measured, not the width.
 
 Bounding every scan removed it, for 0.06s. Then the width could be asked
-properly, and the answer is **1.4%** -- 5.64s to 5.72s on isa_real, after four
-rounds of getting it down from the naive widening's 7.4%.
+properly, and the answer is **1.8%** -- 5.64s to 5.74s on isa_real, after
+three rounds of getting it down from the naive widening's 7.4%.
 
 What is wide: an expression, and a symbol's value. What is not: an address, a
 count, an immediate, a displacement, and a fixup's addend. The reference keeps

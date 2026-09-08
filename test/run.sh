@@ -517,30 +517,46 @@ else
             status=1
         fi
 
-        # The rotated-scan tell, in the one function every line goes through.
+        # The rotated-scan shape, in the one function every line goes through.
         #
-        # test_scan_bounds above says the source carries a bound. This says
-        # the bound did its work: `dec iy` before a loop head is what the
-        # rotation looks like once it is code, and it is the only place the
-        # fault is ever visible -- the host build is correct whether the loop
-        # is rotated or not.
+        # test_scan_bounds above says the source carries a bound. This says the
+        # bound did its work, and it is the only place the fault is ever
+        # visible: the host build is correct whether the loop is rotated or
+        # not.
         #
-        # Zero, not a budget. It was three before the scans were bounded and
-        # none of the three was a scan of a wrongly rotated kind -- they were
-        # correct by register allocation, which is exactly the thing that
-        # stops being true when something unrelated moves. A `dec iy` that
-        # comes back is not proof of a fault; it is the moment to open the
-        # assembly and look, which is what this exists to force.
+        # The shape and not just `dec iy`. This counted the instruction alone
+        # for one round and it was too blunt -- deleting an unnecessary
+        # temporary moved the register allocation, `hex_digits`'s digit
+        # counter landed in `iy`, and a loop that walks nothing at all read as
+        # a rotated scan. What the fault actually looks like is a
+        # pre-decremented pointer read one past:
+        #
+        #     dec  iy
+        #   .LBB8_239:
+        #     lea  bc, iy + 0
+        #     inc  bc
+        #     ld   e, (iy + 1)      <- the first character is never examined
+        #     ...
+        #     jr   nz, .LBB8_239
+        #
+        # So: a `dec iy` with a read of `(iy + 1)` close behind it. On the
+        # commit before the scans were bounded that is 2, and a counter in
+        # `iy` is 0 because nothing indexes through it.
         #
         # parse_operand is always_inline, so its scans are counted here too.
         ndec=$(awk '/^_assemble_line:$/ { go = 1; next }
                     go && /^_[a-z_0-9]+:$/ { exit }
-                    go && /dec[ \t]+iy/ { n++ }
+                    !go { next }
+                    /dec[ \t]+iy/ { watch = 12; next }
+                    watch > 0 {
+                        if ($0 ~ /\(iy \+ 1\)/) { n++; watch = 0; next }
+                        watch--
+                    }
                     END { print n + 0 }' "$OUT/zap.s")
         if [ "$ndec" = 0 ]; then
             echo "PASS  assemble_line has no rotated scan"
         else
-            echo "FAIL  assemble_line has $ndec dec iy; check the scans in the assembly"
+            echo "FAIL  assemble_line has $ndec rotated scans; read the assembly"
             status=1
         fi
     else

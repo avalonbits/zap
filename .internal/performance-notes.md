@@ -3777,9 +3777,9 @@ what it costs rather than for what it disturbs.
 
 The round before this one removed what was blocking it. Here is the number.
 
-**7.4% for the naive widening, 1.4% for the one that shipped.**
+**7.4% for the naive widening, 1.8% for the one that shipped.**
 
-    isa_real   5.64 -> 6.06 naive -> 5.72 shipped
+    isa_real   5.64 -> 6.06 naive -> 5.74 shipped
 
 Byte-identical output at every step, on all four benchmarks, and on the Agon
 as well as the host -- which for this change is not a formality. `int` is
@@ -3809,7 +3809,21 @@ Four measurements, one build and one run each.
     - hex_digits declines a run wider than
       the machine, num_parse reads it           5.86 -> 5.74   -0.12
     - the decimal fast readers do the same      5.74 -> 5.72   -0.02
-                                                       shipped  +0.08
+                                                       shipped  +0.10
+
+The shipped figure is 5.74 and not 5.72, and the two hundredths between them
+are a redundant temporary that was taken *out* after the run above. It held
+hex_digits's answer on its way into a variable of the same type, so the cast
+beside it said something false; removing it moved the register allocation and
+cost 0.02s. Kept out. Two hundredths is the resolution of this measurement and
+a variable that does nothing is a permanent tax on whoever reads it next.
+
+That removal is also what showed the `dec iy` check was too blunt -- see below.
+
+    isa_real         5.64 -> 5.74   397 -> 404 cycles a byte
+    isa_even         5.74 -> 5.84   404 -> 411
+    isa_degenerate   5.24 -> 5.34   368 -> 375
+    isa_memory       5.72 -> 5.80   402 -> 408
 
 Two lessons, and they are the same lesson.
 

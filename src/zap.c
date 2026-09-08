@@ -103,10 +103,17 @@
  * already dropped. The reference evaluates in 32 bits, so this is also the
  * width that agrees with it wherever the two would otherwise differ.
  *
- * It costs 0.04s of isa_real's 5.68 -- see .internal/performance-notes.md,
- * which has where that lands and what was tried to avoid it. The evaluator is
- * not on the path most operands take: a register, a plain literal and a bare
- * name each have a reader of their own that never enters it.
+ * It costs **0.10s of isa_real's 5.74**, 1.8%, and it cost 0.42 before three
+ * rounds of taking it off the paths that do not need it: the fast literal
+ * readers decline anything wider than the machine and let num_parse have it,
+ * and the emitters narrow once when the width is three or less. See
+ * .internal/performance-notes.md, which has the decomposition and the two
+ * things that measured and were not kept.
+ *
+ * The evaluator is not on the path most operands take: a register, a plain
+ * literal and a bare name each have a reader of their own that never enters
+ * it, and keeping those readers narrow is most of why the price is 1.8% and
+ * not 7.4%.
  *
  * Narrowing this is a one-line edit and would look like free speed, which is
  * why the assertion is here rather than in a comment. It fires on the target
@@ -3699,7 +3706,6 @@ full_expression:
         }
 
         int v = 0;
-        int hv = 0;
         bool got = false;
         if (nn == 1 && ns[0] == '$') {
             /* The address of the instruction being assembled. `$` alone; with
@@ -3755,15 +3761,13 @@ full_expression:
             }
             got = true;
         } else if (nn >= 3 && ns[0] == '0' && (ns[1] | 0x20) == 'x') {
-            got = hex_digits(ns + 2, nn - 2, &hv);
-            v = (int) hv;
+            got = hex_digits(ns + 2, nn - 2, &v);
         } else if (nn >= 2 && (ns[nn - 1] | 0x20) == 'h') {
             /* A trailing h, which is the form the reference's own corpus
              * writes: `aabbcch`, and `0ffh`. It begins with a letter as often
              * as not, so it arrives here only because the register path
              * rewinds to it. */
-            got = hex_digits(ns, nn - 1, &hv);
-            v = (int) hv;
+            got = hex_digits(ns, nn - 1, &v);
         } else if (nn > 0 && digit_ch(ns[0])) {
             /* First digit outside the loop, for the reason given at the
              * displacement above: a one-digit literal then needs no multiply,
@@ -5132,7 +5136,7 @@ static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
              * `value >> 8` on the evaluator's word is a call to __lshru, and
              * DB, DW and DL are 3,181 lines of isa_real between them. Narrowed
              * first, they keep the shifts the eZ80 has. Splitting the write
-             * this way is 0.24s of the 0.42 the widening cost -- see
+             * this way is 0.20s of the 0.42 the widening cost -- see
              * .internal/performance-notes.md. */
             uint8_t* o = z->o;
             if (width > 3) {

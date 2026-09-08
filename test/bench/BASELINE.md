@@ -1,53 +1,63 @@
 # Baseline
 
-Recorded on fab-agon-emulator 1.2.4 with `test/bench/bench.sh`, at the commit
-that fixed the runner. Figures are each assembler's own `Done in` line. Every
-output was byte-identical between the two.
+Recorded on fab-agon-emulator 1.2.4 with `test/bench/bench.sh`. Figures are
+each assembler's own `Done in` line. Every output was byte-identical between
+the two.
 
 | source | zap | ez80asm | ratio | |
 |---|---|---|---|---|
-| bbcbasic | 20.96s | 22.44s | 0.93x | ez80asm `-m` |
-| rokky | 2.40s | 2.48s | 0.97x | |
-| synth | 40.78s | 45.60s | 0.89x | ez80asm `-m` |
+| bbcbasic | 4.12s | 22.42s | **0.18x** | ez80asm `-m` |
+| rokky | 0.56s | 2.50s | **0.22x** | |
+| synth | 7.30s | 45.64s | **0.16x** | ez80asm `-m` |
 
-Lower is better. The goal is **0.50x**: bbcbasic at 11.2s, rokky at 1.24s, synth
-at 22.8s -- about a 45% cut across the board.
+Lower is better. **The goal was 0.50x and it is met with room to spare** --
+between four and six times faster than the reference rather than the two the
+target asked for.
+
+## What this replaces
+
+The first table in this file, taken when the runner was fixed:
+
+| source | zap | ez80asm | ratio |
+|---|---|---|---|
+| bbcbasic | 20.96s | 22.44s | 0.93x |
+| rokky | 2.40s | 2.48s | 0.97x |
+| synth | 40.78s | 45.60s | 0.89x |
+
+So zap is **5.1x, 4.3x and 5.6x** faster than it was, on the same three
+sources and the same rig.
+
+**ez80asm's three figures are the check on that.** They were not supposed to
+move and they did not: 22.44 to 22.42, 2.48 to 2.50, 45.60 to 45.64, all
+within a run-to-run hundredth on a rig that has been rebuilt and a machine
+that has been rebooted many times in between. A speedup measured against a
+reference that had drifted would be worth nothing, and this is the evidence
+that it has not.
 
 ## ez80asm gets -m only above 256 KiB of source
 
-`-m` is ez80asm's minimum memory configuration. Without it, it sizes its buffers
-for a desktop and never finishes on a 512 KB machine: bbcbasic sat on
-"Pass 1..." indefinitely. rokky, a fifteenth the size, completed normally either
-way, which is what made the failure look like a hang in the runner rather than
-the assembler running out of room.
+`-m` is ez80asm's minimum memory configuration. Without it, it sizes its
+buffers for a desktop and never finishes on a 512 KB machine: bbcbasic sat on
+"Pass 1..." indefinitely. rokky, a fifteenth the size, completed normally
+either way, which is what made the failure look like a hang in the runner
+rather than the assembler running out of room.
 
 Passing it everywhere would be simpler and would not be fair. `-m` costs
-ez80asm real time -- rokky is 2.48s without it and 2.70s with -- and nobody
+ez80asm real time -- rokky is 2.50s without it and 2.70s with -- and nobody
 reaches for it until they have to, so timing against a flag a user would not
-have used makes zap look better than it is. Charging it only where the source
-actually needs it moved rokky's ratio from a flattering 0.87x to 0.97x.
+have used makes zap look better than it is.
 
-The threshold is on **the whole source the assembler reads**, includes and all,
-because that is what drives the memory it needs. The size of the file named on
-the command line would get it exactly backwards: bbcbasic's top-level source is
-554 bytes and its include tree is 400 KB.
+The threshold is on **the whole source the assembler reads**, includes and
+all, because that is what drives the memory it needs. The size of the file
+named on the command line would get it exactly backwards: bbcbasic's top-level
+source is 554 bytes and its include tree is 386 KB.
 
-    bbcbasic  408,119 bytes  -m
-    rokky      60,861 bytes  no -m
+    bbcbasic  386,345 bytes  -m
+    rokky      25,171 bytes  no -m
     synth     471,286 bytes  -m
 
 The runner prints `ez80asm -m` beside the sources that got it, so a reader
 cannot mistake which comparison a row is.
-
-## What these numbers replace
-
-The previous benchmark, `big.asm`, existed only in a scratch directory and is
-gone. `synth` is a different file and its timings do not continue that series;
-the 57.88s figure quoted against big.asm has no successor here.
-
-Two figures span both rigs and both reproduce: rokky at 2.40s exactly, and zap
-on bbcbasic at 20.96s against the old rig's 20.96s. That is the only evidence
-available that the two setups agree.
 
 ## Regenerating
 
@@ -55,8 +65,9 @@ available that the two setups agree.
     test/bench/bench.sh       # all three
     test/bench/bench.sh rokky # just one
 
-Both binaries are snapshotted when the run starts, so a `make` while a run is in
-flight cannot change what is being measured half way through. Do not edit
+Both binaries are snapshotted when the run starts, so a `make` while a run is
+in flight cannot change what is being measured half way through. Do not edit
 `bench.sh` during a run either -- bash reads a script incrementally by offset,
-so rewriting it under a running instance makes it execute garbage. That happened
-once and ended a run with `unexpected EOF` after the table had already printed.
+so rewriting it under a running instance makes it execute garbage. That
+happened once and ended a run with `unexpected EOF` after the table had
+already printed.

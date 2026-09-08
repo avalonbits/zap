@@ -4331,6 +4331,43 @@ static inline const char* lit_value(const char* p, const char* e, int* out) {
     return q;
 }
 
+/* A bare name that ends the item, handed straight to the atom rather than
+ * through the evaluator.
+ *
+ * Same shape and the same reason as lit_value above, for the other half of
+ * what a data list holds. `DL label` measured 5,935 cycles a line against
+ * `DB 4`'s 3,281, and the difference is not the lookup -- `jp label` costs 73
+ * cycles more than `jp 0x040000`, so finding a symbol is nearly free. It is
+ * the route: expr_value, expr_term with its unary operators and its forward
+ * bookkeeping, and expr_climb called to discover there is no operator.
+ *
+ * Returns the end of the token, or NULL if this is not one. The first
+ * character has to be one a name can start with, which is what keeps `$` and
+ * `%1010` out; everything else about the token is left to expr_atom, which
+ * already knows a trailing-h hex literal from a label and a local from a
+ * global. */
+static const char* name_item(const char* p, const char* e) {
+    if (!alpha_ch(*p) && *p != '_' && *p != '@') {
+        return NULL;
+    }
+    const char* q = p;
+    while (q < e && num_ch(*q)) {
+        q++;
+    }
+
+    /* What ended the run has to end the item too, or an operator follows and
+     * the evaluator is what reads it. */
+    const char* r = q;
+    while (is_space_ch(*r)) {
+        r++;
+    }
+    if (*r != ',' && *r != '\n' && *r != ';' && r < e) {
+        return NULL;
+    }
+
+    return q;
+}
+
 /* `DB`, `DW` and `DL`: a comma-separated list of values, and for DB of strings
  * too.
  *
@@ -4375,14 +4412,27 @@ static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
              * Only if what ends the run also ends the item. `DB 1+2` has to go
              * through the evaluator, and deciding that costs one class lookup
              * on a character already in hand. */
-            const char* const q = lit_value(p, e, &value);
+            const char* q = lit_value(p, e, &value);
             if (q != NULL) {
                 p = q;
             } else {
                 fwd_reset(NULL);
-                uint8_t fwdmask = 0;
-                if (!expr_value(z, &value, &p, e, &fwdmask)) {
-                    return false;
+                const char* const nm = name_item(p, e);
+                if (nm != NULL) {
+                    if (!expr_atom(z, &value, p, (int) (nm - p))) {
+                        return false;
+                    }
+                    p = nm;
+                    /* Marked as having gone through the evaluator, because it
+                     * has: a name that is not defined yet has put a forward
+                     * reference in the slots, and the fixup below is what
+                     * reads it. */
+                    q = NULL;
+                } else {
+                    uint8_t fwdmask = 0;
+                    if (!expr_value(z, &value, &p, e, &fwdmask)) {
+                        return false;
+                    }
                 }
             }
             if (!out_reserve_n(z, width)) {

@@ -6,9 +6,10 @@ one against `ez80asm` to separate a missing feature from a user symbol that
 merely looks like one.
 
     247 sources in scope        (Errors_cputype excluded, as it always is)
-    104 byte-identical          was 81 before the mode suffixes, 98 before BLKB
+    110 byte-identical          81 before the mode suffixes, 98 before BLKB,
+                                104 before the parser gaps
     106 rejected by both        the negative tests, working as intended
-     37 divergences             was 60
+     31 divergences             was 60
 
 The 60 are what follows. They are ranked by what they unblock, not by how many
 tests they fix, because those two orders are very different here.
@@ -84,21 +85,24 @@ and `Opcodes/z80_undocumented`, and the honest handling is to accept `.cpu
 ez80` and refuse the rest, rather than refuse the line and take the whole file
 down with it.
 
-## 3. Parser gaps
+## 3. Parser gaps -- DONE
 
-  - **Character-literal escapes.** `LD A, '\a'` is 3E 07 in the reference and
-    "expected a character" here. So is `'\''`.
-  - **The `\?` string escape.** The reference takes it; zap does not. `\0` is
-    refused by both, which the comment in `str_escape` already says.
-  - **`ASSUME ADL = <expression>`.** zap wants a literal 0 or 1;
-    `assume adl=before` where `before` is an EQU assembles in the reference.
-  - **A conditional inside an included file** while the caller has one open.
-    zap says "conditionals do not nest". The reference allows it -- the rule
-    is per file, not per assembly.
-  - **MACRO inside a switched-off branch is still captured.** `.if 1 / macro
-    test / .db 0 / endmacro / .else / macro test / .db 1 / endmacro / .endif`
-    gives 00 in the reference and 01 here: the definition in the branch that
-    was not taken overwrote the one that was. The third byte divergence.
+All five, for six more identical sources. What they were:
+
+  - Character-literal escapes. `LD A, '\a'` was "expected a character" against
+    3E 07, and `'\''` could not be written at all. The backslash turned out to
+    be both its own escape and itself: `'\'` is 5C and `'\''` is 27, and only
+    the fourth character tells them apart.
+  - The `\?` string escape, which the reference takes. `\0` is still refused
+    by both.
+  - `ASSUME ADL = <expression>`, which the reference's own Labels corpus
+    writes.
+  - A conditional inside an included file. The rule is per file, not per
+    assembly -- and an IF left open at the end of one is an error either way.
+  - A MACRO definition inside a branch that is not taken, which was captured
+    rather than skipped. The skip path asks `kind >= DIR_IF` and nothing
+    else, so the fix was to put MACRO and ENDMACRO below the conditionals in
+    the numbering.
 
 ## 4. Error detection, where zap is too permissive
 

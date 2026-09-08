@@ -6,10 +6,11 @@ one against `ez80asm` to separate a missing feature from a user symbol that
 merely looks like one.
 
     247 sources in scope        (Errors_cputype excluded, as it always is)
-    110 byte-identical          81 before the mode suffixes, 98 before BLKB,
-                                104 before the parser gaps
+    115 byte-identical          81 before the mode suffixes, 98 before BLKB,
+                                104 before the parser gaps, 110 before the
+                                remaining directives
     106 rejected by both        the negative tests, working as intended
-     31 divergences             was 60
+     26 divergences             was 60
 
 The 60 are what follows. They are ranked by what they unblock, not by how many
 tests they fix, because those two orders are very different here.
@@ -53,12 +54,11 @@ tiers below, which were written when the suffixes hid them.
 ## 2. Directives
 
     BLKB  BLKW  BLKP         DONE -- n units of a given fill, emitted
-    BLKL                     four bytes, and the evaluator is three; see below
-    DW32  .DW32              four-byte data
-    ASCIZ  .ASCIZ            a string with a terminator
-    FILLBYTE                 sets what a reservation is filled with
-    .RELOCATE  .ENDRELOCATE  a relocatable block
-    .CPU                     two in-scope uses; see below
+    ASCIZ  .ASCIZ            DONE -- the list, and then one zero
+    FILLBYTE                 DONE, with one refusal; see below
+    .RELOCATE  .ENDRELOCATE  DONE -- it is a second origin
+    .CPU                     DONE -- a check, not a setting
+    BLKL  DW32               four bytes, and the evaluator is three; see below
 
 BLKB was not missing, it was wrong, which was worse: it was mapped to `DS`,
 and the two are different directives.
@@ -71,13 +71,32 @@ and the two are different directives.
 That was two of the three cases where both assemblers accepted a source and
 the bytes differed. Fixed, with BLKW and BLKP, for six more identical sources.
 
-**BLKL is the one that is not just work.** It is four bytes wide and the
-corpus fills it with `0x55555555` and `-2147483648`; the expression evaluator
-works in the machine's own word, which is 24 bits here, and that is a
-deliberate choice paid for on every operand in every file. Implementing BLKL
-means either writing wrong bytes for half of the reference's own cases or
-widening the evaluator, which is a performance decision and not a directive.
-It reports an unknown instruction until someone makes that decision.
+FILLBYTE has one refusal. In the reference a reservation is a gap filled when
+the file is written out, so the last FILLBYTE wins for every one of them,
+backwards as well: `ds 2 / fillbyte 0xAA` fills that earlier reservation too.
+One pass writes bytes where it meets them, and reproducing that means keeping
+every reserved range to go back over -- 682 of them in isa_real, for a case
+that appears nowhere in the corpus, where every FILLBYTE precedes what it
+fills. A FILLBYTE that would change a reservation already written is refused.
+
+## The 24-bit ceiling, which is one decision and not three
+
+**BLKL and DW32 are both four bytes wide**, and the corpus fills them with
+`0x55555555` and `-2147483648`. The expression evaluator works in the
+machine's own word, 24 bits here, and that is a deliberate choice paid for on
+every operand in every file. Implementing either means writing wrong bytes for
+half of the reference's own cases, so both report an unknown instruction.
+
+The same ceiling shows in a third place: `.relocate 0x1000000` is "Address
+outside 24-bit range" in the reference and is accepted here, because the `0x`
+fast path accumulates in the machine's word and truncates. The `$1000000`
+spelling of the same number goes through the general parser and *is* caught.
+
+Between them that is four corpus sources -- `compound_all_operator_values_dx`,
+`compound_all_operator_values_blkx`, `Defines/compound`,
+`Macro/argument_replacement_equ` -- plus one negative test. Widening the
+evaluator is a performance question with a measurable answer, and nobody has
+measured it yet. That is the decision, not the directives.
 
 `.CPU` is 262 uses in the corpus and 260 of them are in `Errors_cputype`, which
 is out of scope because zap is eZ80-only. The other two are `Opcodes/z180_new`

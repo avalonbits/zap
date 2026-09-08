@@ -173,3 +173,13 @@ blkfill:  EQU 0xAA
   ds 3
   blkb 3
   ds 3
+
+; ASCIZ is the data list plus one terminating zero -- one for the whole list,
+; not one per string. ASCII and BYTE are DB under other names and add nothing.
+  asciz "ab"
+  .asciz "ab"
+  asciz "ab", "cd"
+  asciz "ab", 5
+  asciz 5
+  ascii "ab"
+  byte "ab"

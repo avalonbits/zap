@@ -734,6 +734,17 @@ typedef struct _dz {
      * dropped once, at the end. */
     int fill_end;
     int fill_len;
+    /* What DS, ALIGN, ORG padding and a BLK with no fill of its own write.
+     * 0xFF until FILLBYTE says otherwise, and it says so for the rest of the
+     * assembly rather than for the next directive only. */
+    uint8_t fill;
+    /* The origin RELOCATE displaced, and whether one is open. Addresses are
+     * `org + (o - out)` everywhere, so relocating is moving `org` and putting
+     * it back -- labels, `$`, EQU and every fixup follow without knowing. */
+    int reloc_org;
+    bool reloc;
+    /* Whether a reservation has been written yet. See FILLBYTE. */
+    bool filled;
 
     /* Where `path` points when an include fails.
      *
@@ -4239,9 +4250,14 @@ static bool macro_expand(dz* z, const macro* m, const char* p, const char* e,
 #define DIR_DB    1   /* one byte per value, and strings */
 #define DIR_DW    2   /* two */
 #define DIR_DL    3   /* three; the eZ80 word */
-#define DIR_DS    4   /* reserve, filled with 0xFF */
-#define DIR_ALIGN 5
-#define DIR_ORG   6
+/* ASCIZ is the data list plus one terminating zero, so it is not a width and
+ * cannot live in the range above. */
+#define DIR_ASCIZ 4
+#define DIR_DS    5   /* reserve, filled with FILLBYTE's value */
+#define DIR_ALIGN 6
+#define DIR_ORG   7
+#define DIR_FILLBYTE 8
+#define DIR_RELOCATE 9
 /* BLKB, BLKW and BLKP: n units of a fill value, written out. Consecutive and
  * in width order, so the width is `kind - DIR_BLKB + 1`.
  *
@@ -4258,12 +4274,16 @@ static bool macro_expand(dz* z, const macro* m, const char* p, const char* e,
  * that quietly wrote the low three bytes and a sign would be wrong for half of
  * the reference's own cases, and "unknown instruction" is the honest answer
  * until the evaluator's width is a decision someone has made. */
-#define DIR_BLKB  7
-#define DIR_BLKW  8
-#define DIR_BLKP  9
-#define DIR_INCLUDE 10
-#define DIR_INCBIN  11
-#define DIR_ASSUME  12
+#define DIR_BLKB  10
+#define DIR_BLKW  11
+#define DIR_BLKP  12
+/* Below INCLUDE, because these three are tested by name and the file
+ * directives are tested as a range. */
+#define DIR_CPU         13
+#define DIR_ENDRELOCATE 14
+#define DIR_ASSUME      15
+#define DIR_INCLUDE 16
+#define DIR_INCBIN  17
 /* MACRO and ENDMACRO below the conditionals, and that ordering is load-bearing:
  * a line inside a switched-off branch asks `kind >= DIR_IF` and nothing else,
  * so anything at or above IF is handled while skipping and anything below is
@@ -4271,11 +4291,11 @@ static bool macro_expand(dz* z, const macro* m, const char* p, const char* e,
  * captured the body and defined the macro -- the reference skips it, and
  * `IF 1 / macro m / db 0 / endmacro / ELSE / macro m / db 1 / endmacro / ENDIF`
  * assembled the branch that was not taken. */
-#define DIR_MACRO    13
-#define DIR_ENDMACRO 14
-#define DIR_IF       15
-#define DIR_ELSE     16
-#define DIR_ENDIF    17
+#define DIR_MACRO    18
+#define DIR_ENDMACRO 19
+#define DIR_IF       20
+#define DIR_ELSE     21
+#define DIR_ENDIF    22
 
 /* How deep INCLUDE may go, and how much buffer a file below the first gets.
  *
@@ -4324,11 +4344,13 @@ static uint8_t directive_of(const char* s, int n) {
             break;
         case 3:
             if (dir_is(s, "org", 3)) return DIR_ORG;
+            if (dir_is(s, "cpu", 3)) return DIR_CPU;
             break;
         case 5:
             if (dir_is(s, "endif", 5)) return DIR_ENDIF;
             if (dir_is(s, "macro", 5)) return DIR_MACRO;
             if (dir_is(s, "ascii", 5)) return DIR_DB;
+            if (dir_is(s, "asciz", 5)) return DIR_ASCIZ;
             if (dir_is(s, "align", 5)) return DIR_ALIGN;
             break;
         case 6:
@@ -4340,6 +4362,11 @@ static uint8_t directive_of(const char* s, int n) {
             break;
         case 8:
             if (dir_is(s, "endmacro", 8)) return DIR_ENDMACRO;
+            if (dir_is(s, "fillbyte", 8)) return DIR_FILLBYTE;
+            if (dir_is(s, "relocate", 8)) return DIR_RELOCATE;
+            break;
+        case 11:
+            if (dir_is(s, "endrelocate", 11)) return DIR_ENDRELOCATE;
             break;
         default:
             break;
@@ -4554,6 +4581,12 @@ static const char* name_item(const char* p, const char* e) {
  * A value that names a label still ahead becomes a fixup of the directive's
  * width, which is the same machinery an instruction's immediate uses and the
  * reason widths of one, two and three were already there. */
+/* ASCIZ is a second caller, and that is enough for the compiler to stop
+ * inlining this into directive_line -- the fault that has cost real time five
+ * times in this file. It was measured here and costs nothing: `always_inline`
+ * on it reads 5.42s on isa_real and so does leaving it alone, because the call
+ * lands on the 3,181 directive lines rather than on all 21,494. Left as it is,
+ * rather than forced inline on a rule that does not apply here. */
 static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
     const char* p = *pp;
     for (;;) {
@@ -4671,9 +4704,10 @@ static bool emit_fill(dz* z, int n) {
     const int at = (int) (z->o - z->out);
     z->fill_len = (at == z->fill_end) ? z->fill_len + n : n;
 
+    z->filled = true;
     uint8_t* o = z->o;
     while (n-- != 0) {
-        *o++ = 0xFF;
+        *o++ = z->fill;
     }
     z->o = o;
     z->fill_end = (int) (z->o - z->out);
@@ -5017,6 +5051,35 @@ static const insninfo* suffixed_mnemonic(const dz* z, const char* s, int n,
 static bool suffixed_insn(dz* z, const insninfo* insn, uint8_t suffix,
                           const char* p, const char* e, const char** stop);
 
+/* `ASCIZ`: the data list at one byte a value, and then one zero. Not a zero
+ * per string -- `asciz "ab", "cd"` is 61 62 63 64 00.
+ *
+ * Out of line and tested after the data list, so DB, DW and DL reach theirs on
+ * the one comparison they always did.
+ *
+ * That arrangement is not what makes the number: adding this directive costs
+ * isa_real 0.08 seconds however it is written. Folded into the data branch
+ * with a select, in front of it, behind it, with emit_data forced inline and
+ * with it left alone -- all five read 5.42s against 5.34 without it. The cost
+ * is directive_line growing and its register allocation moving, which is the
+ * same thing that made a file of nothing but `DB 1, 3, 0x07, -1` 3% slower two
+ * rounds ago. It is written the way that is easiest to read, since none of the
+ * others is faster. */
+__attribute__((noinline))
+static bool asciz_line(dz* z, const char** pp, const char* e,
+                       const char** stop) {
+    if (!emit_data(z, 1, pp, e)) {
+        return false;
+    }
+    if (!out_reserve(z)) {
+        return false;
+    }
+    *z->o++ = 0;
+    *stop = *pp;
+
+    return true;
+}
+
 /* A directive line, or a report that this was not one.
  *
  * Out of line and reached only where the mnemonic lookup failed, so an
@@ -5114,6 +5177,45 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
         return true;
     }
 
+    if (kind == DIR_CPU) {
+        /* zap is eZ80-only, so this is a check rather than a setting. The
+         * reference takes `.cpu Z80` and `.cpu Z180` and filters its
+         * instruction table by them; reproducing that would be a second
+         * assembler's worth of rows for a directive whose whole in-scope use
+         * in the corpus is two lines. A file that says what it is gets to
+         * assemble; one that asks for another machine is told so rather than
+         * quietly given eZ80 encodings. */
+        while (is_space_ch(*p)) {
+            p++;
+        }
+        const char* const cs = p;
+        while (name_ch(*p)) {
+            p++;
+        }
+        if ((int) (p - cs) != 4 || !same_ci_full("ez80", cs, 4)) {
+            z->err = "this assembler is eZ80 only";
+
+            return false;
+        }
+        *stop = p;
+
+        return true;
+    }
+
+    if (kind == DIR_ENDRELOCATE) {
+        if (!z->reloc) {
+            /* "Missing RELOCATE directive" there. */
+            z->err = "no RELOCATE is open";
+
+            return false;
+        }
+        z->org = z->reloc_org;
+        z->reloc = false;
+        *stop = p;
+
+        return true;
+    }
+
     if (kind == DIR_ASSUME) {
         /* `ASSUME ADL=0` or `=1`, and nothing else: the reference calls any
          * other name an invalid operand and any other value an invalid ADL
@@ -5187,6 +5289,12 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
         return true;
     }
 
+    /* After the data list and not before it, so that DB, DW and DL reach
+     * theirs on the one comparison they always did. */
+    if (kind == DIR_ASCIZ) {
+        return asciz_line(z, &p, e, stop);
+    }
+
     /* DS and ALIGN both take one value that has to be known now -- the
      * reference refuses a label still ahead of either, having no way to reserve
      * an amount it does not know yet. */
@@ -5246,6 +5354,64 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
         return true;
     }
 
+    if (kind == DIR_FILLBYTE) {
+        /* One byte of it, and it stands for the rest of the assembly.
+         *
+         * In the reference it stands for the *whole* assembly, backwards as
+         * well: `ds 2 / fillbyte 0xAA` fills that earlier reservation with
+         * 0xAA, because a reservation there is a gap that is filled when the
+         * file is written out and the last FILLBYTE wins. One pass writes the
+         * bytes where it meets them, so reproducing that means remembering
+         * every reserved range to go back over -- 682 of them in isa_real, for
+         * a case that appears nowhere in the reference's own corpus, where
+         * every FILLBYTE precedes the reservations it is for.
+         *
+         * So it is refused instead of being got wrong: a FILLBYTE that would
+         * change the fill of a reservation already written says so. A second
+         * one with the same value is not a change and is allowed. Blocks are
+         * unaffected either way -- BLKB writes data, and takes the value in
+         * force where it stands, in both assemblers. */
+        if (z->filled && (uint8_t) value != z->fill) {
+            z->err = "FILLBYTE must come before the space it fills";
+
+            return false;
+        }
+        z->fill = (uint8_t) value;
+        *stop = p;
+
+        return true;
+    }
+
+    if (kind == DIR_RELOCATE) {
+        if (z->reloc) {
+            /* "Nested relocate not allowed" there. */
+            z->err = "RELOCATE does not nest";
+
+            return false;
+        }
+
+        if (value < 0 || value > 0xFFFFFF) {
+            /* "Address outside 24-bit range" there, and the eZ80's address
+             * space is exactly that, so this is the reference being right
+             * rather than a quirk to reproduce. `$1000000` is one past it and
+             * `-1` is the other end. */
+            z->err = "address outside the 24-bit range";
+
+            return false;
+        }
+
+        /* The bytes stay where they are and the addresses move. `org` is what
+         * every address is measured from -- a label, `$`, an EQU taking `$`,
+         * and the target of every fixup -- so displacing it is the whole of
+         * this directive and nothing else has to know. */
+        z->reloc_org = z->org;
+        z->reloc = true;
+        z->org = value - (int) (z->o - z->out);
+        *stop = p;
+
+        return true;
+    }
+
     if (kind >= DIR_BLKB) {
         /* Everything at or above DIR_INCLUDE has returned by here, so this is
          * BLKB, BLKW or BLKP, and the width follows from which. */
@@ -5260,8 +5426,9 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
         }
         const int width = kind - DIR_BLKB + 1;
 
-        /* The fill, if one is given. 0xFF at the unit width if not. */
-        int fill = 0xFF;
+        /* The fill, if one is given. FILLBYTE's value at the unit width if
+         * not, which is 0xFF until something says otherwise. */
+        int fill = z->fill;
         while (is_space_ch(*p)) {
             p++;
         }
@@ -6369,6 +6536,10 @@ __attribute__((noinline)) static bool run(dz* z, const char* path) {
     z->o = z->out;
     z->org = ZAP_ORG;
     z->org_set = false;
+    z->fill = 0xFF;
+    z->filled = false;
+    z->reloc = false;
+    z->reloc_org = 0;
     z->adl = ZAP_ADL;
     z->in_cond = false;
     z->cond_emit = true;

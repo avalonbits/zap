@@ -9,8 +9,9 @@ merely looks like one.
     115 byte-identical          81 before the mode suffixes, 98 before BLKB,
                                 104 before the parser gaps, 110 before the
                                 remaining directives
-    106 rejected by both        the negative tests, working as intended
-     26 divergences             was 60
+    119 rejected by both        the negative tests, working as intended --
+                                106 before the error checks
+     13 divergences             was 60
 
 The 60 are what follows. They are ranked by what they unblock, not by how many
 tests they fix, because those two orders are very different here.
@@ -123,16 +124,29 @@ All five, for six more identical sources. What they were:
     else, so the fix was to put MACRO and ENDMACRO below the conditionals in
     the numbering.
 
-## 4. Error detection, where zap is too permissive
+## 4. Error detection -- DONE
 
-Thirteen negative tests that the reference refuses and zap accepts. None of
-them changes the bytes of a valid program, and all of them are part of being
-finished:
+All thirteen. A label over 64 characters counting the `@`; an index
+displacement outside -128..127, which was being emitted truncated and silently
+wrong; a macro parameter that is a number, a mnemonic or a directive; a macro
+defined twice; and an anonymous label in a macro body.
 
-    Errors_labels    label maximum length, global and local
-    Errors_macros    argument name rules (six), an anonymous label in a body,
-                     a macro whose name is already defined
-    Errors_opcodes   relative displacement at the positive and negative limits
+They cost isa_real 5.42s to 5.54s, and that is the frame rather than the
+tests: the two on the label path each take assemble_line from 110 bytes to 113,
+which is near the 128 an `ix` displacement reaches. Three placements were tried
+and all read 113.
+
+## What is left
+
+Thirteen sources, and they are four things:
+
+  - **The 24-bit evaluator**, above: five sources.
+  - **`.cpu Z80` and `.cpu Z180`**, which ask for another machine's
+    instruction set. Two sources, out of scope by the same rule that excludes
+    Errors_cputype.
+  - **Four whole programs** -- BBC BASIC, Rokky, and two of the Lessons --
+    plus two Macro tests. Each needs looking at on its own; they are no longer
+    failing for a reason the corpus has already named.
 
 ## Not missing
 

@@ -4148,3 +4148,76 @@ addresses.
 If it is taken, take it once, for `cpir` on the comment scan, and let the
 build flag be `ZAP_ASM` with the C version compiled and tested by default in
 CI.
+
+## Attacking the instruction floor
+
+`  nop` is 3.68s over 30,000 lines -- **2,261 cycles** -- against 412 for a
+blank line. That gap is what every instruction pays before its operands, and
+it is the largest single number left.
+
+### The empty operand pointed at rather than copied -- reverted
+
+`b = dop_none;` is a 21-byte `ldir` on every instruction with fewer than two
+operands, which is `nop`, `ret`, `halt`, every `push`, every `inc`, every
+`jp nn`. Replacing the copy with a pointer at the shared template needed one
+real change on the way: `transform` wrote `op->mode &= ~IMM` to say the
+immediate had been folded into the opcode, so an operand was something the
+emitter wrote to. It reports that through its return value now and emit_row
+keeps the mode in a local, which is a better shape regardless.
+
+It measured **worse on all three**:
+
+    nop        3.68 -> 3.76
+    isa_real   5.46 -> 5.58
+    bbcbasic   3.80 -> 3.86
+
+The copy was the cheap half. A `dop` in the frame is read with `(ix - d)`, one
+instruction; through a pointer it is a register pair held live plus `(iy + d)`,
+and emit_row and match_row between them read the second operand eleven times.
+Twenty-one bytes of `ldir` -- which the eZ80 does about two cycles a byte --
+buys eleven cheaper reads and a frame slot the allocator already had.
+
+**The rule: on this machine, copy into the frame rather than point at
+something.** It is the opposite of the advice on a machine with cheap
+indirection and a data cache.
+
+### The mnemonic matched on one word rather than character by character -- reverted
+
+The bucket already fixes the first character and the length, so characters
+one, two and three are the whole of what tells one candidate in a chain from
+another. Across all 114 mnemonics and all 37 buckets there is **not one
+collision** on those three -- and with the length and a compare of character
+four for the five-letter names, the match is not merely likely but exact.
+Twenty-four bits is the machine's word, so a candidate becomes one compare.
+
+It measured worse than the loop it replaced, everywhere:
+
+    nop        3.68 -> 4.00
+    isa_real   5.46 -> 5.76
+    bbcbasic   3.80 -> 4.00
+
+Two reasons, and the first is the interesting one. **The loop it replaced
+almost never runs to the end.** `ld`, `cp`, `or`, `push`, `djnz` and `bit` are
+alone in their buckets and a mismatch on the second character rejects a
+candidate, so the "loop over the characters" is usually one or two byte
+compares. Against that, building a word out of three bytes -- through a union
+in the frame, with a branch per character on the length -- and then comparing
+24 bits in a register pair is more work, not less.
+
+The second: it made `nop` slower too, and `nop` is the case the change was
+aimed at. Whatever the staged map attributed 381 cycles to, it was not the
+chain walk.
+
+### What the staged map cannot tell you
+
+Two changes this round were aimed at numbers the `-DTRUNC` map produced, and
+both made things slower. That is worth being explicit about: **a stage
+difference is two different programs, not one program with a piece removed.**
+Truncating at stage 4 changes what is live across stage 5, what the allocator
+spills and where the frame ends up, and those effects are the same size as the
+things being measured. The map is good for "the operand parser is roughly a
+fifth of it" and bad for "the chain walk is 381 cycles".
+
+The measurements that have held up this round all came from *whole* programs
+built the ordinary way -- the comment file, the shape files, blank lines --
+where nothing is conditionally compiled away.

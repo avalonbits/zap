@@ -6,9 +6,9 @@ one against `ez80asm` to separate a missing feature from a user symbol that
 merely looks like one.
 
     247 sources in scope        (Errors_cputype excluded, as it always is)
-     98 byte-identical          was 81 before the mode suffixes
+    104 byte-identical          was 81 before the mode suffixes, 98 before BLKB
     106 rejected by both        the negative tests, working as intended
-     43 divergences             was 60
+     37 divergences             was 60
 
 The 60 are what follows. They are ranked by what they unblock, not by how many
 tests they fix, because those two orders are very different here.
@@ -51,24 +51,32 @@ tiers below, which were written when the suffixes hid them.
 
 ## 2. Directives
 
-    BLKB  BLKW  BLKL  BLKP    reserve n units of a given fill, and *emit* them
+    BLKB  BLKW  BLKP         DONE -- n units of a given fill, emitted
+    BLKL                     four bytes, and the evaluator is three; see below
     DW32  .DW32              four-byte data
     ASCIZ  .ASCIZ            a string with a terminator
     FILLBYTE                 sets what a reservation is filled with
     .RELOCATE  .ENDRELOCATE  a relocatable block
     .CPU                     two in-scope uses; see below
 
-**BLKB is not missing, it is wrong**, which is worse. zap maps it to `DS`, and
-the two are different directives:
+BLKB was not missing, it was wrong, which was worse: it was mapped to `DS`,
+and the two are different directives.
 
     ds 2         at the end of a file    dropped        (reserve)
     ds 2, 0xAA   the fill is ignored     FF FF
     blkb 2       at the end of a file    FF FF          (emit)
     blkb 2, 0xAA                         AA AA
 
-That is two of the three cases where both assemblers accept a source and the
-bytes differ. `blkw`, `blkl` and `blkp` are the two-, four- and three-byte
-versions of the same thing.
+That was two of the three cases where both assemblers accepted a source and
+the bytes differed. Fixed, with BLKW and BLKP, for six more identical sources.
+
+**BLKL is the one that is not just work.** It is four bytes wide and the
+corpus fills it with `0x55555555` and `-2147483648`; the expression evaluator
+works in the machine's own word, which is 24 bits here, and that is a
+deliberate choice paid for on every operand in every file. Implementing BLKL
+means either writing wrong bytes for half of the reference's own cases or
+widening the evaluator, which is a performance decision and not a directive.
+It reports an unknown instruction until someone makes that decision.
 
 `.CPU` is 262 uses in the corpus and 260 of them are in `Errors_cputype`, which
 is out of scope because zap is eZ80-only. The other two are `Opcodes/z180_new`

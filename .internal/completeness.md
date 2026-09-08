@@ -116,6 +116,8 @@ and `Opcodes/z80_undocumented`, and the honest handling is to accept `.cpu
 ez80` and refuse the rest, rather than refuse the line and take the whole file
 down with it.
 
+**Since resolved, and the paragraph above is wrong twice.** See section 6.
+
 ## 3. Parser gaps -- DONE
 
 All five, for six more identical sources. What they were:
@@ -176,17 +178,47 @@ The full decomposition -- including the two things that measured and were not
 kept, and a new way for the Agon and the host to disagree about correct C --
 is in .internal/performance-notes.md.
 
+## 6. `.CPU`, and a scope line that should never have been drawn
+
+The last two sources, and 260 more that the runner was not even looking at.
+
+**The reasoning that put them out of scope was wrong, and it was wrong about
+this repository.** It said reproducing the reference's CPU filter would be a
+second assembler's worth of rows. Every row in `src/isa_table.c` has carried a
+CPU mask since the day it was written -- `BIT_Z80`, `BIT_U80` for the
+undocumented Z80 forms, `BIT_Z180`, `BIT_EZ80` -- and `match_row` has always
+tested it, against a hard-coded `CPU_EZ80`. The rows were there. Refusing the
+directive was the only thing in front of them.
+
+Two things follow from that, and the second matters more than the first.
+
+The first is the count. `Opcodes/z180_new` is byte-identical on the directive
+alone -- one line of work for a source called out of scope. `z80_undocumented`
+needed three real pieces: the three-operand `RES n,(IX+d),r`, a transform bug
+in twenty-four rows that had never been reachable, and the CPU-dependent
+refusals for ADL and the mode suffixes. `Errors_cputype`'s 260 sources needed
+**nothing but the filter** in 250 cases.
+
+The second is what "out of scope" was doing. It was standing in for "I have
+not looked", and it had been standing there long enough to be quoted in a PR
+body as though it were a decision. A scope line is a claim about the work, and
+a claim about the work has to be checked like any other. The reference
+assembles both of those files; zap says it is a drop-in replacement for the
+reference; that is the whole argument and there was never a counter to it.
+
+**A behaviour the reference has is not a candidate for `-ez80`, either.** That
+flag is for the places the reference is *wrong* and zap reproduces it anyway --
+no operator precedence, `IF a == b` discarding the comparison. `.CPU` is not a
+quirk to hide behind a flag; it is a feature to have.
+
+What it cost: 0.3% on isa_real, 1.5% on isa_degenerate. See
+.internal/performance-notes.md.
+
 ## What is left
 
-Two sources, and one thing:
-
-  - **`.cpu Z80` and `.cpu Z180`**, which ask for another machine's
-    instruction set. Out of scope by the same rule that excludes
-    Errors_cputype.
-
-That is the whole of it. **Every source in the corpus that is in scope now
-assembles byte-identically**, and nothing is left that is a bug rather than a
-scope line.
+**Nothing.** Every source in the reference's corpus -- all 507 of them, with
+`Errors_cputype` no longer skipped -- either assembles to identical bytes or
+is refused by both assemblers.
 Every whole program in the corpus now assembles byte-identically. The last two
 were Rokky, whose bug was a global minus a local resolving against the wrong
 local -- three bytes in 31,520 with both assemblers accepting the file -- and

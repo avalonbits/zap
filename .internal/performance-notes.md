@@ -3893,3 +3893,56 @@ The bytes were checked on the machine too, which is the only complete answer:
     test/cases/data.s, assembled with -ez80 on the emulator and md5'd against
     ez80asm's own output. cf00ff08 both. Without -ez80, the Agon and the host
     agree at 7aa2203a, which is the other half of the claim.
+
+## What `.CPU` cost, and the row that had never run
+
+    isa_real         5.74 -> 5.76   404 -> 405 cycles a byte   +0.3%
+    isa_even         5.84 -> 5.88   411 -> 413                 +0.7%
+    isa_degenerate   5.34 -> 5.42   375 -> 381                 +1.5%
+    isa_memory       5.80 -> 5.86   408 -> 412                 +1.0%
+
+Byte-identical output on all four.
+
+The filter itself is free: `match_row` already tested `row->cpu`, and this
+changed the constant it tested against into a variable. The whole price is the
+three-operand `RES n,(IX+d),r`, which needs two things on lines that will never
+have a third operand:
+
+* **one compare after the second operand**, `*p == ','`, on every two-operand
+  line;
+* **a space skip after `)`** on every indirect register operand, so that
+  `res 5, (ix+1) , h` finds its comma.
+
+That is why isa_degenerate and isa_memory move five times as far as isa_real:
+they hold no directives, so nearly every line is a two-operand instruction and
+a large share of the operands are `(hl)` or `(ix+d)`.
+
+Three placements for the skip, measured:
+
+    in assemble_line, after the second operand   isa_real 5.78
+    in parse_operand, on the paren close         isa_real 5.76
+    nowhere, and the spaced form refused         isa_real 5.74
+
+The middle one shipped. The third is free and refuses a spelling the reference
+accepts, which is not a trade this project makes -- and 0.04s on the benchmark
+built to be a worst case is what exact agreement costs here.
+
+### Twenty-four rows that had never been reached
+
+`rlc (ix+0),b` came out `DD CB 00 02` against the reference's `DD CB 00 00`.
+Twenty-four rows carried `TR_Z` on the *index* operand as well as on the
+destination, so `(ix+0)` OR-ed its own register index -- 2, for both IX and IY,
+since the DD/FD prefix is what tells them apart -- into the opcode byte. The
+pattern reads b→2, c→3, d→2, e→3, h→6, l→7, a→7, which is `z | 2` and was what
+identified it.
+
+Every one of those rows is `BIT_U80`, and `match_row` had been returning NULL
+for anything without `CPU_EZ80` since it was written. **They had never once
+executed.** No test could have caught it, because no input could reach them.
+
+That is the shape of the risk in a table with an unreachable region: the rows
+look reviewed, they compile, they sit in the same file as the ones that work,
+and nothing distinguishes them until the day something turns them on. The
+corpus caught it within a minute of the filter going in -- which is the
+argument for running the whole corpus rather than the part currently believed
+to be in scope.

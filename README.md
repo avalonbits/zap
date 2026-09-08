@@ -25,9 +25,10 @@ Without `-ez80` the defaults are the ones a reader expects. Where the two
 disagree it is on purpose and it is written down; where they disagree by
 accident it is a bug.
 
-Against the reference's own 247-source corpus, 98 assemble to identical bytes,
-106 are refused by both, and 43 disagree. `test/corpus.sh` prints that table,
-and `.internal/completeness.md` says what each of the 43 needs.
+Against the reference's own 507-source corpus, **nothing disagrees**: 128
+assemble to identical bytes and 379 are refused by both. `test/corpus.sh`
+prints that table. So do BBC BASIC and Rokky, assembled whole with their
+include trees.
 
 ## What it supports
 
@@ -36,7 +37,12 @@ own opcode corpus. Global, local (`@name`) and anonymous (`@@`, `@f`, `@b`)
 labels. Expressions, in both precedence modes. `DB` `DW` `DL` `DS` `ALIGN`
 `ORG` `EQU` `INCLUDE` `INCBIN` `ASSUME ADL` `IF`/`ELSE`/`ENDIF`
 `MACRO`/`ENDMACRO`, and the `.SIS` `.LIS` `.SIL` `.LIL` instruction mode
-suffixes with their short spellings.
+suffixes with their short spellings. `DW24` `DW32` `ASCIZ` `FILLBYTE`
+`BLKB` `BLKW` `BLKP` `BLKL` `.RELOCATE`/`.ENDRELOCATE`.
+
+`.CPU EZ80`, `.CPU Z80` and `.CPU Z180` select an instruction set, as they do
+in the reference: the Z80 set includes the undocumented instructions, and
+neither the Z80 nor the Z180 has ADL or a mode suffix.
 
 ## Testing
 

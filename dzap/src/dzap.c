@@ -4971,16 +4971,32 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
     while (is_space_ch(*p)) {
         p++;
     }
-    fwd_reset(NULL);
-    uint8_t fwdmask = 0;
     int value = 0;
-    if (!expr_value(z, &value, &p, e, &fwdmask)) {
-        return false;
-    }
-    if (expr_fwd != NULL) {
-        z->err = "a label here must be defined already";
 
-        return false;
+    /* A plain number, read here rather than through the evaluator, for the
+     * same reason a data item is: `DS 4` measured 5,603 cycles a line against
+     * `DB 4`'s 3,281, and a count is a number far more often than it is
+     * anything else. `ORG $ + 8` and `ALIGN size*2` still go the long way.
+     *
+     * lit_value wants what ends the run to end the item, and for these the
+     * item is the whole rest of the line -- which it already takes, since a
+     * newline or a remark ends an item too. `DS 3,1,2` is the one form where
+     * a comma follows, and the arguments after the count are taken and
+     * ignored, so stopping at the comma is right there as well. */
+    const char* const lit = lit_value(p, e, &value);
+    if (lit != NULL) {
+        p = lit;
+    } else {
+        fwd_reset(NULL);
+        uint8_t fwdmask = 0;
+        if (!expr_value(z, &value, &p, e, &fwdmask)) {
+            return false;
+        }
+        if (expr_fwd != NULL) {
+            z->err = "a label here must be defined already";
+
+            return false;
+        }
     }
 
     if (kind == DIR_DS) {

@@ -48,3 +48,20 @@ ahead:
 where: EQU 0x050200
   ORG where
   ld hl, $
+
+; The counts these take are read by the same short path a data item uses, so
+; the forms it must and must not take are pinned here: a plain number, a hex
+; one either way round, one that names something, an expression, and the
+; comma form where the arguments after the count are taken and ignored.
+  DS 4
+  DS 3,1,2
+  DS 0x4
+  DS 4h
+  DS 4 ; a remark after the count
+  ALIGN 4
+  ALIGN 2+2
+countequ: EQU 4
+  DS countequ
+  ALIGN countequ
+  ORG $ + 8
+  nop

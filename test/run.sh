@@ -135,6 +135,30 @@ loc=$("$OUT/zap" "$OUT/loc.s" "$OUT/loc.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an undefined local names the line that used it" \
     "$(printf '%s' "$loc" | grep -c 'line 3: unknown label')" 1
 
+# A negative count, which the reference reads as unsigned: `blkb -1` there is
+# sixteen megabytes of fill and a successful assembly. Refused here for the
+# reason DS's count is, and only the message tells the two refusals apart.
+printf '  blkb -1\n' > "$OUT/blk1.s"
+blk1=$("$OUT/zap" "$OUT/blk1.s" "$OUT/blk1.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a negative block count is refused" \
+    "$(printf '%s' "$blk1" | grep -c 'line 1: blk needs a positive number')" 1
+
+# A fill that names a label still ahead. The reference has a second pass and
+# resolves it; one pass cannot, because the fill is one value repeated n times
+# and a forward reference would need n fixups to patch a byte each.
+printf '  blkb 2, ahead\nahead:\n  nop\n' > "$OUT/blk2.s"
+blk2=$("$OUT/zap" "$OUT/blk2.s" "$OUT/blk2.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a fill still ahead is refused" \
+    "$(printf '%s' "$blk2" | grep -c 'line 1: a label here must be defined already')" 1
+
+# BLKL is absent rather than approximated: it is four bytes wide and the
+# reference's own corpus fills it with 0x55555555, which the evaluator cannot
+# hold. It reports what an unimplemented directive reports.
+printf '  blkl 1, 0\n' > "$OUT/blk3.s"
+blk3=$("$OUT/zap" "$OUT/blk3.s" "$OUT/blk3.bin" 2>&1 | tr -d '\r' || true)
+cli_check "blkl is not pretended to work" \
+    "$(printf '%s' "$blk3" | grep -c 'line 1: unknown instruction')" 1
+
 # A mode suffix on an instruction whose row does not take one.
 #
 # The suffix means something only where the instruction touches memory, the

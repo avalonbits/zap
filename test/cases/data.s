@@ -133,3 +133,43 @@ dataequ: EQU 5
   DB dataequ
 dataahead:
   nop
+
+; BLKB, BLKW and BLKP: n units of a fill, written out.
+;
+; Not the same directive as DS, which is what they were mapped to here. DS
+; reserves 0xFF, ignores any fill argument, and a run of it at the end of a
+; file is dropped; these write the fill they are given and are never dropped.
+; Getting that wrong made `blkb 1, 1` come out as 0xFF and `blkb 1, 255` at the
+; end of a file come out as nothing.
+;
+; The default fill is 0xFF at the unit width and not all ones: `blkw 1` is
+; FF 00, which is the value 0x00FF written as a word.
+  blkb 3
+  blkb 3, 0xAA
+  blkb 3, 0
+  blkb 0
+  blkb 3, 0x1234
+  blkb 3, -1
+  blkw 2, 0x1234
+  blkw 2
+  blkw 1, 65535
+  blkw 1, -32768
+  blkp 2, 0x123456
+  blkp 1
+  blkp 1, 16777215
+  blkp 1, -8388608
+  .blkb 2, 0xAA
+  BLKB 2, 0xAA
+  blkb 2, 0xAA, 9
+  blkb 2, 128+127-255+4/2*2<<1>>1&0x04|0x04
+blkcount: EQU 3
+blkfill:  EQU 0xAA
+  blkb blkcount
+  blkb 2, blkfill
+  blkb 2, 1+1
+
+; A block after a reservation is what stops the reservation being dropped, so
+; the DS above it is written out and the DS below it is not.
+  ds 3
+  blkb 3
+  ds 3

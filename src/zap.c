@@ -4210,14 +4210,33 @@ static bool macro_expand(dz* z, const macro* m, const char* p, const char* e,
 #define DIR_DS    4   /* reserve, filled with 0xFF */
 #define DIR_ALIGN 5
 #define DIR_ORG   6
-#define DIR_INCLUDE 7
-#define DIR_INCBIN  8
-#define DIR_ASSUME  9
-#define DIR_IF      10
-#define DIR_ELSE    11
-#define DIR_ENDIF   12
-#define DIR_MACRO    13
-#define DIR_ENDMACRO 14
+/* BLKB, BLKW and BLKP: n units of a fill value, written out. Consecutive and
+ * in width order, so the width is `kind - DIR_BLKB + 1`.
+ *
+ * Not the same directive as DS, which is why they are not the same number.
+ * `blkb` was an alias for DS here and it is wrong twice: DS reserves 0xFF and
+ * ignores a fill argument, and a run of it at the end of a file is dropped;
+ * BLKB writes the fill it is given and is never dropped. `blkb 1, 1` came out
+ * as 0xFF and `blkb 1, 255` at the end of a file came out as nothing.
+ *
+ * BLKL is absent rather than approximated. It is four bytes and the corpus
+ * fills it with `0x55555555` and `-2147483648`, which the expression evaluator
+ * cannot hold: it works in the machine's own word, which is 24 bits here, and
+ * that is a deliberate choice paid for on every operand in the file. A BLKL
+ * that quietly wrote the low three bytes and a sign would be wrong for half of
+ * the reference's own cases, and "unknown instruction" is the honest answer
+ * until the evaluator's width is a decision someone has made. */
+#define DIR_BLKB  7
+#define DIR_BLKW  8
+#define DIR_BLKP  9
+#define DIR_INCLUDE 10
+#define DIR_INCBIN  11
+#define DIR_ASSUME  12
+#define DIR_IF      13
+#define DIR_ELSE    14
+#define DIR_ENDIF   15
+#define DIR_MACRO    16
+#define DIR_ENDMACRO 17
 
 /* How deep INCLUDE may go, and how much buffer a file below the first gets.
  *
@@ -4260,7 +4279,9 @@ static uint8_t directive_of(const char* s, int n) {
             if (dir_is(s, "defw", 4)) return DIR_DW;
             if (dir_is(s, "dw24", 4)) return DIR_DL;
             if (dir_is(s, "defs", 4)) return DIR_DS;
-            if (dir_is(s, "blkb", 4)) return DIR_DS;
+            if (dir_is(s, "blkb", 4)) return DIR_BLKB;
+            if (dir_is(s, "blkw", 4)) return DIR_BLKW;
+            if (dir_is(s, "blkp", 4)) return DIR_BLKP;
             break;
         case 3:
             if (dir_is(s, "org", 3)) return DIR_ORG;
@@ -4611,6 +4632,47 @@ static bool emit_fill(dz* z, int n) {
     }
     z->o = o;
     z->fill_end = (int) (z->o - z->out);
+
+    return true;
+}
+
+/* `BLKB n, fill` and its wider relatives: n units of `fill`, written out.
+ *
+ * Not emit_fill. That one reserves space, which the reference drops if it
+ * reaches the end of the file with nothing after it; this writes bytes and is
+ * kept wherever it lands. Ending the run is what says so -- `ds 3 / blkb 3` at
+ * the end of a file is six bytes in the reference and `blkb 3 / ds 3` is
+ * three, so the block is what stops the reservation before it from being
+ * dropped.
+ *
+ * Little-endian at the unit width, and the default fill is 0xFF at that width
+ * rather than all ones: `blkw 1` is FF 00 and not FF FF, which is the value
+ * 0x00FF written as a word. Measured, not assumed. */
+/* n and width are both positive here; the caller has checked the count. */
+static bool emit_block(dz* z, int n, int width, int fill) {
+    if (n <= 0) {
+        return true;
+    }
+    if (!out_reserve_n(z, n * width)) {
+        return false;
+    }
+
+    uint8_t* o = z->o;
+    while (n-- != 0) {
+        *o++ = (uint8_t) fill;
+        if (width > 1) {
+            *o++ = (uint8_t) (fill >> 8);
+        }
+        if (width > 2) {
+            *o++ = (uint8_t) (fill >> 16);
+        }
+    }
+    z->o = o;
+
+    /* Nothing to do about a reservation still pending. The drop at the end of
+     * the file only fires when the run ends exactly where the output does, and
+     * writing these bytes has already moved that -- which is why `ds 3 / blkb
+     * 3` is six bytes in the reference and `blkb 3 / ds 3` is three. */
 
     return true;
 }
@@ -5092,6 +5154,64 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
         /* `DS 3,1,2` is three bytes in the reference: the arguments after the
          * count are taken and ignored. Skipped rather than parsed, since
          * nothing reads them. */
+        while (p < e && *p != '\n' && *p != ';') {
+            p++;
+        }
+        *stop = p;
+
+        return true;
+    }
+
+    if (kind >= DIR_BLKB) {
+        /* Everything at or above DIR_INCLUDE has returned by here, so this is
+         * BLKB, BLKW or BLKP, and the width follows from which. */
+        if (value < 0) {
+            /* Refused for the reason DS is: the reference reads the count as
+             * unsigned, so a negative one is sixteen megabytes of fill and a
+             * successful assembly. On a 512 KB machine that is a way to lose
+             * the program rather than a feature. */
+            z->err = "blk needs a positive number";
+
+            return false;
+        }
+        const int width = kind - DIR_BLKB + 1;
+
+        /* The fill, if one is given. 0xFF at the unit width if not. */
+        int fill = 0xFF;
+        while (is_space_ch(*p)) {
+            p++;
+        }
+        if (*p == ',') {
+            p++;
+            while (is_space_ch(*p)) {
+                p++;
+            }
+            const char* const flit = lit_value(p, e, &fill);
+            if (flit != NULL) {
+                p = flit;
+            } else {
+                fwd_reset(NULL);
+                uint8_t fwdmask = 0;
+                if (!expr_value(z, &fill, &p, e, &fwdmask)) {
+                    return false;
+                }
+                if (expr_fwd != NULL) {
+                    /* The reference has a second pass and resolves it. One
+                     * pass cannot: the fill is one value repeated n times, so
+                     * a forward reference would need n fixups to patch a byte
+                     * each. Refused rather than emitted wrong, which is where
+                     * DS's count already stands. */
+                    z->err = "a label here must be defined already";
+
+                    return false;
+                }
+            }
+        }
+        if (!emit_block(z, value, width, fill)) {
+            return false;
+        }
+
+        /* Anything after the fill is taken and ignored, as it is for DS. */
         while (p < e && *p != '\n' && *p != ';') {
             p++;
         }

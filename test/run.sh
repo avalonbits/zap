@@ -304,6 +304,24 @@ wide2=$("$OUT/zap" "$OUT/wide2.s" "$OUT/wide2.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a folded local half too large to add is refused" \
     "$(printf '%s' "$wide2" | grep -c 'that constant is too large')" 1
 
+# The third thing the machine's word was costing, and the one nobody was
+# looking for.
+#
+# `relocate 0x1000000` is "Address outside 24-bit range" in the reference and
+# was accepted here: the range test read `value > 0xFFFFFF`, which a 24-bit
+# int can never satisfy, so half of it was dead code on the Agon and live on
+# the host. The `$1000000` spelling of the same number went through the
+# general parser and *was* caught, which is how it was noticed at all.
+#
+# Two spellings, because they take different paths to the same value and only
+# one of them was ever wrong.
+for spell in 0x1000000 '$1000000'; do
+    printf '  relocate %s\n  nop\n  endrelocate\n' "$spell" > "$OUT/rel24.s"
+    rel24=$("$OUT/zap" "$OUT/rel24.s" "$OUT/rel24.bin" 2>&1 | tr -d '\r' || true)
+    cli_check "relocate $spell is outside the 24-bit range" \
+        "$(printf '%s' "$rel24" | grep -c 'address outside the 24-bit range')" 1
+done
+
 # DW32 and BLKL do not exist below the width they need, so the directives and
 # the evaluator ship together. The bytes are in test/cases/data.s, compared
 # against the reference; this says the names resolve at all, which a build

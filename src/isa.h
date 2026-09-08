@@ -22,7 +22,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "operand.h"
+#include "registers.h"
 
 /* Addressing conditions a row requires of an operand. The first four are
  * matched against the operand; the rest say how wide an immediate is. */

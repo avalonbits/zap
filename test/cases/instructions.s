@@ -1,4 +1,4 @@
-; Every instruction shape dzap claims to handle, assembled by both dzap and
+; Every instruction shape zap claims to handle, assembled by both zap and
 ; ez80asm and compared byte for byte. The unit tests pin the cases a refactor
 ; is likely to break; this pins the breadth.
   nop

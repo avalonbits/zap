@@ -3,9 +3,9 @@
 #
 # Nothing but instructions: no labels, no comments, no blank lines, no
 # constants, no directives. Every line maps straight to its bytes and nothing
-# refers to anything else, which is the case dzap exists to measure -- and the
-# case zap can be run against to see what its machinery costs when none of it
-# is needed.
+# refers to anything else, which is the floor: the case with no symbol table,
+# no fixup list and no deferred anything, so a run against it says what zap
+# costs when none of its machinery is needed.
 #
 # Deterministic, like gen_synth.sh: the line at index i is a pure function of
 # i, so any run reproduces any earlier one. Changing this script invalidates
@@ -14,19 +14,19 @@
 #
 #   test/bench/gen_pure.sh [lines] > pure.s
 #
-# The default is sized to 256 KiB, which dzap assembles in about 20 seconds --
+# The default is sized to 256 KiB, which zap assembles in about 20 seconds --
 # short enough to iterate on and long enough that the 10 ms clock is noise.
-# The work is linear in the source, verified: dzap took 39.02s on 507 KB and
+# The work is linear in the source, verified: zap took 39.02s on 507 KB and
 # 78.90s on 1049 KB, a ratio of 2.02 against a size ratio of 2.02.
 #
 # 2 MiB was the intent and does not fit. These instructions produce a shade
 # under a fifth of a byte of output per source byte, so 2 MiB assembles to
 # 376,650 bytes -- and holding that on a 512 KB machine fails, whatever the
-# assembler does with the rest of its time. dzap reached line 64,727 and ran
+# assembler does with the rest of its time. zap reached line 64,727 and ran
 # out. That is the memory wall reached by a program with no symbol table, no
 # fixups and no bookkeeping of any kind, which is worth knowing on its own.
 #
-# The instruction set here is restricted to what dzap handles: registers,
+# The instruction set here is restricted to what zap handles: registers,
 # literals, indirection and an index displacement. Condition codes are in,
 # suffixes and expressions are not -- an expression between literals is one of
 # the features to add back and price separately, so it does not belong in the

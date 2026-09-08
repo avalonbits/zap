@@ -1,25 +1,25 @@
 #!/bin/bash
-# Regenerates dzap/test/cases/opcodes.s from the reference's own opcode corpus.
+# Regenerates zap/test/cases/opcodes.s from the reference's own opcode corpus.
 #
-#   dzap/test/cases/gen_opcodes.sh > dzap/test/cases/opcodes.s
+#   zap/test/cases/gen_opcodes.sh > zap/test/cases/opcodes.s
 #
-# THE ORACLE IS ez80asm, NEVER dzap. This matters more than anything else here.
+# THE ORACLE IS ez80asm, NEVER zap. This matters more than anything else here.
 #
-# The previous corpus was built by running the forms through dzap and keeping
-# the ones it accepted, which quietly made it a list of things dzap already got
-# right. A form dzap assembled wrongly was dropped by the very filter that
+# The previous corpus was built by running the forms through zap and keeping
+# the ones it accepted, which quietly made it a list of things zap already got
+# right. A form zap assembled wrongly was dropped by the very filter that
 # existed to catch it -- and one was: jr and djnz emitted the target truncated
 # to a byte for as long as that file existed, and the file could not say so.
 #
-# So a line is kept when the *reference* assembles it. Whether dzap agrees is
+# So a line is kept when the *reference* assembles it. Whether zap agrees is
 # what test/run.sh is for, and a disagreement has to show up as a failure
 # rather than as a shorter file.
 #
 # What is removed is removed by what the line LOOKS like, never by whether
-# dzap manages it: labels, directives, the .lil/.sil/.sis/.lis suffixes, and
-# operands naming a symbol. Those are features dzap has not been given yet, and
+# zap manages it: labels, directives, the .lil/.sil/.sis/.lis suffixes, and
+# operands naming a symbol. Those are features zap has not been given yet, and
 # each one arrives with its own forms. If a rule here starts dropping something
-# dzap should handle, that is a bug in this script and not a licence to filter
+# zap should handle, that is a bug in this script and not a licence to filter
 # by behaviour again.
 set -euo pipefail
 
@@ -32,8 +32,8 @@ trap 'rm -rf "$WORK"' EXIT
 
 # What counts as an instruction is the shared ISA table, not a list written out
 # here that would drift from it. This is a feature filter and not a behavioural
-# one: it says dzap implements instructions and not directives, which is true
-# by construction, rather than asking dzap whether it likes a particular line.
+# one: it says zap implements instructions and not directives, which is true
+# by construction, rather than asking zap whether it likes a particular line.
 # `dw24`, `align` and the rest fall out of it without being named.
 grep -oE '\{ *"[a-z0-9.]+"' src/isa_table.c | sed -e 's/.*"\(.*\)"/\1/' | sort -u \
     > "$WORK/mnemonics"
@@ -45,7 +45,7 @@ grep -oE '\{ *"[a-z0-9.]+"' src/isa_table.c | sed -e 's/.*"\(.*\)"/\1/' | sort -
 collect() {
     cat test/corpus/Opcodes/tests/*.s test/corpus/Addressing/tests/*.s
     # Negative literals, which the corpus barely exercises: it has exactly one
-    # negative displacement and no negative immediate at all. dzap reaches them
+    # negative displacement and no negative immediate at all. zap reaches them
     # through a separate branch that negates the value, so a corpus without
     # them cannot say whether that branch works.
     #
@@ -55,7 +55,7 @@ collect() {
     # 777o, 777q and 0o777 are all refused, checked against ez80asm rather
     # than taken from a manual. A leading zero is decimal too -- 010 is ten,
     # and 08 assembles -- so there is no octal in any spelling. Only 0x and
-    # the trailing h have fast paths in dzap; the rest reach num_parse, and
+    # the trailing h have fast paths in zap; the rest reach num_parse, and
     # being here is what says they still agree.
     cat <<'EOF'
 	ld a,(ix-1)
@@ -142,13 +142,15 @@ done < "$WORK/candidates"
 cat <<EOF
 ; Every instruction form in the reference's own opcode corpus that ez80asm
 ; assembles: test/corpus/Opcodes and test/corpus/Addressing, with labels,
-; directives, ADL suffixes and symbolic operands removed because dzap has none
-; of those features yet. Plus negative displacements and immediates, which the
-; corpus itself barely covers.
+; directives, ADL suffixes and symbolic operands taken out. Not because zap
+; cannot read them -- it can, and each has a case file of its own -- but
+; because this file is the instruction-form corpus and one thing at a time is
+; what makes a failure here point somewhere. Plus negative displacements and
+; immediates, which the corpus itself barely covers.
 ;
-; KEPT BY WHAT THE REFERENCE ACCEPTS, NOT BY WHAT DZAP ACCEPTS. The earlier
-; version of this file was filtered through dzap, which made it a record of
-; what dzap already got right and silently dropped anything it got wrong -- jr
+; KEPT BY WHAT THE REFERENCE ACCEPTS, NOT BY WHAT ZAP ACCEPTS. The earlier
+; version of this file was filtered through zap, which made it a record of
+; what zap already got right and silently dropped anything it got wrong -- jr
 ; and djnz were wrong for the whole life of that file and it could not say so.
 ;
 ; This is breadth the unit tests cannot reach, and it is what makes a change to
@@ -156,7 +158,7 @@ cat <<EOF
 ; picks the wrong one for some rare addressing mode shows up here and nowhere
 ; else. Compared against ez80asm by test/run.sh like every other case file.
 ;
-; Regenerate with dzap/test/cases/gen_opcodes.sh. Do not edit by hand.
+; Regenerate with zap/test/cases/gen_opcodes.sh. Do not edit by hand.
 ; $kept forms, from $tried candidates.
 
 EOF

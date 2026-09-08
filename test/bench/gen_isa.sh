@@ -1,5 +1,5 @@
 #!/bin/bash
-# Generates a source containing every instruction form dzap can assemble.
+# Generates a source containing every instruction form zap can assemble.
 #
 #   test/bench/gen_isa.sh even [bytes] > isa_even.s
 #   test/bench/gen_isa.sh real [bytes] > isa_real.s
@@ -14,14 +14,14 @@
 # not will still look like an improvement. That is not hypothetical -- it
 # happened, and is written up in .internal/performance-notes.md.
 #
-# The forms come from dzap/test/cases/opcodes.s, which is the reference's own
+# The forms come from test/cases/opcodes.s, which is the reference's own
 # opcode corpus filtered to what *ez80asm* assembles -- see gen_opcodes.sh --
 # plus the call forms that corpus happens not to contain. Deriving them from a
 # file that is checked against ez80asm on every test run means these cannot
-# drift into containing something dzap gets wrong.
+# drift into containing something zap gets wrong.
 #
-# That file used to be filtered through dzap instead, which meant these
-# benchmarks measured only the forms dzap already handled: 53 it did not were
+# That file used to be filtered through zap instead, which meant these
+# benchmarks measured only the forms zap already handled: 53 it did not were
 # absent, negative literals among them, so the branch that negates a value was
 # never once executed by either distribution. Regenerating after that was fixed
 # changed both files, and every timing taken before it is against different
@@ -98,12 +98,12 @@
 # operand of a `jp` with a label would have kept the line count and lost the
 # form: these files exist to contain every form, and an operand is part of one.
 #
-# NOT INCLUDED: jr and djnz, though not for want of correctness -- dzap now
+# NOT INCLUDED: jr and djnz, though not for want of correctness -- zap now
 # assembles both byte-identically to the reference. A relative displacement
 # reaches 127 bytes forward and 128 back, and without labels there is no way to
 # write a target that stays in reach as the output grows past that in the first
 # hundred bytes of a 256 KiB file. They are covered by
-# dzap/test/cases/relative.s instead, which stays short for the same reason.
+# test/cases/relative.s instead, which stays short for the same reason.
 #
 # They are 10.3% of real instructions, so the `real` weighting is optimistic by
 # about that much.
@@ -232,7 +232,7 @@ if [ "$MODE" = include ]; then
 else
     TOTAL="${2:-262144}"
 fi
-CASES="dzap/test/cases/opcodes.s"
+CASES="test/cases/opcodes.s"
 
 if [ ! -f "$CASES" ]; then
     echo "missing $CASES" >&2
@@ -324,7 +324,7 @@ END {
         # 1.2 million names and cannot be mistaken for a mnemonic.
         #
         # One in three and not one in two, because **one in two does not fit**.
-        # At that density 256 KB of source is 15,460 labels and dzap runs out
+        # At that density 256 KB of source is 15,460 labels and zap runs out
         # of memory on the Agon at line 28,673 of 30,920 -- 93% of the way
         # through -- needing about 313 KB of heap against roughly 310 KB that
         # a 512 KB machine has left after MOS and the program. That is the real
@@ -632,7 +632,7 @@ function write_header(i,   kn, kf, j, t) {
 # A file body stops on a scope boundary, not on the byte budget alone.
 #
 # The reference scopes local labels **per file**: a local defined in one and
-# named in another is "Unknown identifier" there, in either direction. dzap is
+# named in another is "Unknown identifier" there, in either direction. zap is
 # more permissive and lets a scope cross an include, so a file cut at an
 # arbitrary line assembles here and not there -- and these files exist to be
 # compared. Ending on a multiple of 32 keeps every local, and every anonymous
@@ -1050,7 +1050,7 @@ function mname(k,   d, g, r, i2, out2) {
 # shorter than eleven. Every label is hashed once and compared at least once,
 # so the benchmark was doing 2x the per-label character work of real code, and
 # anything it said about the symbol table was inflated by about that much. It
-# had already bent two conclusions; see .internal/dzap-to-zap.md.
+# had already bent two conclusions; see .internal/zap-to-zap.md.
 #
 # Length comes from the table above. Uniqueness comes from `s`, the rank a
 # label holds among the ones of its own length, spelled in decimal and put at the end:

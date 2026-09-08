@@ -1,7 +1,7 @@
-# What dzap still needs, measured
+# What zap still needs, measured
 
 Taken by running the reference's own corpus -- `test/corpus`, the 247 sources
-in scope -- through dzap and classifying every divergence, then probing each
+in scope -- through zap and classifying every divergence, then probing each
 one against `ez80asm` to separate a missing feature from a user symbol that
 merely looks like one.
 
@@ -19,7 +19,7 @@ Landed. Seventeen more sources are byte-identical, fifteen of them whole
 programs, and the four benchmarks did not move by a hundredth of a second.
 What the section said before it was done:
 
-**This one feature is the only thing standing between dzap and every real
+**This one feature is the only thing standing between zap and every real
 program in the corpus.** BBC BASIC, Rokky and all nineteen AgonBits Lessons
 programs fail on it and on nothing else:
 
@@ -58,7 +58,7 @@ tiers below, which were written when the suffixes hid them.
     .RELOCATE  .ENDRELOCATE  a relocatable block
     .CPU                     two in-scope uses; see below
 
-**BLKB is not missing, it is wrong**, which is worse. dzap maps it to `DS`, and
+**BLKB is not missing, it is wrong**, which is worse. zap maps it to `DS`, and
 the two are different directives:
 
     ds 2         at the end of a file    dropped        (reserve)
@@ -80,21 +80,21 @@ down with it.
 
   - **Character-literal escapes.** `LD A, '\a'` is 3E 07 in the reference and
     "expected a character" here. So is `'\''`.
-  - **The `\?` string escape.** The reference takes it; dzap does not. `\0` is
+  - **The `\?` string escape.** The reference takes it; zap does not. `\0` is
     refused by both, which the comment in `str_escape` already says.
-  - **`ASSUME ADL = <expression>`.** dzap wants a literal 0 or 1;
+  - **`ASSUME ADL = <expression>`.** zap wants a literal 0 or 1;
     `assume adl=before` where `before` is an EQU assembles in the reference.
   - **A conditional inside an included file** while the caller has one open.
-    dzap says "conditionals do not nest". The reference allows it -- the rule
+    zap says "conditionals do not nest". The reference allows it -- the rule
     is per file, not per assembly.
   - **MACRO inside a switched-off branch is still captured.** `.if 1 / macro
     test / .db 0 / endmacro / .else / macro test / .db 1 / endmacro / .endif`
     gives 00 in the reference and 01 here: the definition in the branch that
     was not taken overwrote the one that was. The third byte divergence.
 
-## 4. Error detection, where dzap is too permissive
+## 4. Error detection, where zap is too permissive
 
-Thirteen negative tests that the reference refuses and dzap accepts. None of
+Thirteen negative tests that the reference refuses and zap accepts. None of
 them changes the bytes of a valid program, and all of them are part of being
 finished:
 
@@ -105,7 +105,7 @@ finished:
 
 ## Not missing
 
-The instruction set as `dzap/test/cases/opcodes.s` pins it, expressions and
+The instruction set as `zap/test/cases/opcodes.s` pins it, expressions and
 both precedence modes, global, local and anonymous labels, EQU, ORG, DS, ALIGN,
 DB, DW, DL, INCLUDE, INCBIN, ASSUME ADL, conditional assembly, and macros.
 

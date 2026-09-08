@@ -84,6 +84,12 @@ cc -std=gnu11 -Wall -Wextra -fsigned-char -O1 \
    -include test/stubs/host_types.h -Isrc -Itest/stubs \
    -o "$OUT/zap" src/*.c test/stubs/agon_stubs.c || exit 1
 
+# -ez80 on every run below, because this comparison *is* the compatibility
+# claim. zap's default gives operators the precedence a reader expects and the
+# reference gives them none, so `1+2*3` is 7 by default and 9 here; running the
+# default against the reference would be asking two assemblers that disagree on
+# purpose to agree. The same reasoning as test/run.sh's case comparison.
+
 # Prove the reference works before trusting anything it does not produce.
 #
 # A missing output file is read below as "ez80asm rejected this", which is
@@ -124,7 +130,7 @@ for dir in "$CORPUS"/*/; do
         mkdir -p "$OUT/z"
         cp -r "$dir"/tests/* "$OUT/z/" 2>/dev/null
 
-        (cd "$OUT/z" && rm -f "$base.bin" && timeout 30 "$OUT/zap" "$base.s" "$base.bin" >/dev/null 2>&1)
+        (cd "$OUT/z" && rm -f "$base.bin" && timeout 30 "$OUT/zap" -ez80 "$base.s" "$base.bin" >/dev/null 2>&1)
         z=$([ -f "$OUT/z/$base.bin" ] && md5sum < "$OUT/z/$base.bin" | cut -d' ' -f1 || echo rejected)
 
         rm -rf "$OUT/e"
@@ -165,7 +171,7 @@ for src in "$@"; do
     total=$((total + 1))
 
     (cd "$dir" && rm -f "$OUT/real.z.bin" \
-        && timeout 120 "$OUT/zap" "$base" "$OUT/real.z.bin" >/dev/null 2>&1)
+        && timeout 120 "$OUT/zap" -ez80 "$base" "$OUT/real.z.bin" >/dev/null 2>&1)
     (cd "$dir" && rm -f "$OUT/real.e.bin" \
         && timeout 120 "$EZ" "$base" "$OUT/real.e.bin" >/dev/null 2>&1)
 

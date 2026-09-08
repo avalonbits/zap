@@ -17,3 +17,12 @@ include $(shell agondev-config --makefile)
 # agondev sets CFLAGS in its own makefile.inc, so the warning flags the CEdev
 # build used have to be appended after the include rather than before it.
 CFLAGS += -Wall -Wextra
+
+# A hook for a build that measures something, so a measuring build is the
+# ordinary build plus flags rather than a different build. Setting CFLAGS on
+# the command line instead replaces what agondev's makefile put there, which
+# fails in ways that look like the measurement not working.
+#
+#   make EXTRA_CFLAGS='-DZMALLOC -Dmalloc=z_malloc ...'
+#   make EXTRA_CFLAGS=-DTRUNC=4
+CFLAGS += $(EXTRA_CFLAGS)

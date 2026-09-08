@@ -1,3 +1,9 @@
+> **`dzap` is `zap`.** Everything below was measured on the assembler that was
+> called `dzap` while it was being built beside the older one. It replaced that
+> one; the sources are `src/zap.c` and the numbers carry over unchanged. The
+> names in the older entries are left as they were written, because a
+> measurement rewritten after the fact is no longer a record of anything.
+
 # Where the assemblers stand, and what is left
 
 Notes to self, started 2026-09-05 about zap and continued about dzap, which is
@@ -353,7 +359,7 @@ It also found one real bug on the way in, already fixed in the stash: writing
 the sentinel at `bsz_` clobbers the first character of the partial line the
 reader carries to the next buffer. That produced wrong output with no crash,
 ASan clean, and all 96 checks passing -- every case file is smaller than one
-16 KiB buffer, so none of them ever reached a refill. `dzap/test/cases/refill.s`
+16 KiB buffer, so none of them ever reached a refill. `test/cases/refill.s`
 (in the stash) places a line across each of the first three boundaries and
 catches it.
 

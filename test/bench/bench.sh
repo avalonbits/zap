@@ -93,12 +93,15 @@ stage_synth()    { test/bench/gen_synth.sh > "$1/synth.s";              echo syn
 # and 1.2% *slower* on these two, which is why they are in the default set
 # rather than something to remember to run.
 #
-# BOTH NOW CONTAIN LOCAL AND ANONYMOUS LABELS, WHICH zap DOES NOT HAVE. It
-# fails on them, so
-# these two rows measure ez80asm alone until zap grows the feature. That is a
-# deliberate consequence of dzap being where the work is: the sources exist to
-# say what dzap costs, and holding them back to what zap can read would have
-# made them measure the wrong assembler. The rest of the set is unaffected.
+# They contain everything zap supports -- global, local and anonymous labels,
+# expressions, every data directive, EQU, ASSUME, conditionals, macros and
+# instruction mode suffixes -- because a benchmark that leaves a feature out
+# prices it at nothing. Each of those was added to these files as the feature
+# landed, and what each cost is in .internal/performance-notes.md.
+#
+# For a while they measured ez80asm alone, because they held labels the
+# assembler being developed alongside could not read yet. That assembler is
+# this one now, and both rows are live again.
 stage_isa_even() { test/bench/gen_isa.sh even > "$1/isa_even.s";        echo isa_even.s; }
 stage_isa_real() { test/bench/gen_isa.sh real > "$1/isa_real.s";        echo isa_real.s; }
 
@@ -265,7 +268,7 @@ for name in $want; do
     fi
 
     rm -f "$sd/out.bin"
-    z=$(run_one "$sd" "zap $src out.bin" "z_$name" "zap flush.s flush.bin")
+    z=$(run_one "$sd" "zap -ez80 $src out.bin" "z_$name" "zap -ez80 flush.s flush.bin")
     zsz=$([ -f "$sd/out.bin" ] && stat -c%s "$sd/out.bin" || echo 0)
     zmd=$([ -f "$sd/out.bin" ] && md5sum < "$sd/out.bin" | cut -c1-8 || echo "--------")
 

@@ -70,7 +70,7 @@ case "$msg" in
 esac
 
 # gen_isa.sh's label names, which are a benchmark input and so are checked here
-# rather than in dzap's suite.
+# rather than in zap's suite.
 #
 # The names decide what the symbol table appears to cost, and they were wrong
 # for three revisions of that script: two words and an index, mean 17.1

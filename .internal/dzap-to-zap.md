@@ -1,3 +1,9 @@
+> **Finished, by replacement.** This file asked what the older zap could learn
+> from `dzap`. The answer turned out to be all of it: `dzap` reached the same
+> feature set for a third of the cycles and became `zap`. The table below is
+> what each feature cost as it landed, and it is still the record of that --
+> nothing in it was ported anywhere in the end.
+
 # What dzap learns that zap can have
 
 dzap assembles the easy case, so some of what makes it fast is the easy case

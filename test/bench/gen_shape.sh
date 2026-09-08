@@ -3,7 +3,7 @@
 #
 #   test/bench/gen_shape.sh <shape> [lines] > shape.s
 #
-# The per-instruction costs quoted in .internal/dzap-to-zap.md come from these.
+# The per-instruction costs quoted in .internal/zap-to-zap.md come from these.
 # A file of one shape isolates what that shape costs: the difference between
 # two of them is the difference between the two instructions and nothing else,
 # where a mixed source only ever gives an average. It is also how the row

@@ -1,5 +1,5 @@
 #!/bin/bash
-# What a dzap run actually costs in memory, on the machine that has 512 KB.
+# What a zap run actually costs in memory, on the machine that has 512 KB.
 #
 #   test/bench/memprofile.sh [source ...]     default: the generated set
 #
@@ -22,22 +22,22 @@ EMU="${AGON_EMU:-$HOME/fab-agon-emulator-1.2.4}"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-# A build with the shim in. zmalloc.c is symlinked into dzap/src beside the
+# A build with the shim in. zmalloc.c is symlinked into src beside the
 # other shared sources and is inert without ZMALLOC, so this is the ordinary
 # build plus four renames.
 ZFLAGS='-DZMALLOC -Dmalloc=z_malloc -Dcalloc=z_calloc -Drealloc=z_realloc -Dfree=z_free -include src/zmalloc.h -I src'
-( cd dzap && PATH="$HOME/agondev/bin:$PATH" make clean >/dev/null 2>&1
-  cd "$ROOT/dzap" && PATH="$HOME/agondev/bin:$PATH" make EXTRA_CFLAGS="$ZFLAGS" ) >"$WORK/build.log" 2>&1
-if [ ! -f dzap/bin/dzap.bin ]; then
+( PATH="$HOME/agondev/bin:$PATH" make clean >/dev/null 2>&1
+  cd "$ROOT" && PATH="$HOME/agondev/bin:$PATH" make EXTRA_CFLAGS="$ZFLAGS" ) >"$WORK/build.log" 2>&1
+if [ ! -f bin/zap.bin ]; then
     echo "the instrumented build failed:" >&2
     tail -20 "$WORK/build.log" >&2
     exit 2
 fi
-cp dzap/bin/dzap.bin "$WORK/dzap.bin"
+cp bin/zap.bin "$WORK/zap.bin"
 # Leave the tree with an ordinary build, so a later timing run is not measuring
 # the shim by accident.
-( cd dzap && PATH="$HOME/agondev/bin:$PATH" make clean >/dev/null 2>&1
-  cd "$ROOT/dzap" && PATH="$HOME/agondev/bin:$PATH" make ) >/dev/null 2>&1
+( PATH="$HOME/agondev/bin:$PATH" make clean >/dev/null 2>&1
+  cd "$ROOT" && PATH="$HOME/agondev/bin:$PATH" make ) >/dev/null 2>&1
 
 SRCS=("$@")
 if [ "${#SRCS[@]}" -eq 0 ]; then
@@ -52,9 +52,9 @@ for src in "${SRCS[@]}"; do
     sd="$WORK/sd"; rm -rf "$sd"; mkdir -p "$sd/bin"
     cp -r "$EMU/sdcard/mos" "$sd/" 2>/dev/null
     cp "$EMU/sdcard/MOS.bin" "$EMU/sdcard/firmware.bin" "$sd/" 2>/dev/null
-    cp "$WORK/dzap.bin" "$sd/bin/dzap.bin"
+    cp "$WORK/zap.bin" "$sd/bin/zap.bin"
     cp "$src" "$sd/s.s"
-    printf 'dzap s.s out.bin\r\nemulator_exit_success\r\n' > "$sd/autoexec.txt"
+    printf 'zap s.s out.bin\r\nemulator_exit_success\r\n' > "$sd/autoexec.txt"
     fifo="$WORK/f"; rm -f "$fifo"; mkfifo "$fifo"
     tail -f /dev/null > "$fifo" & hold=$!
     ( cd "$EMU" && timeout 900 ./agon-cli-emulator --sdcard "$sd" -z < "$fifo" > "$WORK/cap" 2>&1 )

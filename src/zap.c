@@ -39,6 +39,19 @@
  * in .internal/performance-notes.md. Splitting it would be tidier and slower,
  * and the second part has been measured more than once.
  *
+ * EVERY SCAN IS BOUNDED. A loop that walks a character pointer compares that
+ * pointer against the end of the buffer as well as testing what it points at,
+ * and that is not defensive programming -- unbounded, these loops have come
+ * out of the compiler rotated the wrong way: the pointer pre-decremented and
+ * each turn testing one character past it, so the first is never examined and
+ * the scan stops one short. It has happened five times on five different
+ * loops, it reduces to nothing, and **the host build is correct every time**,
+ * so nothing here can catch it except reading the source or the assembly. The
+ * last occasion rotated four loops in a function whose source was unchanged,
+ * because a function was added between two others and the allocation moved.
+ * Two conditions are what stops it. `test/run.sh` checks that the source
+ * keeps them, and the price is in .internal/performance-notes.md.
+ *
  * WHERE THIS CAME FROM. It began as `dzap`, a stripped assembler written to
  * find a floor: the earlier zap spent about 830 cycles per source byte and it
  * was not clear how much of that was assembling and how much was machinery.
@@ -2986,7 +2999,7 @@ static bool expr_atom(dz* z, int* out, const char* ns, int nn) {
 static bool expr_term(dz* z, int* out, const char** pp, const char* e,
                       uint8_t* fwdmask) {
     const char* p = *pp;
-    while (is_space_ch(*p)) {
+    while (p < e && is_space_ch(*p)) {
         p++;
     }
 
@@ -3001,7 +3014,7 @@ static bool expr_term(dz* z, int* out, const char** pp, const char* e,
             invert = true;
         }
         p++;
-        while (is_space_ch(*p)) {
+        while (p < e && is_space_ch(*p)) {
             p++;
         }
         if (*p == '-' || *p == '+' || *p == '~' || exop[(uint8_t) *p] != 0) {
@@ -3031,7 +3044,7 @@ static bool expr_term(dz* z, int* out, const char** pp, const char* e,
             return false;
         }
         expr_depth--;
-        while (is_space_ch(*p)) {
+        while (p < e && is_space_ch(*p)) {
             p++;
         }
         if (*p != (square ? ']' : ')')) {
@@ -3134,7 +3147,7 @@ static bool expr_climb(dz* z, int* total, const char** pp, const char* e,
         return false;
     }
     for (;;) {
-        while (is_space_ch(*p)) {
+        while (p < e && is_space_ch(*p)) {
             p++;
         }
         const char c = *p;
@@ -3229,17 +3242,22 @@ static bool expr_value(dz* z, int* out, const char** pp, const char* e,
     return true;
 }
 
-/* Scans here are mostly unbounded, and safe because the reader keeps a newline
- * one byte past the last valid one.
+/* Every scan below is bounded, and the reader also keeps a newline one byte
+ * past the last valid one.
  *
- * Every scan below stops at a newline -- none of the character classes it uses
- * contains one -- so the sentinel ends any scan that would otherwise run off
- * the buffer, without a bound being tested on every character. The pointer can
- * reach the end of the content but never pass it, and reading through it there
- * yields the sentinel, which is why the single tests lost their bounds too.
+ * The sentinel is what makes the scans *terminate*: none of the character
+ * classes contains a newline, so every loop stops on it whether or not it
+ * tests the end. The bound is for something else entirely -- see EVERY SCAN IS
+ * BOUNDED at the top of this file -- and it is the only defence against a loop
+ * the compiler has rotated, which the sentinel cannot help with because a
+ * rotated loop does not run off the end; it skips the first character.
  *
- * The two num_ch scans are the exception and keep theirs; see each. `e` stays
- * a parameter for them. */
+ * The single tests -- `*p == ','` and the like -- have no bound and need none.
+ * They are not loops, so there is nothing to rotate, and the sentinel is what
+ * makes reading one character past the content safe.
+ *
+ * The bounds here cost 0.06s of isa_real's 5.64, all of the price this rule
+ * carries anywhere in the file. Nothing else measured at all. */
 /* Where a truncated stage sinks what it computed, so the compiler cannot
  * delete the work whose result nothing reads. Declared here because both the
  * line-level and the operand-level cuts write to it, and parse_operand comes
@@ -3273,7 +3291,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
     *op = dop_none;
 
     const char* p = *pp;
-    while (is_space_ch(*p)) {
+    while (p < e && is_space_ch(*p)) {
         p++;
     }
 
@@ -3298,7 +3316,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
     if ((cl & C_LPAREN) != 0) {
         op->mode |= INDIRECT;
         p++;
-        while (is_space_ch(*p)) {
+        while (p < e && is_space_ch(*p)) {
             p++;
         }
         cl = cclass[(uint8_t) *p];
@@ -3309,7 +3327,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
     const char* known_end = NULL;
     if ((cl & C_ALPHA) != 0) {
         const char* s = p;
-        while (name_ch(*p)) {
+        while (p < e && name_ch(*p)) {
             p++;
         }
         const char* const nend = p;
@@ -3334,7 +3352,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
             }
 
             /* (ix+d) and (ix-d). */
-            while (is_space_ch(*p)) {
+            while (p < e && is_space_ch(*p)) {
                 p++;
             }
             /* Not only inside parentheses. `lea bc, ix+5` and `pea ix+5`
@@ -3346,23 +3364,22 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
             if (*p == '+' || *p == '-') {
                 const bool neg = *p == '-';
                 p++;
-                while (is_space_ch(*p)) {
+                while (p < e && is_space_ch(*p)) {
                     p++;
                 }
                 const char* ds = p;
-                /* Bounded, unlike every other scan here, and deliberately.
-                 *
-                 * Unbounded, this compiles to a loop that is rotated wrongly:
-                 * the pointer is pre-decremented and each iteration tests one
-                 * character past it, so the first character is never examined
-                 * and the scan stops one short. `ld a, 0x42` parses as 0x4 and
-                 * leaves `2` behind. The bound is what stops the rotation.
+                /* This is the loop the whole rule came from, and the only
+                 * one whose failure was ever *seen* rather than reasoned
+                 * about: unbounded, `ld a, 0x42` parsed as 0x4 and left `2`
+                 * behind, because the rotated loop never examined the first
+                 * character and stopped one short.
                  *
                  * It does not reduce -- the same loop in isolation compiles
                  * correctly -- and rewriting it to index from a base rather
                  * than advance a pointer does not help; that was tried and
                  * fails the same way. Full diagnosis on the `sentinel`
-                 * branch. */
+                 * branch. Every scan in the file now carries the same bound
+                 * for the same reason; see the top of this file. */
                 while (p < e && num_ch(*p)) {
                     p++;
                 }
@@ -3441,7 +3458,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
 
                     return false;
                 }
-                while (is_space_ch(*p)) {
+                while (p < e && is_space_ch(*p)) {
                     p++;
                 }
             }
@@ -3504,7 +3521,8 @@ __attribute__((always_inline)) static inline bool parse_operand(dz* z, dop* op, 
             if (*p == '-' || *p == '+') {
                 p++;
             }
-            /* Bounded, for the reason given at the displacement scan above. */
+            /* Bounded, like every scan here, and this one was written that
+             * way from the start for the reason at the displacement scan. */
             while (p < e && num_ch(*p)) {
                 p++;
             }
@@ -3706,7 +3724,7 @@ full_expression:
          * not that shape. See defer_expr. */
         {
             const char* q = p;
-            while (is_space_ch(*q)) {
+            while (q < e && is_space_ch(*q)) {
                 q++;
             }
             if (exop[(uint8_t) *q] != 0) {
@@ -3738,7 +3756,7 @@ have_value:
         op->imm = total;
         op->mode |= IMM;
 
-        while (is_space_ch(*p)) {
+        while (p < e && is_space_ch(*p)) {
             p++;
         }
         if ((op->mode & INDIRECT) != 0) {
@@ -3768,7 +3786,7 @@ have_value:
              * Re-reading the operand from the start is what the rewind is:
              * `*pp` still holds where it began, because nothing writes it
              * until the end. */
-            while (is_space_ch(*p)) {
+            while (p < e && is_space_ch(*p)) {
                 p++;
             }
             if (exop[(uint8_t) *p] != 0) {
@@ -3800,9 +3818,10 @@ static inline const char* lit_value(const char* p, const char* e, int* out);
  * three bytes of frame and the frame costs `iy`. The same test written with a
  * `const char* q` measured a whole 1.8% worse across every benchmark.
  *
- * Reading ahead is safe without a bound for the usual reason and one more: the
- * chain short-circuits on the first mismatch, and the buffer ends in a newline
- * that matches nothing here, so it can reach the sentinel and never pass it.
+ * Reading ahead is safe without a bound, and this is not an exception to the
+ * rule at the top of the file: there is no loop here to rotate. The chain
+ * short-circuits on the first mismatch, and the buffer ends in a newline that
+ * matches nothing here, so it can reach the sentinel and never pass it.
  * The class test on the fourth character is what keeps `equx` from being one.
  *
  * The reference takes `EQU`, `equ` and `.EQU`; it does not take `X EQU 5`
@@ -3845,7 +3864,7 @@ static bool equ_line(dz* z, const char* name, int nlen, const char* p,
         p++;
     }
     p += 3;
-    while (is_space_ch(*p)) {
+    while (p < e && is_space_ch(*p)) {
         p++;
     }
 
@@ -3899,7 +3918,7 @@ static bool equ_line(dz* z, const char* name, int nlen, const char* p,
     named->defined = true;
     named->addr = value;
 
-    while (is_space_ch(*p)) {
+    while (p < e && is_space_ch(*p)) {
         p++;
     }
     *stop = p;
@@ -4169,7 +4188,7 @@ static const macro* macro_at(const dz* z, const char* s, int n) {
  * move; the parameters go in as a length byte followed by the text, so walking
  * them needs no second array and no terminator. */
 __attribute__((noinline))
-static bool macro_begin(dz* z, const char** pp) {
+static bool macro_begin(dz* z, const char** pp, const char* e) {
     if (z->defining != NULL) {
         /* "No macro definitions allowed inside a macro" there. */
         z->err = "macros do not nest";
@@ -4177,11 +4196,11 @@ static bool macro_begin(dz* z, const char** pp) {
         return false;
     }
     const char* p = *pp;
-    while (is_space_ch(*p)) {
+    while (p < e && is_space_ch(*p)) {
         p++;
     }
     const char* ns = p;
-    while (name_ch(*p)) {
+    while (p < e && name_ch(*p)) {
         p++;
     }
     const int nn = (int) (p - ns);
@@ -4226,7 +4245,7 @@ static bool macro_begin(dz* z, const char** pp) {
 
     /* The parameters, each stored as a length and then its characters. */
     for (;;) {
-        while (is_space_ch(*p)) {
+        while (p < e && is_space_ch(*p)) {
             p++;
         }
         if (*p == ',') {
@@ -4237,7 +4256,7 @@ static bool macro_begin(dz* z, const char** pp) {
             break;
         }
         const char* ps = p;
-        while (name_ch(*p)) {
+        while (p < e && name_ch(*p)) {
             p++;
         }
         const int pn = (int) (p - ps);
@@ -4350,7 +4369,7 @@ static char* macro_text(dz* z, const macro* m, const char* p, const char* e,
     int argn[MACRO_MAXPARAM];
     int nargs = 0;
     for (;;) {
-        while (is_space_ch(*p)) {
+        while (p < e && is_space_ch(*p)) {
             p++;
         }
         if (p >= e || *p == '\n' || *p == ';') {
@@ -4789,7 +4808,7 @@ static inline const char* lit_value(const char* p, const char* e, int* out) {
 
     /* What ended the run has to end the item too. */
     const char* r = q;
-    while (is_space_ch(*r)) {
+    while (r < e && is_space_ch(*r)) {
         r++;
     }
     if (*r != ',' && *r != '\n' && *r != ';' && r < e) {
@@ -4853,7 +4872,7 @@ static const char* name_item(const char* p, const char* e) {
     /* What ended the run has to end the item too, or an operator follows and
      * the evaluator is what reads it. */
     const char* r = q;
-    while (is_space_ch(*r)) {
+    while (r < e && is_space_ch(*r)) {
         r++;
     }
     if (*r != ',' && *r != '\n' && *r != ';' && r < e) {
@@ -4878,7 +4897,7 @@ static const char* name_item(const char* p, const char* e) {
 static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
     const char* p = *pp;
     for (;;) {
-        while (is_space_ch(*p)) {
+        while (p < e && is_space_ch(*p)) {
             p++;
         }
         if (*p == '"') {
@@ -4964,7 +4983,7 @@ static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
             z->o = o;
         }
 
-        while (is_space_ch(*p)) {
+        while (p < e && is_space_ch(*p)) {
             p++;
         }
         if (*p != ',') {
@@ -5058,7 +5077,7 @@ static bool emit_block(dz* z, int n, int width, int fill) {
 static bool file_name(dz* z, const char** pp, const char* e,
                       char* out, int cap) {
     const char* p = *pp;
-    while (is_space_ch(*p)) {
+    while (p < e && is_space_ch(*p)) {
         p++;
     }
     if (*p != '"') {
@@ -5273,7 +5292,7 @@ static bool cond_value(dz* z, int* out, const char** pp, const char* e) {
         return false;
     }
 
-    while (is_space_ch(*p)) {
+    while (p < e && is_space_ch(*p)) {
         p++;
     }
     if (p[0] == '=' && p[1] == '=') {
@@ -5406,7 +5425,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
     }
 
     if (kind == DIR_MACRO) {
-        if (!macro_begin(z, &p)) {
+        if (!macro_begin(z, &p, e)) {
             return false;
         }
         *stop = p;
@@ -5450,7 +5469,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
 
             return false;
         }
-        while (is_space_ch(*p)) {
+        while (p < e && is_space_ch(*p)) {
             p++;
         }
         int cond = 0;
@@ -5473,11 +5492,11 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
          * in the corpus is two lines. A file that says what it is gets to
          * assemble; one that asks for another machine is told so rather than
          * quietly given eZ80 encodings. */
-        while (is_space_ch(*p)) {
+        while (p < e && is_space_ch(*p)) {
             p++;
         }
         const char* const cs = p;
-        while (name_ch(*p)) {
+        while (p < e && name_ch(*p)) {
             p++;
         }
         if ((int) (p - cs) != 4 || !same_ci_full("ez80", cs, 4)) {
@@ -5508,7 +5527,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
         /* `ASSUME ADL=0` or `=1`, and nothing else: the reference calls any
          * other name an invalid operand and any other value an invalid ADL
          * mode. Spaces are allowed around the equals. */
-        while (is_space_ch(*p)) {
+        while (p < e && is_space_ch(*p)) {
             p++;
         }
         if (!dir_is(p, "adl", 3) || (cclass[(uint8_t) p[3]] & C_MNEM) != 0) {
@@ -5517,7 +5536,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
             return false;
         }
         p += 3;
-        while (is_space_ch(*p)) {
+        while (p < e && is_space_ch(*p)) {
             p++;
         }
         if (*p != '=') {
@@ -5526,7 +5545,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
             return false;
         }
         p++;
-        while (is_space_ch(*p)) {
+        while (p < e && is_space_ch(*p)) {
             p++;
         }
         /* Read as a number, not as one character: the reference takes
@@ -5586,7 +5605,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
     /* DS and ALIGN both take one value that has to be known now -- the
      * reference refuses a label still ahead of either, having no way to reserve
      * an amount it does not know yet. */
-    while (is_space_ch(*p)) {
+    while (p < e && is_space_ch(*p)) {
         p++;
     }
     int value = 0;
@@ -5718,12 +5737,12 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
          * not, which is 0xFF until something says otherwise. */
         int fill = z->fill;
         const sym* pending = NULL;
-        while (is_space_ch(*p)) {
+        while (p < e && is_space_ch(*p)) {
             p++;
         }
         if (*p == ',') {
             p++;
-            while (is_space_ch(*p)) {
+            while (p < e && is_space_ch(*p)) {
                 p++;
             }
             const char* const flit = lit_value(p, e, &fill);
@@ -6410,8 +6429,7 @@ static bool suffixed_insn(dz* z, const insninfo* insn, uint8_t suffix,
     (void) z;
     (void) insn;
     (void) suffix;
-    (void) e;
-    while (*p != '\n') {
+    while (p < e && *p != '\n') {
         p++;
     }
     *stop = p;
@@ -6423,7 +6441,7 @@ static bool suffixed_insn(dz* z, const insninfo* insn, uint8_t suffix,
     if (!parse_operand(z, &a, &p, e)) {
         return false;
     }
-    while (is_space_ch(*p)) {
+    while (p < e && is_space_ch(*p)) {
         p++;
     }
     if (*p == ',') {
@@ -6451,13 +6469,18 @@ static bool suffixed_insn(dz* z, const insninfo* insn, uint8_t suffix,
 
 /* Assembles one line and reports where it stopped.
  *
- * The end of the line is not looked for first. It used to be: the caller
+ * The end of the *line* is not looked for first. It used to be: the caller
  * scanned to the newline to bound this one, and then this one scanned the same
  * bytes again -- two passes over every byte in the source to parse it once.
- * Nothing here needs the bound, because no scan can run past a newline
- * anyway: it is not a space, not a name character and not part of a number, so
- * every loop stops on it. The caller is told where parsing ended and steps
- * over the newline from there. */
+ * No scan needs that bound, because no scan can run past a newline anyway: it
+ * is not a space, not a name character and not part of a number, so every loop
+ * stops on it. The caller is told where parsing ended and steps over the
+ * newline from there.
+ *
+ * The bound the scans do carry is `e`, the end of the *buffer*, which the
+ * caller already has and which costs nothing to find. That is a different
+ * thing from the newline and it is there for a different reason -- see EVERY
+ * SCAN IS BOUNDED at the top of this file. */
 /* Whether a token would be read as a number rather than as a name.
  *
  * A label cannot be spelled like a literal: the reference refuses `a00h:`,
@@ -6509,18 +6532,16 @@ static bool suffixed_insn(dz* z, const insninfo* insn, uint8_t suffix,
 #endif
 
 __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const char* e, const char** stop) {
-    /* Bounded, and it has to be.
+    /* Bounded, like every scan in the file, and this one was bounded first:
+     * it was correct until labels were added around it, nothing about labels
+     * touches it, and unbounded it then broke *every line on the Agon* while
+     * the host build was perfect.
      *
-     * Unbounded, this compiles to a loop rotated wrongly -- the pointer is
-     * pre-decremented and each turn tests one character past it, so the first
-     * is never examined and the scan stops one short. It is the same fault the
-     * num_ch scans carry a bound for, and it does not reduce: the loop was
-     * correct until labels were added around it, and nothing about labels
-     * touches it. The bound is what stops the rotation.
-     *
-     * Every line starts here, so this is worth re-checking in the generated
-     * assembly whenever the function changes. `dec iy` before the loop head is
-     * the tell. */
+     * Every line starts here, so the generated assembly is worth re-reading
+     * whenever this function changes. `dec iy` before a loop head is the tell,
+     * and test/run.sh counts them -- it was three here before the scans were
+     * bounded and is zero now. None of those three was actually wrong, which
+     * is the point: they were correct by register allocation. */
     while (p < e && is_space_ch(*p)) {
         p++;
     }
@@ -6535,7 +6556,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
     TRUNC_AT(1, *p);
 
     const char* s = p;
-    while ((cclass[(uint8_t) *p] & C_MNEM) != 0) {
+    while (p < e && (cclass[(uint8_t) *p] & C_MNEM) != 0) {
         p++;
     }
     int n = (int) (p - s);
@@ -6632,7 +6653,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
         }
         LTRUNC_AT(2);
         p++;
-        while (is_space_ch(*p)) {
+        while (p < e && is_space_ch(*p)) {
             p++;
         }
         *stop = p;
@@ -6660,7 +6681,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
         }
 
         s = p;
-        while ((cclass[(uint8_t) *p] & C_MNEM) != 0) {
+        while (p < e && (cclass[(uint8_t) *p] & C_MNEM) != 0) {
             p++;
         }
         n = (int) (p - s);
@@ -6702,7 +6723,7 @@ __attribute__((noinline)) static bool assemble_line(dz* z, const char* p, const 
     if (!parse_operand(z, &a, &p, e)) {
         return false;
     }
-    while (is_space_ch(*p)) {
+    while (p < e && is_space_ch(*p)) {
         p++;
     }
     if (*p == ',') {
@@ -6733,7 +6754,7 @@ trunc_done:
     /* The loop wants the line left on its newline. In the seventh build this
      * runs too, over the handful of characters an instruction leaves behind,
      * so every variant carries it and it cancels out of the differences. */
-    while (*p != '\n') {
+    while (p < e && *p != '\n') {
         p++;
     }
     *stop = p;
@@ -6881,14 +6902,14 @@ __attribute__((noinline)) static bool run_lines(dz* z) {
          * one byte -- sixteen instructions to discover there is no trailing
          * space, on every line of the source. One compare replaces them. */
         if (*stop != '\n') {
-            while (is_space_ch(*stop)) {
+            while (stop < end && is_space_ch(*stop)) {
                 stop++;
             }
             if (*stop == ';') {
                 /* A remark after the instruction. Its body is never looked at
                  * -- the search for the newline below walks it once and that
                  * is all a comment ever costs. */
-                while (*stop != '\n') {
+                while (stop < end && *stop != '\n') {
                     stop++;
                 }
             } else if (*stop != '\n') {

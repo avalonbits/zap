@@ -156,8 +156,15 @@ Six sources, and they are two things:
     rotated four more of `assemble_line`'s unbounded scans -- the fault this
     project has now met five times. `dec iy` in that function goes from 3 to 7.
 
-    So the scans there are correct by register allocation rather than by
-    construction, and that has to be fixed before the width can be. See
+    So the scans there were correct by register allocation rather than by
+    construction, and that had to be fixed before the width could be. **It
+    has been**: every character scan in the file now carries a bound, `dec iy`
+    in `assemble_line` is zero rather than three, and the source rule is
+    checked by `test_scan_bounds`. It cost 0.06s of isa_real's 5.64, all of it
+    in the operand parser.
+
+    The width is therefore unblocked, and is a measurement nobody has taken
+    yet -- the first attempt measured the rotation and not the width. See
     .internal/performance-notes.md.
   - **`.cpu Z80` and `.cpu Z180`**, which ask for another machine's
     instruction set. Two sources, out of scope by the same rule that excludes

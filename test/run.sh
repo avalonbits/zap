@@ -378,6 +378,59 @@ else
     done
 fi
 
+# Every character scan carries a bound.
+#
+# Unbounded, `while (is_space_ch(*p)) p++;` has compiled to a loop rotated the
+# wrong way on the eZ80: the pointer is pre-decremented and each turn tests one
+# character past it, so the first is never examined and the scan runs one past
+# where it should. It has happened five times, on five different loops, and it
+# reduces to nothing -- the same loop in isolation compiles correctly, and it
+# has appeared and disappeared under changes that do not touch the loop at all.
+# The last time, adding one function between `expr_value` and its callees
+# rotated four loops in a function whose source was unchanged.
+#
+# **Nothing on the host reproduces it.** The host build is correct every time,
+# which is why this is a check on the source and not on the behaviour: there is
+# no input that fails here, and the only test that can bite before the Agon
+# does is one that reads what was written.
+#
+# The rule is that a loop whose condition dereferences a pointer must also
+# compare one of the pointers it dereferences against a limit. Two conditions
+# are what stops the rotation. A loop that walks two pointers in step needs
+# only the one bound -- `while (q != qend && *t == *q)` is bounded -- so any
+# one of them satisfies it. A dereference does not count as its own bound,
+# which is what makes `while (*p != '\n')` a failure and not a pass.
+echo "=== test_scan_bounds ==="
+unbounded=$(awk '
+    {
+        i = index($0, "while (")
+        if (i == 0) { next }
+        cond = substr($0, i + 6)
+        n = 0
+        rest = cond
+        while ((j = index(rest, "*")) > 0) {
+            rest = substr(rest, j + 1)
+            sub(/^[ \t]+/, "", rest)
+            if (match(rest, /^[A-Za-z_][A-Za-z_0-9]*/) == 0) { continue }
+            n++
+            names[n] = substr(rest, 1, RLENGTH)
+        }
+        if (n == 0) { next }
+        bounded = 0
+        for (k = 1; k <= n; k++) {
+            if (cond ~ ("[^A-Za-z_0-9*]" names[k] "[ \t]*(<|!=|>)") \
+                || cond ~ ("^" names[k] "[ \t]*(<|!=|>)")) { bounded = 1 }
+        }
+        if (!bounded) { printf "%s:%d: %s\n", FILENAME, FNR, $0 }
+    }' src/*.c src/*.h)
+if [ -z "$unbounded" ]; then
+    echo "PASS  every character scan is bounded"
+else
+    echo "FAIL  an unbounded character scan can be rotated wrongly on the eZ80"
+    printf '%s\n' "$unbounded" | sed 's/^/      /'
+    status=1
+fi
+
 # The generated code, on the machine this is for.
 #
 # Some changes have no answer of their own: making a loop counter unsigned
@@ -417,6 +470,33 @@ else
             echo "PASS  assemble_line has no more signed-compare repairs than it did ($nset)"
         else
             echo "FAIL  assemble_line has $nset signed-compare repairs, was 12"
+            status=1
+        fi
+
+        # The rotated-scan tell, in the one function every line goes through.
+        #
+        # test_scan_bounds above says the source carries a bound. This says
+        # the bound did its work: `dec iy` before a loop head is what the
+        # rotation looks like once it is code, and it is the only place the
+        # fault is ever visible -- the host build is correct whether the loop
+        # is rotated or not.
+        #
+        # Zero, not a budget. It was three before the scans were bounded and
+        # none of the three was a scan of a wrongly rotated kind -- they were
+        # correct by register allocation, which is exactly the thing that
+        # stops being true when something unrelated moves. A `dec iy` that
+        # comes back is not proof of a fault; it is the moment to open the
+        # assembly and look, which is what this exists to force.
+        #
+        # parse_operand is always_inline, so its scans are counted here too.
+        ndec=$(awk '/^_assemble_line:$/ { go = 1; next }
+                    go && /^_[a-z_0-9]+:$/ { exit }
+                    go && /dec[ \t]+iy/ { n++ }
+                    END { print n + 0 }' "$OUT/zap.s")
+        if [ "$ndec" = 0 ]; then
+            echo "PASS  assemble_line has no rotated scan"
+        else
+            echo "FAIL  assemble_line has $ndec dec iy; check the scans in the assembly"
             status=1
         fi
     else

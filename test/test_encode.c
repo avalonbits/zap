@@ -1020,35 +1020,43 @@ int main(void) {
     check("a forward label minus a known one",
           emit("st:\n  ld hl, later-st\nlater:\n  nop\n"), "21 04 00 00 00");
 
-    /* `*` binding tighter is what decides whether this is representable, so
-     * the same text is fine in one mode and refused in the other: by default
-     * the multiplication joins two constants, and in -ez80 it multiplies the
-     * label. */
+    /* `*` binding tighter changes the answer and no longer changes whether
+     * there is one: by default the multiplication joins two constants, and in
+     * -ez80 it multiplies the label. Both assemble, and they disagree because
+     * the modes disagree on purpose. */
     check("a product beside a forward label",
           emit("  ld hl, later+2*3\nlater:\n  nop\n"), "21 0A 00 04 00");
-    check("and the same text is refused in -ez80",
-          emit_ez80("  ld hl, later+2*3\nlater:\n  nop\n"), "ERR");
+    check("and the same text in -ez80",
+          emit_ez80("  ld hl, later+2*3\nlater:\n  nop\n"), "21 12 00 0C 00");
 
-    /* What a symbol and an addend still cannot say. The reference assembles
-     * all of these -- it has a second pass -- so each is a divergence, and a
-     * loud one rather than a wrong address. */
+    /* What a symbol and an addend cannot say, kept as text and settled when
+     * the source runs out. Every one of these was a refusal and a recorded
+     * divergence until then; every one of these is now what the reference
+     * gives, checked against it one at a time. See defer_expr. */
     check("a forward label subtracted from something",
-          emit("  ld hl, 1-later\nlater:\n  nop\n"), "ERR");
+          emit("  ld hl, 1-later\nlater:\n  nop\n"), "21 FD FF FB 00");
     check("a negated forward label",
-          emit("  ld hl, -later\nlater:\n  nop\n"), "ERR");
+          emit("  ld hl, -later\nlater:\n  nop\n"), "21 FC FF FB 00");
     check("a complemented forward label",
-          emit("  ld hl, ~later\nlater:\n  nop\n"), "ERR");
+          emit("  ld hl, ~later\nlater:\n  nop\n"), "21 FB FF FB 00");
     check("a multiplied forward label",
-          emit("  ld hl, later*2\nlater:\n  nop\n"), "ERR");
+          emit("  ld hl, later*2\nlater:\n  nop\n"), "21 08 00 08 00");
     check("a masked forward label",
-          emit("  ld hl, later&0xFF\nlater:\n  nop\n"), "ERR");
+          emit("  ld hl, later&0xFF\nlater:\n  nop\n"), "21 04 00 00 00");
     check("three forward labels at once",
           emit("  ld hl, f3-f2-f1\nf1:\n  nop\nf2:\n  nop\nf3:\n  nop\n"),
-          "ERR");
+          "21 FD FF FB 00 00 00");
     check("two forward labels multiplied",
-          emit("  ld hl, f2*f1\nf1:\n  nop\nf2:\n  nop\n"), "ERR");
+          emit("  ld hl, f2*f1\nf1:\n  nop\nf2:\n  nop\n"),
+          "21 14 00 24 00 00");
     check("two forward labels both subtracted",
-          emit("  ld hl, -f1-f2\nf1:\n  nop\nf2:\n  nop\n"), "ERR");
+          emit("  ld hl, -f1-f2\nf1:\n  nop\nf2:\n  nop\n"),
+          "21 F7 FF F7 00 00");
+
+    /* And one that stays an error, because nothing ever defines it: the text
+     * is kept, and evaluating it at the end still finds no such label. */
+    check("a name nothing defines, in an expression",
+          emit("  ld hl, nosuch*2\n"), "ERR");
 
     /* Two forward references at once: `end - start` with neither written yet,
      * which is how a program measures a table it is still emitting. The fixup

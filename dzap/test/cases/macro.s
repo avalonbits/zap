@@ -278,3 +278,31 @@ wide:
   manylocals
   manylocals
   jp @k1
+
+; Parameters are matched case-sensitively, and everything else about a macro is
+; not. `MACRO m v` with `V` in the body is "Unknown identifier" in the
+; reference, and was a substitution here until it was measured -- the name, the
+; directive and the invocation are all case-blind, so this had been assumed to
+; be as well.
+  MACRO casepar v, V
+  db v
+  db V
+  ENDMACRO
+  casepar 1, 2
+
+; Two parameters that share a first letter, either way round, so that the
+; cheap compare in front of the full one cannot decide it alone.
+  MACRO sharefirst aa, ab
+  db aa, ab
+  ENDMACRO
+  sharefirst 3, 4
+  MACRO sharefirst2 ab, aa
+  db aa, ab
+  ENDMACRO
+  sharefirst2 5, 6
+
+; And the macro name itself, which is case-blind in both.
+  MACRO MixedName q
+  db q
+  ENDMACRO
+  mixedNAME 7

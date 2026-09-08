@@ -96,3 +96,40 @@ scope:
 @@:
   DB 9
   ld hl, @b
+
+; A name as a data item, which is read by the atom directly rather than through
+; the evaluator. What the short read must get right is everything the token
+; could be besides a label: a trailing-h hex literal that begins with a letter,
+; a local, an anonymous reference, the current address, and anything with an
+; operator after it, which has to go the long way round.
+dataname:
+  DL dataname
+  DW dataname
+  DB dataname
+  DL dataname , dataname,dataname
+  DL dataname ; a remark after the item
+  DL aabbcch
+  DL abch
+  DW 0ffh
+  DL $
+  DW $
+  DL %1010
+  DL dataname+1
+  DL 1+dataname
+  DL dataname-dataname
+  DL -dataname
+  DB "text", dataname, 3
+  DL dataahead
+  DW dataahead, 1
+@dataloc:
+  DL @dataloc
+  DW @dataloc
+@@:
+  DL @b
+  DL @f
+@@:
+dataequ: EQU 5
+  DL dataequ
+  DB dataequ
+dataahead:
+  nop

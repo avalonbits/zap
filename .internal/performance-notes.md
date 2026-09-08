@@ -3461,3 +3461,115 @@ above; the rest is the two extra lines an invocation actually assembles.
 Under 350 is not reachable on this file without either making an expansion cost
 about nothing or thinning the macros out, and thinning them out would be going
 back to measuring a feature at zero cost because the benchmark avoids it.
+
+## The directive path, and 384 to 368 cycles a byte
+
+The stage map after macros landed put a quarter of the run in one place:
+
+    isa_real  5.46s
+
+    read the line                  0.58
+    scan the mnemonic              0.28
+    label path and line_mode       0.52
+    mnemonic_of                    0.52
+    directives and macros          1.42     <- 26%
+    parse both operands            1.48
+    match_row                      0.32
+    emit_row                       0.34
+
+and macros were only 0.46 of that 1.42. The rest was 3,181 directive lines at
+about 4,900 cycles each, against 2,230 for a bare `nop` line and 3,500 for
+`ld a, 5`. Pricing them one at a time said where:
+
+    DB 1, 3, 0x07, -1     7,520 cycles a line
+    DW 0x000B, label      8,145
+    DS 4                  7,520
+    DL label              5,713
+    DB 4                  3,281
+    nop                   2,230
+
+`DS 4` costing the same as a four-item DB, and `DL label` costing more than
+`DB 4` by two thirds, is the whole finding. Neither is about the work the
+directive does. Both are about how the value got read.
+
+### The evaluator was the toll booth
+
+Three paths reach a number, and only one of them was fast.
+
+`lit_value` reads a signed literal directly and has since the directives
+landed. `parse_operand` has its own for `$`, `@f`, hex, decimal and a bare
+label. `expr_value` had neither: `expr_term` scanned the token and handed it to
+`expr_atom`, which asked `numeric_token` and then `num_parse` -- two calls into
+another translation unit to decide that `4` is four.
+
+    DB 1+0    10,396 -> 6,563 cycles   reading a decimal in the atom
+    DS 4       7,520 ->  5,603         and then giving DS the literal path
+                        4,571
+    DL label   5,935 ->  5,087         and a bare name the atom directly
+
+The name one is worth its own note. A symbol lookup is nearly free -- `jp label`
+costs 73 cycles more than `jp 0x040000` -- so the 2,650 that `DL label` paid
+over `DB 4` was not the lookup. It was the route: `expr_value`, then
+`expr_term` with its unary operators and its forward-reference bookkeeping, and
+then `expr_climb` called to discover there is no operator.
+
+### The frame again, twice
+
+`directive_line`'s frame was 140 bytes, past the 128 an `ix` displacement
+reaches, because INCLUDE and INCBIN keep an 80-byte file-name buffer in it.
+Five accesses in the *other* directives were paying a five-instruction address
+computation for a buffer they never touch. Moving those two out: 57 bytes, no
+far accesses, 5.28s to 5.24s.
+
+`emit_string` inlined into that same function spilled its scan pointer and its
+cursor on every character -- 35 instructions a character, most of them
+`ld (ix - 111), hl` and back. Out of line: 7,814 to 6,488 cycles for a
+twenty-character string.
+
+**Both of those are the same lesson from the other end.** The frame-pointer
+cliff is usually described as a reason not to add to a hot function. It is also
+a reason to take a cold *buffer* out of one: the cost lands on whatever else
+shares the frame, which here was every directive in the file.
+
+### What did not work
+
+**Skipping `expr_climb` when no operator follows.** The climb has seven
+arguments to push and a frame to set up before it can find out there is nothing
+to do, and the same class lookup answers it in the caller. It made `DS 4` and
+the conditionals faster and isa_real slower -- 5.24 to 5.26 -- so it is out.
+
+It also reintroduced the loop-rotation fault that `assemble_line`'s first scan
+carries a bound for. Unbounded, `while (is_space_ch(*p)) p++;` came out as
+`dec iy` before the loop head and `ld e, (iy + 1)` inside it: the first
+character is never examined and the scan runs one past where it should. The
+newline after `EQU %1010` was stepped over and the next line read as trailing
+text. **Nothing on the host reproduces it**, which is now three separate
+occasions where the target and the host disagree about code that is correct C.
+
+### Where it stands
+
+    isa_real  5.24s = 368 cycles a byte
+
+    read the line                  0.58     11%
+    scan the mnemonic              0.28      5%
+    label path and line_mode       0.48      9%
+    mnemonic_of                    0.52     10%
+    directives and macros          1.24     24%
+    parse both operands            1.48     28%
+    match_row                      0.30      6%
+    emit_row                       0.36      7%
+
+isa_degenerate and isa_memory did not move by a hundredth of a second, which is
+the check that this was the directive path: neither of them holds a directive.
+
+A label definition is 2,080 cycles and there are 2,300 of them; the intern, the
+allocate and the eight-byte name copy account for most of it and no single
+piece is a lump. `mnemonic_of` is 0.52s and has now resisted three rounds.
+
+## A compatibility fault found while optimising
+
+`MACRO m v` with `V` in the body is "Unknown identifier" in the reference and
+was a substitution here. Macro parameters are matched case-sensitively there;
+the directive, the name and the invocation are all case-blind, so this had been
+assumed to match rather than measured -- which is the fault this project keeps
+finding, and the reason the rule is to measure every one of them.

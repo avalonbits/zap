@@ -1936,6 +1936,17 @@ static inline bool same_ci(const char* name, const char* s, int n) {
 
 /* A whole-name compare including the first character, which `same_ci` skips
  * because its caller has already matched it through the bucket. */
+/* The same, without the folding. Macro parameters are matched exactly. */
+static bool same_full(const char* name, const char* s, int n) {
+    for (int i = 0; i < n; i++) {
+        if (name[i] != s[i]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static bool same_ci_full(const char* name, const char* s, int n) {
     for (int i = 0; i < n; i++) {
         if ((name[i] | 0x20) != (s[i] | 0x20)) {
@@ -2611,6 +2622,34 @@ static bool expr_atom(dz* z, int* out, const char* ns, int nn) {
     } else if (nn >= 2 && (ns[nn - 1] | 0x20) == 'h') {
         if (hex_digits(ns, nn - 1, &v)) {
             *out = v;
+
+            return true;
+        }
+    }
+
+    /* Decimal, read here rather than through num_parse.
+     *
+     * A token that is nothing but digits is a number and can be nothing else,
+     * so neither the check nor the general parser has anything to decide. Both
+     * are real calls, and between them they were most of what `DS 4` cost:
+     * 7,520 cycles against `DB 4`'s 3,281, for the same one-digit number
+     * through the evaluator instead of the data path's fast read.
+     *
+     * The same accumulation as lit_value, deliberately: the first digit
+     * outside the loop, because `acc * 10` is a call to __imulu here, and the
+     * same 24-bit wrap on a value too big to fit, so that `DB 20000000` and
+     * `DS 20000000` cannot disagree with each other. */
+    if (digit_ch(ns[0])) {
+        int acc = ns[0] - '0';
+        int k = 1;
+        for (; k < nn; k++) {
+            if (!digit_ch(ns[k])) {
+                break;
+            }
+            acc = acc * 10 + (ns[k] - '0');
+        }
+        if (k == nn) {
+            *out = acc;
 
             return true;
         }
@@ -3679,8 +3718,12 @@ static bool macro_room(macro* m, int need) {
 }
 
 static const macro* macro_at(const dz* z, const char* s, int n) {
+    const char c0 = (char) (*s | 0x20);
     for (const macro* m = z->macros; m != NULL; m = m->next) {
-        if (m->namelen != (uint8_t) n) {
+        /* Length and first character before the call, for the same reason the
+         * substitution loop asks them: the list is walked once per invocation
+         * and most of it is not this macro. */
+        if (m->namelen != (uint8_t) n || (m->name[0] | 0x20) != c0) {
             continue;
         }
         if (same_ci_full(m->name, s, n)) {
@@ -3931,7 +3974,10 @@ static char* macro_text(dz* z, const macro* m, const char* p, const char* e,
     while (b < bend) {
         const char* src = b;
         int take = 1;
-        const bool ident = name_ch(*b) && !digit_ch(*b);
+        /* One class load, not two: a character that may start a name is one
+         * C_NAME admits and C_DIGIT does not, and both bits arrive together. */
+        const uint8_t cl = cclass[(uint8_t) *b];
+        const bool ident = (cl & (C_NAME | C_DIGIT)) == C_NAME;
         if (ident) {
             const char* j = b;
             while (j < bend && name_ch(*j)) {
@@ -3946,7 +3992,19 @@ static char* macro_text(dz* z, const macro* m, const char* p, const char* e,
             const int* an = argn;
             for (int k = 0; k < m->nparam; k++) {
                 const int pn = (uint8_t) pp2[0];
-                if (pn == take && same_ci_full(pp2 + 1, b, take)) {
+                /* Case-sensitively, which is what the reference does and what
+                 * this did not: `MACRO m v` with `V` in the body is "Unknown
+                 * identifier" there and was a substitution here. Everything
+                 * else about a macro is case-blind -- the name, the directive
+                 * -- so this had been assumed rather than measured.
+                 *
+                 * The length and then the first character before the call. A
+                 * body is mostly mnemonics and registers, and one compare says
+                 * `a` is not the parameter `v` without a function call to find
+                 * out. Every identifier in the body asks this of every
+                 * parameter. */
+                if (pn == take && pp2[1] == *b
+                    && same_full(pp2 + 1, b, take)) {
                     src = *ap;
                     need = *an;
                     break;
@@ -4182,11 +4240,22 @@ static int str_escape(char c) {
  *
  * Reserved in one go before anything is written: the length is known once the
  * closing quote is found, and escapes only ever shrink it. */
+/* Out of line, and measured that way.
+ *
+ * Inlined into directive_line it shares a frame deep enough that the scan
+ * spills its pointer and its cursor on every character -- 35 instructions a
+ * character, most of them `ld (ix - 111), hl` and back. A string is one call
+ * per item against that. */
+__attribute__((noinline))
 static bool emit_string(dz* z, const char** pp, const char* e) {
     const char* p = *pp + 1;                      /* past the opening quote */
+    /* No bound on the step past an escape. The buffer ends in a newline one
+     * byte past the last valid character, so a backslash in the last position
+     * steps over the sentinel and the `q < e` test above ends the scan -- as
+     * "string not terminated", which is what it is. */
     const char* q = p;
     while (q < e && *q != '"' && *q != '\n') {
-        q += (*q == '\\' && q + 1 < e) ? 2 : 1;
+        q += (*q == '\\') ? 2 : 1;
     }
     if (q >= e || *q != '"') {
         z->err = "string not terminated";
@@ -4303,6 +4372,43 @@ static inline const char* lit_value(const char* p, const char* e, int* out) {
     return q;
 }
 
+/* A bare name that ends the item, handed straight to the atom rather than
+ * through the evaluator.
+ *
+ * Same shape and the same reason as lit_value above, for the other half of
+ * what a data list holds. `DL label` measured 5,935 cycles a line against
+ * `DB 4`'s 3,281, and the difference is not the lookup -- `jp label` costs 73
+ * cycles more than `jp 0x040000`, so finding a symbol is nearly free. It is
+ * the route: expr_value, expr_term with its unary operators and its forward
+ * bookkeeping, and expr_climb called to discover there is no operator.
+ *
+ * Returns the end of the token, or NULL if this is not one. The first
+ * character has to be one a name can start with, which is what keeps `$` and
+ * `%1010` out; everything else about the token is left to expr_atom, which
+ * already knows a trailing-h hex literal from a label and a local from a
+ * global. */
+static const char* name_item(const char* p, const char* e) {
+    if (!alpha_ch(*p) && *p != '_' && *p != '@') {
+        return NULL;
+    }
+    const char* q = p;
+    while (q < e && num_ch(*q)) {
+        q++;
+    }
+
+    /* What ended the run has to end the item too, or an operator follows and
+     * the evaluator is what reads it. */
+    const char* r = q;
+    while (is_space_ch(*r)) {
+        r++;
+    }
+    if (*r != ',' && *r != '\n' && *r != ';' && r < e) {
+        return NULL;
+    }
+
+    return q;
+}
+
 /* `DB`, `DW` and `DL`: a comma-separated list of values, and for DB of strings
  * too.
  *
@@ -4352,9 +4458,22 @@ static bool emit_data(dz* z, uint8_t width, const char** pp, const char* e) {
                 p = q;
             } else {
                 fwd_reset(NULL);
-                uint8_t fwdmask = 0;
-                if (!expr_value(z, &value, &p, e, &fwdmask)) {
-                    return false;
+                const char* const nm = name_item(p, e);
+                if (nm != NULL) {
+                    if (!expr_atom(z, &value, p, (int) (nm - p))) {
+                        return false;
+                    }
+                    p = nm;
+                    /* `q` is already NULL here -- lit_value declined -- which
+                     * is what the fixup below tests, and it means the same
+                     * thing for a name as for an expression: whatever this
+                     * was, it went through the atom and may have left a
+                     * forward reference in the slots. */
+                } else {
+                    uint8_t fwdmask = 0;
+                    if (!expr_value(z, &value, &p, e, &fwdmask)) {
+                        return false;
+                    }
                 }
             }
             if (!out_reserve_n(z, width)) {
@@ -4738,6 +4857,26 @@ static bool cond_skip(dz* z, const char* s, int n, const char* p,
     return true;
 }
 
+/* INCLUDE and INCBIN, in a function of their own for the sake of the frame.
+ *
+ * The name buffer is 80 bytes and has to live for as long as the file it opens
+ * does -- `br_open` keeps the pointer and `br_resume` reads it back. Left in
+ * directive_line that made the frame 140 bytes, past the 128 an `ix`
+ * displacement reaches, so five places in the *other* directives were paying a
+ * five-instruction address computation for a buffer they never touch. These
+ * two are one line in a thousand; everything else on that path is not. */
+__attribute__((noinline))
+static bool file_directive(dz* z, uint8_t kind, const char** pp, const char* e,
+                           const char** stop) {
+    char name[INCLUDE_NAME_MAX];
+    if (!file_name(z, pp, e, name, (int) sizeof(name))) {
+        return false;
+    }
+    *stop = *pp;
+
+    return kind == DIR_INCBIN ? incbin_file(z, name) : include_file(z, name);
+}
+
 /* A directive line, or a report that this was not one.
  *
  * Out of line and reached only where the mnemonic lookup failed, so an
@@ -4865,17 +5004,7 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
     }
 
     if (kind >= DIR_INCLUDE) {
-        /* A file name rather than a value, and the only argument that is not
-         * an expression. `name` lives in this frame for as long as the file it
-         * opens does -- see include_file. */
-        char name[INCLUDE_NAME_MAX];
-        if (!file_name(z, &p, e, name, (int) sizeof(name))) {
-            return false;
-        }
-        *stop = p;
-
-        return kind == DIR_INCBIN ? incbin_file(z, name)
-                                  : include_file(z, name);
+        return file_directive(z, kind, &p, e, stop);
     }
 
     if (kind <= DIR_DL) {
@@ -4893,16 +5022,32 @@ static bool directive_line(dz* z, const char* s, int n, const char* p,
     while (is_space_ch(*p)) {
         p++;
     }
-    fwd_reset(NULL);
-    uint8_t fwdmask = 0;
     int value = 0;
-    if (!expr_value(z, &value, &p, e, &fwdmask)) {
-        return false;
-    }
-    if (expr_fwd != NULL) {
-        z->err = "a label here must be defined already";
 
-        return false;
+    /* A plain number, read here rather than through the evaluator, for the
+     * same reason a data item is: `DS 4` measured 5,603 cycles a line against
+     * `DB 4`'s 3,281, and a count is a number far more often than it is
+     * anything else. `ORG $ + 8` and `ALIGN size*2` still go the long way.
+     *
+     * lit_value wants what ends the run to end the item, and for these the
+     * item is the whole rest of the line -- which it already takes, since a
+     * newline or a remark ends an item too. `DS 3,1,2` is the one form where
+     * a comma follows, and the arguments after the count are taken and
+     * ignored, so stopping at the comma is right there as well. */
+    const char* const lit = lit_value(p, e, &value);
+    if (lit != NULL) {
+        p = lit;
+    } else {
+        fwd_reset(NULL);
+        uint8_t fwdmask = 0;
+        if (!expr_value(z, &value, &p, e, &fwdmask)) {
+            return false;
+        }
+        if (expr_fwd != NULL) {
+            z->err = "a label here must be defined already";
+
+            return false;
+        }
     }
 
     if (kind == DIR_DS) {

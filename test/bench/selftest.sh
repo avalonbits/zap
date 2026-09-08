@@ -347,6 +347,59 @@ else
 fi
 rm -rf "$INCW"
 
+# The generator's omission switches, which attribute.sh is built on.
+#
+# Two properties. The default output must not move -- every timing ever taken
+# with this generator is against it, and a switch that changed the file by a
+# byte would invalidate all of them silently. And each switch must actually
+# remove the thing it names, or the attribution table is measuring noise and
+# reporting it as a feature.
+#
+# At 32 KiB rather than 256, because this runs on every test and the gates are
+# the same gates at any size.
+GW=$(mktemp -d)
+test/bench/gen_isa.sh real 32768 > "$GW/base.s"
+ISA_OMIT="" test/bench/gen_isa.sh real 32768 > "$GW/empty.s"
+if cmp -s "$GW/base.s" "$GW/empty.s"; then
+    echo "PASS  an empty ISA_OMIT changes nothing"
+else
+    echo "FAIL  an empty ISA_OMIT changes the file"
+    status=1
+fi
+
+# Each switch, and what has to be gone when it is set. ASSUME and the data
+# directives keep the one the header writes, which is not part of the body.
+check_omit() {
+    local feat="$1" pat="$2" floor="$3" before after
+    ISA_OMIT="$feat" test/bench/gen_isa.sh real 32768 > "$GW/$feat.s"
+    before=$(grep -cE "$pat" "$GW/base.s")
+    after=$(grep -cE "$pat" "$GW/$feat.s")
+    if [ "$before" -gt "$floor" ] && [ "$after" -le "$floor" ]; then
+        echo "PASS  ISA_OMIT=$feat removes them ($before to $after)"
+    else
+        echo "FAIL  ISA_OMIT=$feat: $before before, $after after, floor $floor"
+        status=1
+    fi
+    # And the file is still the size that was asked for, or the comparison it
+    # is built on is between a long file and a short one.
+    local sz
+    sz=$(wc -c < "$GW/$feat.s")
+    if [ "$sz" -ge 32000 ] && [ "$sz" -le 33500 ]; then
+        echo "PASS  ISA_OMIT=$feat still fills the budget ($sz bytes)"
+    else
+        echo "FAIL  ISA_OMIT=$feat gives $sz bytes, wanted about 32768"
+        status=1
+    fi
+}
+
+check_omit equ    ' EQU ' 0
+check_omit macro  '^  (msave|mload|msum|mwait|mtri|mrest|mg)' 0
+check_omit cond   '^  (IF |ELSE|ENDIF)' 0
+check_omit assume 'ASSUME' 1
+check_omit suffix '\.(lil|sis|lis|l|s) ' 0
+check_omit data   '^  (DB|DW|DL|DS|ALIGN|ORG)' 1
+rm -rf "$GW"
+
 # time-one.sh takes a tree as well as a file, which is what measuring a change
 # against a real program needs: bbcbasic is twenty files and a 554-byte root,
 # and the single-file form cannot stage it.

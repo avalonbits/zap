@@ -236,6 +236,25 @@ cd "$(dirname "$0")/../.."
 
 MODE="${1:?usage: gen_isa.sh <even|real|degenerate|memory|include> [bytes]}"
 
+# Features left out, space separated, for attribution.
+#
+#   ISA_OMIT="macro cond" test/bench/gen_isa.sh real > without_macros.s
+#
+# The file is still the byte budget it was asked for, so leaving a feature out
+# fills the space with ordinary instructions instead. That is what makes the
+# difference between two of these the cost of the feature rather than the cost
+# of a shorter file, and it is the same shape gen_comments.sh uses.
+#
+# Offered: equ, macro, cond, assume, suffix, data.
+#
+# NOT offered: labels. Every reference, every DL and DW operand, every scope
+# boundary and the whole of finish() are built on them, so a file without them
+# is not this file with one thing removed -- it is a different generator. What
+# labels cost is in the note at the top of this file, measured the once by
+# taking them out by hand and never repeated because the answer moved the file
+# rather than the assembler.
+ISA_OMIT="${ISA_OMIT:-}"
+
 # `include` writes a directory rather than a stream, because ten files cannot
 # come out of one pipe. Everything else takes the byte budget as $2.
 INCDIR=""
@@ -267,7 +286,7 @@ out0:3 lea:3 lddr:3 in0:3 sra:2 ldi:2 in:2 rrd:1 rld:1 reti:1 out:1"
     for cc in "" "nz, " "z, " "nc, " "c, " "po, " "pe, " "p, " "m, "; do
         printf '  call %s0x040000\n' "$cc"
     done
-} | sed 's/[[:space:]]*$//' | sort -u | awk -v mode="$MODE" -v total="$TOTAL" -v w="$WEIGHTS" -v incdir="$INCDIR" '
+} | sed 's/[[:space:]]*$//' | sort -u | awk -v mode="$MODE" -v total="$TOTAL" -v w="$WEIGHTS" -v incdir="$INCDIR" -v omit="$ISA_OMIT" '
 BEGIN {
     # Label names, sized like the corpus rather than like a generator.
     #
@@ -767,6 +786,11 @@ function macro_def(spec,   head, body, nb, b, j, t, used) {
 # `outfile` is empty for the modes that write one stream to stdout, and names a
 # file for the include tree. Every print below goes through emit() so that the
 # two cases share one body.
+# Whether a feature was left out. See ISA_OMIT above.
+function off(f) {
+    return index(" " omit " ", " " f " ") > 0
+}
+
 function emit(t) {
     if (outfile == "") {
         print t
@@ -782,7 +806,7 @@ function out(line,   used, k, t, m) {
         lbl++
         used += length(lname(lbl)) + 2
         emit(lname(lbl) ":")
-    } else if (k == 1) {
+    } else if (k == 1 && !off("equ")) {
         # A name for a value, at the top of the scope and nowhere else. An EQU
         # ends the enclosing scope exactly as a global label does -- measured
         # against the reference -- so one in the middle would put the locals
@@ -814,7 +838,7 @@ function out(line,   used, k, t, m) {
         t = "eq" lbl ": EQU " equ_value(lbl)
         used += length(t) + 1
         emit(t)
-    } else if (k == 5) {
+    } else if (k == 5 && !off("macro")) {
         # A macro invocation, once a scope. The corpus counts definitions and
         # not invocations, so there is no rate to copy here; one per 32 lines
         # is the same reasoning as everything else in this cycle -- dense
@@ -832,7 +856,7 @@ function out(line,   used, k, t, m) {
         else             t = "  mrest"
         used += length(t) + 1
         emit(t)
-    } else if (k == 9) {
+    } else if (k == 9 && !off("cond")) {
         # A conditional block, lines 9 to 13 of the scope. Nothing inside it
         # defines a label: an unassembled definition would leave whatever
         # referred to it unresolved, and the condition is false half the time
@@ -842,13 +866,16 @@ function out(line,   used, k, t, m) {
         # symbol and an expression rather than a literal -- which is what real
         # code puts there, and it means the value has to be evaluated before
         # the block can be skipped or kept.
-        t = "  IF eq" lbl " & 1"
+        # The condition names the EQU above unless there is not one, in
+        # which case it is a literal -- so `cond` can be priced with `equ`
+        # left out and the other way round.
+        t = off("equ") ? ("  IF " (lbl % 2)) : ("  IF eq" lbl " & 1")
         used += length(t) + 1
         emit(t)
-    } else if (k == 13) {
+    } else if (k == 13 && !off("cond")) {
         used += 8
         emit("  ENDIF")
-    } else if (k == 17 && lbl % 8 == 0) {
+    } else if (k == 17 && lbl % 8 == 0 && !off("assume")) {
         # A mode switch and back, with two instructions inside that encode
         # differently on either side of it: `ld hl, nn` is three bytes in Z80
         # mode and four in ADL. The island is closed before this line is
@@ -861,7 +888,7 @@ function out(line,   used, k, t, m) {
         emit("  ld a, 5")
         emit("  ASSUME ADL = 1")
         used += 17 + 16 + 11 + 17
-    } else if (k == 22) {
+    } else if (k == 22 && !off("suffix")) {
         # An instruction carrying a mode suffix.
         #
         # The corpus has one every 82 lines, which is denser than anything else
@@ -886,7 +913,7 @@ function out(line,   used, k, t, m) {
         else             t = "  ret.lil"
         used += length(t) + 1
         emit(t)
-    } else if (k == 26) {
+    } else if (k == 26 && !off("suffix")) {
         # The second one, holding the shapes the first does not: the short
         # spellings, whose meaning depends on the mode they are read in, and a
         # label operand -- including one still ahead, so a fixup is patched at
@@ -900,7 +927,7 @@ function out(line,   used, k, t, m) {
         else             t = "  ld.s hl, 0x" sprintf("%04X", (lbl * 7) % 65536)
         used += length(t) + 1
         emit(t)
-    } else if (k == 29 && lbl % 64 == 0) {
+    } else if (k == 29 && lbl % 64 == 0 && !off("macro")) {
         # A macro defined mid-file and used once, which is the other half of
         # the feature: the six in the header are all captured before a line of
         # the body is read, and capture is a per-line cost of its own.
@@ -913,42 +940,48 @@ function out(line,   used, k, t, m) {
         t = "  mg" lbl " 0x" sprintf("%04X", (lbl * 13) % 65536)
         used += length(t) + 1
         emit(t)
-    } else if (k == 7) {
+    } else if (k == 7 && !off("data")) {
         t = "  DB " (lbl % 251) ", " ((lbl * 3) % 251) ", 0x" \
             sprintf("%02X", (lbl * 7) % 256) ", -1"
         used += length(t) + 1
         emit(t)
-    } else if (k == 11) {
+    } else if (k == 11 && !(off("data") && off("cond"))) {
         # Every fourth scope splits the block in two here, which is close to
         # the share the corpus has: 35 ELSE against 951 IF, so most conditionals
         # have only the one arm. Whichever arm is not taken is skipped, and the
         # two arms cost different things, so both need to appear.
-        if (lbl % 4 == 0) {
+        # Two features share this slot, so each is gated on its own rather
+        # than the branch as a whole -- an early return here would skip the
+        # instruction the line is really about.
+        if (lbl % 4 == 0 && !off("cond")) {
             used += 7
             emit("  ELSE")
         }
         # A word list with a name in it, so the directive takes a fixup at a
         # width an instruction never asks for.
-        t = "  DW 0x" sprintf("%04X", (lbl * 11) % 65536) ", eq" lbl
-        used += length(t) + 1
-        emit(t)
-    } else if (k == 15) {
+        if (!off("data")) {
+            t = "  DW 0x" sprintf("%04X", (lbl * 11) % 65536) \
+                (off("equ") ? "" : (", eq" lbl))
+            used += length(t) + 1
+            emit(t)
+        }
+    } else if (k == 15 && !off("data")) {
         t = "  DB \"row " lbl " of the table\", 0"
         used += length(t) + 1
         emit(t)
-    } else if (k == 19) {
+    } else if (k == 19 && !off("data")) {
         # Reserved space and alignment alternate, so both the fill loop and the
         # distance-to-the-next-multiple appear.
         t = (lbl % 2 == 0) ? "  DS 4" : "  ALIGN 4"
         used += length(t) + 1
         emit(t)
-    } else if (k == 27) {
+    } else if (k == 27 && !off("data")) {
         # Three bytes of a label that has already been defined, which is the
         # width a fixup uses for an address.
         t = "  DL " lname(lbl)
         used += length(t) + 1
         emit(t)
-    } else if (k == 31 && lbl % 64 == 0) {
+    } else if (k == 31 && lbl % 64 == 0 && !off("data")) {
         # The padding ORG, rarely: it writes 0xFF into the output without
         # taking a byte of source, and once every 64 scopes is enough to keep
         # the path exercised without the output running away.
@@ -1017,7 +1050,7 @@ function finish(   k) {
     # between them has an open block -- and every label below would be inside
     # it, which is how a truncated file stops assembling.
     k = ln % 32
-    if (k >= 10 && k <= 13) {
+    if (k >= 10 && k <= 13 && !off("cond")) {
         emit("  ENDIF")
     }
 

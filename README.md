@@ -41,15 +41,41 @@ it works unaltered.
     -o   org start, hex, default 040000       -s   export <source>.symbols
     -b   fillbyte, hex, default FF            -x   assembly statistics
     -a   ADL mode 1/0, default 1              -c   no colour
-    -i   accepted, does nothing               -m   accepted, does nothing
+    -w   warn about truncated values          -i   accepted, does nothing
+    -m   accepted, does nothing
     -ez80  the reference's expression rules
 
 `-o`, `-b` and `-a` change the bytes, and each is checked against the
-reference by assembling the same source through both. `-i` ignores value
-truncation warnings and zap has none -- every diagnostic it has is fatal;
-`-m` is a memory configuration and zap has one, the small one. Both are taken
-and do nothing, silently, so a script that passes them need not care. An
+reference by assembling the same source through both. `-m` is a memory
+configuration and zap has one, the small one, so it is taken and does nothing.
+`-i` asks for what is already true and does nothing too -- see below. An
 option that is not the reference's is still refused.
+
+`-w` is the one flag that is zap's own, and the one place the two command
+lines mean different things rather than spelling the same thing differently.
+
+## When something is nearly wrong
+
+    $ zap prog.s prog.bin -w
+    File "prog.s" line 1 - Value truncated to 8 bit '0x100'
+
+A value that does not fit where it is written is said and the assembly carries
+on, producing the bytes the reference produces. The line is drawn where the
+reference draws it: a value fits if the bytes that come out mean the same
+number read as signed or as unsigned, so `ld a, -1` and `ld a, 255` are both
+fine and `ld a, 256` and `ld a, -129` are not.
+
+**Unlike the reference, the check is off unless `-w` asks for it.** There, it
+always runs and `-i` silences the message; here `-i` is accepted and does
+nothing, because nothing is what the default already does. The reason is cost.
+Every other diagnostic in zap is work done after something has gone wrong;
+this one is a question asked of every value in every source, and asking it
+costs 2% of a real program and 6.7% of a file that is nothing but immediates.
+The reference's `-i` cannot give that back, because there the check runs
+either way.
+
+So a command line written for ez80asm still runs and still gets the same
+bytes, and `-w` is there for when the question is worth 2%.
 
 ## When something is wrong
 

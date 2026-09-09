@@ -4,6 +4,9 @@
 #   test/bench/time-one.sh <assembler.bin> <source.s>
 #   test/bench/time-one.sh <assembler.bin> <dir> <entry.s>
 #
+# ZAP_FLAGS='-w' passes options to the guest zap, for measuring what a flag
+# costs against the same binary and the same source.
+#
 # The second form is for a program with an include tree: the whole directory is
 # staged and `entry.s` is the file named on the command line. That is what
 # measuring against a real program takes -- bbcbasic is twenty files and a
@@ -77,8 +80,11 @@ else
 fi
 
 printf '  nop\n  ret\n' > "$sd/flush.s"
-printf 'zap %s out.bin\r\nzap flush.s flush.bin\r\nemulator_exit_success\r\n' \
-    "$top" > "$sd/autoexec.txt"
+# ZAP_FLAGS puts options on the guest command line, which is what measuring a
+# flag takes: one binary, one source, the flag the only difference. zap takes
+# options after the filenames, so they go on the end.
+printf 'zap %s out.bin %s\r\nzap flush.s flush.bin\r\nemulator_exit_success\r\n' \
+    "$top" "${ZAP_FLAGS:-}" > "$sd/autoexec.txt"
 
 # Shared with bench.sh so the two cannot drift apart.
 eval "$(sed -n '/^guest_error() {/,/^}/p' "$(dirname "$0")/bench.sh")"

@@ -4563,3 +4563,82 @@ a time.
 There is no version of a runtime-switchable listing that is free. A
 compile-time switch would be, and a duplicated line loop would be, and neither
 is what a flag means.
+
+## What a truncation warning costs, which is more than it looks
+
+*(and why it ended up behind `-w` rather than on by default -- the figures
+below are what made that the shape. Three builds now: no warning code at all,
+the flag off, the flag on.)*
+
+    isa_real         5.36 -> 5.72   +6.7%
+    isa_even         5.46 -> 5.80   +6.2%
+    isa_degenerate   5.18 -> 5.28   +1.9%
+    isa_memory       5.56 -> 5.60   +0.7%
+    bbcbasic         3.78 -> 3.86   +2.1%
+    rokky            0.52 -> 0.54   +3.8%, on a clock that reads to 0.02
+    synth            6.94 -> 7.06   +1.7%
+
+One range check on every immediate written, and it is the most expensive
+diagnostic in the program by a wide margin -- because unlike everything else
+in the reporting, **it is a question asked of every source, not a thing done
+after one has already gone wrong.**
+
+Three formulations, all within a hundredth of each other:
+
+* `v == (int8_t) v || v == (uint8_t) v` and the same for sixteen bits. In
+  `evalue` this widened every immediate to the evaluator's four bytes and the
+  compares became `__lcmpu`: **9.3%**.
+* The same in the machine's word, where the three-byte case is provably true
+  and folds away: 7.5%.
+* One add and one unsigned compare -- the range slid down by its lower bound,
+  so `-2^(8w-1)..2^8w-1` becomes `0..2^8w+2^(8w-1)-1`: 7.1%.
+
+And one structural change worth keeping for its own sake. Putting the warning
+inside `emit_imm` made a leaf function into a caller: **47 instructions and no
+frame became 113 and a four-byte one**, for every immediate in the file. Moved
+out into `emit_row` -- which is inlined into `assemble_line`, where there is a
+frame already and a dozen calls -- `emit_imm` is a leaf again and
+`assemble_line`'s frame went *down*, 111 bytes to 108.
+
+That recovered 0.02s of 0.36. **The frame was never the cost either.** What it
+costs is the question itself, asked ten thousand times.
+
+And the spread across the seven says what the cost is proportional to, which
+is not the size of the file or the number of lines but **how many operands in
+it are immediates**. isa_real and isa_even are one instruction per line with
+an operand each and pay 6%; isa_memory is loads and stores through addresses
+and pays 0.7%. bbcbasic's 2.1% is what a real program pays.
+
+## And what having the flag costs while it is off, which is a call
+
+2.1% is more than this program gives away, so the check went behind `-w` and
+the default stopped asking. That does not get all of it back:
+
+    source          none    -w off    -w on
+    isa_real        5.36      5.42     5.72
+    isa_even        5.46      5.52     5.80
+    isa_degenerate  5.18      5.22     5.28
+    isa_memory      5.56      5.60     5.60
+    bbcbasic        3.78      3.80     3.88
+    rokky           0.52      0.52     0.54
+    synth           6.94      7.04     7.06
+
+**About 1% remains with the flag off, and every bit of it is a call.** The
+compiler weighs `static inline void warn_imm` and makes it a real function --
+0x5e bytes of it in the object file -- so every immediate in the file calls it
+to be told that `want_warn` is false and there is nothing to do.
+
+The obvious fix is to put the test at the call site, so the call never
+happens. It was tried, as a macro in emit_row, and it is **slower**: 5.44 on
+isa_real against 5.42.
+
+    -108 became -111 in assemble_line's frameset
+
+Which is the same cliff as always. The frame is a signed `ix` displacement,
+the edge is at 128, and everything in the hot path is already leaning on it;
+three bytes has cost 1.8% here before. The inlined test needs the operand and
+the width live across a branch that the call did not.
+
+So: a call per immediate, or three bytes of frame. The call is cheaper, and
+the residual is 0.02s on a real program -- the emulator's own resolution.
+**This is the fourth time a change that removed work has lost to the frame.**

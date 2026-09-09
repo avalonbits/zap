@@ -118,10 +118,18 @@
 # anything measured against this one -- the baselines below are the ones that
 # count.
 #
-#   isa_real         5.32s   374 cycles/byte   21,494 lines
-#   isa_even         5.88s   413               21,719
-#   isa_degenerate   5.42s   381               22,530
-#   isa_memory       5.86s   412               28,040
+#   isa_real         5.42s   381 cycles/byte   21,494 lines
+#   isa_even         5.52s   388               21,719
+#   isa_degenerate   5.22s   367               22,530
+#   isa_memory       5.60s   394               28,040
+#
+# Those are the default, which does not check for truncated values. With `-w`,
+# which does, the same binary reads 5.72 / 5.80 / 5.28 / 5.60, and a build with
+# no warning code in it at all read 5.36 / 5.46 / 5.18 / 5.56 -- so the flag
+# costs about 1% while it is off and up to 6.7% while it is on. The spread
+# across the four is the whole story of what a range check costs: it is
+# proportional to how many operands in the file are immediates, and these four
+# sit at both ends of that.
 #
 # Those four are up on the 5.28 / 5.34 / 4.86 / 5.32 recorded before, and none
 # of it is this file: it has not changed. Two rounds of correctness work moved

@@ -54,13 +54,13 @@ cc "${CFLAGS[@]}" -o "$OUT/zap" src/zap.c "${SRCS[@]}"
 printf '  nop\n  ret\n' > "$OUT/ok.s"
 printf '  ld a,\n' > "$OUT/bad.s"
 
-out=$("$OUT/zap" "$OUT/ok.s" "$OUT/ok.bin" 2>&1 | tr -d '\r')
+out=$("$OUT/zap" -c "$OUT/ok.s" "$OUT/ok.bin" 2>&1 | tr -d '\r')
 cli_check "assembling line"  "$(printf '%s' "$out" | grep -c '^Assembling ')" 1
 cli_check "wrote line"       "$(printf '%s' "$out" | grep -c '^Wrote .*, 2 bytes')" 1
 cli_check "timing line matches the reference's format" \
     "$(printf '%s' "$out" | grep -cE '^Done in [0-9]+\.[0-9][0-9] seconds$')" 1
 
-bad=$("$OUT/zap" "$OUT/bad.s" "$OUT/bad.bin" 2>&1 | tr -d '\r' || true)
+bad=$("$OUT/zap" -c "$OUT/bad.s" "$OUT/bad.bin" 2>&1 | tr -d '\r' || true)
 cli_check "no timing on failure" "$(printf '%s' "$bad" | grep -c '^Done in ')" 0
 
 # An error inside an included file has to name that file, not the one that
@@ -70,7 +70,7 @@ cli_check "no timing on failure" "$(printf '%s' "$bad" | grep -c '^Done in ')" 0
 # `inc_ .in`.
 printf '  ld a,\n' > "$OUT/broken.inc"
 printf '  INCLUDE "%s"\n' "$OUT/broken.inc" > "$OUT/inctop.s"
-incbad=$("$OUT/zap" "$OUT/inctop.s" "$OUT/inc.bin" 2>&1 | tr -d '\r' || true)
+incbad=$("$OUT/zap" -c "$OUT/inctop.s" "$OUT/inc.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an error names the included file" \
     "$(printf '%s' "$incbad" | grep -c "^File \"$OUT/broken.inc\" line 1 - ")" 1
 
@@ -80,7 +80,7 @@ cli_check "an error names the included file" \
 # in advance, so a source that assembles pays for none of this. That is the
 # property worth protecting; these check that the parts arrive.
 printf '  frobnicate a\n' > "$OUT/r1.s"
-r1=$("$OUT/zap" "$OUT/r1.s" "$OUT/r1.bin" 2>&1 | tr -d '\r' || true)
+r1=$("$OUT/zap" -c "$OUT/r1.s" "$OUT/r1.bin" 2>&1 | tr -d '\r' || true)
 cli_check "the message names the token it is about" \
     "$(printf '%s' "$r1" | grep -c "unknown instruction 'frobnicate'")" 1
 cli_check "the failing line is echoed" \
@@ -90,7 +90,7 @@ cli_check "the failing line is echoed" \
 # line has gone -- so the line is fetched back out of the file, which costs one
 # open and costs it only when the assembly has already failed.
 printf '  nop\n  nop\n  jp nowhere\n' > "$OUT/r2.s"
-r2=$("$OUT/zap" "$OUT/r2.s" "$OUT/r2.bin" 2>&1 | tr -d '\r' || true)
+r2=$("$OUT/zap" -c "$OUT/r2.s" "$OUT/r2.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a deferred failure still names its line" \
     "$(printf '%s' "$r2" | grep -c "line 3 - unknown label 'nowhere'")" 1
 cli_check "a deferred failure still shows its line" \
@@ -100,7 +100,7 @@ cli_check "a deferred failure still shows its line" \
 # it named the macro as though it were a file, counted lines from the top of
 # the body, and said nothing at all about where the macro had been invoked.
 printf '  MACRO m v\n  ld a, v v\n  ENDMACRO\n  nop\n  m 5\n' > "$OUT/r3.s"
-r3=$("$OUT/zap" "$OUT/r3.s" "$OUT/r3.bin" 2>&1 | tr -d '\r' || true)
+r3=$("$OUT/zap" -c "$OUT/r3.s" "$OUT/r3.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a macro failure names the macro and the line of the file" \
     "$(printf '%s' "$r3" | grep -c '^Macro \[m\] in .* line 2 - ')" 1
 cli_check "a macro failure shows the body line" \
@@ -110,23 +110,80 @@ cli_check "a macro failure names where it was invoked" \
 cli_check "a macro failure shows the invocation" \
     "$(printf '%s' "$r3" | grep -c '^  m 5$')" 1
 
-# Colour is asked for, never assumed: the corpus runner and every grep above
-# read what this prints.
-cli_check "no colour unless it is asked for" \
-    "$(printf '%s' "$r1" | grep -c "$(printf '\033')")" 0
-r4=$("$OUT/zap" -color "$OUT/r1.s" "$OUT/r1.bin" 2>&1 | tr -d '\r' || true)
-cli_check "-color colours the report" \
+# Colour is on, as it is in the reference, and `-c` turns it off. Every check
+# above passes `-c`, which is what a script reading the output would do.
+r4=$("$OUT/zap" "$OUT/r1.s" "$OUT/r1.bin" 2>&1 | tr -d '\r' || true)
+cli_check "colour is on by default" \
     "$(printf '%s' "$r4" | grep -c "$(printf '\033')\[31m")" 1
-cli_check "-colour is the same option" \
-    "$("$OUT/zap" -colour "$OUT/r1.s" "$OUT/r1.bin" 2>&1 | tr -d '\r' \
-       | grep -c "$(printf '\033')\[31m")" 1
+cli_check "-c turns it off" \
+    "$(printf '%s' "$r1" | grep -c "$(printf '\033')")" 0
 # The message and the token it quotes are coloured differently, as they are in
 # the reference, so the escape falls between them -- which is why this looks
 # for the message alone rather than for the whole line.
-cli_check "the colour flag does not change what is said" \
+cli_check "the colour does not change what is said" \
     "$(printf '%s' "$r4" | grep -c 'unknown instruction')" 1
-cli_check "the colour flag does not change the token" \
+cli_check "the colour does not change the token" \
     "$(printf '%s' "$r4" | grep -c "'frobnicate'")" 1
+
+# The reference's options, by the same letters and in the same forms.
+#
+# Three of them change the bytes, and those are the ones that matter: a build
+# script that passes them and swaps assemblers must get the same file. Checked
+# against the reference itself rather than against what the help text says.
+printf '  ld hl, $\n' > "$OUT/opt.s"
+# The same reference the case files are compared against, named here because
+# these checks come before that section.
+OPTREF="$ROOT/test/ref/linux_x86_64/ez80asm"
+opt_same() {
+    local name="$1"
+    shift
+    if [ ! -x "$OPTREF" ]; then
+        echo "SKIP  $name: no vendored ez80asm"
+        return
+    fi
+    rm -f "$OUT/opta.bin" "$OUT/optb.bin"
+    "$OUT/zap" -c "$OUT/opt.s" "$OUT/opta.bin" "$@" > /dev/null 2>&1 || true
+    "$OPTREF" "$OUT/opt.s" "$OUT/optb.bin" "$@" > /dev/null 2>&1 || true
+    if cmp -s "$OUT/opta.bin" "$OUT/optb.bin"; then
+        echo "PASS  $name gives the same bytes as the reference"
+    else
+        echo "FAIL  $name differs: $(xxd -p "$OUT/opta.bin" 2>/dev/null) against $(xxd -p "$OUT/optb.bin" 2>/dev/null)"
+        status=1
+    fi
+}
+opt_same "-o 50000" -o 50000
+opt_same "-o50000 attached" -o50000
+opt_same "-a 0" -a 0
+printf 'start:\n  ds 4\n  nop\n' > "$OUT/opt.s"
+opt_same "-b AA" -b AA
+opt_same "no options" 
+
+# The ones that take a value say so rather than assembling somewhere nobody
+# asked for. This one caught a real fault: opt_hex read digits through
+# `hexval`, which build_cclass fills *after* the arguments are parsed, so
+# every digit read as zero and `-o 50000` silently assembled at address 0.
+printf '  nop\n' > "$OUT/opt2.s"
+for badopt in "-o zz" "-b gg" "-a 7"; do
+    # shellcheck disable=SC2086
+    ob=$("$OUT/zap" -c $badopt "$OUT/opt2.s" "$OUT/opt2.bin" 2>&1 | tr -d '\r' || true)
+    cli_check "$badopt is refused" \
+        "$(printf '%s' "$ob" | grep -c '^Option -')" 1
+done
+optv=$("$OUT/zap" -v 2>&1 | tr -d '\r' || true)
+cli_check "-v prints a version and assembles nothing" \
+    "$(printf '%s' "$optv" | grep -c '^zap version ')" 1
+cli_check "-h lists the options" \
+    "$("$OUT/zap" -h 2>&1 | tr -d '\r' | grep -c '^  -o\b')" 1
+# Accepted and doing nothing, because zap has nothing for them to turn off.
+# Silently, because a script that passes them should not have to care.
+for noop in -i -m; do
+    cli_check "$noop is accepted" \
+        "$("$OUT/zap" -c $noop "$OUT/opt2.s" "$OUT/opt2.bin" 2>&1 \
+           | tr -d '\r' | grep -c 'Unknown option')" 0
+done
+cli_check "an option that is not the reference's is still refused" \
+    "$("$OUT/zap" -c -Q "$OUT/opt2.s" "$OUT/opt2.bin" 2>&1 | tr -d '\r' \
+       | grep -c 'Unknown option -Q')" 1
 
 # mnemonic_of compares without checking the length, which is only safe while
 # every name in a bucket has the same length. build_tables says so if that ever
@@ -161,7 +218,7 @@ cli_check "failure is reported"  "$(printf '%s' "$bad" | grep -c 'line 1 - ')" 1
 # encoding tests, which see only ERR, cannot tell the line loop's own check
 # from those. Deleting it failed no test at all until this one.
 printf '  ld a, b c\n' > "$OUT/trail.s"
-trail=$("$OUT/zap" "$OUT/trail.s" "$OUT/trail.bin" 2>&1 | tr -d '\r' || true)
+trail=$("$OUT/zap" -c "$OUT/trail.s" "$OUT/trail.bin" 2>&1 | tr -d '\r' || true)
 cli_check "trailing text is reported by the line loop" \
     "$(printf '%s' "$trail" | grep -c 'line 1 - unexpected text after the instruction')" 1
 
@@ -174,7 +231,7 @@ cli_check "trailing text is reported by the line loop" \
 # just as the wrong thing: the token becomes `ab` and `$cd` is trailing text.
 # Only the message tells the two apart, so only the message can test it.
 printf '  ld a, ab$cd\n' > "$OUT/dollar.s"
-dollar=$("$OUT/zap" "$OUT/dollar.s" "$OUT/dollar.bin" 2>&1 | tr -d '\r' || true)
+dollar=$("$OUT/zap" -c "$OUT/dollar.s" "$OUT/dollar.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a name run stopping at \$ is scanned as one token" \
     "$(printf '%s' "$dollar" | grep -c 'line 1 - unknown label')" 1
 
@@ -185,7 +242,7 @@ cli_check "a name run stopping at \$ is scanned as one token" \
 # off the pending reference rather than from wherever the failure surfaced.
 # Nothing in the encoding tests can see a line number.
 printf 'one:\n  nop\n  jp @gone\n  nop\n  nop\ntwo:\n  nop\n' > "$OUT/loc.s"
-loc=$("$OUT/zap" "$OUT/loc.s" "$OUT/loc.bin" 2>&1 | tr -d '\r' || true)
+loc=$("$OUT/zap" -c "$OUT/loc.s" "$OUT/loc.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an undefined local names the line that used it" \
     "$(printf '%s' "$loc" | grep -c 'line 3 - unknown label')" 1
 
@@ -196,29 +253,29 @@ cli_check "an undefined local names the line that used it" \
 lab64=$(printf 'a%.0s' $(seq 1 64))
 lab65=$(printf 'a%.0s' $(seq 1 65))
 printf '%s: nop\n' "$lab64" > "$OUT/lab1.s"
-"$OUT/zap" "$OUT/lab1.s" "$OUT/lab1.bin" > /dev/null 2>&1 || true
+"$OUT/zap" -c "$OUT/lab1.s" "$OUT/lab1.bin" > /dev/null 2>&1 || true
 cli_check "a label of 64 characters is allowed" \
     "$(od -An -tx1 "$OUT/lab1.bin" 2>/dev/null | tr -s ' ')" " 00"
 printf '%s: nop\n' "$lab65" > "$OUT/lab2.s"
-lab2=$("$OUT/zap" "$OUT/lab2.s" "$OUT/lab2.bin" 2>&1 | tr -d '\r' || true)
+lab2=$("$OUT/zap" -c "$OUT/lab2.s" "$OUT/lab2.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a label of 65 characters is refused" \
     "$(printf '%s' "$lab2" | grep -c 'line 1 - label too long')" 1
 
 # The `@` counts towards the limit, so a local has one character less of name.
 printf 'g:\n@%s: nop\n' "$lab64" > "$OUT/lab3.s"
-lab3=$("$OUT/zap" "$OUT/lab3.s" "$OUT/lab3.bin" 2>&1 | tr -d '\r' || true)
+lab3=$("$OUT/zap" -c "$OUT/lab3.s" "$OUT/lab3.bin" 2>&1 | tr -d '\r' || true)
 cli_check "the at sign counts towards the limit" \
     "$(printf '%s' "$lab3" | grep -c 'line 2 - label too long')" 1
 
 # One signed byte is what the instruction has room for, so anything else would
 # be emitted truncated and silently wrong.
 printf '  ld a,(ix+127)\n  ld a,(ix-128)\n' > "$OUT/dsp1.s"
-"$OUT/zap" "$OUT/dsp1.s" "$OUT/dsp1.bin" > /dev/null 2>&1 || true
+"$OUT/zap" -c "$OUT/dsp1.s" "$OUT/dsp1.bin" > /dev/null 2>&1 || true
 cli_check "the ends of the displacement range are allowed" \
     "$(od -An -tx1 "$OUT/dsp1.bin" 2>/dev/null | tr -s ' ')" " dd 7e 7f dd 7e 80"
 for d in '+128' '-129'; do
     printf '  ld a,(ix%s)\n' "$d" > "$OUT/dsp2.s"
-    dsp2=$("$OUT/zap" "$OUT/dsp2.s" "$OUT/dsp2.bin" 2>&1 | tr -d '\r' || true)
+    dsp2=$("$OUT/zap" -c "$OUT/dsp2.s" "$OUT/dsp2.bin" 2>&1 | tr -d '\r' || true)
     cli_check "a displacement of $d is refused" \
         "$(printf '%s' "$dsp2" | grep -c 'line 1 - index offset out of range')" 1
 done
@@ -228,26 +285,26 @@ done
 # allowed, and `macro m hl` assembles in both.
 for bad in 1 1h 0x1 0b1 1b and ld db equ macro align; do
     printf '  macro m %s\n  db 5\n  endmacro\n' "$bad" > "$OUT/arg.s"
-    arg=$("$OUT/zap" "$OUT/arg.s" "$OUT/arg.bin" 2>&1 | tr -d '\r' || true)
+    arg=$("$OUT/zap" -c "$OUT/arg.s" "$OUT/arg.bin" 2>&1 | tr -d '\r' || true)
     cli_check "a macro parameter called $bad is refused" \
         "$(printf '%s' "$arg" | grep -c 'line 1 - a macro parameter may not be')" 1
 done
 for ok in hl nz af x1 _x; do
     printf '  macro m %s\n  db %s\n  endmacro\n  m 5\n' "$ok" "$ok" > "$OUT/argok.s"
-    "$OUT/zap" "$OUT/argok.s" "$OUT/argok.bin" > /dev/null 2>&1 || true
+    "$OUT/zap" -c "$OUT/argok.s" "$OUT/argok.bin" > /dev/null 2>&1 || true
     cli_check "a macro parameter called $ok is allowed" \
         "$(od -An -tx1 "$OUT/argok.bin" 2>/dev/null | tr -s ' ')" " 05"
 done
 
 # And the same macro name twice, which is case-blind as the lookup is.
 printf '  macro m\n  ld a,b\n  endmacro\n  macro M\n  ld b,c\n  endmacro\n' > "$OUT/dup.s"
-dup=$("$OUT/zap" "$OUT/dup.s" "$OUT/dup.bin" 2>&1 | tr -d '\r' || true)
+dup=$("$OUT/zap" -c "$OUT/dup.s" "$OUT/dup.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a macro defined twice is refused" \
     "$(printf '%s' "$dup" | grep -c 'line 4 - that macro is already defined')" 1
 
 # An anonymous label in a body, refused at the invocation as a global one is.
 printf '  macro m\n  ld a,b\n@@: db 5\n  endmacro\n  m\n' > "$OUT/anon.s"
-anon=$("$OUT/zap" "$OUT/anon.s" "$OUT/anon.bin" 2>&1 | tr -d '\r' || true)
+anon=$("$OUT/zap" -c "$OUT/anon.s" "$OUT/anon.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an anonymous label in a macro is refused" \
     "$(printf '%s' "$anon" | grep -c 'no anonymous labels allowed in a macro')" 1
 
@@ -259,13 +316,13 @@ cli_check "an anonymous label in a macro is refused" \
 # range to go back over, for a case that appears nowhere in the reference's own
 # corpus, where every FILLBYTE precedes the reservations it is for.
 printf '  ds 2\n  fillbyte 0xAA\n  nop\n' > "$OUT/fb1.s"
-fb1=$("$OUT/zap" "$OUT/fb1.s" "$OUT/fb1.bin" 2>&1 | tr -d '\r' || true)
+fb1=$("$OUT/zap" -c "$OUT/fb1.s" "$OUT/fb1.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a FILLBYTE that reaches backwards is refused" \
     "$(printf '%s' "$fb1" | grep -c 'line 2 - FILLBYTE must come before the space it fills')" 1
 
 # The same value twice is not a change, so it is allowed.
 printf '  fillbyte 0xAA\n  ds 2\n  fillbyte 0xAA\n  nop\n' > "$OUT/fb2.s"
-"$OUT/zap" "$OUT/fb2.s" "$OUT/fb2.bin" > /dev/null 2>&1 || true
+"$OUT/zap" -c "$OUT/fb2.s" "$OUT/fb2.bin" > /dev/null 2>&1 || true
 cli_check "the same FILLBYTE twice is not a change" \
     "$(od -An -tx1 "$OUT/fb2.bin" 2>/dev/null | tr -s ' ')" " aa aa 00"
 
@@ -278,22 +335,22 @@ cli_check "the same FILLBYTE twice is not a change" \
 # prefix goes through the general parser and the wide value survives to be
 # checked. Recorded in .internal/completeness.md with the rest of the ceiling.
 printf '  .relocate $1000000\n  .endrelocate\n' > "$OUT/rl1.s"
-rl1=$("$OUT/zap" "$OUT/rl1.s" "$OUT/rl1.bin" 2>&1 | tr -d '\r' || true)
+rl1=$("$OUT/zap" -c "$OUT/rl1.s" "$OUT/rl1.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a relocate address past 24 bits is refused" \
     "$(printf '%s' "$rl1" | grep -c 'line 1 - address outside the 24-bit range')" 1
 
 printf '  .relocate -1\n  .endrelocate\n' > "$OUT/rl2.s"
-rl2=$("$OUT/zap" "$OUT/rl2.s" "$OUT/rl2.bin" 2>&1 | tr -d '\r' || true)
+rl2=$("$OUT/zap" -c "$OUT/rl2.s" "$OUT/rl2.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a negative relocate address is refused" \
     "$(printf '%s' "$rl2" | grep -c 'line 1 - address outside the 24-bit range')" 1
 
 printf '  .endrelocate\n' > "$OUT/rl3.s"
-rl3=$("$OUT/zap" "$OUT/rl3.s" "$OUT/rl3.bin" 2>&1 | tr -d '\r' || true)
+rl3=$("$OUT/zap" -c "$OUT/rl3.s" "$OUT/rl3.bin" 2>&1 | tr -d '\r' || true)
 cli_check "ENDRELOCATE with none open is refused" \
     "$(printf '%s' "$rl3" | grep -c 'line 1 - no RELOCATE is open')" 1
 
 printf '  .relocate 0x50000\n  .relocate 0x60000\n' > "$OUT/rl4.s"
-rl4=$("$OUT/zap" "$OUT/rl4.s" "$OUT/rl4.bin" 2>&1 | tr -d '\r' || true)
+rl4=$("$OUT/zap" -c "$OUT/rl4.s" "$OUT/rl4.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a nested RELOCATE is refused" \
     "$(printf '%s' "$rl4" | grep -c 'line 2 - RELOCATE does not nest')" 1
 
@@ -304,7 +361,7 @@ cli_check "a nested RELOCATE is refused" \
 # The rows the filter takes away. `ld ixh, b` is an eZ80 form, assembles at the
 # top of cpu.s, and is 260 of the reference's own corpus sources under Z180.
 printf '  .cpu Z180\n  ld ixh, b\n' > "$OUT/cpu1.s"
-cpu1=$("$OUT/zap" "$OUT/cpu1.s" "$OUT/cpu1.bin" 2>&1 | tr -d '\r' || true)
+cpu1=$("$OUT/zap" -c "$OUT/cpu1.s" "$OUT/cpu1.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an eZ80 form is gone under .cpu Z180" \
     "$(printf '%s' "$cpu1" | grep -c 'line 2 - no such instruction form')" 1
 
@@ -313,19 +370,19 @@ cli_check "an eZ80 form is gone under .cpu Z180" \
 # though it names the mode they are already in.
 for mode in 0 1; do
     printf '  .cpu Z80\n  .assume ADL=%s\n' "$mode" > "$OUT/cpu2.s"
-    cpu2=$("$OUT/zap" "$OUT/cpu2.s" "$OUT/cpu2.bin" 2>&1 | tr -d '\r' || true)
+    cpu2=$("$OUT/zap" -c "$OUT/cpu2.s" "$OUT/cpu2.bin" 2>&1 | tr -d '\r' || true)
     cli_check "ADL=$mode is refused on the Z80" \
         "$(printf '%s' "$cpu2" | grep -c 'line 2 - no ADL mode on this CPU')" 1
 done
 printf '  .cpu Z80\n  ld.lil a,(0)\n' > "$OUT/cpu3.s"
-cpu3=$("$OUT/zap" "$OUT/cpu3.s" "$OUT/cpu3.bin" 2>&1 | tr -d '\r' || true)
+cpu3=$("$OUT/zap" -c "$OUT/cpu3.s" "$OUT/cpu3.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a mode suffix is refused on the Z80" \
     "$(printf '%s' "$cpu3" | grep -c 'line 2 - no mode suffix on this CPU')" 1
 
 # The Z280 has a bit in the table and no rows tagged with it, so it is not
 # offered rather than accepted and then quietly empty.
 printf '  .cpu Z280\n  nop\n' > "$OUT/cpu4.s"
-cpu4=$("$OUT/zap" "$OUT/cpu4.s" "$OUT/cpu4.bin" 2>&1 | tr -d '\r' || true)
+cpu4=$("$OUT/zap" -c "$OUT/cpu4.s" "$OUT/cpu4.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an unsupported CPU is refused" \
     "$(printf '%s' "$cpu4" | grep -c 'line 1 - unsupported CPU type')" 1
 
@@ -333,15 +390,15 @@ cli_check "an unsupported CPU is refused" \
 # on the pseudo mnemonic -- so nothing downstream would notice an eighth bit,
 # and nothing but the lookup stops `ld a, b, c`.
 printf '  .cpu Z80\n  res 8,(ix+0),b\n' > "$OUT/cpu5.s"
-cpu5=$("$OUT/zap" "$OUT/cpu5.s" "$OUT/cpu5.bin" 2>&1 | tr -d '\r' || true)
+cpu5=$("$OUT/zap" -c "$OUT/cpu5.s" "$OUT/cpu5.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a bit outside 0..7 has no third-operand form" \
     "$(printf '%s' "$cpu5" | grep -c 'line 2 - no such instruction form')" 1
 printf '  ld a, b, c\n' > "$OUT/cpu6.s"
-cpu6=$("$OUT/zap" "$OUT/cpu6.s" "$OUT/cpu6.bin" 2>&1 | tr -d '\r' || true)
+cpu6=$("$OUT/zap" -c "$OUT/cpu6.s" "$OUT/cpu6.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a third operand on an instruction that has none is refused" \
     "$(printf '%s' "$cpu6" | grep -c 'line 1 - no such instruction form')" 1
 printf '  .cpu Z80\n  bit 0,(ix+0),b\n' > "$OUT/cpu7.s"
-cpu7=$("$OUT/zap" "$OUT/cpu7.s" "$OUT/cpu7.bin" 2>&1 | tr -d '\r' || true)
+cpu7=$("$OUT/zap" -c "$OUT/cpu7.s" "$OUT/cpu7.bin" 2>&1 | tr -d '\r' || true)
 cli_check "BIT has no third-operand form, because it writes no result" \
     "$(printf '%s' "$cpu7" | grep -c 'line 2 - no such instruction form')" 1
 
@@ -349,9 +406,9 @@ cli_check "BIT has no third-operand form, because it writes no result" \
 # one process, so it has to be reset with the rest of the state. Two files,
 # the second of which would fail to encode if the first one's .cpu leaked.
 printf '  .cpu Z80\n  sll b\n' > "$OUT/cpu8.s"
-"$OUT/zap" "$OUT/cpu8.s" "$OUT/cpu8.bin" > /dev/null 2>&1 || true
+"$OUT/zap" -c "$OUT/cpu8.s" "$OUT/cpu8.bin" > /dev/null 2>&1 || true
 printf '  ld.lil hl, 0x123456\n' > "$OUT/cpu9.s"
-cpu9=$("$OUT/zap" "$OUT/cpu9.s" "$OUT/cpu9.bin" 2>&1 | tr -d '\r' || true)
+cpu9=$("$OUT/zap" -c "$OUT/cpu9.s" "$OUT/cpu9.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an eZ80 file after a Z80 one still assembles" \
     "$(xxd -p "$OUT/cpu9.bin" 2>/dev/null | tr -d '\n')" "5b21563412"
 
@@ -359,7 +416,7 @@ cli_check "an eZ80 file after a Z80 one still assembles" \
 # sixteen megabytes of fill and a successful assembly. Refused here for the
 # reason DS's count is, and only the message tells the two refusals apart.
 printf '  blkb -1\n' > "$OUT/blk1.s"
-blk1=$("$OUT/zap" "$OUT/blk1.s" "$OUT/blk1.bin" 2>&1 | tr -d '\r' || true)
+blk1=$("$OUT/zap" -c "$OUT/blk1.s" "$OUT/blk1.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a negative block count is refused" \
     "$(printf '%s' "$blk1" | grep -c 'line 1 - blk needs a positive number')" 1
 
@@ -368,20 +425,20 @@ cli_check "a negative block count is refused" \
 # and filled in when the value is known, which is one record however long the
 # run is.
 printf '  blkb 2, ahead\nahead:\n  nop\n' > "$OUT/blk2.s"
-"$OUT/zap" "$OUT/blk2.s" "$OUT/blk2.bin" > /dev/null 2>&1 || true
+"$OUT/zap" -c "$OUT/blk2.s" "$OUT/blk2.bin" > /dev/null 2>&1 || true
 cli_check "a fill still ahead is filled in afterwards" \
     "$(od -An -tx1 "$OUT/blk2.bin" 2>/dev/null | tr -s ' ')" " 02 02 00"
 
 # The count is a different matter and is still refused: how many bytes there
 # are decides where everything after them lands.
 printf '  blkb ahead, 1\nahead: equ 2\n' > "$OUT/blk2b.s"
-blk2b=$("$OUT/zap" "$OUT/blk2b.s" "$OUT/blk2b.bin" 2>&1 | tr -d '\r' || true)
+blk2b=$("$OUT/zap" -c "$OUT/blk2b.s" "$OUT/blk2b.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a count still ahead is refused" \
     "$(printf '%s' "$blk2b" | grep -c 'line 1 - a label here must be defined already')" 1
 
 # And a fill nothing ever defines is found when the run is filled in.
 printf '  blkb 2, nosuch\n' > "$OUT/blk2c.s"
-blk2c=$("$OUT/zap" "$OUT/blk2c.s" "$OUT/blk2c.bin" 2>&1 | tr -d '\r' || true)
+blk2c=$("$OUT/zap" -c "$OUT/blk2c.s" "$OUT/blk2c.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a fill nothing defines is reported" \
     "$(printf '%s' "$blk2c" | grep -c 'unknown label')" 1
 
@@ -397,7 +454,7 @@ cli_check "a fill nothing defines is reported" \
 # other, which is the failure the widening exists to remove. That is why this
 # check can bite on the host at all.
 printf '  dw32 later + 0x55555555\nlater: EQU 1\n' > "$OUT/wide1.s"
-wide1=$("$OUT/zap" "$OUT/wide1.s" "$OUT/wide1.bin" 2>&1 | tr -d '\r' || true)
+wide1=$("$OUT/zap" -c "$OUT/wide1.s" "$OUT/wide1.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a constant too large to add to a label is refused" \
     "$(printf '%s' "$wide1" | grep -c 'line 1 - that constant is too large')" 1
 
@@ -406,7 +463,7 @@ cli_check "a constant too large to add to a label is refused" \
 # written.
 printf 'g:\n  dw32 ahead - @loc\n@loc: EQU 0x7FFFFFF\nh:\n  nop\nahead: EQU 1\n' \
     > "$OUT/wide2.s"
-wide2=$("$OUT/zap" "$OUT/wide2.s" "$OUT/wide2.bin" 2>&1 | tr -d '\r' || true)
+wide2=$("$OUT/zap" -c "$OUT/wide2.s" "$OUT/wide2.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a folded local half too large to add is refused" \
     "$(printf '%s' "$wide2" | grep -c 'that constant is too large')" 1
 
@@ -423,7 +480,7 @@ cli_check "a folded local half too large to add is refused" \
 # one of them was ever wrong.
 for spell in 0x1000000 '$1000000'; do
     printf '  relocate %s\n  nop\n  endrelocate\n' "$spell" > "$OUT/rel24.s"
-    rel24=$("$OUT/zap" "$OUT/rel24.s" "$OUT/rel24.bin" 2>&1 | tr -d '\r' || true)
+    rel24=$("$OUT/zap" -c "$OUT/rel24.s" "$OUT/rel24.bin" 2>&1 | tr -d '\r' || true)
     cli_check "relocate $spell is outside the 24-bit range" \
         "$(printf '%s' "$rel24" | grep -c 'address outside the 24-bit range')" 1
 done
@@ -433,7 +490,7 @@ done
 # against the reference; this says the names resolve at all, which a build
 # with the directives renumbered wrongly would not.
 printf '  dw32 1\n  blkl 1, 2\n' > "$OUT/blk3.s"
-"$OUT/zap" "$OUT/blk3.s" "$OUT/blk3.bin" > /dev/null 2>&1 || true
+"$OUT/zap" -c "$OUT/blk3.s" "$OUT/blk3.bin" > /dev/null 2>&1 || true
 cli_check "dw32 and blkl are four bytes each" \
     "$(xxd -p "$OUT/blk3.bin" 2>/dev/null | tr -d '\n')" "0100000002000000"
 
@@ -445,13 +502,13 @@ cli_check "dw32 and blkl are four bytes each" \
 # are the same row table and the same operands; only the message tells them
 # apart, and the encoding tests would read every refusal here as ERR.
 printf '  ld.lil a, b\n' > "$OUT/sfx1.s"
-sfx1=$("$OUT/zap" "$OUT/sfx1.s" "$OUT/sfx1.bin" 2>&1 | tr -d '\r' || true)
+sfx1=$("$OUT/zap" -c "$OUT/sfx1.s" "$OUT/sfx1.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a suffix on a register-only form is refused" \
     "$(printf '%s' "$sfx1" | grep -c 'line 1 - this instruction takes no mode suffix')" 1
 
 # Per row and not per mnemonic: `retn.lil` assembles, `retn.sis` does not.
 printf '  retn.sis\n' > "$OUT/sfx2.s"
-sfx2=$("$OUT/zap" "$OUT/sfx2.s" "$OUT/sfx2.bin" 2>&1 | tr -d '\r' || true)
+sfx2=$("$OUT/zap" -c "$OUT/sfx2.s" "$OUT/sfx2.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a row may take some suffixes and not others" \
     "$(printf '%s' "$sfx2" | grep -c 'line 1 - this instruction takes no mode suffix')" 1
 
@@ -459,13 +516,13 @@ cli_check "a row may take some suffixes and not others" \
 # refused, which is what sends `.db` to the directives and lets a macro be
 # called `read.next`. It arrives as an unknown instruction, not a bad suffix.
 printf '  ld.xyz hl, 0\n' > "$OUT/sfx3.s"
-sfx3=$("$OUT/zap" "$OUT/sfx3.s" "$OUT/sfx3.bin" 2>&1 | tr -d '\r' || true)
+sfx3=$("$OUT/zap" -c "$OUT/sfx3.s" "$OUT/sfx3.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an unreadable suffix is not read as one" \
     "$(printf '%s' "$sfx3" | grep -c 'line 1 - unknown instruction')" 1
 
 # And the dot that starts a directive is not a suffix: it is at the front.
 printf '  .db 1, 2\n' > "$OUT/sfx4.s"
-"$OUT/zap" "$OUT/sfx4.s" "$OUT/sfx4.bin" > /dev/null 2>&1 || true
+"$OUT/zap" -c "$OUT/sfx4.s" "$OUT/sfx4.bin" > /dev/null 2>&1 || true
 cli_check "a leading dot still reaches the directives" \
     "$(od -An -tx1 "$OUT/sfx4.bin" 2>/dev/null | tr -s ' ')" " 01 02"
 
@@ -477,7 +534,7 @@ cli_check "a leading dot still reaches the directives" \
 # scan. Without the message this looks the same as any other refusal, and the
 # encoding tests would read both as ERR.
 printf '  DB "abc\\' > "$OUT/esc.s"
-esc=$("$OUT/zap" "$OUT/esc.s" "$OUT/esc.bin" 2>&1 | tr -d '\r' || true)
+esc=$("$OUT/zap" -c "$OUT/esc.s" "$OUT/esc.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a string ending in a backslash is not terminated" \
     "$(printf '%s' "$esc" | grep -c 'line 1 - string not terminated')" 1
 
@@ -488,11 +545,11 @@ cli_check "a string ending in a backslash is not terminated" \
 # the refusal and the acceptance as ERR and 00, which is also what a macro that
 # was never expanded at all would give.
 printf 'g:\n  MACRO m\nglob:\n  nop\n  ENDMACRO\n  m\n' > "$OUT/gmac.s"
-gmac=$("$OUT/zap" "$OUT/gmac.s" "$OUT/gmac.bin" 2>&1 | tr -d '\r' || true)
+gmac=$("$OUT/zap" -c "$OUT/gmac.s" "$OUT/gmac.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a global label in an expanded macro is refused" \
     "$(printf '%s' "$gmac" | grep -c 'no global labels allowed in a macro')" 1
 printf 'g:\n  MACRO m\nglob:\n  nop\n  ENDMACRO\n  nop\n' > "$OUT/gmac2.s"
-gmac2=$("$OUT/zap" "$OUT/gmac2.s" "$OUT/gmac2.bin" 2>&1 | tr -d '\r' || true)
+gmac2=$("$OUT/zap" -c "$OUT/gmac2.s" "$OUT/gmac2.bin" 2>&1 | tr -d '\r' || true)
 cli_check "the same body, never invoked, is not" \
     "$(printf '%s' "$gmac2" | grep -c 'no global labels')" 0
 
@@ -518,7 +575,7 @@ else
         # reference gives them none, so `1+2*3` is 7 by default and 9 here.
         # Running the default against the reference would be asking two
         # assemblers that disagree on purpose to agree.
-        "$OUT/zap" -ez80 "$src" "$OUT/dz.bin" > /dev/null 2>&1 || true
+        "$OUT/zap" -c -ez80 "$src" "$OUT/dz.bin" > /dev/null 2>&1 || true
         if [ -f "$OUT/ref.bin" ] && cmp -s "$OUT/ref.bin" "$OUT/dz.bin"; then
             echo "PASS  $(basename "$src") matches ez80asm"
         else
@@ -726,7 +783,7 @@ omit_bad=0
 for sz in 32768 65536 131072; do
     for feat in equ macro cond assume suffix data; do
         ISA_OMIT="$feat" test/bench/gen_isa.sh real "$sz" > "$OUT/omit.s" 2>/dev/null
-        if ! "$OUT/zap" -ez80 "$OUT/omit.s" "$OUT/omit.bin" > "$OUT/omit.log" 2>&1; then
+        if ! "$OUT/zap" -c -ez80 "$OUT/omit.s" "$OUT/omit.bin" > "$OUT/omit.log" 2>&1; then
             echo "      ISA_OMIT=$feat at $sz: $(tail -1 "$OUT/omit.log" | tr -d '\r')"
             omit_bad=1
         fi
@@ -750,7 +807,7 @@ fi
 # has to be checked as well as one that defines one.
 printf 'g:\n@here:\n  nop\n  MACRO r\n  jp @here\n  ENDMACRO\n  r\n' \
     > "$OUT/mloc.s"
-mloc=$("$OUT/zap" "$OUT/mloc.s" "$OUT/mloc.bin" 2>&1 | tr -d '\r' || true)
+mloc=$("$OUT/zap" -c "$OUT/mloc.s" "$OUT/mloc.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a body naming a local it does not define is refused" \
     "$(printf '%s' "$mloc" | grep -c 'unknown label')" 1
 
@@ -767,8 +824,8 @@ echo "=== test_macro_expansion ==="
 ISA_LINES=600 test/bench/gen_isa.sh real > "$OUT/mw.s" 2>/dev/null
 ISA_LINES=600 ISA_OMIT=macrocall test/bench/gen_isa.sh real > "$OUT/mc.s" 2>/dev/null
 rm -f "$OUT/mw.bin" "$OUT/mc.bin"
-"$OUT/zap" -ez80 "$OUT/mw.s" "$OUT/mw.bin" > /dev/null 2>&1 || true
-"$OUT/zap" -ez80 "$OUT/mc.s" "$OUT/mc.bin" > /dev/null 2>&1 || true
+"$OUT/zap" -c -ez80 "$OUT/mw.s" "$OUT/mw.bin" > /dev/null 2>&1 || true
+"$OUT/zap" -c -ez80 "$OUT/mc.s" "$OUT/mc.bin" > /dev/null 2>&1 || true
 ninv=$(grep -cE '^  (msave|mload|msum|mwait|mtri|mrest|mg)' "$OUT/mw.s" || true)
 nexp=$(grep -cE '^  (msave|mload|msum|mwait|mtri|mrest|mg)' "$OUT/mc.s" || true)
 if [ ! -f "$OUT/mw.bin" ] || [ ! -f "$OUT/mc.bin" ]; then
@@ -795,16 +852,16 @@ fi
 echo "=== test_pricing_flags ==="
 # The -ez80 flag itself, and that it is the only one taken.
 printf '  ld hl, 1+2*3\n' > "$OUT/prec.s"
-"$OUT/zap" "$OUT/prec.s" "$OUT/prec_def.bin" > /dev/null 2>&1 || true
-"$OUT/zap" -ez80 "$OUT/prec.s" "$OUT/prec_ez.bin" > /dev/null 2>&1 || true
+"$OUT/zap" -c "$OUT/prec.s" "$OUT/prec_def.bin" > /dev/null 2>&1 || true
+"$OUT/zap" -c -ez80 "$OUT/prec.s" "$OUT/prec_ez.bin" > /dev/null 2>&1 || true
 cli_check "default gives 1+2*3 the value 7" \
     "$(xxd -p "$OUT/prec_def.bin" 2>/dev/null | tr -d '\n')" "21070000"
 cli_check "-ez80 gives 1+2*3 the value 9" \
     "$(xxd -p "$OUT/prec_ez.bin" 2>/dev/null | tr -d '\n')" "21090000"
-"$OUT/zap" "$OUT/prec.s" "$OUT/prec2.bin" -ez80 > /dev/null 2>&1 || true
+"$OUT/zap" -c "$OUT/prec.s" "$OUT/prec2.bin" -ez80 > /dev/null 2>&1 || true
 cli_check "the flag is taken after the filenames too" \
     "$(xxd -p "$OUT/prec2.bin" 2>/dev/null | tr -d '\n')" "21090000"
-unk=$("$OUT/zap" -wat "$OUT/prec.s" "$OUT/x.bin" 2>&1 | tr -d '\r' || true)
+unk=$("$OUT/zap" -c -wat "$OUT/prec.s" "$OUT/x.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an unknown option is refused" \
     "$(printf '%s' "$unk" | grep -c 'Unknown option -wat')" 1
 
@@ -818,7 +875,7 @@ for flag in DUP_ROW DUP_GROUP DUP_BUCKET DUP_HASH DUP_SYMCHAIN DUP_INTERN DUP_LO
     bad=0
     for src in test/cases/*.s; do
         rm -f "$OUT/base.bin" "$OUT/dup.bin"
-        "$OUT/zap" "$src" "$OUT/base.bin" > /dev/null 2>&1 || true
+        "$OUT/zap" -c "$src" "$OUT/base.bin" > /dev/null 2>&1 || true
         "$OUT/zap_$flag" "$src" "$OUT/dup.bin" > /dev/null 2>&1 || true
         cmp -s "$OUT/base.bin" "$OUT/dup.bin" || { bad=1; echo "      $(basename "$src")"; }
     done

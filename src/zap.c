@@ -2234,10 +2234,35 @@ static uint8_t exprec[256];
 /* Set once, from the command line, and read in the operator loop. A file-scope
  * flag rather than a field on dz, because dz is reached through a pointer on
  * every line and this is read only where an expression has an operator in it. */
+/* Printed by -v. One place, so a release cannot say two things. */
+#define ZAP_VERSION "1.0"
+
+/* What -o, -b and -a set: the values the assembly starts with, which the
+ * source may still move with ORG, FILLBYTE and ASSUME ADL. The defaults are
+ * the reference's, which is what makes a command line carrying none of them
+ * mean the same thing to both. */
+static int opt_org = ZAP_ORG;
+static uint8_t opt_fill = 0xFF;
+static bool opt_adl = ZAP_ADL;
+
 static bool compat_ez80 = false;
 
-/* Whether the error report is coloured. See is_color_opt. */
-static bool use_color = false;
+/* Whether the error report is coloured.
+ *
+ * On, as the reference has it, and `-c` turns it off. It was the other way
+ * round for one commit, on the reasoning that a pipe should get plain text --
+ * which is true and is not zap's decision to make: a drop-in replacement that
+ * needs a flag the original did not is not a drop-in replacement. The test
+ * suite passes `-c`, which is the same thing said by the side that wants it. */
+static bool use_color = true;
+
+/* What the options ask for beyond the bytes: a listing, a symbol file, the
+ * statistics. All of them are written after the assembly is finished except
+ * the listing, which is the only one the loop has to know about. */
+static bool want_list = false;
+static bool want_console_list = false;
+static bool want_symbols = false;
+static bool want_stats = false;
 
 /* Which instruction set is in force, as the bitmask an isa_row carries.
  *
@@ -7854,13 +7879,13 @@ __attribute__((noinline)) static bool run(const char* path) {
         return false;
     }
     zz.o = zz.out;
-    zz.org = ZAP_ORG;
+    zz.org = opt_org;
     zz.org_set = false;
-    zz.fill = 0xFF;
+    zz.fill = opt_fill;
     zz.filled = false;
     zz.reloc = false;
     zz.reloc_org = 0;
-    zz.adl = ZAP_ADL;
+    zz.adl = opt_adl;
     /* Reset with the rest, and it has to be: `cpu_mask` is a file-scope
      * static so that match_row need not carry it, and the unit tests assemble
      * many sources in one process. Without this, one `.cpu Z80` would decide
@@ -8025,24 +8050,45 @@ static bool is_ez80_opt(const char* a) {
            && a[3] == '8' && a[4] == '0' && a[5] == 0;
 }
 
-/* Colour is asked for, not assumed.
+/* A hexadecimal value on an option, attached or in the next argument.
  *
- * The reference emits it unconditionally, which is fine on a terminal and
- * noise everywhere else -- and zap's own corpus runner reads what it prints.
- * Off unless `-color` says otherwise, so a pipe gets text and a person gets
- * the escape codes they wanted. Spelled the same way as the compilers, with
- * `-colour` taken as well, because half the world writes it that way and
- * neither half should have to look it up. */
-static bool is_color_opt(const char* a) {
-    if (a[0] != '-' || (a[1] | 0x20) != 'c' || (a[2] | 0x20) != 'o'
-        || (a[3] | 0x20) != 'l' || (a[4] | 0x20) != 'o') {
+ * The reference takes both -- `-o50000` and `-o 50000` are the same thing --
+ * so a command line written for it works here unaltered. Returns false for a
+ * value that is not hexadecimal at all, which is worth saying rather than
+ * quietly assembling at an address nobody asked for. */
+static bool opt_hex(const char* attached, const char* next, int* used,
+                    int* out) {
+    const char* p = attached;
+    if (*p == 0) {
+        if (next == NULL) {
+            return false;
+        }
+        p = next;
+        *used = 1;
+    }
+    /* Read here rather than through hexval, which build_cclass fills and
+     * build_cclass runs after the arguments are parsed. Reaching for it left
+     * every digit reading as zero, so `-o 50000` assembled at 0 and said
+     * nothing -- the options were being parsed against a table of zeros. */
+    int v = 0;
+    int n = 0;
+    for (; *p != 0; p++, n++) {
+        int d;
+        if (*p >= '0' && *p <= '9') {
+            d = *p - '0';
+        } else if ((*p | 0x20) >= 'a' && (*p | 0x20) <= 'f') {
+            d = (*p | 0x20) - 'a' + 10;
+        } else {
+            return false;
+        }
+        v = (v << 4) | d;
+    }
+    if (n == 0) {
         return false;
     }
-    if ((a[5] | 0x20) == 'r' && a[6] == 0) {
-        return true;
-    }
+    *out = v;
 
-    return (a[5] | 0x20) == 'u' && (a[6] | 0x20) == 'r' && a[7] == 0;
+    return true;
 }
 
 /* One flag, taken from anywhere on the line so that `zap -ez80 a.s a.bin` and
@@ -8056,30 +8102,119 @@ static bool is_color_opt(const char* a) {
  * the same wall the mnemonic chain and the symbol chain compare sit behind,
  * reached from the other side: not code that runs, code that is merely
  * *there*. */
+static void usage(void) {
+    printf("Usage: zap <filename> [output filename] [OPTION]\r\n\r\n");
+    printf("  -v\tList version information only\r\n");
+    printf("  -h\tList help information\r\n");
+    printf("  -o\tOrg start address in hexadecimal format, default is 040000\r\n");
+    printf("  -b\tFillbyte in hexadecimal format, default is FF\r\n");
+    printf("  -a\tADL mode 1/0, default is 1\r\n");
+    printf("  -i\tIgnore value truncation warnings\r\n");
+    printf("  -l\tListing to file with .lst extension\r\n");
+    printf("  -s\tExport symbols\r\n");
+    printf("  -d\tDirect listing to console\r\n");
+    printf("  -c\tNo color codes in output\r\n");
+    printf("  -x\tDisplay assembly statistics\r\n");
+    printf("  -ez80\tThe reference assembler's expression rules\r\n");
+}
+
+/* The reference's options, taken by the same letters and in the same forms.
+ *
+ * A drop-in replacement that needs the command line rewritten is not one, so
+ * every flag it has is accepted here -- three of them change the bytes and
+ * have to be implemented, two are recognised and do nothing because zap has
+ * nothing for them to turn off, and the rest do what they say.
+ *
+ * `-m` is minimum memory. It is taken and ignored: zap has one memory
+ * configuration and it is the small one, so there is nothing to shrink from
+ * and nothing for a script that passes it to be surprised by.
+ *
+ * `-i` ignores value truncation warnings, and zap has no warnings at all --
+ * every diagnostic it has is fatal. Taken and ignored, and the gap it stands
+ * for is written up in .internal/completeness.md rather than hidden behind a
+ * flag that appears to do something. */
 __attribute__((noinline)) static bool parse_args(int argc, char* argv[],
                                                  const char** in,
-                                                 const char** out) {
+                                                 const char** out,
+                                                 bool* stop) {
     *in = NULL;
     *out = NULL;
+    *stop = false;
     for (int i = 1; i < argc; i++) {
-        if (argv[i][0] == '-') {
-            if (is_ez80_opt(argv[i])) {
-                compat_ez80 = true;
-            } else if (is_color_opt(argv[i])) {
-                use_color = true;
-            } else {
-                printf("Unknown option %s\r\n", argv[i]);
+        const char* a = argv[i];
+        if (a[0] != '-') {
+            if (*in == NULL) {
+                *in = a;
+            } else if (*out == NULL) {
+                *out = a;
+            }
+            continue;
+        }
+        if (is_ez80_opt(a)) {
+            compat_ez80 = true;
+            continue;
+        }
+        const char* const next = (i + 1 < argc) ? argv[i + 1] : NULL;
+        int used = 0;
+        int v = 0;
+        switch (a[1] | 0x20) {
+            case 'v':
+                printf("zap version %s\r\n", ZAP_VERSION);
+                *stop = true;
+
+                return true;
+            case 'h':
+                usage();
+                *stop = true;
+
+                return true;
+            case 'o':
+                if (!opt_hex(a + 2, next, &used, &v)) {
+                    printf("Option -o needs a hexadecimal address\r\n");
+
+                    return false;
+                }
+                opt_org = v;
+                break;
+            case 'b':
+                if (!opt_hex(a + 2, next, &used, &v)) {
+                    printf("Option -b needs a hexadecimal byte\r\n");
+
+                    return false;
+                }
+                opt_fill = (uint8_t) v;
+                break;
+            case 'a':
+                if (!opt_hex(a + 2, next, &used, &v) || (v != 0 && v != 1)) {
+                    printf("Option -a needs 0 or 1\r\n");
+
+                    return false;
+                }
+                opt_adl = v != 0;
+                break;
+            case 'c': use_color = false; break;
+            case 'l': want_list = true; break;
+            case 'd': want_console_list = true; break;
+            case 's': want_symbols = true; break;
+            case 'x': want_stats = true; break;
+            case 'i': break;   /* zap has no warnings to ignore */
+            case 'm': break;   /* one memory configuration, and it is small */
+            default:
+                printf("Unknown option %s\r\n", a);
 
                 return false;
-            }
-        } else if (*in == NULL) {
-            *in = argv[i];
-        } else if (*out == NULL) {
-            *out = argv[i];
         }
+        i += used;
     }
-    if (*in == NULL || *out == NULL) {
-        printf("Usage: zap [-ez80] [-color] <source> <output>\r\n");
+    if (*in == NULL) {
+        printf("No input filename\r\n");
+        usage();
+
+        return false;
+    }
+    if (*out == NULL) {
+        printf("No output filename\r\n");
+        usage();
 
         return false;
     }
@@ -8189,8 +8324,12 @@ static void report(const char* in) {
 int main(int argc, char* argv[]) {
     const char* in;
     const char* out;
-    if (!parse_args(argc, argv, &in, &out)) {
+    bool stop = false;
+    if (!parse_args(argc, argv, &in, &out, &stop)) {
         return 1;
+    }
+    if (stop) {
+        return 0;
     }
 
     /* After the flag is read: the operator table it builds depends on it. */

@@ -185,6 +185,70 @@ cli_check "an option that is not the reference's is still refused" \
     "$("$OUT/zap" -c -Q "$OUT/opt2.s" "$OUT/opt2.bin" 2>&1 | tr -d '\r' \
        | grep -c 'Unknown option -Q')" 1
 
+# The three that write something extra. None of them may fail an assembly:
+# the bytes are written first and a sidecar that cannot be saved is a line of
+# complaint, not an exit code.
+printf 'val: EQU 9\nlab:\n  ld hl, lab\n  db 1,2,3,4,5,6\n' > "$OUT/side.s"
+
+# -s exports the globals, sorted, in the reference's format -- and compared
+# against the reference's own file rather than against a description of it.
+rm -f "$OUT/side.symbols"
+"$OUT/zap" -c "$OUT/side.s" "$OUT/side.bin" -s > /dev/null 2>&1 || true
+if [ -x "$OPTREF" ]; then
+    cp "$OUT/side.symbols" "$OUT/zap.symbols" 2>/dev/null || true
+    rm -f "$OUT/side.symbols"
+    "$OPTREF" "$OUT/side.s" "$OUT/sideb.bin" -s > /dev/null 2>&1 || true
+    if diff -q <(tr -d '\r' < "$OUT/zap.symbols" 2>/dev/null) \
+               <(tr -d '\r' < "$OUT/side.symbols" 2>/dev/null) > /dev/null 2>&1; then
+        echo "PASS  -s writes the reference's symbol file"
+    else
+        echo "FAIL  -s differs from the reference"
+        status=1
+    fi
+else
+    echo "SKIP  -s: no vendored ez80asm"
+fi
+
+# -l writes a listing beside the source, with the reference's columns: six
+# hex digits of address, four bytes to a row in a twelve-character field, the
+# line number in four digits, then the line as it was written.
+rm -f "$OUT/side.lst"
+"$OUT/zap" -c "$OUT/side.s" "$OUT/side.bin" -l > /dev/null 2>&1 || true
+lst=$(tr -d '\r' < "$OUT/side.lst" 2>/dev/null || true)
+cli_check "-l writes a listing with the reference's header" \
+    "$(printf '%s' "$lst" | grep -c '^PC     Output      Line$')" 1
+cli_check "-l lists an address, its bytes and its line" \
+    "$(printf '%s' "$lst" | grep -c '^040000 21 00 00 04 0003   ld hl, lab$')" 1
+cli_check "-l wraps after four bytes, under a blank address" \
+    "$(printf '%s' "$lst" | grep -c '^       05 06       $')" 1
+cli_check "-l lists a line that emits nothing" \
+    "$(printf '%s' "$lst" | grep -c '^040000             0001 val: EQU 9$')" 1
+
+# -d is the same listing on the console, and does not write the file.
+rm -f "$OUT/side.lst"
+dl=$("$OUT/zap" -c "$OUT/side.s" "$OUT/side.bin" -d 2>&1 | tr -d '\r' || true)
+cli_check "-d lists to the console" \
+    "$(printf '%s' "$dl" | grep -c '^PC     Output      Line$')" 1
+cli_check "-d writes no file" "$([ -f "$OUT/side.lst" ] && echo 1 || echo 0)" 0
+
+# -x reports what the assembly used, after it is over.
+xs=$("$OUT/zap" -c "$OUT/side.s" "$OUT/side.bin" -x 2>&1 | tr -d '\r' || true)
+cli_check "-x counts the labels" \
+    "$(printf '%s' "$xs" | grep -cE '^Labels +: +2$')" 1
+cli_check "-x reports the output size" \
+    "$(printf '%s' "$xs" | grep -cE '^Output +: +10$')" 1
+
+# And none of the four changes a byte of what is assembled.
+rm -f "$OUT/side1.bin" "$OUT/side2.bin"
+"$OUT/zap" -c "$OUT/side.s" "$OUT/side1.bin" > /dev/null 2>&1 || true
+"$OUT/zap" -c "$OUT/side.s" "$OUT/side2.bin" -l -d -s -x > /dev/null 2>&1 || true
+if cmp -s "$OUT/side1.bin" "$OUT/side2.bin"; then
+    echo "PASS  the reporting options change no bytes"
+else
+    echo "FAIL  the reporting options changed the output"
+    status=1
+fi
+
 # mnemonic_of compares without checking the length, which is only safe while
 # every name in a bucket has the same length. build_tables says so if that ever
 # stops being true; nothing else would notice until an instruction assembled as

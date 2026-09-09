@@ -418,6 +418,38 @@ if [ -x "$OPTREF" ]; then
     fi
 fi
 
+# A forward reference is emitted as zeroes and patched when its label settles,
+# long after its line was listed. The lines that hold one are remembered and
+# their byte columns written again from the finished output, so the listing
+# shows the address rather than the placeholder.
+printf 'start:\n  ld hl, ahead\n  jr fwd\nfwd:\n  db 1,2,3,4,5, ahead\nahead:\n  ret\n' \
+    > "$OUT/lstf.s"
+rm -f "$OUT/lstf.lst"
+"$OUT/zap" -c -l "$OUT/lstf.s" "$OUT/lstf.bin" > /dev/null 2>&1
+lstf=$(tr -d '\r' < "$OUT/lstf.lst")
+cli_check "a forward reference is listed patched, not as emitted" \
+    "$(printf '%s' "$lstf" | grep -c '^040000 21 0C 00 04 0002   ld hl, ahead$')" 1
+cli_check "and on a continuation row too" \
+    "$(printf '%s' "$lstf" | grep -c '^       05 0C       $')" 1
+cli_check "nothing is left showing the placeholder" \
+    "$(printf '%s' "$lstf" | grep -c '21 00 00 00')" 0
+if [ -x "$OPTREF" ]; then
+    cp "$OUT/lstf.lst" "$OUT/lstf.zap"
+    rm -f "$OUT/lstf.lst"
+    "$OPTREF" -l "$OUT/lstf.s" "$OUT/lstfr.bin" > /dev/null 2>&1
+    if cmp -s "$OUT/lstf.zap" "$OUT/lstf.lst"; then
+        echo "PASS  a listing with forward references is the reference's file byte for byte"
+    else
+        echo "FAIL  a listing with forward references differs from the reference's"
+        status=1
+    fi
+fi
+# -d cannot be given this: it was printed as the assembly went. It still shows
+# the line, with the bytes as they were emitted.
+cli_check "-d still lists the line" \
+    "$("$OUT/zap" -c -d "$OUT/lstf.s" "$OUT/lstf.bin" 2>&1 | tr -d '\r' \
+       | grep -c 'ld hl, ahead')" 1
+
 # An expansion is listed: the invocation with no bytes on it, then the
 # arguments, then a line per body line carrying the bytes it wrote and the
 # depth it wrote them at. zap used to list the invocation with the whole

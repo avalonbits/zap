@@ -239,6 +239,12 @@ _Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
  * the newline, a carriage return included. */
 #define LINE_MAX_CHARS 256
 
+/* A listing row under the first one: six characters of address left blank, a
+ * space, twelve of output field, and the newline. The first row is longer by
+ * whatever its source line was, which is why it is measured rather than
+ * computed. */
+#define LIST_ROW_LEN 20
+
 /* The longest file name INCLUDE and INCBIN will take. Fixed, because the name
  * is copied into a frame that has to outlive the line it came from, and into
  * `dz.errpath` when an include fails. */
@@ -279,6 +285,17 @@ typedef struct {
     uint8_t k;      /* which parameter */
     uint8_t len;    /* how many bytes of body the argument replaces */
 } macmark;
+
+/* One listed line that has a fixup in it, and everything needed to write its
+ * byte columns again once the fixup is settled: where the line is in the
+ * listing file, how long its first row was -- the rows under it are a fixed
+ * width -- and which bytes of the output it printed. */
+typedef struct {
+    int lstat;      /* offset in the listing file of the line's first row */
+    int row0;       /* length of that row, through its newline */
+    int outoff;     /* the line's first byte, as an index into zz.out */
+    int nbytes;     /* how many bytes it printed */
+} lstfix;
 
 struct _macro {
     macro* next;
@@ -1049,6 +1066,24 @@ typedef struct _dz {
      * being written at all. */
     const char* lst_p;
     bool lst_done;
+
+    /* Where the listing has got to, and where the line being listed started.
+     *
+     * A forward reference is emitted as zeroes and patched when its label is
+     * settled, long after its line was listed -- so a listing written as the
+     * assembly goes shows `ld hl, ahead` as 21 00 00 00 where the reference,
+     * which lists on its second pass, shows the address. The fix is to go
+     * back: every listed line that left a fixup behind is remembered here,
+     * and the byte columns are rewritten from the finished output once every
+     * fixup has been settled. See lstfix_apply. */
+    int lst_pos;      /* bytes written to the listing file so far */
+    int lst_lineat;   /* where the current line's first row began */
+    int lst_row0;     /* how long that row was, through its newline */
+    bool fix_touched; /* this line left a fixup behind */
+
+    lstfix* lstfix;
+    int lstfix_used;
+    int lstfix_cap;
 
     bool errhave;          /* the failing line has been captured */
     char errline[ERRLINE_MAX];
@@ -2083,6 +2118,15 @@ static bool fix_add(const sym* target, const sym* sub, int addend,
      * is on the node rather than on the operand that carried it here: the
      * operand is copied twice a line with an ldir and this is written once per
      * distinct label. */
+    /* The line this came from will need its byte columns written again once
+     * the label is settled. Set here because this is the one place that knows
+     * a line has a forward reference in it, and set unconditionally: the flag
+     * is only ever *read* under `listing`, and a store to a fixed address
+     * once per forward reference -- 843 of them in isa_real -- is cheaper
+     * than the test that would avoid it, never mind moving the option flags
+     * above this function to make the test possible. */
+    zz.fix_touched = true;
+
     fixup** list = &zz.fixups;
     int* used = &zz.fix_used;
     int* cap = &zz.fix_cap;
@@ -5263,6 +5307,7 @@ static void list_line(int pc, const uint8_t* from, const uint8_t* to, int line,
 static void list_invocation(const macro* m, int base, int line, int depth,
                             const char* e);
 static void list_args(const macro* m, int base, int depth);
+static void lstfix_add(const uint8_t* from, const uint8_t* to);
 
 /* Defined with the line loop, and called from the macro expansion below --
  * which assembles the body itself rather than handing it to a reader. */
@@ -5598,8 +5643,12 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
                  * the Args line above it. */
                 list_line(bpc, bo, zz.o, zz.line, zz.depth,
                           m->body + b, m->body + le + 1);
+                if (zz.fix_touched) {
+                    lstfix_add(bo, zz.o);
+                }
             }
             zz.lst_done = false;
+            zz.fix_touched = false;
         }
         b = le + 1;
     }
@@ -8364,8 +8413,12 @@ __attribute__((noinline)) static bool run_lines(void) {
         if (listing) {
             if (!zz.lst_done) {
                 list_line(zz.lst_pc, zz.lst_o, zz.o, zz.line, 0, p, stop);
+                if (zz.fix_touched) {
+                    lstfix_add(zz.lst_o, zz.o);
+                }
             }
             zz.lst_done = false;
+            zz.fix_touched = false;
         }
 
         /* A line that was only a remark stops at the semicolon, so the rest
@@ -8526,6 +8579,7 @@ static void dz_free(void) {
     free(zz.subfix);
     free(zz.defer);
     free(zz.fillp);
+    free(zz.lstfix);
     for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
         free(zz.expbuf[i]);
     }
@@ -8851,6 +8905,7 @@ static void list_out(const char* buf, int n) {
     if (list_fh != 0) {
         mos_fwrite(list_fh, (char*) buf, (uint24_t) n);
         mos_fwrite(list_fh, (char*) "\n", 1);
+        zz.lst_pos += n + 1;
     }
 }
 
@@ -8866,6 +8921,12 @@ static void list_line(int pc, const uint8_t* from, const uint8_t* to, int line,
     char buf[ERRLINE_MAX + 48];
     int n = (int) (to - from);
     int row = 0;
+
+    /* Kept for lstfix_add, which the caller reaches for only when the line
+     * left a fixup behind. Free here, where nothing is on the instruction
+     * path: this function runs only when a listing is being written. */
+    zz.lst_lineat = zz.lst_pos;
+    zz.lst_row0 = 0;
 
     do {
         int w = 0;
@@ -8911,8 +8972,86 @@ static void list_line(int pc, const uint8_t* from, const uint8_t* to, int line,
             }
         }
         list_out(buf, w);
+        if (row == 0) {
+            zz.lst_row0 = zz.lst_pos - zz.lst_lineat;
+        }
         row++;
     } while (row * 4 < n);
+}
+
+/* Remembers a listed line whose bytes are not final yet.
+ *
+ * Only the lines that have a fixup in them, which is why this is a list and
+ * not a record per line: isa_real lists 21,494 lines and 843 of them hold a
+ * forward reference. Sixteen bytes each on the host and twelve on the Agon,
+ * and none of it is allocated unless a listing was asked for.
+ *
+ * A listing that runs out of memory is not a failed assembly. The bytes are
+ * written either way and the assembly is already correct; what is lost is
+ * that some lines of the listing show what was emitted rather than what was
+ * patched, which is what every line showed before this existed. */
+static void lstfix_add(const uint8_t* from, const uint8_t* to) {
+    if (list_fh == 0 || to == from || zz.lst_row0 == 0) {
+        return;
+    }
+    if (zz.lstfix_used == zz.lstfix_cap) {
+        Z_SITE("listing fixups");
+        const int want = zz.lstfix_cap == 0 ? 64 : zz.lstfix_cap + zz.lstfix_cap;
+        lstfix* grown =
+            (lstfix*) realloc(zz.lstfix, (size_t) want * sizeof(lstfix));
+        if (grown == NULL) {
+            return;
+        }
+        zz.lstfix = grown;
+        zz.lstfix_cap = want;
+    }
+    lstfix* r = &zz.lstfix[zz.lstfix_used++];
+    r->lstat = zz.lst_lineat;
+    r->row0 = zz.lst_row0;
+    r->outoff = (int) (from - zz.out);
+    r->nbytes = (int) (to - from);
+}
+
+/* Writes the byte columns of every remembered line again, from the output as
+ * it finally stands.
+ *
+ * Once, at the end, after every fixup has been settled and before the listing
+ * file is closed. Each row of a listing is a fixed shape -- six characters of
+ * address, a space, then four bytes in a twelve-character field -- so the
+ * place a byte was printed is arithmetic: the first row starts where the line
+ * does, and every row under it is the same twenty characters long.
+ *
+ * The console listing cannot be given this. It was printed as the assembly
+ * went and is gone; `-d` shows what was emitted. */
+static void lstfix_apply(void) {
+    for (int i = 0; i < zz.lstfix_used; i++) {
+        const lstfix* r = &zz.lstfix[i];
+        for (int row = 0; row * 4 < r->nbytes; row++) {
+            /* The first row is as long as its source line made it; the rows
+             * under it carry no text at all. */
+            const int at = (row == 0)
+                               ? r->lstat
+                               : r->lstat + r->row0 + (row - 1) * LIST_ROW_LEN;
+            char field[12];
+            int w = 0;
+            int put = 0;
+            while (put < 4 && row * 4 + put < r->nbytes) {
+                list_hex(field, &w, zz.out[r->outoff + row * 4 + put], 2);
+                field[w++] = ' ';
+                put++;
+            }
+            while (put < 4) {
+                field[w++] = ' ';
+                field[w++] = ' ';
+                field[w++] = ' ';
+                put++;
+            }
+            if (mos_flseek(list_fh, (uint32_t) (at + 7)) != 0) {
+                return;
+            }
+            mos_fwrite(list_fh, field, (uint24_t) w);
+        }
+    }
 }
 
 /* The line the reference prints between an invocation and the body it
@@ -9295,6 +9434,11 @@ int main(int argc, char* argv[]) {
         list_out(head, (int) sizeof(head) - 1);
         if (list_fh != 0) {
             mos_fwrite(list_fh, (char*) "\r", 1);
+            /* Counted, like everything else written to this file. It is one
+             * byte and it is the header's, and leaving it out put every line
+             * offset one character to the left -- which lstfix_apply then
+             * wrote the bytes into, over the space after the address. */
+            zz.lst_pos++;
         }
     }
     const clock_t begin = clock();
@@ -9322,6 +9466,9 @@ int main(int argc, char* argv[]) {
     mos_fclose(fh);
 
     if (list_fh != 0) {
+        /* Every fixup is settled by now, so the lines that held one can be
+         * given the bytes they actually got. */
+        lstfix_apply();
         mos_fclose(list_fh);
         list_fh = 0;
     }

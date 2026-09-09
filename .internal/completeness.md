@@ -294,18 +294,25 @@ file is the reference's bytes, LF-terminated with one stray CR after the
 header. A listing of a source with no macros is byte-identical to the
 reference's and run.sh compares them.
 
-Four differences are left and all four are the same wall: the reference lists
-on its second pass and knows everything before it writes line 1, while zap
-writes each line as it assembles it.
+Three differences are left, all of them the same wall: the reference lists on
+its second pass and knows everything before it writes line 1, while zap writes
+each line as it assembles it. A fourth was closed rather than recorded.
 
-**A forward reference is listed with the bytes as they were emitted, not as
-they were patched.** `ld hl, ahead` is `21 00 00 00` here and `21 17 00 04`
-there. This one is not about macros at all and reaches every listing of every
-real program; it was found by comparing .lst files in the corpus runner, which
-is what that comparison is for. Closing it means either buffering the listing
-or recording a file offset per fixup and seeking back to rewrite twelve
-characters -- and `-d`, which goes to the console, could not be fixed either
-way.
+**A forward reference used to be listed with the bytes as emitted rather than
+as patched** -- `ld hl, ahead` was `21 00 00 00` here and `21 17 00 04` there.
+That one is not about macros and reached every listing of every real program,
+and it is fixed: **every listed line that leaves a fixup behind is remembered,
+and its byte columns are written again from the finished output before the
+file is closed.** A listing row is a fixed shape -- six characters of address,
+a space, twelve of output field -- so where a byte was printed is arithmetic,
+and the rows under the first are all the same twenty characters. Sixteen bytes
+of record per line that needs one, allocated only when a listing was asked
+for, and 843 of isa_real's 21,494 lines need one.
+
+It costs nothing measurable: isa_real and bbcbasic both read the same
+afterwards as before. The one thing it cannot fix is `-d`, which was printed
+as the assembly went and is gone; the console listing still shows what was
+emitted.
 
 **A reservation's fill is listed differently again.** `ds 4` there leaves the
 first row's byte field empty and puts the fill on a continuation row, unpadded;
@@ -327,13 +334,14 @@ are offsets into that. The listing shows `db x` where the reference shows
 `  db x`.
 
 The console listing keeps CRLF rather than the reference's bare LF, which is
-a fifth difference and the only deliberate one: `-d` there staircases down an
+a fourth difference and the only deliberate one: `-d` there staircases down an
 Agon screen.
 
-The `listing/` group in test/regress is the sources that avoid all four
+The `listing/` group in test/regress is the sources that avoid the three
 structural ones, so their `.lst` can be compared byte for byte. That
 comparison is what caught zap writing CRLF where the reference writes LF, and
-what found the forward-reference difference above.
+what found the forward-reference difference -- which is why two of its sources
+are now full of forward references in every width a fixup has.
 
 ## The one warning the reference has, and the one place zap does not copy it
 

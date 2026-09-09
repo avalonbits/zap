@@ -19,7 +19,14 @@ reference assembler's own test corpus it is **3.2x faster** per source and
 **5.8x faster** on a real program (BBC BASIC for Agon: 3.9 seconds against
 22.4). It produces byte-identical output, so switching costs nothing.
 
-## Building
+## Getting it
+
+**Download the release.** This is the way to get zap: the
+[latest release](https://github.com/avalonbits/zap/releases/latest) has
+`zap.bin`, built for the Agon. Copy it to `/bin` on the SD card and run it as
+`zap` -- there is nothing to install and nothing to configure.
+
+## Building it yourself
 
 **For the Agon**, with the [agondev](https://github.com/AgonPlatform/agondev)
 toolchain on your `PATH`:

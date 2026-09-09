@@ -5507,29 +5507,20 @@ static bool emit_string(const char** pp, const char* e) {
 }
 
 /* A whole item that is nothing but a signed literal, read without the
- * evaluator.
+ * evaluator. Shared by the data directives and by EQU, which is a plain
+ * literal four times in five.
  *
- * Shared by the data directives and by EQU, which had the same fault for the
- * same reason: both went straight to `expr_value` for every value, and an
- * operand has had this path since early on. `DB 42` measured 889 cycles a byte
- * against `ld a, 42`'s 349 before the directives got it; **four EQUs in five
- * are a plain literal** in the corpus, 7,778 of 9,772, and every one of them
- * was paying for a general expression parser.
+ * always_inline: as an ordinary function it costs a call per item, and
+ * `emit_data`'s loop runs once per value in a list.
  *
- * always_inline, and measured that way. Written as an ordinary function it
- * costs `emit_data` a call per item and **isa_db4 went from 381 to 405** --
- * 6.3% to save the duplication, on a loop that runs four times a line. Inlined
- * into both, the directives keep what they had and EQU gets the same path.
+ * What makes it safe is what it refuses. The character that ended the digit
+ * run has to end the item, so `1+2` goes to the evaluator, and so does
+ * `0b1010`, whose run begins with a digit and whose decimal loop stops on the
+ * `b`.
  *
- * What makes it safe is what it refuses: the character that ended the digit run has
- * to end the item, so `1+2` goes to the evaluator, and so does `0b1010`, whose
- * run begins with a digit and whose decimal loop stops on the `b`.
- *
- * Hands back where it stopped rather than advancing a pointer through an
- * out-parameter. Taking the address of the caller's cursor is what put it in
- * memory, and that cost the data directives 2.4% even inlined -- the third
- * time in this file that `&p` has been the expensive part of a helper. NULL
- * means it was not a literal and nothing moved. */
+ * Returns where it stopped, or NULL if this was not a literal and nothing
+ * moved. It does not advance the caller's cursor through an out-parameter,
+ * because taking the address of that cursor would put it in memory. */
 __attribute__((always_inline))
 static inline const char* lit_value(const char* p, const char* e, evalue* out) {
     const char* q = p;
@@ -5605,20 +5596,18 @@ static inline const char* lit_value(const char* p, const char* e, evalue* out) {
 }
 
 /* A bare name that ends the item, handed straight to the atom rather than
- * through the evaluator.
+ * through the evaluator. The other half of what a data list holds, and the
+ * same shape as lit_value above.
  *
- * Same shape and the same reason as lit_value above, for the other half of
- * what a data list holds. `DL label` measured 5,935 cycles a line against
- * `DB 4`'s 3,281, and the difference is not the lookup -- `jp label` costs 73
- * cycles more than `jp 0x040000`, so finding a symbol is nearly free. It is
- * the route: expr_value, expr_term with its unary operators and its forward
- * bookkeeping, and expr_climb called to discover there is no operator.
+ * The saving is not the symbol lookup, which is cheap, but the route: the
+ * evaluator would run expr_value, expr_term with its unary operators and its
+ * forward-reference bookkeeping, and then expr_climb to discover there is no
+ * operator.
  *
  * Returns the end of the token, or NULL if this is not one. The first
  * character has to be one a name can start with, which is what keeps `$` and
- * `%1010` out; everything else about the token is left to expr_atom, which
- * already knows a trailing-h hex literal from a label and a local from a
- * global. */
+ * `%1010` out; the rest of the token is left to expr_atom, which already tells
+ * a trailing-h hex literal from a label and a local from a global. */
 static const char* name_item(const char* p, const char* e) {
     if (!alpha_ch(*p) && *p != '_' && *p != '@') {
         return NULL;
@@ -5647,12 +5636,10 @@ static const char* name_item(const char* p, const char* e) {
  * A value that names a label still ahead becomes a fixup of the directive's
  * width, which is the same machinery an instruction's immediate uses and the
  * reason widths of one, two and three were already there. */
-/* ASCIZ is a second caller, and that is enough for the compiler to stop
- * inlining this into directive_line -- the fault that has cost real time five
- * times in this file. It was measured here and costs nothing: `always_inline`
- * on it reads 5.42s on isa_real and so does leaving it alone, because the call
- * lands on the 3,181 directive lines rather than on all 21,494. Left as it is,
- * rather than forced inline on a rule that does not apply here. */
+/* Left as an ordinary function even though ASCIZ gives it a second caller,
+ * which elsewhere in this file is enough to make the compiler outline
+ * something that should be inline. Here the call lands only on directive
+ * lines rather than on every line of the source, so it costs nothing. */
 static bool emit_data(uint8_t width, const char** pp, const char* e) {
     const char* p = *pp;
     for (;;) {
@@ -5674,23 +5661,18 @@ static bool emit_data(uint8_t width, const char** pp, const char* e) {
         } else {
             evalue value = 0;
 
-            /* A plain literal, read here rather than through the evaluator.
+            /* A plain literal, read here rather than through the evaluator,
+             * and a list of four values would pay for the evaluator four
+             * times.
              *
-             * `DB 42` measured **889 cycles per byte against `ld a, 42`'s
-             * 349** -- two and a half times an instruction that does a
-             * mnemonic lookup and a row match on top of the same number --
-             * because an operand has had this fast path since early on and a
-             * directive went straight to `expr_value` for every item. A list
-             * of four costs it four times.
-             *
-             * The same two forms the operand parser takes, and the same
+             * The same two forms the operand parser takes, for the same
              * reasons: `0x` and hex digits, or decimal with the first digit
              * outside the loop so that a one-digit value needs no multiply --
              * `d * 10` is a call to __imulu here.
              *
-             * Only if what ends the run also ends the item. `DB 1+2` has to go
-             * through the evaluator, and deciding that costs one class lookup
-             * on a character already in hand. */
+             * Only when what ends the digit run also ends the item: `DB 1+2`
+             * goes through the evaluator, and deciding that costs one class
+             * lookup on a character already in hand. */
             const char* const q = lit_value(p, e, &value);
             if (q != NULL) {
                 p = q;
@@ -5702,11 +5684,10 @@ static bool emit_data(uint8_t width, const char** pp, const char* e) {
                         return false;
                     }
                     p = nm;
-                    /* `q` is already NULL here -- lit_value declined -- which
-                     * is what the fixup below tests, and it means the same
-                     * thing for a name as for an expression: whatever this
-                     * was, it went through the atom and may have left a
-                     * forward reference in the slots. */
+                    /* `q` is NULL here, because lit_value declined, and that
+                     * is what the fixup below tests: whatever this item was,
+                     * it went through the atom and may have left a forward
+                     * reference in the slots. */
                 } else {
                     uint8_t fwdmask = 0;
                     if (!expr_value(&value, &p, e, &fwdmask)) {
@@ -5785,8 +5766,8 @@ static bool emit_data(uint8_t width, const char** pp, const char* e) {
     return true;
 }
 
-/* Fills `n` bytes with 0xFF, which is what `DS` reserves and what `ALIGN` pads
- * with. Not zero -- that was measured, and it is what an erased ROM reads as. */
+/* Fills `n` bytes with the FILLBYTE, which defaults to 0xFF -- what `DS`
+ * reserves and what `ALIGN` pads with, as in the reference. */
 static bool emit_fill(int n) {
     if (n <= 0) {
         return true;
@@ -5813,16 +5794,13 @@ static bool emit_fill(int n) {
 
 /* `BLKB n, fill` and its wider relatives: n units of `fill`, written out.
  *
- * Not emit_fill. That one reserves space, which the reference drops if it
- * reaches the end of the file with nothing after it; this writes bytes and is
- * kept wherever it lands. Ending the run is what says so -- `ds 3 / blkb 3` at
- * the end of a file is six bytes in the reference and `blkb 3 / ds 3` is
- * three, so the block is what stops the reservation before it from being
- * dropped.
+ * Not emit_fill, which reserves space that is dropped if it reaches the end of
+ * the file with nothing after it. A block writes bytes and is kept wherever it
+ * lands, and ending the reserved run is what says so: `ds 3 / blkb 3` at the
+ * end of a file is six bytes and `blkb 3 / ds 3` is three.
  *
- * Little-endian at the unit width, and the default fill is 0xFF at that width
- * rather than all ones: `blkw 1` is FF 00 and not FF FF, which is the value
- * 0x00FF written as a word. Measured, not assumed. */
+ * Little-endian at the unit width, and the default fill is the value 0xFF
+ * written at that width rather than all ones: `blkw 1` is FF 00. */
 /* n and width are both positive here; the caller has checked the count. */
 static bool emit_block(int n, int width, evalue fill) {
     if (n <= 0) {
@@ -5964,20 +5942,17 @@ static bool incbin_file(const char* name) {
 /* `INCLUDE "file"`: the file's lines, assembled here.
  *
  * The reader lives in `dz` so that the line loop reaches it without an
- * indirection, so an include has to save the one it displaces. That is done
- * here, in this function's own frame, which lives exactly as long as the
- * included file does -- including `name`, whose storage the caller owns for
- * the same reason.
+ * indirection, so an include saves the reader it displaces in this function's
+ * own frame -- which lives exactly as long as the included file does, as does
+ * `name`, whose storage the caller owns for the same reason.
  *
- * The parent's file handle is closed while the child runs and reopened after.
- * MOS has few of them, and `br_suspend`/`br_resume` were built for this: resume
- * seeks back to where the reader had read to, so the parent carries on mid-file
- * without noticing.
+ * The parent's file handle is closed while the child runs and reopened after,
+ * because MOS has few of them. `br_resume` seeks back to where the parent's
+ * reader had reached, so it carries on mid-file without noticing.
  *
  * Paths are opened exactly as written, which is what the reference does: an
- * INCLUDE inside `sub/a.inc` naming `b.inc` gets `./b.inc` there and not
- * `sub/b.inc`. Measured, because it is the sort of thing every assembler
- * decides differently. */
+ * INCLUDE inside `sub/a.inc` naming `b.inc` opens `./b.inc`, not
+ * `sub/b.inc`. */
 __attribute__((noinline))
 static bool include_file(const char* name) {
     if (zz.depth >= INCLUDE_MAXDEPTH) {
@@ -6019,14 +5994,12 @@ static bool include_file(const char* name) {
     zz.line = 0;
     zz.depth++;
 
-    /* A conditional belongs to the file it is written in.
-     *
-     * `IF 1 / INCLUDE "x.inc"` where x.inc has an IF of its own is ordinary --
-     * it is how a header switches on what its caller set -- and it was refused
-     * here as "conditionals do not nest", because the flag was one per
-     * assembly rather than one per file. Both halves of the rule are the
-     * reference's: an IF left open at the end of an included file is an error
-     * there, and so is an ENDIF in one that would close the caller's. */
+    /* A conditional belongs to the file it is written in, so the state is
+     * saved and restored around an include: `IF 1 / INCLUDE "x.inc"` where
+     * x.inc has an IF of its own is how a header switches on what its caller
+     * set. Both halves of the rule are the reference's -- an IF left open at
+     * the end of an included file is an error, and so is an ENDIF in one that
+     * would close the caller's. */
     const bool saved_cond = zz.in_cond;
     const bool saved_emit = zz.cond_emit;
     zz.in_cond = false;
@@ -6105,15 +6078,13 @@ static bool cond_value(evalue* out, const char** pp, const char* e) {
     if (p[0] == '=' && p[1] == '=') {
         p += 2;
         if (compat_ez80) {
-            /* The reference does not compare. It evaluates the left side and
-             * throws the rest of the line away, so `IF 0 == 0` is false there
-             * and `IF 1 == 2` is true, and `IF 1 == nosuchname` assembles
-             * because the name is never looked at. Measured, all four ways.
+            /* The reference does not compare: it evaluates the left side and
+             * throws the rest of the line away, so `IF 0 == 0` is false there,
+             * `IF 1 == 2` is true, and `IF 1 == nosuchname` assembles because
+             * the name is never looked at.
              *
-             * That is a bug, and a quiet one -- `IF version == 2` means
-             * `IF version` -- but it decides which bytes come out, so
-             * reproducing it is what `-ez80` is for. The same position as
-             * operator precedence, and the second time it has been needed. */
+             * It is a quiet bug -- `IF version == 2` means `IF version` -- but
+             * it decides which bytes come out, so `-ez80` reproduces it. */
             while (p < e && *p != '\n' && *p != ';') {
                 p++;
             }
@@ -6142,12 +6113,11 @@ static bool cond_value(evalue* out, const char** pp, const char* e) {
 __attribute__((noinline))
 /* INCLUDE and INCBIN, in a function of their own for the sake of the frame.
  *
- * The name buffer is 80 bytes and has to live for as long as the file it opens
- * does -- `br_open` keeps the pointer and `br_resume` reads it back. Left in
- * directive_line that made the frame 140 bytes, past the 128 an `ix`
- * displacement reaches, so five places in the *other* directives were paying a
- * five-instruction address computation for a buffer they never touch. These
- * two are one line in a thousand; everything else on that path is not. */
+ * The name buffer is 80 bytes and has to live as long as the file it opens --
+ * `br_open` keeps the pointer and `br_resume` reads it back. In
+ * directive_line's frame it would take that frame past the 128 bytes an `ix`
+ * displacement reaches, so the other directives would pay a five-instruction
+ * address computation for a buffer they never touch. */
 __attribute__((noinline))
 static bool file_directive(uint8_t kind, const char** pp, const char* e,
                            const char** stop) {
@@ -6165,20 +6135,11 @@ static const insninfo* suffixed_mnemonic(const char* s, int n,
 static bool suffixed_insn(const insninfo* insn, uint8_t suffix,
                           const char* p, const char* e, const char** stop);
 
-/* `ASCIZ`: the data list at one byte a value, and then one zero. Not a zero
- * per string -- `asciz "ab", "cd"` is 61 62 63 64 00.
+/* `ASCIZ`: the data list at one byte a value, and then a single zero. Not a
+ * zero per string -- `asciz "ab", "cd"` is 61 62 63 64 00.
  *
  * Out of line and tested after the data list, so DB, DW and DL reach theirs on
- * the one comparison they always did.
- *
- * That arrangement is not what makes the number: adding this directive costs
- * isa_real 0.08 seconds however it is written. Folded into the data branch
- * with a select, in front of it, behind it, with emit_data forced inline and
- * with it left alone -- all five read 5.42s against 5.34 without it. The cost
- * is directive_line growing and its register allocation moving, which is the
- * same thing that made a file of nothing but `DB 1, 3, 0x07, -1` 3% slower two
- * rounds ago. It is written the way that is easiest to read, since none of the
- * others is faster. */
+ * the one comparison they always did. */
 __attribute__((noinline))
 static bool asciz_line(const char** pp, const char* e,
                        const char** stop) {
@@ -6196,34 +6157,31 @@ static bool asciz_line(const char** pp, const char* e,
 
 /* A directive line, or a report that this was not one.
  *
- * Out of line and reached only where the mnemonic lookup failed, so an
- * instruction pays nothing for any of it -- not a test, not a table, not a
- * character. The whole feature sits on the error path of something that used to
- * do nothing but set a message. */
+ * Out of line, and reached only where the mnemonic lookup has already failed,
+ * so an instruction pays nothing for any of it: not a test, not a table, not a
+ * character. */
 __attribute__((noinline))
 static bool directive_line(const char* s, int n, const char* p,
                            const char* e, const char** stop) {
     const uint8_t kind = directive_of(s, n);
     if (kind == DIR_NONE) {
-        /* An instruction with a mode suffix, asked here so that the ordinary
-         * path keeps the shape it had: assemble_line still ends at
+        /* An instruction with a mode suffix, asked here rather than in front
+         * of the directive dispatch: assemble_line ends at
          * `return directive_line(...)` when the mnemonic table says no, and a
-         * directive still reaches its own dispatch in one call. Adding a hop
-         * in front of this instead cost 1.5% on isa_real, all of it paid by
-         * the 3,181 directive lines that are not suffixed instructions. */
+         * directive still reaches its own dispatch in one call. */
         uint8_t suffix = 0;
         const insninfo* const insn = suffixed_mnemonic(s, n, &suffix);
         if (insn != NULL) {
             if (cpu_mask != CPU_EZ80) {
-                /* A mode suffix says which of two address widths one
+                /* A mode suffix says which of two address widths an
                  * instruction runs in, and neither the Z80 nor the Z180 has
-                 * two. The reference refuses all eight spellings under either,
-                 * which is eight of its own corpus sources.
+                 * two, so the reference refuses all eight spellings under
+                 * either.
                  *
                  * Asked here rather than in suffixed_mnemonic, which returns
                  * NULL for a token that is not a suffixed mnemonic at all --
                  * `read.next` may be a macro. Refusing there would report this
-                 * as "unknown instruction" and lose which of the two it was. */
+                 * as an unknown instruction and lose which fault it was. */
                 zz.err = ZAP_E_NO_MODE_SUFFIX_CPU;
 
                 return false;
@@ -6310,18 +6268,10 @@ static bool directive_line(const char* s, int n, const char* p,
     if (kind == DIR_CPU) {
         /* A setting, and the whole of it is `cpu_mask`. See there.
          *
-         * This was a *check* -- anything but eZ80 refused -- on the reasoning
-         * that reproducing the filter meant a second assembler's worth of
-         * rows. That was wrong, and wrong about a table that was already in
-         * the tree: every Z80, undocumented-Z80 and Z180 row has carried its
-         * CPU bits since the day it was written, and match_row has always
-         * tested them. Refusing the directive was the only thing standing in
-         * front of them.
-         *
-         * The mode follows the machine. Neither the Z80 nor the Z180 has ADL
-         * -- there is no 24-bit mode to be in -- so both select it off, which
-         * is what makes `ld hl, 0x1234` three bytes there and four here. The
-         * reference does the same; measured, not assumed. */
+         * The mode follows the machine: neither the Z80 nor the Z180 has ADL,
+         * so selecting either turns it off, which is what makes `ld hl, 0x1234`
+         * three bytes under them and four in eZ80 mode. The reference does the
+         * same. */
         while (p < e && is_space_ch(*p)) {
             p++;
         }
@@ -6371,9 +6321,8 @@ static bool directive_line(const char* s, int n, const char* p,
          * mode. Spaces are allowed around the equals. */
         if (cpu_mask != CPU_EZ80) {
             /* "No ADL mode for CPU type" there, and for *either* value: the
-             * Z80 and the Z180 have no ADL to select, so `ADL=0` is refused
-             * as well, though it names the mode they are already in.
-             * Measured, all six ways. */
+             * Z80 and the Z180 have no ADL to select, so `ADL=0` is refused as
+             * well, even though it names the mode they are already in. */
             zz.err = ZAP_E_NO_ADL_MODE_CPU;
 
             return false;
@@ -6407,11 +6356,11 @@ static bool directive_line(const char* s, int n, const char* p,
         if (after != NULL) {
             p = after;
         } else {
-            /* Not only a literal: `assume adl=one` with `one` an EQU is what
-             * the reference's own Labels corpus writes, and it was refused
-             * here. A label still ahead is refused by both -- the mode decides
-             * the width of every immediate below it, so there is nothing
-             * sensible to do with one that is not known yet. */
+            /* Not only a literal: `assume adl=one` with `one` an EQU appears
+             * in the reference's own corpus. A label still ahead is refused by
+             * both assemblers, because the mode decides the width of every
+             * immediate below it and there is nothing sensible to do with a
+             * value that is not known yet. */
             fwd_reset(NULL);
             uint8_t fwdmask = 0;
             if (!expr_value(&mode, &p, e, &fwdmask)) {
@@ -6466,15 +6415,14 @@ static bool directive_line(const char* s, int n, const char* p,
     evalue value = 0;
 
     /* A plain number, read here rather than through the evaluator, for the
-     * same reason a data item is: `DS 4` measured 5,603 cycles a line against
-     * `DB 4`'s 3,281, and a count is a number far more often than it is
-     * anything else. `ORG $ + 8` and `ALIGN size*2` still go the long way.
+     * same reason a data item is: a count is a literal far more often than it
+     * is anything else. `ORG $ + 8` and `ALIGN size*2` still go the long way.
      *
-     * lit_value wants what ends the run to end the item, and for these the
-     * item is the whole rest of the line -- which it already takes, since a
-     * newline or a remark ends an item too. `DS 3,1,2` is the one form where
-     * a comma follows, and the arguments after the count are taken and
-     * ignored, so stopping at the comma is right there as well. */
+     * lit_value wants what ends the digit run to end the item, and for these
+     * the item is the rest of the line -- which it already accepts, since a
+     * newline or a remark ends an item too. `DS 3,1,2` is the one form where a
+     * comma follows, and the arguments after the count are ignored, so
+     * stopping at the comma is right there as well. */
     const char* const lit = lit_value(p, e, &value);
     if (lit != NULL) {
         p = lit;
@@ -6552,22 +6500,20 @@ static bool directive_line(const char* s, int n, const char* p,
     }
 
     if (kind == DIR_FILLBYTE) {
-        /* One byte of it, and it stands for the rest of the assembly.
+        /* One byte, and it stands for the rest of the assembly.
          *
          * In the reference it stands for the *whole* assembly, backwards as
          * well: `ds 2 / fillbyte 0xAA` fills that earlier reservation with
-         * 0xAA, because a reservation there is a gap that is filled when the
-         * file is written out and the last FILLBYTE wins. One pass writes the
-         * bytes where it meets them, so reproducing that means remembering
-         * every reserved range to go back over -- 682 of them in isa_real, for
-         * a case that appears nowhere in the reference's own corpus, where
-         * every FILLBYTE precedes the reservations it is for.
+         * 0xAA, because a reservation there is a gap filled when the file is
+         * written out, and the last FILLBYTE wins. One pass writes the bytes
+         * where it meets them, so reproducing that would mean remembering
+         * every reserved range in the file to go back over.
          *
-         * So it is refused instead of being got wrong: a FILLBYTE that would
-         * change the fill of a reservation already written says so. A second
-         * one with the same value is not a change and is allowed. Blocks are
-         * unaffected either way -- BLKB writes data, and takes the value in
-         * force where it stands, in both assemblers. */
+         * So a FILLBYTE that would change the fill of a reservation already
+         * written is refused rather than got wrong. A second one with the same
+         * value changes nothing and is allowed. Blocks are unaffected either
+         * way: BLKB writes data, and takes the value in force where it
+         * stands. */
         if (zz.filled && (uint8_t) value != zz.fill) {
             zz.err = ZAP_E_FILLBYTE_COME_BEFORE_SPACE_FILLS;
 
@@ -6800,11 +6746,9 @@ __attribute__((always_inline)) static inline const isa_row* match_row_cc(
     return NULL;
 }
 
-/* always_inline, and it has to be. It has two callers now -- the ordinary
- * path and the suffixed one -- and a second caller is enough for the compiler
- * to stop inlining it for the first: measured, that put isa_degenerate from
- * 4.86s to 5.80s. The same fault as `same_ci`, the argument parser, sym_define
- * and fwd_result before it. */
+/* always_inline, and it has to be: this has two callers, the ordinary path and
+ * the suffixed one, and a second caller is enough for the compiler to stop
+ * inlining it into the first -- which is the path every instruction takes. */
 __attribute__((always_inline)) static inline const isa_row* match_row(const insninfo* insn,
                                                          const dop* a,
                                                          const dop* b) {
@@ -6838,22 +6782,20 @@ __attribute__((always_inline)) static inline const isa_row* match_row(const insn
     const uint8_t anone = a->noreg;
     const uint8_t bnone = b->noreg;
 
-    /* A first, on its own, and B only if A survives.
+    /* Operand A on its own, and B only if A survives.
      *
-     * These were two 0/1 values ANDed together, which reads well and compiles
-     * badly: each `(g != 0)` is a compare and a branch to pick between two
-     * constants, and both sides were computed before either was looked at.
-     * Nothing here needs a 0/1 -- the question is whether the operand shares a
-     * bit with what the row accepts, so the bits are tested where they are,
-     * and B is reached only by the rows A did not already reject.
+     * The question is whether the operand shares a bit with what the row
+     * accepts, so the bits are tested where they are rather than turned into
+     * two 0/1 values and ANDed -- each `(g != 0)` would be a compare and a
+     * branch to pick between two constants, and both sides would be computed
+     * before either was looked at.
      *
-     * This is the line to spend care on. Counted over isa_real, 3.40 rows per
-     * instruction reach the register test: the rows an instruction wastes
-     * time on are mostly rows of the right shape with the wrong registers,
-     * not rows of the wrong shape. Of those, A alone rejects 2.00, so B is not
-     * computed at all for three rejections in five.
+     * This is the line to spend care on: several rows reach the register test
+     * for every instruction, and most rejections are rows of the right shape
+     * with the wrong registers. Rejecting on A alone skips B entirely for the
+     * majority of them.
      *
-     * No mode test here, and no ccok either. Being in the group is the answer,
+     * No mode test here and no ccok test: being in the group is the answer,
      * and a mnemonic with a ccok row anywhere in it has no groups at all. */
     const rowinfo* ri = g->rows;
     for (uint8_t k = g->count; k != 0; k--, ri++) {
@@ -6879,10 +6821,10 @@ typedef struct _emitted {
     uint8_t opcode;
 } emitted;
 
-/* Register-set masks by byte plane, so a test that was a 24-bit AND -- one
- * call to __iand and one to __lcmpzero -- is one or two byte ANDs. The
- * assertions tie them to the definitions in operand.h, which is the only thing
- * stopping them drifting apart silently. */
+/* Register-set masks by byte plane, so a test is one or two byte ANDs rather
+ * than a 24-bit AND -- which would be a call to __iand and another to
+ * __lcmpzero. The assertions tie these to the definitions in operand.h, which
+ * is what stops the two drifting apart silently. */
 #define RP1_IX  0xD0   /* (R_IX  | R_IXH | R_IXL) >> 8  */
 #define RP1_IY  0x20   /* (R_IY  | R_IYH | R_IYL) >> 8  */
 #define RP2_IY  0x03   /* (R_IY  | R_IYH | R_IYL) >> 16 */
@@ -6910,32 +6852,28 @@ __attribute__((always_inline)) static inline uint8_t ddfd_prefix(const dop* op) 
 
 /* The low byte of an immediate, read as a byte.
  *
- * `op->imm & 7` is a 24-bit AND, which is a call to __iand: imm is an int, so
- * the value arrives in hl and the compiler masks it where it sits. Casting to
- * uint8_t first does not help -- the cast is folded away, since masking three
- * bits off a byte and off the whole value give the same answer. What has to
- * change is the load. Reading the low byte through a uint8_t* makes it
- * `ld a, (iy + n); and a, 7`, the byte operation it always was.
+ * `op->imm & 7` is a 24-bit AND and therefore a call to __iand: imm is an int,
+ * so the value arrives in hl and the compiler masks it there. Casting to
+ * uint8_t does not help, because the cast folds away -- masking three bits off
+ * a byte and off the whole value give the same answer. The load is what has to
+ * change: reading the low byte through a uint8_t* makes it
+ * `ld a, (iy + n); and a, 7`.
  *
- * transform is inlined at both operand sites and two of its cases mask an
- * immediate, so this was four calls per instruction with an immediate.
- *
- * Little-endian, as the hex parser above already assumes. */
+ * Little-endian, as the hex parser above also assumes. */
 static inline uint8_t imm_lo(const dop* op) {
     return *(const uint8_t*) &op->imm;
 }
 
-/* Returns false for an operand that folds into the opcode and does not fit
- * the field it folds into. There are three of those and the reference refuses
- * all three; zap used to mask them and emit an instruction the source did not
- * write -- `bit 8, a` as `bit 0, a`, `im 3` as `im 0`, `rst 0x09` as
- * `rst 0x08`. Wrong bytes with nothing said, which is the worst thing an
- * assembler can do.
+/* Folds an operand into the opcode, and returns false if it does not fit the
+ * field it folds into: a bit number above 7, an interrupt mode above 2, an
+ * address that is not one of the eight restarts. Masking them instead would
+ * assemble an instruction the source did not write -- `bit 8, a` as
+ * `bit 0, a`, `rst 0x09` as `rst 0x08` -- and the reference refuses all three.
  *
  * The checks sit here rather than in the matcher because this is where the
  * field is known: `IMM_BIT` is a marker on the row, and the row is not chosen
- * until the operands are parsed. Failing the match instead would say "no such
- * instruction form", which is true and useless. */
+ * until the operands are parsed. Failing the match instead would report "no
+ * such instruction form", which is true and useless. */
 /* What transform did with the operand. */
 #define TRF_OK    0
 #define TRF_ERR   1
@@ -6971,11 +6909,10 @@ __attribute__((always_inline)) static inline uint8_t transform(emitted* out, dop
 
                     return TRF_ERR;
                 }
-                /* Shifted rather than looked up, and not masked, because the
-                 * reference is not: `bit -1, a` is CB FF there -- the whole
-                 * of the shifted value ORed into the opcode, three bits of
-                 * bit number and five of whatever else it lands on. A table
-                 * indexed by `v & 7` is faster and gives CB 7F. */
+                /* Shifted rather than looked up in a table, and not masked,
+                 * because the reference does not mask: `bit -1, a` is CB FF
+                 * there -- the whole shifted value ORed into the opcode. A
+                 * table indexed by `v & 7` would give CB 7F. */
                 out->opcode |= (uint8_t) ((unsigned) op->imm << 3);
             } else {
                 out->opcode |= shl3[op->reg_index & 7];
@@ -7042,15 +6979,14 @@ __attribute__((always_inline)) static inline uint8_t transform(emitted* out, dop
     return TRF_OK;
 }
 
-/* A fold whose label is still ahead: work out where the opcode byte will land
- * and leave a fixup on it, before the chain in emit_row moves past it.
+/* A fold whose label is still ahead: works out where the opcode byte will land
+ * and leaves a fixup on it, before the chain in emit_row moves past it.
  *
- * Out of line, and taking the prefixes by value rather than the `emitted` it
- * came from, for one reason each. Out of line because everything here is dead
- * weight in the ordinary instruction -- inlined, it cost isa_real 1.8%, which
- * is what two more live values across emit_row's body are worth. By value
- * because taking the address of `out` puts it in the frame, and the frame is
- * the thing this program cannot spare. */
+ * Out of line, because everything here is dead weight in an ordinary
+ * instruction and inlining it keeps two more values live across emit_row's
+ * body. The prefixes are passed by value rather than as the `emitted` they
+ * came from, because taking that struct's address would put it in the
+ * frame. */
 __attribute__((noinline)) static bool fold_defer(uint8_t type, const dop* op,
                                                  uint8_t prefix1, uint8_t prefix2,
                                                  uint8_t flags, int off) {
@@ -7259,16 +7195,8 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
 
     ETRUNC_AT(3);
 
-    /* A relative displacement is measured from the instruction after this
-     * one, so it is the last thing written and needs no width decision.
-     *
-     * It was not written at all before: the row's TR_REL transform had no case
-     * here, so the operand kept its immediate and was emitted as an ordinary
-     * one-byte value -- the target address truncated. `jr 0x040000` assembled
-     * to 18 00 where the reference gives 18 fe. Nothing caught it because no
-     * benchmark or case file held a relative jump, and the corpus forms that
-     * did were filtered out of opcodes.s for failing the byte comparison the
-     * filter exists to enforce. */
+    /* A relative displacement is measured from the instruction after this one,
+     * so it is the last thing written and needs no width decision. */
     if (row->transformA == TR_REL || row->transformB == TR_REL) {
         const dop* rel = (row->transformA == TR_REL) ? a : b;
         if (rel->fwd != NULL) {
@@ -7401,14 +7329,13 @@ static bool cond_skip(const char* s, int n, const char* p,
 /* A mnemonic with a mode suffix on it, or a report that this was not one.
  *
  * Reached only where the plain lookup failed, so an ordinary instruction pays
- * nothing for any of it -- not a test, not a character. The token has already
- * been scanned in one piece, because `.` is a mnemonic character: `.db` needs
- * it and so does `ld.lil`, and telling them apart is a dot at a position other
- * than the first.
+ * nothing for it. The token has already been scanned in one piece, because `.`
+ * is a mnemonic character -- `.db` needs that and so does `ld.lil` -- and what
+ * tells them apart is a dot at a position other than the first.
  *
- * A dot the reader does not understand is left alone rather than refused. That
- * is what sends `.db` and `.assume` to the directives, and it means a macro
- * may be called `read.next` without this deciding otherwise. */
+ * A dot this does not understand is left alone rather than refused, which is
+ * what sends `.db` and `.assume` on to the directives and lets a macro be
+ * called `read.next`. */
 __attribute__((noinline))
 static const insninfo* suffixed_mnemonic(const char* s, int n,
                                          uint8_t* suffix) {
@@ -7482,24 +7409,24 @@ static bool suffixed_insn(const insninfo* insn, uint8_t suffix,
 #endif
 }
 
-/* `RES n, (IX+d), r` and `SET n, (IX+d), r`, and nothing else has three.
+/* `RES n, (IX+d), r` and `SET n, (IX+d), r`, the only instructions with three
+ * operands.
  *
- * These are the undocumented Z80 forms that write the result to a register as
- * well as to memory -- `DD CB d 80+r` rather than `DD CB d 86` -- and they are
- * the only instruction shape in the reference with an operand after the second.
- * The table holds them as sixteen pseudo-mnemonics, `res0` through `set7`,
- * each taking `(IX+d)` and a register, so the bit is part of the *name* and
- * two operands is all a row ever needs. Building the name here is what turns
- * the three-operand line into a two-operand one.
+ * They are the undocumented Z80 forms that write the result to a register as
+ * well as to memory -- `DD CB d 80+r` rather than `DD CB d 86`. The table
+ * holds them as sixteen pseudo-mnemonics, `res0` through `set7`, each taking
+ * `(IX+d)` and a register, so the bit number is part of the *name* and no row
+ * ever needs more than two operands. Building that name here is what turns a
+ * three-operand line into a two-operand one.
  *
  * noinline and reached by a tail call, like the directives and the suffixes:
  * nothing from assemble_line has to survive it, so an ordinary instruction
  * pays one compare on a character already in a register and no frame at all.
  *
- * The bit is checked here because the row cannot: it was spent on the name,
- * so nothing downstream would notice `res 9, (ix+0), b`. A mnemonic that has
- * no numbered form -- `bit`, which writes no result, or `ld` -- simply fails
- * the lookup, which is why this asks the table rather than a list of names. */
+ * The bit number is checked here because the row cannot check it -- it was
+ * spent on the name, so nothing downstream would notice `res 9, (ix+0), b`. A
+ * mnemonic with no numbered form, like `bit` or `ld`, fails the lookup, which
+ * is why this asks the table rather than a list of names. */
 __attribute__((noinline))
 static bool third_operand(const insninfo* insn, dop* a, dop* b,
                           const char* p, const char* e, const char** stop) {
@@ -7547,18 +7474,15 @@ static bool third_operand(const insninfo* insn, dop* a, dop* b,
 
 /* Assembles one line and reports where it stopped.
  *
- * The end of the *line* is not looked for first. It used to be: the caller
- * scanned to the newline to bound this one, and then this one scanned the same
- * bytes again -- two passes over every byte in the source to parse it once.
- * No scan needs that bound, because no scan can run past a newline anyway: it
- * is not a space, not a name character and not part of a number, so every loop
- * stops on it. The caller is told where parsing ended and steps over the
- * newline from there.
+ * The end of the line is not found first. Scanning to the newline to bound
+ * this function would mean two passes over every byte of the source to parse
+ * it once, and no scan needs that bound: a newline is not a space, not a name
+ * character and not part of a number, so every loop stops on it anyway. The
+ * caller is told where parsing ended and steps over the newline from there.
  *
  * The bound the scans do carry is `e`, the end of the *buffer*, which the
- * caller already has and which costs nothing to find. That is a different
- * thing from the newline and it is there for a different reason -- see EVERY
- * SCAN IS BOUNDED at the top of this file. */
+ * caller already has. That is a different thing from the newline and it is
+ * there for a different reason -- see the header of this file. */
 /* Whether a token would be read as a number rather than as a name.
  *
  * A label cannot be spelled like a literal: the reference refuses `a00h:`,
@@ -7610,16 +7534,10 @@ static bool third_operand(const insninfo* insn, dop* a, dop* b,
 #endif
 
 __attribute__((noinline)) static bool assemble_line(const char* p, const char* e, const char** stop) {
-    /* Bounded, like every scan in the file, and this one was bounded first:
-     * it was correct until labels were added around it, nothing about labels
-     * touches it, and unbounded it then broke *every line on the Agon* while
-     * the host build was perfect.
-     *
-     * Every line starts here, so the generated assembly is worth re-reading
-     * whenever this function changes. `dec iy` before a loop head is the tell,
-     * and test/run.sh counts them -- it was three here before the scans were
-     * bounded and is zero now. None of those three was actually wrong, which
-     * is the point: they were correct by register allocation. */
+    /* Bounded, like every character scan in the file. Every line of the source
+     * starts here, so the generated assembly is worth re-reading whenever this
+     * function changes: `dec iy` before a loop head is the sign of a rotated
+     * scan, and test/run.sh counts them. */
     while (p < e && is_space_ch(*p)) {
         p++;
     }
@@ -7667,23 +7585,13 @@ __attribute__((noinline)) static bool assemble_line(const char* p, const char* e
     if (*p == ':') {
         LTRUNC_AT(1);
         const int addr = zz.org + (int) (zz.o - zz.out);
-        /* "Label too long" there, at sixty-five characters. The `@` of a
-         * local counts towards it, which is why this is asked once for both
-         * rather than after the two are told apart.
+        /* "Label too long" at sixty-five characters, as in the reference. The
+         * `@` of a local counts towards the limit, which is why this is asked
+         * once for both rather than after the two are told apart.
          *
          * Unsigned, because a length cannot be negative and a signed compare
-         * is a `call pe, __setflag` that the codegen budget in test/run.sh
-         * counts.
-         *
-         * This test and the anonymous one below each take assemble_line's
-         * frame from 110 bytes to 113, and isa_real from 5.42s to 5.54s. That
-         * is the frame and not the tests: the same 128 bytes an `ix`
-         * displacement reaches, and the same size of growth that cost 1.8%
-         * when an EQU kept a pointer here. Moving both into a function of
-         * their own, and moving them into sym_intern, loc_intern and
-         * anon_define which are already out of line, both still read 113 --
-         * so they are written where the definition is, which is where they
-         * are easiest to find. */
+         * is a `call pe, __setflag` -- which the codegen budget in test/run.sh
+         * counts. */
         if ((unsigned) n > LABEL_MAX) {
             zz.err = ZAP_E_LABEL_TOO_LONG;
 
@@ -7741,19 +7649,16 @@ __attribute__((noinline)) static bool assemble_line(const char* p, const char* e
 
         /* `name: EQU value`, which names a value rather than an address.
          *
-         * Placed after the return above and not before the definition, which
-         * is where the two earlier attempts put it. A bare `label:` line never
-         * reaches here, and those are 9,347 of isa_memory's lines and every
-         * label in isa_real; testing before the definition instead cost 1.8%
-         * on isa_memory alone.
+         * Tested after the return above rather than before the definition, so
+         * that a bare `label:` line -- which never reaches here -- pays
+         * nothing for it.
          *
          * The label has already been defined at the address the line was at,
          * and equ_line replaces that with the value. It re-finds the symbol by
-         * name rather than being handed it: keeping the pointer in a local
-         * here took three more bytes of frame, and the frame going 115 to 118
-         * was enough to lose `iy` as the line pointer -- 1.8% on every
-         * benchmark, including the ones with no EQU in them. One hash lookup
-         * per EQU line against a spill on every line in the file. */
+         * name rather than being handed it, because keeping that pointer in a
+         * local here would cost three more bytes of frame, which is enough to
+         * lose `iy` as the line pointer for every line in the file. One hash
+         * lookup per EQU is the cheaper end of that trade. */
         if (is_equ_at(p)) {
             return equ_line(s, n, p, e, stop);
         }
@@ -7782,15 +7687,13 @@ __attribute__((noinline)) static bool assemble_line(const char* p, const char* e
     if (insn == NULL) {
         /* A directive, a macro, a suffixed instruction, or nothing this
          * understands. All of them are asked here and nowhere earlier, so an
-         * instruction line never tests for any of them: `DB` and its dozen
-         * relatives, and `.lil` and its seven, live entirely on the path that
-         * used to do nothing but set "unknown instruction".
+         * instruction line never tests for any of them.
          *
-         * And this stays a *tail* call. Written as `insn = something(...)`
-         * followed by a fall-through into the operands, everything this
-         * function holds has to survive the call, and that cost 6% on every
-         * benchmark -- including the ones with no suffix and no directive in
-         * them. Nothing returns to this line. */
+         * This must stay a *tail* call. Written as `insn = something(...)`
+         * with a fall-through into the operand parsing below, everything this
+         * function holds would have to survive the call -- which is paid on
+         * every line, including the ones with no directive in them. Nothing
+         * returns to this point. */
         return directive_line(s, n, p, e, stop);
     }
 
@@ -7811,12 +7714,10 @@ __attribute__((noinline)) static bool assemble_line(const char* p, const char* e
         }
         /* A third operand, which only RES and SET have. See third_operand.
          *
-         * One compare, on a character already in a register. parse_operand
-         * leaves the cursor past whatever follows the operand -- it did so
-         * already on three of its four exits and now does on the fourth -- so
-         * there is no scan here, and a two-operand line pays a byte compare
-         * and nothing else. Written with the scan here instead it was 0.04s
-         * of isa_real. */
+         * One compare, on a character already in a register: parse_operand
+         * leaves the cursor past whatever follows the operand on every exit,
+         * so there is no scan here and a two-operand line pays a byte compare
+         * and nothing else. */
         if (*p == ',') {
             return third_operand(insn, &a, &b, p + 1, e, stop);
         }
@@ -7945,19 +7846,15 @@ static bool resolve_fixups(void) {
  * `end` are locals, so the only thing an include has to save is the reader,
  * which it does in its own frame.
  *
- * Not one line of the loop changed to make that work, and that was the whole
- * point of doing it this way. The alternative -- a stack of readers in `dz`,
- * popped when a file ends -- puts a test for "is there a parent file" in the
- * hottest code in the assembler, to answer a question only an INCLUDE can ask.
+ * The alternative -- a stack of readers in `dz`, popped when a file ends --
+ * would put a test for "is there a parent file" in the hottest loop in the
+ * assembler, to answer a question only an INCLUDE can ask.
  */
 __attribute__((noinline)) static bool run_lines(void) {
-    /* The cursor is a pointer, not an offset into the buffer.
-     *
-     * Every line used to turn `bpos_` into a pointer to start, and the pointer
-     * back into `bpos_` to finish -- two loads and two adds on the way in, a
-     * subtract and a store on the way out, for a value only this loop uses.
-     * br_fill_lines never reads bpos_; it only resets it, so nothing needs the
-     * offset kept up to date in between. */
+    /* The cursor is a pointer, not an offset into the buffer. An offset would
+     * be turned into a pointer on the way into every line and back again on
+     * the way out, for a value only this loop uses. br_fill_lines never reads
+     * `bpos_`; it only resets it. */
     const char* p = zz.rd.buf_;
 
     /* Empty for a file, so the first pass through the loop fills it. A reader
@@ -7984,13 +7881,10 @@ __attribute__((noinline)) static bool run_lines(void) {
         /* The buffer holds whole lines, so this one's newline is in it. */
         const char* stop = p;
 
-        /* Where the output stood before this line, for the listing.
-         *
-         * In `dz` and not in a frame. As two locals they were live across
-         * assemble_line, which took two slots in the loop that has the least
-         * to spare, and the branch that never runs cost **1.1% of isa_real**
-         * -- more than the test it guards could account for. At a fixed
-         * address the stores are absolute and the loop keeps its registers. */
+        /* Where the output stood before this line, for the listing. Held in
+         * `dz` rather than in locals, which would be live across assemble_line
+         * and take two registers from the loop that has fewest to spare. At a
+         * fixed address the stores are absolute. */
         if (listing) {
             zz.lst_o = zz.o;
             zz.lst_pc = zz.org + (int) (zz.o - zz.out);
@@ -7999,10 +7893,10 @@ __attribute__((noinline)) static bool run_lines(void) {
 
         zz.line++;
         if (!assemble_line(p, end, &stop)) {
-            /* The innermost failure has already taken `errline`; this line
-             * is then the one that invoked it, and its text is the one thing
-             * the expansion could not record for itself. Which file and which
-             * line it was, it did record -- see macro_expand. */
+            /* The innermost failure has already taken `errline`, so this line
+             * is the one that invoked it, and its text is the one thing the
+             * expansion could not record for itself. Which file and which line
+             * it was, it did record -- see macro_expand. */
             if (!zz.errhave) {
                 err_line(zz.errline, p, end);
                 zz.errhave = true;
@@ -8028,11 +7922,9 @@ __attribute__((noinline)) static bool run_lines(void) {
              *
              * `stop` has had its address taken -- assemble_line reports
              * through it -- so the compiler cannot keep it in a register and
-             * stored it to the frame **on every character of every comment**:
-             * `ld (ix - 3), hl` inside the loop, plus two `lea` and a
-             * push/pop pair to move the pointer at all. A comment byte cost
-             * 48 cycles. A local that is never addressed costs about a third
-             * of that, and comments are 28% of the bytes in BBC BASIC. */
+             * would store it to the frame on every character of every comment.
+             * A local that is never addressed stays in a register, and
+             * comments are a quarter of the bytes in a real program. */
             const char* q = stop;
             while (q < end && is_space_ch(*q)) {
                 q++;
@@ -8082,15 +7974,13 @@ __attribute__((noinline)) static bool run_lines(void) {
         /* A line that was only a remark stops at the semicolon, so the rest
          * of it is walked here. This is the whole cost of a comment: one pass
          * over its bytes, looking for the newline and nothing else. */
-        /* stop is on the newline: the test above returned for every
-         * other case, and the comment skip before it ends on one too.
-         * The loop that used to search for it from here could never
-         * take a step. */
-        /* No bound on the step. The line always ends on a newline that is
-         * inside the buffer, or on the sentinel one past it, so stop + 1 is
-         * at worst one past the end -- and the refill above tests `p >= end`,
-         * which that satisfies just as `end` did. The compare it replaces was
-         * a 24-bit one, on every line. */
+        /* `stop` is on the newline: every other case returned above, and the
+         * comment skip before it ends on one too. */
+        /* No bound on the step. A line always ends on a newline inside the
+         * buffer, or on the sentinel one past it, so `stop + 1` is at worst
+         * one past the end -- and the refill above tests `p >= end`, which
+         * that satisfies. A bounded step would be a 24-bit compare on every
+         * line. */
         p = stop + 1;
     }
 
@@ -8207,14 +8097,13 @@ __attribute__((noinline)) static bool run(const char* path) {
         return false;
     }
 
-    /* Space that was reserved and never written over is not output. `DS 4` at
-     * the end of a file is four bytes shorter in the reference, and `ALIGN 8`
-     * at the end is nothing at all -- both measured. Dropped here, once,
-     * rather than by testing on every write.
+    /* Space that was reserved and never written over is not output: `DS 4` at
+     * the end of a file produces nothing, and neither does a trailing `ALIGN`,
+     * as in the reference. Dropped here, once, rather than tested on every
+     * write.
      *
-     * After the fixups, not before: a forward reference is patched by offset,
-     * and shortening the output first would move nothing but would leave the
-     * question of whether it could. */
+     * After the fixups rather than before, so that nothing has to reason about
+     * whether shortening the output could move a patch site. */
     if (zz.fill_len != 0 && (int) (zz.o - zz.out) == zz.fill_end) {
         zz.o -= zz.fill_len;
     }
@@ -8222,12 +8111,8 @@ __attribute__((noinline)) static bool run(const char* path) {
     return true;
 }
 
-/* Everything run() may have allocated.
- *
- * Written once because it was written three times: the two error paths and
- * the success path each freed their own list, and the block list was added to
- * one of them. The sanitiser found it; a machine with 512 KB and no leak
- * checker would have found it later and less clearly. */
+/* Everything run() may have allocated, freed in one place so that the two
+ * error paths and the success path cannot drift apart. */
 static void dz_free(void) {
     free(zz.out);
     free(zz.syms);
@@ -8277,14 +8162,12 @@ static void dz_free(void) {
 
 /* `-ez80`, spelled out rather than compared with same_ci.
  *
- * same_ci is the mnemonic compare and is wanted inlined into mnemonic_of, which
- * runs on every line of the source. Calling it from here -- once, at startup,
- * on an argument -- was enough for the compiler to stop inlining it and emit it
- * out of line, so the hot compare became a call per candidate: about 31,700 of
- * them on isa_real, and **5.5% of runtime**. The measurement that found it is
- * in the notes; the lesson is that a `static inline` helper is inlined at the
- * compiler's discretion, and one cold caller can take that away from every hot
- * one. */
+ * same_ci is the mnemonic compare, and it has to stay inlined into mnemonic_of,
+ * which runs on every line of the source. One cold caller here -- once, at
+ * startup, on an argument -- is enough for the compiler to stop inlining it
+ * everywhere, turning the hot compare into a call per candidate. A
+ * `static inline` helper is inlined at the compiler's discretion, and a single
+ * cold caller can take that away from every hot one. */
 static bool is_ez80_opt(const char* a) {
     return a[0] == '-' && (a[1] | 0x20) == 'e' && (a[2] | 0x20) == 'z'
            && a[3] == '8' && a[4] == '0' && a[5] == 0;
@@ -8306,10 +8189,9 @@ static bool opt_hex(const char* attached, const char* next, int* used,
         p = next;
         *used = 1;
     }
-    /* Read here rather than through hexval, which build_cclass fills and
-     * build_cclass runs after the arguments are parsed. Reaching for it left
-     * every digit reading as zero, so `-o 50000` assembled at 0 and said
-     * nothing -- the options were being parsed against a table of zeros. */
+    /* Read here rather than through hexval, which is filled by build_cclass
+     * -- and build_cclass runs after the arguments are parsed, so at this
+     * point that table is still all zeros. */
     int v = 0;
     int n = 0;
     for (; *p != 0; p++, n++) {
@@ -8525,24 +8407,18 @@ static void err_reopen(const char* path, int line) {
  *     040000 01 02 03 04 0001   db 1,2,3,4
  *            05 06 07 08
  *
- * Six hex digits of address, then four bytes to a row in a twelve-character
+ * Six hex digits of address, then up to four bytes in a twelve-character
  * field, then the line number in four digits, then the source line as it was
  * written. A line that emitted more than four bytes carries on underneath with
  * the address column blank.
  *
- * An invocation is one row carrying the bytes its expansion produced, and the
- * body lines are not listed separately. The reference lists them, indented and
- * numbered `0001M1`, *after* the invocation -- and getting that order right
- * here would mean printing a row before the line is assembled, when the bytes
- * it emits are not yet known. One row with the right bytes on it reads better
- * than two with the wrong order, and a listing is a convenience rather than a
- * thing anybody diffs against the reference.
+ * A macro body line carries its own number and a depth tag -- `0001M1` -- and
+ * is written by macro_expand, which also writes the invocation and its
+ * arguments; see there.
  *
- * The source text is echoed as it was written. The reference reformats it --
- * a line with no indent comes back with two spaces -- which is a difference
- * worth having on this side.
+ * The source text is echoed exactly as written.
  *
- * Whatever it cannot write, it drops. A listing is a convenience and must
+ * Whatever cannot be written is dropped: a listing is a convenience and must
  * never be able to fail an assembly. */
 /* One line of listing, without its terminator, which is not the same on both
  * destinations.
@@ -8639,15 +8515,13 @@ static void list_line(int pc, const uint8_t* from, const uint8_t* to, int line,
 
 /* Remembers a listed line whose bytes are not final yet.
  *
- * Only the lines that have a fixup in them, which is why this is a list and
- * not a record per line: isa_real lists 21,494 lines and 843 of them hold a
- * forward reference. Sixteen bytes each on the host and twelve on the Agon,
- * and none of it is allocated unless a listing was asked for.
+ * Only the lines that have a fixup in them, which is why this is a list rather
+ * than a record per line: a small fraction of the lines in a source hold a
+ * forward reference. Nothing here is allocated unless a listing was asked for.
  *
- * A listing that runs out of memory is not a failed assembly. The bytes are
- * written either way and the assembly is already correct; what is lost is
- * that some lines of the listing show what was emitted rather than what was
- * patched, which is what every line showed before this existed. */
+ * A listing that runs out of memory is not a failed assembly: the output bytes
+ * are correct either way, and what is lost is that some lines of the listing
+ * show what was emitted rather than what was patched. */
 static void lstfix_add(const uint8_t* from, const uint8_t* to) {
     if (list_fh == 0 || to == from || zz.lst_row0 == 0) {
         return;
@@ -8912,8 +8786,8 @@ static void write_symbols(const char* src) {
     free(list);
 }
 
-/* What the assembly used, for -x. Counted rather than measured: these are the
- * numbers zap already keeps, not an instrumented run. */
+/* What the assembly used, for -x: the counters zap already keeps, rather than
+ * anything measured by instrumenting the run. */
 static void write_stats(void) {
     int syms = 0;
     for (const symblock* b = zz.blocks; b != NULL; b = b->next) {
@@ -8939,20 +8813,18 @@ static void write_stats(void) {
     printf("Output buffer        : %6d\r\n", zz.cap);
 }
 
-/* A value that did not fit where it was written, said and carried on.
+/* A value that did not fit where it was written: said, and the assembly
+ * carries on.
  *
- * Yellow rather than red, as the reference has it, because the assembly is
- * still going to produce a file -- and the bytes it produces are the ones the
- * reference produces, which is why this is a warning in both and not an error
- * in either.
+ * Yellow rather than red, as in the reference, because a file is still going
+ * to be produced -- and its bytes are the ones the reference produces, which
+ * is why this is a warning in both and an error in neither.
  *
- * The value is printed rather than the text it was written as. The reference
- * quotes the source token; the emitter is several layers below where that
- * text was, and carrying it down would mean holding a pointer and a length on
- * every operand of every line, which is a real cost on every source that has
- * nothing wrong with it. The number is what the reader needs anyway.
- *
- * No echoed line, for the same reason. */
+ * The value is printed rather than the source text it was written as. The
+ * reference quotes the token; the emitter is several layers below where that
+ * text was, and carrying it down would mean holding a pointer and a length for
+ * every operand of every line. There is no echoed source line for the same
+ * reason. */
 /* Where a warning happened, printed the way the reference prints it, and the
  * colour left on for the message that follows. Inside an expansion `zz.path`
  * is the macro, which is what the reader needs to be told: the line number
@@ -9002,18 +8874,17 @@ static void warn_initializer(const char* t, int n) {
 
 /* What went wrong, said the way somebody trying to fix it needs to hear it.
  *
- * Three things the one-line form did not have. The **source line**, because a
- * line number sends the reader to the file and the line sends them to the
- * mistake. The **token**, where the site that failed had it in hand. And for
- * a macro, **where it was invoked from** -- without which a failure inside a
- * body reported a line number of a file the reader had to guess at, and a
- * macro invoked in twenty places named none of them.
+ * Three things beyond the message. The **source line**, because a line number
+ * sends the reader to the file and the line sends them to the mistake. The
+ * **token**, where the site that failed had it in hand. And for a macro,
+ * **where it was invoked from**, without which a failure inside a body names a
+ * line of a file the reader has to guess at.
  *
  * All of it is captured when the failure happens and none of it is maintained
- * in advance, so a source that assembles pays for none of this.
+ * in advance, so a source that assembles pays for none of it.
  *
- * Colour on request; see is_color_opt. The codes are the reference's: red for
- * what went wrong, yellow for the text it went wrong in. */
+ * The colour codes are the reference's: red for what went wrong, yellow for
+ * the text it went wrong in. */
 static void report(const char* in) {
     const char* const red = use_color ? "\033[31m" : "";
     const char* const yellow = use_color ? "\033[33m" : "";

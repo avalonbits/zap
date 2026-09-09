@@ -1288,8 +1288,48 @@ static inline bool fits_imm(int v, int width) {
  * because the fixup patcher is the first thing that needs it. */
 static void warn_trunc(evalue v, int width);
 
-static inline void warn_imm(int v, int width) {
-    if (!fits_imm(v, width)) {
+/* Whether `-w` was given, and the one place zap deliberately does not behave
+ * like the reference.
+ *
+ * There, truncation warnings are on and `-i` turns them off -- but only the
+ * printing: the check still runs, so `-i` buys nothing but quiet. Here the
+ * check *is* the cost, and it is the largest single cost of any diagnostic in
+ * the program: 2.1% of bbcbasic and 6.7% of a file that is nothing but
+ * immediates, because unlike every other diagnostic it asks a question of
+ * every source rather than doing work after one has gone wrong.
+ *
+ * So it is off unless asked for, and asking is `-w`. A source that wants
+ * checking says so and pays for it; a source that does not is not charged for
+ * a question nobody asked. `-i` is still accepted, because a command line
+ * written for the reference must still run -- and with the check already off
+ * it does exactly what it says.
+ *
+ * The cost of the flag itself is a load and a branch that predicts, in front
+ * of arithmetic that is longer than it. See .internal/performance-notes.md. */
+static bool want_warn = false;
+
+/* The flag test lives inside, and the compiler makes this a call whatever the
+ * keyword says. Both halves of that were measured on isa_real, which is the
+ * worst case the instruction set can produce -- an immediate on nearly every
+ * line:
+ *
+ *   no warning code at all   5.36    (the branch before this one)
+ *   test here, a call        5.42    kept
+ *   test at the call site    5.44    a macro in emit_row, so the call never
+ *                                    happens -- and it is slower
+ *
+ * The middle one pays a call per immediate to be told there is nothing to do.
+ * The last one does not pay the call, and pays for it anyway: hoisting the
+ * test into emit_row took assemble_line's frame from 108 bytes to 111, and on
+ * this machine three bytes of frame has cost 1.8% more than once. The frame is
+ * a signed `ix` displacement and the cliff is at 128; everything in the hot
+ * path is already leaning on it.
+ *
+ * So the residual 1.1% is a call, and buying it back costs more than it is
+ * worth. On a real program it is 3.78s against 3.80, which is the emulator's
+ * resolution. */
+static void warn_imm(int v, int width) {
+    if (want_warn && !fits_imm(v, width)) {
         warn_trunc(v, width);
     }
 }
@@ -1607,7 +1647,7 @@ static bool patch_fixup(const fixup* f) {
         return true;
     }
 
-    if (!fits_width(val, (int) w)) {
+    if (want_warn && !fits_width(val, (int) w)) {
         /* Against the line that *used* the label, not the one that defined
          * it. The fixup carries the number for exactly this, and until now
          * only the failure paths read it -- so a truncated forward reference
@@ -2357,12 +2397,8 @@ static bool opt_adl = ZAP_ADL;
 
 static bool compat_ez80 = false;
 
-/* Whether `-i` was given. The reference calls it "ignore value truncation
- * warnings" and that is exactly what it does: the check still runs, and the
- * line is not printed. Suppressing the check instead would make `-i` faster
- * than not passing it, which is a reason to pass it that has nothing to do
- * with what it means. */
-static bool ignore_warn = false;
+/* `-w` (truncation warnings, off by default) is declared above, beside the
+ * first site that reads it. */
 
 /* Whether the error report is coloured.
  *
@@ -5851,7 +5887,7 @@ static bool emit_data(uint8_t width, const char** pp, const char* e) {
              * first, they keep the shifts the eZ80 has. Splitting the write
              * this way is 0.20s of the 0.42 the widening cost -- see
              * .internal/performance-notes.md. */
-            if (!fits_width(value, width)) {
+            if (want_warn && !fits_width(value, width)) {
                 warn_trunc(value, width);
             }
 
@@ -5934,7 +5970,7 @@ static bool emit_block(int n, int width, evalue fill) {
         return false;
     }
 
-    if (!fits_width(fill, width)) {
+    if (want_warn && !fits_width(fill, width)) {
         warn_trunc(fill, width);
     }
 
@@ -8265,7 +8301,8 @@ static void usage(void) {
     printf("  -o\tOrg start address in hexadecimal format, default is 040000\r\n");
     printf("  -b\tFillbyte in hexadecimal format, default is FF\r\n");
     printf("  -a\tADL mode 1/0, default is 1\r\n");
-    printf("  -i\tIgnore value truncation warnings\r\n");
+    printf("  -w\tWarn about truncated values\r\n");
+    printf("  -i\tIgnore value truncation warnings, which is the default\r\n");
     printf("  -l\tListing to file with .lst extension\r\n");
     printf("  -s\tExport symbols\r\n");
     printf("  -d\tDirect listing to console\r\n");
@@ -8278,17 +8315,26 @@ static void usage(void) {
  *
  * A drop-in replacement that needs the command line rewritten is not one, so
  * every flag it has is accepted here -- three of them change the bytes and
- * have to be implemented, one is recognised and does nothing because zap has
- * nothing for it to turn off, and the rest do what they say.
+ * have to be implemented, two are recognised and do nothing, and the rest do
+ * what they say. One flag is zap's own, which is `-w`.
  *
  * `-m` is minimum memory. It is taken and ignored: zap has one memory
  * configuration and it is the small one, so there is nothing to shrink from
  * and nothing for a script that passes it to be surprised by.
  *
- * `-i` was the other one until zap grew the warning it turns off. It silences
- * the printing and leaves the check standing, which is what the reference
- * does -- and it means `-i` is not a way to buy the 2% back. The check is the
- * cost; the printf only happens when something is actually wrong. */
+ * `-i` is now the other one. zap has the warning it names, but off by default
+ * and turned on by `-w` -- the reverse of the reference, and the only place
+ * the two command lines disagree about what they do rather than how they spell
+ * it. The reason is that the check costs 2.1% of a real program and the
+ * reference's `-i` does not recover it, because there `-i` silences the
+ * printing and leaves the check running. Here the check is the flag. With it
+ * off by default, `-i` asks for what is already true, so it is taken and does
+ * nothing -- and a command line written for the reference still runs and still
+ * gets the bytes it expects.
+ *
+ * `-w` is not the reference's, which is the one thing this file otherwise
+ * never does. It is a flag the reference has no spelling for at all: there is
+ * no way to ask ez80asm for the check, because it never turns it off. */
 __attribute__((noinline)) static bool parse_args(int argc, char* argv[],
                                                  const char** in,
                                                  const char** out,
@@ -8353,7 +8399,8 @@ __attribute__((noinline)) static bool parse_args(int argc, char* argv[],
             case 'd': want_console_list = true; break;
             case 's': want_symbols = true; break;
             case 'x': want_stats = true; break;
-            case 'i': ignore_warn = true; break;
+            case 'w': want_warn = true; break;
+            case 'i': break;   /* the default already ignores them */
             case 'm': break;   /* one memory configuration, and it is small */
             default:
                 printf("Unknown option %s\r\n", a);
@@ -8693,9 +8740,6 @@ static void write_stats(void) {
  *
  * No echoed line, for the same reason. */
 static void warn_trunc(evalue v, int width) {
-    if (ignore_warn) {
-        return;
-    }
     const char* const yellow = use_color ? "\033[33m" : "";
     const char* const off = use_color ? "\033[39m" : "";
     /* Inside an expansion `zz.path` is the macro, which is what the reader

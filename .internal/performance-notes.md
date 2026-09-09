@@ -4566,6 +4566,10 @@ is what a flag means.
 
 ## What a truncation warning costs, which is more than it looks
 
+*(and why it ended up behind `-w` rather than on by default -- the figures
+below are what made that the shape. Three builds now: no warning code at all,
+the flag off, the flag on.)*
+
     isa_real         5.36 -> 5.72   +6.7%
     isa_even         5.46 -> 5.80   +6.2%
     isa_degenerate   5.18 -> 5.28   +1.9%
@@ -4603,5 +4607,38 @@ And the spread across the seven says what the cost is proportional to, which
 is not the size of the file or the number of lines but **how many operands in
 it are immediates**. isa_real and isa_even are one instruction per line with
 an operand each and pay 6%; isa_memory is loads and stores through addresses
-and pays 0.7%. bbcbasic's 2.1% is what a real program pays, and it is the
-number to argue about, not the 6.7.
+and pays 0.7%. bbcbasic's 2.1% is what a real program pays.
+
+## And what having the flag costs while it is off, which is a call
+
+2.1% is more than this program gives away, so the check went behind `-w` and
+the default stopped asking. That does not get all of it back:
+
+    source          none    -w off    -w on
+    isa_real        5.36      5.42     5.72
+    isa_even        5.46      5.52     5.80
+    isa_degenerate  5.18      5.22     5.28
+    isa_memory      5.56      5.60     5.60
+    bbcbasic        3.78      3.80     3.88
+    rokky           0.52      0.52     0.54
+    synth           6.94      7.04     7.06
+
+**About 1% remains with the flag off, and every bit of it is a call.** The
+compiler weighs `static inline void warn_imm` and makes it a real function --
+0x5e bytes of it in the object file -- so every immediate in the file calls it
+to be told that `want_warn` is false and there is nothing to do.
+
+The obvious fix is to put the test at the call site, so the call never
+happens. It was tried, as a macro in emit_row, and it is **slower**: 5.44 on
+isa_real against 5.42.
+
+    -108 became -111 in assemble_line's frameset
+
+Which is the same cliff as always. The frame is a signed `ix` displacement,
+the edge is at 128, and everything in the hot path is already leaning on it;
+three bytes has cost 1.8% here before. The inlined test needs the operand and
+the width live across a branch that the call did not.
+
+So: a call per immediate, or three bytes of frame. The call is cheaper, and
+the residual is 0.02s on a real program -- the emulator's own resolution.
+**This is the fourth time a change that removed work has lost to the frame.**

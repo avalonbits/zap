@@ -174,8 +174,12 @@ cli_check "-v prints a version and assembles nothing" \
     "$(printf '%s' "$optv" | grep -c '^zap version ')" 1
 cli_check "-h lists the options" \
     "$("$OUT/zap" -h 2>&1 | tr -d '\r' | grep -c '^  -o\b')" 1
-# Accepted and doing nothing, because zap has nothing for them to turn off.
-# Silently, because a script that passes them should not have to care.
+cli_check "-h lists -w, which is zap's own" \
+    "$("$OUT/zap" -h 2>&1 | tr -d '\r' | grep -c '^  -w\b')" 1
+# Accepted and doing nothing: `-m` because zap has one memory configuration
+# and it is the small one, `-i` because truncation warnings are already off
+# unless `-w` asks for them. Silently, because a script written for the
+# reference should not have to care.
 for noop in -i -m; do
     cli_check "$noop is accepted" \
         "$("$OUT/zap" -c $noop "$OUT/opt2.s" "$OUT/opt2.bin" 2>&1 \
@@ -189,15 +193,21 @@ cli_check "an option that is not the reference's is still refused" \
 # and the assembly carries on and produces the same bytes the reference
 # produces. That is why it is a warning in both and an error in neither.
 #
-# The line is drawn where the reference draws it, at all six boundaries: a
+# The line is drawn where the reference draws it, at all seven boundaries: a
 # value fits if the bytes that come out mean the same number read as signed or
 # as unsigned. `ld a, -1` and `ld a, 255` are both a byte that loses nothing;
 # `ld a, 256` and `ld a, -129` are both a byte that says something else.
+#
+# What zap does NOT copy is when the question gets asked. The reference always
+# asks and `-i` silences the answer; zap asks only for `-w`, because the
+# asking is what costs 2.1% of a real program. So the comparison is zap with
+# `-w` against the reference with nothing, and it is the same comparison at
+# every boundary -- the rule is identical, only the default differs.
 warn_same() {
     local text="$1" want="$2"
     printf '%s\n' "$text" > "$OUT/warn.s"
     local got
-    got=$("$OUT/zap" -c "$OUT/warn.s" "$OUT/warn.bin" 2>&1 | tr -d '\r' \
+    got=$("$OUT/zap" -c -w "$OUT/warn.s" "$OUT/warn.bin" 2>&1 | tr -d '\r' \
           | grep -c 'truncated' || true)
     cli_check "[$text] warns $want" "$got" "$want"
     if [ -x "$OPTREF" ]; then
@@ -206,6 +216,10 @@ warn_same() {
               | sed 's/\x1b\[[0-9;]*m//g' | grep -c 'truncated' || true)
         cli_check "[$text] agrees with the reference" "$got" "$ref"
     fi
+    # And silence without it, which is the default and the whole point of it.
+    cli_check "[$text] says nothing without -w" \
+        "$("$OUT/zap" -c "$OUT/warn.s" "$OUT/warn.bin" 2>&1 | tr -d '\r' \
+           | grep -c 'truncated' || true)" 0
 }
 warn_same "  ld a, 255" 0
 warn_same "  ld a, -1" 0
@@ -216,9 +230,10 @@ warn_same "  dw 65536" 1
 warn_same "  dl 16777216" 1
 
 # And the bytes are the reference's either way, which is the claim that makes
-# it a warning rather than a refusal.
+# it a warning rather than a refusal -- and, now that the check is optional,
+# the claim that makes the flag safe: `-w` must not be a different assembler.
 printf '  ld a, 0x1234\n  dw 65536\n' > "$OUT/warn.s"
-"$OUT/zap" -c "$OUT/warn.s" "$OUT/warna.bin" > /dev/null 2>&1 || true
+"$OUT/zap" -c -w "$OUT/warn.s" "$OUT/warna.bin" > /dev/null 2>&1 || true
 if [ -x "$OPTREF" ]; then
     "$OPTREF" "$OUT/warn.s" "$OUT/warnb.bin" > /dev/null 2>&1 || true
     if cmp -s "$OUT/warna.bin" "$OUT/warnb.bin"; then
@@ -228,23 +243,27 @@ if [ -x "$OPTREF" ]; then
         status=1
     fi
 fi
-wexit=$("$OUT/zap" -c "$OUT/warn.s" "$OUT/warna.bin" > /dev/null 2>&1; echo $?)
+wexit=$("$OUT/zap" -c -w "$OUT/warn.s" "$OUT/warna.bin" > /dev/null 2>&1; echo $?)
 cli_check "a warning is not a failure" "$wexit" 0
 
-# -i names exactly this and now does it.
-cli_check "-i silences them" \
-    "$("$OUT/zap" -c -i "$OUT/warn.s" "$OUT/warna.bin" 2>&1 | tr -d '\r' \
-       | grep -c 'truncated')" 0
-cli_check "-i changes no bytes" \
-    "$("$OUT/zap" -c -i "$OUT/warn.s" "$OUT/warnc.bin" > /dev/null 2>&1; \
-       cmp -s "$OUT/warna.bin" "$OUT/warnc.bin" && echo same || echo differs)" \
-    "same"
+# The three ways to spell the default, all of them silent and all of them the
+# same bytes as -w. `-i` is the reference's flag and asks for what is already
+# true, so it is taken and does nothing rather than refused: a command line
+# written for the reference still runs, and still gets the bytes it expects.
+for wflag in "" "-i"; do
+    cli_check "[${wflag:-no flag}] is silent" \
+        "$("$OUT/zap" -c $wflag "$OUT/warn.s" "$OUT/warnc.bin" 2>&1 \
+           | tr -d '\r' | grep -c 'truncated' || true)" 0
+    cli_check "[${wflag:-no flag}] writes what -w writes" \
+        "$(cmp -s "$OUT/warna.bin" "$OUT/warnc.bin" && echo same || echo differs)" \
+        "same"
+done
 
 # A forward reference is patched long after its line, and the fixup carries
 # the line number so the warning still names it.
 printf '  nop\n  ld a, big\nbig: EQU 0x1234\n' > "$OUT/warnf.s"
 cli_check "a truncated forward reference names its own line" \
-    "$("$OUT/zap" -c "$OUT/warnf.s" "$OUT/warnf.bin" 2>&1 | tr -d '\r' \
+    "$("$OUT/zap" -c -w "$OUT/warnf.s" "$OUT/warnf.bin" 2>&1 | tr -d '\r' \
        | grep -c 'line 2 - Value truncated to 8 bit')" 1
 
 # The three that write something extra. None of them may fail an assembly:
@@ -987,9 +1006,13 @@ cli_check "-ez80 gives 1+2*3 the value 9" \
 "$OUT/zap" -c "$OUT/prec.s" "$OUT/prec2.bin" -ez80 > /dev/null 2>&1 || true
 cli_check "the flag is taken after the filenames too" \
     "$(xxd -p "$OUT/prec2.bin" 2>/dev/null | tr -d '\n')" "21090000"
-unk=$("$OUT/zap" -c -wat "$OUT/prec.s" "$OUT/x.bin" 2>&1 | tr -d '\r' || true)
+# Not -wat, which this used to be: -w is zap's own flag now, and zap reads the
+# letter after the dash. The reference reads them as a cluster and says
+# "Unknown option 'w'" to the same string, for the opposite reason -- it has no
+# -w at all. -zat is unknown to both.
+unk=$("$OUT/zap" -c -zat "$OUT/prec.s" "$OUT/x.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an unknown option is refused" \
-    "$(printf '%s' "$unk" | grep -c 'Unknown option -wat')" 1
+    "$(printf '%s' "$unk" | grep -c 'Unknown option -zat')" 1
 
 for flag in DUP_ROW DUP_GROUP DUP_BUCKET DUP_HASH DUP_SYMCHAIN DUP_INTERN DUP_LOCINTERN DUP_NUMTOK; do
     if ! cc "${CFLAGS[@]}" "-D$flag" -o "$OUT/zap_$flag" src/zap.c "${SRCS[@]}" \

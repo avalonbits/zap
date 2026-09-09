@@ -225,18 +225,32 @@ local -- three bytes in 31,520 with both assemblers accepting the file -- and
 BBC BASIC, which needed an index displacement to be an expression and an
 expression to be kept as text when a fixup could not hold it.
 
-## The one warning the reference has, and where its text differs
+## The one warning the reference has, and the one place zap does not copy it
 
-Value truncation, now emitted:
+Value truncation, now emitted -- with `-w`:
 
     File "prog.s" line 1 - Value truncated to 8 bit '0x100'
 
 Same rule as the reference -- a value fits `width` bytes if it lies in
 `-2^(8w-1) .. 2^(8w)-1`, so `ld a, -1` and `ld a, 255` both pass and
 `ld a, 256` and `ld a, -129` do not -- and all seven boundaries are checked
-against it in test/run.sh. `-i` silences the printing, as it does there.
+against it in test/run.sh, zap with `-w` against the reference with nothing.
 
-Two differences in the text, both deliberate:
+**The default differs deliberately, and it is the only flag that does.** There
+the check always runs and `-i` silences the message; here the check is off and
+`-w` turns it on. `-i` is still accepted, and now says something true: the
+default already ignores them.
+
+The reason is that the reference's `-i` does not buy back what the check
+costs, because there the check runs either way -- and here it costs 2.1% of
+bbcbasic and 6.7% of isa_real. Every other diagnostic in the program is work
+done after a source has already gone wrong. This is the only one that asks a
+question of every source that has not.
+
+A command line written for ez80asm therefore still runs, still produces the
+same bytes, and differs only in whether a message it did not ask for appears.
+
+Two differences in the text as well, both deliberate:
 
 * **The reference quotes the source token; zap prints the value.** `ld a, 256`
   reads `'256'` there and `'0x100'` here. Quoting the token means holding a

@@ -73,7 +73,7 @@ static const char* emit(const char* src) {
 
     /* One assembly per process is what the CLI does; this runs hundreds, so
      * the state is cleared here rather than declared here. */
-    memset(&zz, 0, sizeof(zz));
+    memset(&state, 0, sizeof(state));
 
     const bool ok = run(path);
     unlink(path);
@@ -83,10 +83,10 @@ static const char* emit(const char* src) {
     if (!ok) {
         n = snprintf(out, sizeof(out), "ERR");
     } else {
-        const int len = (int) (zz.o - zz.out);
+        const int len = (int) (state.o - state.out);
         for (int i = 0; i < len && n < (int) sizeof(out) - 4; i++) {
             n += snprintf(&out[n], sizeof(out) - (size_t) n, "%s%02X",
-                          i ? " " : "", zz.out[i]);
+                          i ? " " : "", state.out[i]);
         }
     }
     out[n] = 0;
@@ -124,12 +124,12 @@ static int local_blocks(const char* src) {
     build_tables();
     build_cclass();
 
-    memset(&zz, 0, sizeof(zz));
+    memset(&state, 0, sizeof(state));
     const bool ok = run(path);
     unlink(path);
 
     int n = 0;
-    for (const locblock* b = zz.locfirst; b != NULL; b = b->next) {
+    for (const locblock* b = state.locfirst; b != NULL; b = b->next) {
         n++;
     }
     dz_free();
@@ -590,20 +590,20 @@ int main(void) {
      * Driven directly rather than through a source large enough to force it,
      * which would be a 50 KB case file to exercise four lines. */
     {
-        memset(&zz, 0, sizeof(zz));
-        zz.cap = OUT_MIN;
-        zz.out = (uint8_t*) malloc((size_t) zz.cap);
-        zz.o = zz.out;
-        zz.lim = zz.out + zz.cap - OUT_MAX_INSN;
+        memset(&state, 0, sizeof(state));
+        state.cap = OUT_MIN;
+        state.out = (uint8_t*) malloc((size_t) state.cap);
+        state.o = state.out;
+        state.lim = state.out + state.cap - OUT_MAX_INSN;
         for (int i = 0; i < 100; i++) {
-            *zz.o++ = (uint8_t) i;
+            *state.o++ = (uint8_t) i;
         }
 
         const bool grew = out_grow(0);
         char got[64];
         snprintf(got, sizeof(got), "%d %d %d %d", grew ? 1 : 0,
-                 (int) (zz.o - zz.out), (int) (zz.lim - zz.out),
-                 zz.out[99] == 99 && zz.out[0] == 0);
+                 (int) (state.o - state.out), (int) (state.lim - state.out),
+                 state.out[99] == 99 && state.out[0] == 0);
         char want[64];
         snprintf(want, sizeof(want), "1 100 %d 1", OUT_MIN + OUT_STEP - OUT_MAX_INSN);
         check("out_grow carries the cursor and the limit", got, want);
@@ -611,8 +611,8 @@ int main(void) {
         /* And that the rebased limit still leaves room for a whole
          * instruction, which is the property the reserve relies on. */
         check("a grown buffer has room for the longest form",
-              (zz.lim + OUT_MAX_INSN == zz.out + zz.cap) ? "yes" : "no", "yes");
-        free(zz.out);
+              (state.lim + OUT_MAX_INSN == state.out + state.cap) ? "yes" : "no", "yes");
+        free(state.out);
     }
 
     /* Labels.
@@ -764,8 +764,8 @@ int main(void) {
      * an error: `ffh:` defined a label the reference would have refused, and
      * a later `ld a, ffh` then meant different things in the two assemblers.
      *
-     * Found by a benchmark generator that produced `a00h` by accident, which
-     * is the only reason it was found at all -- no test reached it. */
+     * A generated source is as likely to produce `a00h` as a hand-written one
+     * is, and either way the two assemblers must agree about it. */
     check("a label spelled as trailing-h hex", emit("a00h:\n  nop\n"), "ERR");
     check("a short trailing-h label", emit("ah:\n  nop\n"), "ERR");
     check("a trailing-h label with a leading zero", emit("0ffh:\n  nop\n"), "ERR");
@@ -927,8 +927,8 @@ int main(void) {
      * operators do not already bind left to right. `-ez80` is that behaviour
      * and nothing else.
      *
-     * Every line here was checked against the reference binary before it was
-     * written down; the second column is what ez80asm 2.2 actually prints. */
+     * The second column of every line here is what ez80asm 2.2 prints for it,
+     * taken from the binary rather than from its documentation. */
     check("times binds tighter than plus",
           emit("  ld hl, 1+2*3\n"), "21 07 00 00");
     check("and in -ez80 it does not",
@@ -1057,8 +1057,8 @@ int main(void) {
     check("a forward label minus a known one",
           emit("st:\n  ld hl, later-st\nlater:\n  nop\n"), "21 04 00 00 00");
 
-    /* `*` binding tighter changes the answer and no longer changes whether
-     * there is one: by default the multiplication joins two constants, and in
+    /* `*` binding tighter changes the answer without changing whether there
+     * is one: by default the multiplication joins two constants, and in
      * -ez80 it multiplies the label. Both assemble, and they disagree because
      * the modes disagree on purpose. */
     check("a product beside a forward label",
@@ -1285,11 +1285,10 @@ int main(void) {
 
     /* The literal fast path, and the line between it and the evaluator.
      *
-     * A directive used to send every item through expr_value, which measured
-     * `DB 42` at 889 cycles a byte against `ld a, 42`'s 349. The fast path is
-     * the operand parser's, and what matters here is that it hands back
-     * anything it is not certain of: the character that ended the run has to
-     * end the item too. */
+     * A data item that is nothing but a literal is read without the
+     * evaluator. What matters here is that the fast path hands back anything
+     * it is not certain of: the character that ended the digit run has to end
+     * the item too. */
     check("a decimal that fills the item", emit("  DB 255\n"), "FF");
     check("hex with an 0x", emit("  DB 0x41\n"), "41");
     check("hex with a trailing h", emit("  DB 0FFh\n"), "FF");
@@ -1331,14 +1330,14 @@ int main(void) {
     check("a string", emit("  DB \"hi\",0\n"), "68 69 00");
     check("two bytes", emit("  DW 0x1234\n"), "34 12");
     check("three bytes", emit("  DL 0x123456\n"), "56 34 12");
-    /* Reserved space is filled with 0xFF, not zero -- measured, and it is what
-     * an erased ROM reads as. */
+    /* Reserved space is filled with 0xFF, not zero, which is what the
+     * reference does and what an erased ROM reads as. */
     check("reserved space is 0xFF",
           emit("  DS 4\n  DB 1\n"), "FF FF FF FF 01");
     /* Reserved and never written over is not output at all. `DS` and `ALIGN`
-     * reserve space; the reference only materialises it when something follows,
-     * so a file ending in one is that much shorter there. `ORG` is not the
-     * same and does pad -- all three measured against it. */
+     * reserve space, and the reference materialises it only when something
+     * follows, so a file ending in one is that much shorter. `ORG` is
+     * different and does pad. */
     check("a DS at the end of the output is dropped",
           emit("  DB 1\n  DS 4\n"), "01");
     check("and an ALIGN at the end is too",
@@ -1419,9 +1418,8 @@ int main(void) {
      * reference accepts is in test/cases/org.s; here are the refusals and the
      * two places the distinction shows.
      *
-     * The origin used to be a compile-time constant, so every address in the
-     * assembler was an immediate add. These check that it still means the same
-     * thing once it can move. */
+     * Every address in the assembler is measured from the origin, so these
+     * check that each of them follows when the origin moves. */
     check("the origin moves and writes nothing",
           emit("  ORG 0x050000\n  ld hl, $\n"), "21 00 00 05");
     check("a label takes the moved origin",
@@ -1459,8 +1457,8 @@ int main(void) {
     /* INCLUDE and INCBIN. The fixtures live in test/cases/inc and are the same
      * ones test/cases/include.s uses, so they are checked against the
      * reference as well as here. Paths are relative to where the assembler
-     * runs, which is what the reference does -- an INCLUDE inside sub/a.inc
-     * naming b.inc gets ./b.inc there, not sub/b.inc, and that was measured.
+     * runs, which is what the reference does: an INCLUDE inside sub/a.inc
+     * naming b.inc opens ./b.inc there, not sub/b.inc.
      *
      * The harness runs from the zap directory, which is why these read the
      * way they do. */
@@ -1473,9 +1471,9 @@ int main(void) {
     check("the same file included twice",
           emit("  INCLUDE \"test/cases/inc/bytes2.inc\"\n"
                "  INCLUDE \"test/cases/inc/bytes2.inc\"\n"), "22 22");
-    /* The line after an include is the one that catches a parent reader
-     * resumed at the wrong place -- it re-reads its own first line forever.
-     * That is what a `fread_` never advanced past zero did. */
+    /* The line after an include is what catches a parent reader resumed at
+     * the wrong place: resumed at the top of its file it re-reads its own
+     * first line forever. */
     check("the parent carries on after an include",
           emit("  DB 9\n  INCLUDE \"test/cases/inc/bytes2.inc\"\n  DB 8\n"),
           "09 22 08");
@@ -1556,7 +1554,7 @@ int main(void) {
      * scope and never reuses one -- which is invisible in the output and
      * fatal on the machine this is for. */
     {
-        memset(&zz, 0, sizeof(zz));
+        memset(&state, 0, sizeof(state));
         char path[] = "/tmp/zap_scope_XXXXXX";
         int fd = mkstemp(path);
         /* Enough local names per scope to need more than one block, or the
@@ -1580,8 +1578,8 @@ int main(void) {
             const bool ok = run(path);
             char got[64];
             snprintf(got, sizeof(got), "%d %d %d", ok ? 1 : 0,
-                     zz.locnames == zz.locnamfirst ? 1 : 0,
-                     zz.locnamfirst != NULL ? 1 : 0);
+                     state.locnames == state.locnamfirst ? 1 : 0,
+                     state.locnamfirst != NULL ? 1 : 0);
             check("a scope rewinds its local names to the first block",
                   got, "1 1 1");
             dz_free();
@@ -1594,9 +1592,8 @@ int main(void) {
      * compared against it; here are the refusals and the two places the
      * distinction shows.
      *
-     * The mode used to be a compile-time constant, on the grounds that
-     * choosing it is a directive and directives were what this program existed
-     * to not have. */
+     * The mode is per line rather than per assembly, because a source may
+     * switch as often as it likes and the reference honours each switch. */
     check("the default mode is the eZ80's",
           emit("  ld hl, 0x1234\n"), "21 34 12 00");
     check("ADL=0 makes an address two bytes",
@@ -1671,12 +1668,11 @@ int main(void) {
     /* And the divergence. The reference does not compare: it evaluates the
      * left side and throws the rest of the line away, so `IF 0 == 0` is false
      * there and `IF 1 == 2` is true, and `IF 1 == nosuchname` assembles
-     * because the name is never looked at. All four measured.
+     * because the name is never looked at.
      *
-     * That is a bug and a quiet one -- `IF version == 2` means `IF version` --
-     * but it decides which bytes come out, so -ez80 reproduces it and the
-     * default means what it says. The same position as operator precedence,
-     * and the second time it has been needed. */
+     * It is a quiet bug -- `IF version == 2` means `IF version` -- but it
+     * decides which bytes come out, so -ez80 reproduces it and the default
+     * means what it says. Same position as operator precedence. */
     check("== compares by default",
           emit("  IF 0 == 0\n  db 1\n  ENDIF\n  db 9\n"), "01 09");
     check("and is thrown away in -ez80",
@@ -1691,10 +1687,10 @@ int main(void) {
           emit("  IF 1 == nosuchname\n  db 1\n  ENDIF\n"), "ERR");
 
     /* Macros. What the reference accepts is in test/cases/macro.s; here are
-     * the refusals and the substitution rule, which was measured.
+     * the refusals and the substitution rule, each checked against it.
      *
-     * An expansion is read the way an included file is: a reader over memory,
-     * the parent set aside, the same line loop re-entered. */
+     * Substitution is textual and by whole identifier, so a parameter `x`
+     * does not match the `x` inside `xy`. */
     check("a macro with no arguments",
           emit("  MACRO m\n  nop\n  ENDMACRO\n  m\n"), "00");
     check("invoked twice",
@@ -1905,11 +1901,10 @@ int main(void) {
           "C3 00 00 04");
     check("a digit and a b is binary", emit("10b:\n  nop\n"), "ERR");
 
-    /* A leading digit does not make a number, which cost four of twenty
-     * probes before it was checked: 2 is not a binary digit, so `2b` is a
-     * name, and so are `1z`, `5g` and `123abc`. The reference takes all four
-     * as labels. Only the general parser can decide, and the two-character
-     * rejection above is what keeps it off the common path. */
+    /* A leading digit does not make a number: 2 is not a binary digit, so
+     * `2b` is a name, and so are `1z`, `5g` and `123abc`. The reference takes
+     * all four as labels. Only the general parser can decide, and the
+     * two-character rejection above is what keeps it off the common path. */
     check("a digit and a non-binary b is a label",
           emit("2b:\n  jp 2b\n"), "C3 00 00 04");
     check("a digit and a letter is a label",

@@ -20,8 +20,9 @@ typedef struct _buf_reader  {
     char* buf_;
 
     /* cap_ is how much the buffer holds, raw_ how much was read into it, and
-     * bsz_ how much of that the reader hands out. bsz_ used to be all three,
-     * so a short read shrank the buffer permanently.
+     * bsz_ how much of that the reader hands out. All three are needed
+     * separately: collapsing them would let a short read shrink the buffer
+     * permanently.
      *
      * For a source file they differ on purpose: a read is trimmed back to the
      * last newline in it, so bsz_ always ends a line, and the bytes between

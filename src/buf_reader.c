@@ -47,9 +47,8 @@ buf_reader* br_open(buf_reader* br, const char* fname, int bsz_kb) {
      * source reader's very first buffer ends on a newline the same way every
      * later one does, instead of being a case of its own.
      *
-     * An empty file is a valid source that assembles to nothing, which is what
-     * the reference does with one. It used to be refused as if it could not be
-     * opened. */
+     * An empty file is a valid source that assembles to nothing, as it is in
+     * the reference, so opening one must succeed. */
 
     br->fh_ = fh;
     br->fname_ = fname;
@@ -251,10 +250,8 @@ bool br_fill_lines(buf_reader* br, bool* too_long) {
 
     const uint24_t frsz = mos_fread(br->fh_, &br->buf_[carry], br->cap_ - carry);
     /* How far into the file the handle now is, which is what br_resume seeks
-     * back to. It was only ever set to zero, so a suspended reader resumed at
-     * the start of its file and read it again from the top -- which nothing
-     * noticed until INCLUDE suspended a file mid-way and then carried on with
-     * it. */
+     * back to: an INCLUDE suspends its parent mid-file and the parent has to
+     * carry on from where it had reached, not from the top. */
     br->fread_ += frsz;
     br->raw_ = carry + frsz;
     br->bpos_ = 0;

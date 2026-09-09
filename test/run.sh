@@ -189,6 +189,31 @@ cli_check "an option that is not the reference's is still refused" \
     "$("$OUT/zap" -c -Q "$OUT/opt2.s" "$OUT/opt2.bin" 2>&1 | tr -d '\r' \
        | grep -c 'Unknown option -Q')" 1
 
+# The reference takes 256 characters on a line and refuses the 257th, counting
+# a carriage return, so a CRLF file gets 255. zap's own limit used to be the
+# 16 KB reader buffer, which took lines the reference would not.
+line_same() {
+    local n="$1" eol="$2" nl=""
+    [ "$eol" = crlf ] && nl=$'\r'
+    { printf '; '; head -c $((n - 2)) /dev/zero | tr '\0' 'x'; printf '%s\n  nop%s\n' "$nl" "$nl"; } \
+        > "$OUT/long.s"
+    local zo ro
+    zo=$("$OUT/zap" -c "$OUT/long.s" "$OUT/long.bin" 2>&1 | tr -d '\r' \
+         | grep -c 'line too long' || true)
+    if [ -x "$OPTREF" ]; then
+        ro=$("$OPTREF" "$OUT/long.s" "$OUT/longr.bin" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' \
+             | grep -c 'Input line too long' || true)
+        cli_check "a $n-character $eol line agrees with the reference" "$zo" "$ro"
+    fi
+}
+line_same 255 lf
+line_same 256 lf
+line_same 257 lf
+line_same 400 lf
+line_same 254 crlf
+line_same 255 crlf
+line_same 256 crlf
+
 # Out of ADL mode an address is two bytes and ORG has to fit one. The
 # reference checks this and nothing else nearby: not ORG against 24 bits in
 # ADL mode, not RELOCATE against 16 out of it. Each of those is checked here

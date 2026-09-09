@@ -235,6 +235,10 @@ _Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
  * the report is a courtesy and must never itself be a failure. */
 #define ERRLINE_MAX 128
 
+/* What the reference takes on one line, and what it counts: everything up to
+ * the newline, a carriage return included. */
+#define LINE_MAX_CHARS 256
+
 /* The longest file name INCLUDE and INCBIN will take. Fixed, because the name
  * is copied into a frame that has to outlive the line it came from, and into
  * `dz.errpath` when an include fails. */
@@ -8227,6 +8231,23 @@ __attribute__((noinline)) static bool run_lines(void) {
             }
             stop = q;
         }
+        /* The reference takes 256 characters of line and refuses the 257th --
+         * counting a CR, so a CRLF file gets 255 of them. zap's own limit is
+         * the 16 KB reader buffer, which meant a line that assembled here
+         * would not assemble there, on a file neither of us should take.
+         *
+         * Asked here, where the line is already walked to its end, rather
+         * than by scanning ahead for the newline: `stop` is the newline and
+         * the length is a subtract. The reference refuses the line before
+         * reading it and this refuses it after, so a long line that is also
+         * malformed reports the other fault first. Both refuse the file,
+         * which is what a source can observe. */
+        if ((int) (stop - p) > LINE_MAX_CHARS) {
+            zz.err = ZAP_E_LINE_TOO_LONG;
+
+            return false;
+        }
+
         if (listing) {
             list_line(zz.lst_pc, zz.lst_o, zz.o, zz.line, 0, p, stop);
         }

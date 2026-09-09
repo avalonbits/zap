@@ -33,7 +33,7 @@ That is the only thing the runner can check, and it is the thing that matters.
 ## What is deliberately not here
 
 **The four differences zap keeps on purpose.** They are argued in
-.internal/completeness.md and a file for any of them would fail by design: a
+docs/DESIGN.md and a file for any of them would fail by design: a
 negative reservation (4 GB in the reference), a FILLBYTE that would change a
 reservation already written, `@local - global` with both still ahead, and the
 reference substituting a macro parameter inside a longer identifier.
@@ -52,7 +52,7 @@ and are compared against the reference in test/run.sh.
 ## The listing group, and why it is only some of the sources
 
 Three things a one-pass assembler cannot put in a listing the way a two-pass
-one does, all written up in .internal/completeness.md:
+one does, all written up in docs/DESIGN.md:
 
 * the reference widens the line-number column for the whole file when it
   lists a macro expansion, which it decides before it writes line 1;

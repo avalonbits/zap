@@ -20,7 +20,7 @@
 # arbitrary binary against an arbitrary source, which is what comparing two
 # variants of a change needs: build both, keep both, and run them against the
 # same file without a rebuild in between. Every "measured on its own" figure in
-# .internal/zap-to-zap.md was taken this way.
+# the optimization guide was taken this way.
 #
 # The same two rules as bench.sh, for the same reasons. THE TIMING IS THE
 # ASSEMBLER'S OWN -- the "Done in" line it prints, never host wall clock, which

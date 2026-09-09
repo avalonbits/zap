@@ -12,7 +12,7 @@
 # 114 mnemonics and 40 of its 322 rows, with no call, jp or djnz at all. A
 # change that helps the shapes it happens to contain and hurts the ones it does
 # not will still look like an improvement. That is not hypothetical -- it
-# happened, and is written up in .internal/performance-notes.md.
+# happened, and is written up in the optimization guide.
 #
 # The forms come from test/cases/opcodes.s, which is the reference's own
 # opcode corpus filtered to what *ez80asm* assembles -- see gen_opcodes.sh --
@@ -132,7 +132,7 @@
 #
 # They are 0.08 up on 5.42 / 5.52 / 5.22 / 5.60 for the validation round: the
 # opcode-fold range checks, the reference's 256-character line, and listing a
-# macro expansion. Item by item in .internal/performance-notes.md.
+# macro expansion. Item by item in the optimization guide.
 #
 # Those four are up on the 5.28 / 5.34 / 4.86 / 5.32 recorded before, and none
 # of it is this file: it has not changed. Two rounds of correctness work moved
@@ -141,7 +141,7 @@
 # then bounding every character scan added 0.06 to 0.08 across the set, and
 # widening the evaluator to 32 bits another 0.08 to 0.10, and honouring .CPU
 # another 0.02 to 0.08. What those last three bought and why none of them is
-# optional is in .internal/performance-notes.md.
+# optional is in the optimization guide.
 #
 # Neither shows in these files directly. There is no DW32 and no BLKL in any
 # of them, so what the width costs here is what it costs a source that never
@@ -178,7 +178,7 @@
 # invocation assembles two more lines than the nine characters it occupies
 # would otherwise have bought. It did start out slow -- 6.48s when the macros
 # first went in, against 5.46 now -- and what came out of it is written up in
-# .internal/performance-notes.md.
+# the optimization guide.
 #
 # The three of them together are why isa_real no longer reads under 350. The
 # same file with the macros taken out reads 353. That is the honest position:
@@ -1174,7 +1174,7 @@ function mname(k,   d, g, r, i2, out2) {
 # shorter than eleven. Every label is hashed once and compared at least once,
 # so the benchmark was doing 2x the per-label character work of real code, and
 # anything it said about the symbol table was inflated by about that much. It
-# had already bent two conclusions; see .internal/zap-to-zap.md.
+# had already bent two conclusions; see the optimization guide.
 #
 # Length comes from the table above. Uniqueness comes from `s`, the rank a
 # label holds among the ones of its own length, spelled in decimal and put at the end:

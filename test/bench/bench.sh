@@ -97,7 +97,7 @@ stage_synth()    { test/bench/gen_synth.sh > "$1/synth.s";              echo syn
 # expressions, every data directive, EQU, ASSUME, conditionals, macros and
 # instruction mode suffixes -- because a benchmark that leaves a feature out
 # prices it at nothing. Each of those was added to these files as the feature
-# landed, and what each cost is in .internal/performance-notes.md.
+# landed, and what each cost is in the optimization guide.
 #
 # For a while they measured ez80asm alone, because they held labels the
 # assembler being developed alongside could not read yet. That assembler is

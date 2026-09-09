@@ -6,7 +6,7 @@
 #
 # The host cannot answer this question. test/bench/corpus-time.sh asks it there
 # and gets 1.36x; the same sources here are between five and twenty times.
-# .internal/host-profile-does-not-predict-target has the reason and this is the
+# the optimization guide (section 5) has the reason and this is the
 # largest example of it the repository has.
 #
 # HOW THE TIME IS TAKEN. Each assembler's own `Done in` line, which is what

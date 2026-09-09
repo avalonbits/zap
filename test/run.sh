@@ -745,7 +745,7 @@ cli_check "the same FILLBYTE twice is not a change" \
 # 24-bit ceiling showing through rather than anything about RELOCATE: the `0x`
 # fast path accumulates in the machine's word and truncates, where the `$`
 # prefix goes through the general parser and the wide value survives to be
-# checked. Recorded in .internal/completeness.md with the rest of the ceiling.
+# checked. Recorded in docs/DESIGN.md with the rest of the ceiling.
 printf '  .relocate $1000000\n  .endrelocate\n' > "$OUT/rl1.s"
 rl1=$("$OUT/zap" -c "$OUT/rl1.s" "$OUT/rl1.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a relocate address past 24 bits is refused" \
@@ -1307,6 +1307,19 @@ for flag in DUP_ROW DUP_GROUP DUP_BUCKET DUP_HASH DUP_SYMCHAIN DUP_INTERN DUP_LO
         status=1
     fi
 done
+
+# The guide's index links to its own headings, and a renamed heading breaks a
+# link silently. Every anchor in it has to resolve to a heading in it.
+if command -v python3 > /dev/null 2>&1 && [ -f ez80_advanced_optimization_guide.md ]; then
+    if anchorbad=$(python3 tools/check_doc_links.py --anchors \
+                        ez80_advanced_optimization_guide.md 2>&1); then
+        echo "PASS  every index link in the optimization guide resolves"
+    else
+        echo "FAIL  an index link in the optimization guide does not resolve"
+        printf '      %s\n' "$anchorbad"
+        status=1
+    fi
+fi
 
 # The design document links to the definition of everything it describes, and
 # a line number goes stale the moment the source moves. Every one is checked

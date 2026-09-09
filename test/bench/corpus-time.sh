@@ -6,7 +6,7 @@
 #
 # THIS IS A HOST MEASUREMENT AND THE HOST IS NOT THE AGON. Everything else in
 # test/bench runs on fab-agon-emulator because that is the machine zap is for,
-# and .internal/host-profile-does-not-predict-target says why: a change that
+# and the optimization guide (section 5) says why: a change that
 # read 0.71x on the host read 0.98x on the Agon. A per-source figure cannot be
 # taken there at all -- the emulator boots MOS for each run, and every corpus
 # source is small enough that the assembler's own clock reads 0.00 seconds. So

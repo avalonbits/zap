@@ -12,15 +12,120 @@ reasoning that has not been checked. Section 4 sorts them; section 5 is the meth
 **If you read one section, read 1a** -- ordinary C that has no instruction to
 compile to is where the large wins are, and it is invisible in the source.
 
-| | |
+## Contents
+
+
+**[0. The Words This Guide Uses](#0-the-words-this-guide-uses)**
+
+* [Registers, and the two index registers](#registers-and-the-two-index-registers)
+* [The stack frame, and the frame pointer](#the-stack-frame-and-the-frame-pointer)
+* [The frame prologue and epilogue](#the-frame-prologue-and-epilogue)
+* [Why 128 bytes matters](#why-128-bytes-matters)
+* [Spilling](#spilling)
+* [Register allocation](#register-allocation)
+* [Helper calls: `__imulu`, `__ishl`, `__setflag`](#helper-calls-imulu-ishl-setflag)
+* [Inlining and outlining](#inlining-and-outlining)
+* [Tail call](#tail-call)
+* [The `-Oz` and `-S` flags](#the--oz-and--s-flags)
+
+**[1. Choosing the Right Data Sizes (8 vs. 16 vs. 24-bit)](#1-choosing-the-right-data-sizes-8-vs-16-vs-24-bit)**
+
+* [24-Bit Integers (`int` or `int24_t`) -- *Fastest for Pointers & Math*](#24-bit-integers-int-or-int24t----fastest-for-pointers--math)
+* [8-Bit Integers (`char` or `uint8_t`) -- *Fastest for Counters & Flags*](#8-bit-integers-char-or-uint8t----fastest-for-counters--flags)
+* [16-Bit Integers (`short` or `int16_t`) -- *The Worst Performer in ADL Mode*](#16-bit-integers-short-or-int16t----the-worst-performer-in-adl-mode)
+* [Narrowing pays only if the operations stay narrow](#narrowing-pays-only-if-the-operations-stay-narrow----measured)
+
+**[1a. The Main Hazard: C That Compiles to Calls, Not Instructions](#1a-the-main-hazard-c-that-compiles-to-calls-not-instructions)**
+
+* [The offenders](#the-offenders)
+* [The fixes, in order of how often they apply](#the-fixes-in-order-of-how-often-they-apply)
+* [The trap in fix 4](#the-trap-in-fix-4)
+* [How to find them](#how-to-find-them)
+
+**[2. Core Architecture Rules](#2-core-architecture-rules)**
+
+* [Do NOT Prefer Global/Static Over Stack Locals -- Stack Access Is Faster](#do-not-prefer-globalstatic-over-stack-locals----stack-access-is-faster)
+* [Structure Loops to Count Down to Zero](#structure-loops-to-count-down-to-zero)
+* [Leverage the 8-bit Hardware Multiplier (`MLT`)](#leverage-the-8-bit-hardware-multiplier-mlt)
+* [Pass Arguments via Registers](#pass-arguments-via-registers)
+* [Avoid Passing Structures by Value](#avoid-passing-structures-by-value)
+* [Branchless is not unconditional](#branchless-is-not-unconditional----measured)
+* [One index register is the budget inside a loop](#one-index-register-is-the-budget-inside-a-loop----measured)
+
+**[2a. Inlining Is a Request, and Function Shape Is a Cost](#2a-inlining-is-a-request-and-function-shape-is-a-cost)**
+
+* [One cold caller de-inlines a hot helper for everybody](#one-cold-caller-de-inlines-a-hot-helper-for-everybody)
+* [A cold function with a big buffer must not be inlined into a hot one](#a-cold-function-with-a-big-buffer-must-not-be-inlined-into-a-hot-one)
+* [Tail calls keep a frame off the common path](#tail-calls-keep-a-frame-off-the-common-path)
+* [Code that is merely *there* costs](#code-that-is-merely-there-costs)
+* [Calls versus frames: sometimes the call is cheaper](#calls-versus-frames-sometimes-the-call-is-cheaper)
+
+**[3. Advanced Memory & Mathematical Optimizations](#3-advanced-memory--mathematical-optimizations)**
+
+* [Master `const` and Memory Segments (RAM vs. Flash)](#master-const-and-memory-segments-ram-vs-flash)
+* [Replace Bit-Shifting with Byte-Swapping](#replace-bit-shifting-with-byte-swapping)
+* [Exploit Block Memory Instructions (`LDIR` / `CPIR`)](#exploit-block-memory-instructions-ldir--cpir)
+* [Use Power-of-Two Array Sizes to Avoid Division](#use-power-of-two-array-sizes-to-avoid-division)
+* [Inline Small, Critical Functions](#inline-small-critical-functions)
+* [Keep Every Stack Frame Under 128 Bytes](#keep-every-stack-frame-under-128-bytes)
+
+**[3a. Memory on a Machine With No Virtual Memory](#3a-memory-on-a-machine-with-no-virtual-memory)**
+
+* [A realloc that moves holds both copies](#a-realloc-that-moves-holds-both-copies)
+* [Allocation is cheap; touching memory is not](#allocation-is-cheap-touching-memory-is-not)
+* [Measure memory the way you measure time](#measure-memory-the-way-you-measure-time)
+
+**[3b. Two Miscompiles to Know About](#3b-two-miscompiles-to-know-about)**
+
+* [An unbounded character scan can be compiled rotated](#an-unbounded-character-scan-can-be-compiled-rotated)
+* [A backwards trim reads one byte too far](#a-backwards-trim-reads-one-byte-too-far)
+* [What both have in common](#what-both-have-in-common)
+
+**[3c. Width and Sign](#3c-width-and-sign)**
+
+* [A comparison between different widths tests the wrong bytes](#a-comparison-between-different-widths-tests-the-wrong-bytes)
+* [A signed compare is a call](#a-signed-compare-is-a-call)
+* [An out-parameter puts a value in memory](#an-out-parameter-puts-a-value-in-memory)
+
+**[4. Provenance -- What Here Is Verified](#4-provenance----what-here-is-verified)**
+
+* [Verified against Zilog UM0077 (the instruction Attributes tables, from p. 79)](#verified-against-zilog-um0077-the-instruction-attributes-tables-from-p-79)
+* [Verified by measurement on an emulated Agon](#verified-by-measurement-on-an-emulated-agon)
+* [Contradicted by measurement](#contradicted-by-measurement)
+* [Plausible but unverified](#plausible-but-unverified)
+* [A note on measuring at all](#a-note-on-measuring-at-all)
+* [A constant shift is a call, and you cannot write your way out](#a-constant-shift-is-a-call-and-you-cannot-write-your-way-out----measured)
+
+**[5. How to Measure on This Target](#5-how-to-measure-on-this-target)**
+
+* [The host is not a proxy, and it is biased rather than noisy](#the-host-is-not-a-proxy-and-it-is-biased-rather-than-noisy)
+* [Read the program's own clock, and do not unthrottle the emulator](#read-the-programs-own-clock-and-do-not-unthrottle-the-emulator)
+* [The clock counts hundredths, so repeat and sum](#the-clock-counts-hundredths-so-repeat-and-sum)
+* [One change, one measurement, nothing else running](#one-change-one-measurement-nothing-else-running)
+* [Pricing a piece of code without instrumenting it](#pricing-a-piece-of-code-without-instrumenting-it)
+* [Read the generated assembly](#read-the-generated-assembly)
+
+## Index by symptom
+
+| what you are seeing | where to look |
 |---|---|
-| 0 | the words this guide uses -- frames, spills, helper calls |
-| 1, 1a | data sizes, and the C that becomes library calls |
-| 2, 2a | architecture rules; inlining and function shape |
-| 3, 3a | memory and arithmetic; memory with no virtual memory |
-| 3b, 3c | two miscompiles; width and sign hazards |
-| 4 | provenance -- what is verified, and how |
-| 5 | how to measure on this target |
+| `call __imulu` / `__ishl` / `__iand` in the assembly | [The offenders](#the-offenders) |
+| an array subscript or `p += n` is slow | [The offenders](#the-offenders), [A constant shift is a call](#a-constant-shift-is-a-call-and-you-cannot-write-your-way-out----measured) |
+| a shift by a constant is not free | [Replace Bit-Shifting with Byte-Swapping](#replace-bit-shifting-with-byte-swapping) |
+| `call pe, __setflag` appears in a loop | [A signed compare is a call](#a-signed-compare-is-a-call) |
+| a function got slower when an unrelated one was added | [One cold caller de-inlines a hot helper](#one-cold-caller-de-inlines-a-hot-helper-for-everybody), [Register allocation](#register-allocation) |
+| a loop got slower and its source did not change | [Code that is merely *there* costs](#code-that-is-merely-there-costs), [One index register is the budget](#one-index-register-is-the-budget-inside-a-loop----measured) |
+| `lea hl, ix + 0` sequences everywhere | [Why 128 bytes matters](#why-128-bytes-matters), [Keep Every Stack Frame Under 128 Bytes](#keep-every-stack-frame-under-128-bytes) |
+| a helper you marked `static inline` is being called | [Inlining and outlining](#inlining-and-outlining), [One cold caller de-inlines a hot helper](#one-cold-caller-de-inlines-a-hot-helper-for-everybody) |
+| a cold feature costs time even when it is switched off | [A cold function with a big buffer](#a-cold-function-with-a-big-buffer-must-not-be-inlined-into-a-hot-one), [Code that is merely *there* costs](#code-that-is-merely-there-costs) |
+| a value keeps being written to the frame and read back | [Spilling](#spilling), [An out-parameter puts a value in memory](#an-out-parameter-puts-a-value-in-memory) |
+| wrong bytes on the target, right bytes on the host | [Two Miscompiles to Know About](#3b-two-miscompiles-to-know-about), [A comparison between different widths](#a-comparison-between-different-widths-tests-the-wrong-bytes) |
+| a scan skips its first character | [An unbounded character scan can be compiled rotated](#an-unbounded-character-scan-can-be-compiled-rotated) |
+| out of memory while growing a buffer | [A realloc that moves holds both copies](#a-realloc-that-moves-holds-both-copies) |
+| which integer width should this be | [Choosing the Right Data Sizes](#1-choosing-the-right-data-sizes-8-vs-16-vs-24-bit), [Narrowing pays only if the operations stay narrow](#narrowing-pays-only-if-the-operations-stay-narrow----measured) |
+| should this branch be replaced by a table | [Branchless is not unconditional](#branchless-is-not-unconditional----measured) |
+| how do I measure any of this | [How to Measure on This Target](#5-how-to-measure-on-this-target), [Read the generated assembly](#read-the-generated-assembly) |
+| is this claim actually verified | [Provenance](#4-provenance----what-here-is-verified) |
 
 ---
 

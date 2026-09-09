@@ -1,3 +1,6 @@
 obj/
 bin/*.map
 bin/*.noname.bin
+
+# Local annotations, never in the repo.
+.internal/

@@ -473,7 +473,7 @@ being right and incompatible: no operator precedence, `IF a == b` discarding
 the comparison, `0bh` read as hex.
 
 Four differences are deliberate and permanent, each argued in
-`.internal/completeness.md`: a negative reservation (which the reference turns
+`docs/DESIGN.md`: a negative reservation (which the reference turns
 into gigabytes of output), a `FILLBYTE` that would retroactively change a
 reservation already written, `@local - global` with both still ahead, and
 substituting a macro parameter inside a longer identifier.

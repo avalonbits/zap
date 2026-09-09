@@ -9,7 +9,7 @@
 # allocator spills differently, the frame lands somewhere else, and those
 # effects are the same size as the thing being measured. Two changes were made
 # on the strength of that map and both were slower; the write-up is in
-# .internal/performance-notes.md.
+# the optimization guide.
 #
 # This varies the *input* instead. One binary -- the one that ships -- against
 # a family of sources that differ in exactly one feature, all the same size.

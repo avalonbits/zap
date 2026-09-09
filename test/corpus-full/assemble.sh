@@ -1,6 +1,6 @@
 #!/bin/bash
 # Runs the reference assembler over the full corpus and reports what it makes
-# of it. Step one of the note in .internal/performance-notes.md: anything
+# of it. Step one of the note in the optimization guide: anything
 # ez80asm rejects is out of scope, because zap is not trying to be better than
 # the reference, it is trying to agree with it.
 #

@@ -225,6 +225,33 @@ local -- three bytes in 31,520 with both assemblers accepting the file -- and
 BBC BASIC, which needed an index displacement to be an expression and an
 expression to be kept as text when a fixup could not hold it.
 
+## The one warning the reference has, and where its text differs
+
+Value truncation, now emitted:
+
+    File "prog.s" line 1 - Value truncated to 8 bit '0x100'
+
+Same rule as the reference -- a value fits `width` bytes if it lies in
+`-2^(8w-1) .. 2^(8w)-1`, so `ld a, -1` and `ld a, 255` both pass and
+`ld a, 256` and `ld a, -129` do not -- and all six boundaries are checked
+against it in test/run.sh. `-i` silences the printing, as it does there.
+
+Two differences in the text, both deliberate:
+
+* **The reference quotes the source token; zap prints the value.** `ld a, 256`
+  reads `'256'` there and `'0x100'` here. Quoting the token means holding a
+  pointer and a length for every operand of every line, all the way down to
+  the emitter -- a cost paid by every source that has nothing wrong with it,
+  to improve a message that only prints when something does. The same reason
+  there is no echoed source line.
+* Neither changes a byte of output, and neither changes the exit status: the
+  reference exits 0 on a truncation and so does zap.
+
+What it costs is in .internal/performance-notes.md, and it is the most
+expensive diagnostic in the program -- 2% of a real program, 6.7% of a file
+that is nothing but immediates -- because it is the only one that asks a
+question of every source rather than doing work after one has gone wrong.
+
 ## One divergence found while testing the macro marks
 
 **The reference substitutes a parameter name found inside a longer

@@ -14,12 +14,136 @@ compile to is where the large wins are, and it is invisible in the source.
 
 | | |
 |---|---|
+| 0 | the words this guide uses -- frames, spills, helper calls |
 | 1, 1a | data sizes, and the C that becomes library calls |
 | 2, 2a | architecture rules; inlining and function shape |
 | 3, 3a | memory and arithmetic; memory with no virtual memory |
 | 3b, 3c | two miscompiles; width and sign hazards |
 | 4 | provenance -- what is verified, and how |
 | 5 | how to measure on this target |
+
+---
+
+## 0. The Words This Guide Uses
+
+Most of the advice below is about what the compiler emits, so it uses terms
+from the machine rather than from C. If any of these are unfamiliar, read this
+section first; nothing else here depends on knowing assembly beyond it.
+
+### Registers, and the two index registers
+
+The eZ80 has a handful of 24-bit registers -- `HL`, `DE`, `BC`, `IX`, `IY` --
+and an 8-bit accumulator `A`. A value in a register is free to use; a value in
+memory costs a load.
+
+`IX` and `IY` are the **index registers**. They are the only ones that can be
+used as `(IX + d)`: a base address plus a small constant offset, in one
+instruction. Everything the compiler does with structs, arrays and local
+variables leans on that.
+
+### The stack frame, and the frame pointer
+
+When a function runs, its local variables live in a block of memory on the
+stack. That block is the function's **stack frame**, and the compiler keeps a
+register pointing at it -- the **frame pointer**, which on this target is `IX`.
+
+A local variable is then an offset from that pointer:
+
+```
+    ld   hl, (ix - 9)      ; read a local 9 bytes into the frame
+```
+
+### The frame prologue and epilogue
+
+The instructions at the top of a function that set the frame up, and the ones
+at the bottom that take it down. On this compiler the prologue is a call:
+
+```
+_my_function:
+    ld   hl, -24           ; this function's frame is 24 bytes
+    call __frameset        ; set IX to point at it, reserve the space
+    ...
+```
+
+That is why "the frame grew" is a real cost and not bookkeeping: everything the
+function does afterwards is measured from `IX`, and the *size* of the frame
+decides whether those accesses are cheap.
+
+### Why 128 bytes matters
+
+The `d` in `(IX + d)` is a **signed byte**: −128 to +127. A local more than 128
+bytes into the frame cannot be reached that way, so the compiler computes its
+address instead:
+
+```
+    ld   bc, -139          ; five instructions, and a register clobbered,
+    lea  hl, ix + 0        ; where there was one
+    add  hl, bc
+    ld   hl, (hl)
+```
+
+This is paid on **every access** to every local past the boundary. It is the
+single easiest large regression to introduce by accident, because nothing in
+the C says a frame got bigger.
+
+### Spilling
+
+A value the compiler wanted to keep in a register, but could not, gets written
+to the frame and read back -- it is **spilled**. Taking the address of a local
+(`&x`, or passing `&x` to a function) forces a spill, because a register has no
+address. So does needing more live values at once than there are registers.
+
+Inside a loop, a spill is paid every iteration.
+
+### Register allocation
+
+The compiler's decision about which values live in which registers, and which
+get spilled. It is made per function, over the whole function, which is why
+adding code that never runs -- a branch that is not taken, an inlined helper
+that is never reached -- can slow down a loop somewhere else in the same
+function. This guide has several examples.
+
+### Helper calls: `__imulu`, `__ishl`, `__setflag`
+
+The eZ80 has no multiply wider than 8 bits, no divide, no barrel shifter, and
+an 8-bit ALU. When C asks for something the chip cannot do in one instruction,
+the compiler emits a **call to a library helper** whose name starts with `__`:
+
+| in the assembly | what the C looked like |
+|---|---|
+| `call __imulu` | a multiply -- including an array subscript |
+| `call __ishl`, `call __bshl` | a shift |
+| `call __iand`, `call __ior` | a bitwise operation on a 24-bit value |
+| `call __idivu`, `call __irems` | `/` or `%` |
+| `call pe, __setflag` | repairing the flags after a signed comparison |
+| `call __l...` | anything on a 32-bit type |
+
+Section 1a is about finding and removing these. `__frameset` is the exception:
+it is the frame prologue, not an arithmetic operation.
+
+### Inlining and outlining
+
+**Inlining** is the compiler copying a function's body into its caller instead
+of calling it. **Outlining** is the opposite: deciding to emit the function
+once and call it. `static inline` is a *request*; the compiler decides, and
+section 2a is about what it decides and when that hurts.
+
+### Tail call
+
+A call whose result is returned immediately -- `return f(x);` -- so nothing in
+the caller has to survive it. The caller's registers do not need saving and its
+frame can be reused, which makes a tail call much cheaper than a call whose
+result is used afterwards.
+
+### The `-Oz` and `-S` flags
+
+`-Oz` is "optimise for size", which is the level agondev builds at and the one
+every measurement here was taken at. `-S` makes the compiler write assembly
+instead of an object file, which is how you look at any of the above:
+
+```
+    ez80-none-elf-clang -mllvm -z80-gas-style -Oz -S file.c -o file.s
+```
 
 ---
 
@@ -85,7 +209,7 @@ call to a library helper instead. Nothing in the source suggests it happened,
 the code reads as arithmetic, and on the host it *is* arithmetic — so it is
 invisible to a host profile and to review.
 
-Every large win in the dzap work was one of these, found by reading generated
+Every large win in this work was one of these, found by reading generated
 assembly rather than by thinking harder about the C.
 
 ### The offenders
@@ -191,8 +315,8 @@ the branch buys nothing.
 It does not hold for a branch that **skips work**. zap's instruction-row
 selection evaluated every term of its test so the whole thing could be one
 branch. Rejecting a candidate on the cheapest term first, and only then paying
-for the expensive ones, was worth **23.2% in dzap and 6.4% on zap's
-instruction-dense benchmark** -- on a chip with no branch predictor.
+for the expensive ones, was worth **23.2% on the stripped assembler it was first measured on
+and 6.4% on zap's instruction-dense benchmark** -- on a chip with no branch predictor.
 
 The distinction is whether the branch avoids computation. If it does, take it.
 
@@ -203,7 +327,7 @@ struct has exactly one register to hold the pointer it is walking. Any
 expression that needs a *second* computed address inside that loop evicts the
 first one to the frame and reloads it, once per use.
 
-dzap's row test read three adjacent bytes of a row and ANDed each against the
+zap's row test reads three adjacent bytes of a row and ANDed each against the
 matching byte of the operand. The three bytes are the three planes of a
 register mask, only one of which can be set -- so an obvious improvement is to
 store which plane, and read just that one: `(&ri->a0)[plane]`. Three loads and
@@ -319,7 +443,6 @@ call site as a macro so no call happens, it grew `assemble_line`'s frame from
 iteration.** Which way round it falls has to be measured; the point is that
 both directions are real.
 
-
 ---
 
 ## 3. Advanced Memory & Mathematical Optimizations
@@ -347,7 +470,7 @@ Byte boundaries are cheaper but not uniformly free, and the difference is *where
 | `(uint8_t)(v >> 8)` | `ld a, h` | `ld a, (iy+n+1)` |
 | `(uint8_t)(v >> 16)` | `ld c, 16; call __ishru` | `ld a, (iy+n+2)` |
 
-HL's upper byte is not directly addressable, so the compiler has the byte trick at `>> 8` and loses it at `>> 16`. The practical consequence is the opposite of the usual advice: **do not hoist a value into a local to take bytes out of it.** Reading the struct field afresh for each byte is what makes all three an indexed load. This was worth 1.5% of dzap's whole run time on one function.
+HL's upper byte is not directly addressable, so the compiler has the byte trick at `>> 8` and loses it at `>> 16`. The practical consequence is the opposite of the usual advice: **do not hoist a value into a local to take bytes out of it.** Reading the struct field afresh for each byte is what makes all three an indexed load. This was worth 1.5% of zap's whole run time on one function.
 
 ### Exploit Block Memory Instructions (`LDIR` / `CPIR`)
 * **The Strategy:** Do not write manual `for` loops to copy arrays or clear memory buffers. Always rely on standard C library string and memory utilities: `memcpy()`, `memmove()`, and `memset()`.
@@ -363,7 +486,7 @@ HL's upper byte is not directly addressable, so the compiler has the byte trick 
 * **The limit:** only while the resulting frame stays under 128 bytes. See below.
 
 ### Keep Every Stack Frame Under 128 Bytes
-* **The Problem:** `ix` displacement is a **signed byte**. A function whose frame exceeds 128 bytes cannot reach most of its own locals with `ld a, (ix-9)`, and the compiler falls back to computing the address:
+* **The Problem:** `ix` displacement is a **signed byte** (see section 0). A function whose frame exceeds 128 bytes cannot reach most of its own locals with `ld a, (ix-9)`, and the compiler falls back to computing the address:
 
 ```
     ld   bc, -139
@@ -373,7 +496,7 @@ HL's upper byte is not directly addressable, so the compiler has the byte trick 
 ```
 
   This is paid on **every access** to every local past the boundary, and nothing in the source suggests it is happening.
-* **The Fix:** Split the function, or move the locals an inner loop touches into a small helper. Counter-intuitively this can make the program *smaller*: in dzap, splitting one 149-byte frame into four of 60, 62, 19 and 20 removed 23 escape sequences and cut 77 instructions from the binary, despite adding four call/return pairs. It was worth **7.8%** overall and **28.3%** on the hottest loop.
+* **The Fix:** Split the function, or move the locals an inner loop touches into a small helper. Counter-intuitively this can make the program *smaller*: splitting one 149-byte frame into four of 60, 62, 19 and 20 removed 23 escape sequences and cut 77 instructions from the binary, despite adding four call/return pairs. It was worth **7.8%** overall and **28.3%** on the hottest loop.
 * **How to check:** compile to assembly and count. `grep -c 'lea.*hl, ix + 0'` finds the escapes; `grep -o 'ld.*hl, -[0-9]*'` after each `__frameset` gives the frame sizes.
 * **Where this bites hardest:** aggressive inlining. The four functions above were not written large -- they were separate, and the compiler folded them all into `main`. `-Oz` will happily inline a whole program into one frame and then pay five instructions for every local in it.
 

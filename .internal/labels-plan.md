@@ -1,10 +1,10 @@
-# Adding labels to dzap
+# Adding labels to zap
 
-Written 2026-09-06, against dzap at **318 cycles per source byte** on isa_real
+Written 2026-09-06, against zap at **318 cycles per source byte** on isa_real
 (4.52s for 262,151 bytes, 23,075 lines, 56.6 KiB/s). Everything here is
 measured or is marked as a guess.
 
-dzap exists to price features one at a time. Labels are the first real one, and
+zap exists to price features one at a time. Labels are the first real one, and
 the point of the exercise is the number they cost -- not getting them in.
 
 ## What labels actually weigh
@@ -20,9 +20,9 @@ sample:
 Plus 11-15% of lines that *define* a label.
 
 **So the symbol path is not an add-on. It is as hot as the register path.**
-Roughly half of all lines will do a lookup, and dzap's own source prices zap's
-hash at "about a thousand cycles a lookup" against dzap's current 3,611 cycles
-per line. A lookup at that price, on half the lines, is +14% before anything
+Roughly half of all lines will do a lookup, and the source prices the earlier
+assembler's hash at "about a thousand cycles a lookup" against the current
+3,611 cycles per line. A lookup at that price, on half the lines, is +14% before anything
 else. That is the number to beat, and it is the number the whole project exists
 to produce.
 
@@ -35,7 +35,7 @@ Three sites, all of which already exist and are already branches:
   already there, so instruction lines pay nothing for the feature. This is the
   cheap part.
 * **A reference** -- `parse_operand`, the alpha path, at the `p = s;` rewind
-  (dzap.c:1084). Today that is register-then-literal; it becomes
+  (zap.c:1084). Today that is register-then-literal; it becomes
   register-then-symbol-then-literal. 82% of operands are registers and
   `reg_of_text` fails fast, so the hot case is unaffected.
 * **A forward reference** -- the emitter. `emit_imm` writes one or three bytes
@@ -43,7 +43,7 @@ Three sites, all of which already exist and are already branches:
 
 ## The design
 
-**One pass, with back-patching.** dzap's whole advantage is never re-reading a
+**One pass, with back-patching.** zap's whole advantage is never re-reading a
 line, and the output buffer is already held in memory in full, so a forward
 reference is a `(offset, width, symbol)` triple recorded and patched at the
 end. Two passes would give the line reader back its cost and hide what labels
@@ -135,7 +135,7 @@ clamped length. No shift, so no call. This matters: a constant shift by two is
 
 **A perfect hash is not available.** Labels are discovered while assembling, so
 there is no key set to build one over. Perfect hashing works for a closed set,
-which is exactly what dzap already does for mnemonics and registers -- that
+which is exactly what zap already does for mnemonics and registers -- that
 part is done and is not what labels need.
 
 ### Confirmed on twenty-five programs
@@ -168,7 +168,7 @@ it**, the longest real one being 38, and they are ordinary names --
 `VDU_BufferBitmapExpandMappingBufferBit` and its neighbours in AgonConsole8's
 VDU code. ez80asm allows 64. Truncating at 26 would silently merge two labels
 that differ only after the limit, which is the worst way to be wrong, so
-whatever dzap does must compare the whole name even if it keys on part of it.
+whatever zap does must compare the whole name even if it keys on part of it.
 
 **Where the address comes from.** The emitter already computes
 `DZ_ORG + (o - z->out)` for relative jumps. A label's value is the same
@@ -205,9 +205,9 @@ path, and measure anything else.
 ## How to price it
 
 The corpus and the benchmarks are now generated from what **ez80asm** accepts,
-never from what dzap accepts -- see `test/cases/gen_opcodes.sh`. That
+never from what zap accepts -- see `test/cases/gen_opcodes.sh`. That
 rule is what makes a feature's cost measurable at all: the previous corpus was
-filtered through dzap and hid 53 wrong forms, and the benchmarks built from it
+filtered through zap and hid 53 wrong forms, and the benchmarks built from it
 had never once executed the branch that negates a literal.
 
 Labels cannot go into `isa_even`/`isa_real` without changing what those files

@@ -1,6 +1,6 @@
 # How the numbers in these notes were taken
 
-Everything quoted in `dzap-to-zap.md` comes from the same three moves. They are
+Everything quoted in `feature-costs.md` comes from the same three moves. They are
 written down because the conclusions are worthless without them, and because
 each one exists to stop a specific way of being wrong that has already happened
 here.

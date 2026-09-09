@@ -1,36 +1,30 @@
-> **Finished, by replacement.** This file asked what the older zap could learn
-> from `dzap`. The answer turned out to be all of it: `dzap` reached the same
-> feature set for a third of the cycles and became `zap`. The table below is
-> what each feature cost as it landed, and it is still the record of that --
-> nothing in it was ported anywhere in the end.
+# What each feature cost as it landed
 
-# What dzap learns that zap can have
+zap was rebuilt from a stripped assembler that did nothing but the easy case,
+with every feature -- labels, expressions, directives, EQU, INCLUDE, ASSUME,
+conditionals, macros, mode suffixes -- added back one at a time and priced on
+the Agon before the next one started. This is the record of those prices.
 
-dzap assembles the easy case, so some of what makes it fast is the easy case
-paying for itself and some is technique that would work anywhere. Those are
-worth telling apart as they happen rather than reconstructing later, because
-the first kind is free to port and the second kind has already lost once when
-it was tried on zap.
-
-**Every dzap change gets a row here, with its measured number and a verdict.**
-Three verdicts:
+The verdict column was written while the rebuild was still beside the
+assembler it replaced, and says whether a change depended on the easy case or
+would work anywhere:
 
 - **Portable** -- nothing about it depends on there being no labels,
-  expressions or fixups. Apply to zap and measure on the real benchmark set.
-- **Conditional** -- works in zap only after something else changes, named.
+  expressions or fixups.
+- **Conditional** -- works only after something else changes, named.
 - **Not portable** -- the simplification is doing the work.
 
 ## The table
 
-| change | measured on dzap | verdict |
+| change | measured on zap | verdict |
 |---|---|---|
 | Precomputed mnemonic lengths (was a `strlen` per candidate, 8% of all work) | part of −9.9% | **Portable.** Re-deriving a compile-time constant is a defect anywhere. |
 | Character class table for space/name/digit | part of −9.9% | **Portable.** zap's lexer classifies bytes with the same compare chains. |
-| Bucket mnemonics by first letter *and* length | part of −9.9% | **Conditional** on Option A in `positional-lexing.md`. dzap can assume a statement start is a mnemonic; zap's lexer is context-free and must find registers, directives and flags through the same lookup. |
+| Bucket mnemonics by first letter *and* length | part of −9.9% | **Conditional** on Option A in `positional-lexing.md`. zap can assume a statement start is a mnemonic; zap's lexer is context-free and must find registers, directives and flags through the same lookup. |
 | Precomputed row modes and `F_CCOK`, one 16-bit compare per row | part of −3.7% | **Portable.** Pure table preparation; zap runs the identical test in its own `match_row`. |
-| Operand cleared by copying a zeroed template | part of −3.7% | **Conditional** on shrinking zap's operand first. dzap's is small; zap's is **153 bytes on the eZ80**, 128 of it the expression buffer for deferred fixups. Copying that would be worse than the ten stores it replaces. |
-| Literal fast path: read `0x…` and decimal without `num_parse` | part of −3.7% | **Not portable.** Already tried on zap and reverted: **+3.4% on bbcbasic**, faster only on literal-dense synthetic input. In zap an operand can be a symbol or an expression, so the fast path must fall through to the general evaluator and the fall-through is what costs. dzap's version works because that case does not exist. |
-| Register masks held as `uint24_t` | dzap **−9.4%** measured alone | **Does not transfer.** Three variants tried on zap, all slower: repacking `isa_row`'s field type +0.5…1.0%; narrow side arrays with the operand left at 32 bits +2.6…3.9%; both together, which is dzap's exact shape, +4.0…6.5%. Try 2 isolates the indirection at ~3%, and try 3 adding narrowing on top makes it worse -- which points at zap's `operand` being **153 bytes**, so narrowing `reg` shifts everything after it including the 128-byte `expr` array, on a struct whose fields are read constantly. dzap's operand is 28 bytes with nothing to misalign. |
+| Operand cleared by copying a zeroed template | part of −3.7% | **Conditional** on shrinking zap's operand first. zap's is small; zap's is **153 bytes on the eZ80**, 128 of it the expression buffer for deferred fixups. Copying that would be worse than the ten stores it replaces. |
+| Literal fast path: read `0x…` and decimal without `num_parse` | part of −3.7% | **Not portable.** Already tried on zap and reverted: **+3.4% on bbcbasic**, faster only on literal-dense synthetic input. In zap an operand can be a symbol or an expression, so the fast path must fall through to the general evaluator and the fall-through is what costs. zap's version works because that case does not exist. |
+| Register masks held as `uint24_t` | zap **−9.4%** measured alone | **Does not transfer.** Three variants tried on zap, all slower: repacking `isa_row`'s field type +0.5…1.0%; narrow side arrays with the operand left at 32 bits +2.6…3.9%; both together, which is zap's exact shape, +4.0…6.5%. Try 2 isolates the indirection at ~3%, and try 3 adding narrowing on top makes it worse -- which points at zap's `operand` being **153 bytes**, so narrowing `reg` shifts everything after it including the 128-byte `expr` array, on a struct whose fields are read constantly. zap's operand is 28 bytes with nothing to misalign. |
 | Mnemonic's `.` folded into the class table | part of −12.3% | **Portable.** |
 | Immediate held as `int` (24-bit) rather than 32-bit `value` | part of −4.7% | **Portable.** An instruction's immediate is at most three bytes; zap's `operand.imm` is the same `value` type and its emitter has the same ceiling. Invisible on the host, like the register masks. |
 | No pre-scan for the line end — one pass over the source instead of two | part of −4.7% | **Conditional**, and closer to a redesign than a transplant. zap is driven token-by-token through `lex_next` rather than line-by-line, so the idea (nothing needs the line bound, because no scan can cross a newline) applies but the shape does not. |
@@ -78,7 +72,7 @@ Three verdicts:
 | **The symbol chain compare, four shapes measured** | **the shipped one won, and then stopped winning** | `sym_at` still walked its chain with subscripts -- `text[i] == name[i]`, which reloads the length, the arena base and the name from the frame on every character, sixteen instructions for a byte compare. The obvious fix is the pointer walk `loc_intern` already uses, and it generates **24** instructions with six frame accesses instead of sixteen with three: three live pointers do not fit where two and an index do. Backwards from the end measured 4.76s and a pointer-plus-counter 4.76s, against **4.72s** for what is there. Four shapes, and the one nobody would write on purpose is the fastest. |
 | **Half of what the symbol table appears to cost is the benchmark** | 4.5% measured, ~2.2% on real code -- **now fixed** | isa_real's global labels averaged **17.1 characters** against the corpus's **8.5**, so the benchmark did 2.1x the per-label character work real code does and `sym_at` and the key both read about twice what they would. The mnemonic weights in `real` mode came from the corpus and the label *shape* did not. Fixed in the row below; every symbol-table figure taken before it reads about twice what it should, and this one and `sym_intern`'s 8.1% are the two known cases. |
 | **Label names sized from the corpus, which moved the baselines the wrong way** | isa_real 332 -> **342** cycles/byte, and 210 -> **205** microseconds a line | `lname` now draws a length from the corpus's own distribution -- mean 8.37 against 8.45, median 7 against 7 -- instead of emitting `board_145_level_end` at a mean of 17.1 and never shorter than eleven. The lesson is in the two numbers, and it is a general one about byte-sized benchmarks: **shortening the source text makes a per-byte figure worse**, because the file is sized in bytes and 5.8% shorter labels mean 5.8% more lines inside the same 256 KiB, and a line costs more than the characters of a name. Per line it got 2.6% cheaper, which is the saving the change was for. Both numbers are true; quoting either one alone is how this would mislead. |
-| **Expressions, with precedence by default and `-ez80` for the reference** | **+2.5%** for the evaluator, and see below | **Portable, and the flag is the transferable part.** ez80asm has no precedence at all -- `1+2*3` is 9 -- and ZDS has two levels where `+ - << >> & | ^` are one, so `1\|6&4` is 4 there and 5 anywhere else. Three assemblers, three answers, all measured rather than assumed. dzap does what every language does and offers `-ez80` for byte-compatibility, which is the first place it knowingly computes a different number from the reference on input the reference accepts. One algorithm serves both: a precedence climb where every operator binds equally *is* a left-to-right fold, so the compatible answer is a table and not a second code path. |
+| **Expressions, with precedence by default and `-ez80` for the reference** | **+2.5%** for the evaluator, and see below | **Portable, and the flag is the transferable part.** ez80asm has no precedence at all -- `1+2*3` is 9 -- and ZDS has two levels where `+ - << >> & | ^` are one, so `1\|6&4` is 4 there and 5 anywhere else. Three assemblers, three answers, all measured rather than assumed. zap does what every language does and offers `-ez80` for byte-compatibility, which is the first place it knowingly computes a different number from the reference on input the reference accepts. One algorithm serves both: a precedence climb where every operator binds equally *is* a left-to-right fold, so the compatible answer is a table and not a second code path. |
 | Argument parsing left inline in `main` | **not the cause — hypothesis refuted** | `run` is inlined into `main`, so `main` holds the loop over the source lines, and the option handling added 221 instructions in front of it. That looked like the explanation for the precedence climb costing 5.3% on a build where the evaluator is entered **zero** times -- confirmed by counting: `expr_climb` runs 0 times on isa_real, isa_even and pure. Moving the parser out of line with `noinline` brings `_main` back from 1002 instructions to 838 and measures **5.18s against 5.12s**: slightly worse, not better. Recorded because it is a plausible-looking explanation that is wrong, and the next person will think of it too. |
 | The scope switch asked on every line | **3.5% — made lazy** | A global label opens a scope that starts on the *next* line, so the switch cannot happen where the label is. Doing it at the top of the line loop instead costs 3.5% -- more than the whole feature -- to ask a question on 19,399 lines that only a line with an `@` on it can answer. Moved into the local lookup, which is the first place it can matter, comparing the line the label was on rather than a flag: `two: jp @l` reads its operand in the scope `two` is closing, so "is one pending" is the wrong question and "was it this line" is the right one. **A deferred action belongs at the next thing that can observe it, not at the next tick.** |
 | Local buckets placed in the middle of `dz` | **moved to the end, and asserted there** | The frame-pointer cliff wearing different clothes. `dz` is reached through a pointer and `iy` displacement is a signed byte, so a field past 127 has its address computed rather than being read in one instruction. The 64 bucket slots are 256 bytes; sitting before `line` and `err` they pushed both out of range, and `line` is written on every line of the source. **A big cold field added to a hot struct belongs at the end of it.** Honest about the number: a `_Static_assert` on the target build proves `dz.line` is out of range in the middle placement and in range at the end, but the two builds measured 4.58s and 4.62s on isa_real -- the wrong way round and inside run-to-run variation, so the addressing is established and a saving is not. The assertions stay because the addressing is the part that can silently come back. |
@@ -117,7 +111,7 @@ bytes cannot reach most of its own locals with `ld a, (ix-9)`, so the compiler
 emits `ld bc, -139; lea hl, ix + 0; add hl, bc; ld hl, (hl)` instead — five
 instructions where there was one, on every access.
 
-dzap fell off it by accident. `run`, `assemble_line`, `match_row` and
+zap fell off it by accident. `run`, `assemble_line`, `match_row` and
 `emit_row` were all inlined into `main`, whose frame reached 149 bytes and
 whose hot loop paid the detour 23 times. Marking those four `noinline` split
 one 149-byte frame into four of 60, 62, 19 and 20, removed every escape, and
@@ -153,7 +147,7 @@ above are about *semantics*, and the sizes are always from the Agon.
 
 ## Running total
 
-    256 KiB of pure instructions, dzap
+    256 KiB of pure instructions, zap
       baseline                                    19.72s   1,387 cycles/byte
       + lengths, class table, length buckets      17.76s   1,250
       + row precompute, operand copy, literals    17.10s   1,203
@@ -389,7 +383,7 @@ largest single variable cost — which is what the mode index below addressed.
 
 ## Applying these to zap
 
-| change | dzap | zap |
+| change | zap | zap |
 |---|---|---|
 | Row early-out | −23.2% | **−1.2% bbcbasic, −6.4% synth — kept** |
 | Character class table | measured alone here | **−1.6% bbcbasic, −3.1% synth — kept** |
@@ -421,8 +415,8 @@ more than not narrowing at all because the compare promotes the narrow side
 back. Narrowing the table alone is free only because the smaller struct pays
 for the widening it causes.
 
-The same narrowing is worth 9.4% in dzap. The difference is not the code — it
-is that dzap's hot loop is nearly its whole program and its operand is 28 bytes,
+The same narrowing is worth 9.4% in zap. The difference is not the code — it
+is that zap's hot loop is nearly its whole program and its operand is 28 bytes,
 where zap reaches this code far less often per source byte and its operand is
 153.
 
@@ -436,7 +430,7 @@ lookup tables freely; be very careful with layout and indirection.*
 The spread on the early-out is the shape to expect from all of these: synth is
 11.3 source bytes per instruction and takes the full benefit, BBC BASIC is 41.5
 and most of its bytes never reach the code being changed. A change worth *n*%
-in dzap is worth a fraction of that in zap, scaled by how much of the real
+in zap is worth a fraction of that in zap, scaled by how much of the real
 source is instructions.
 
 **Bundle nothing.** The masks entry above was wrong because two changes shared
@@ -478,4 +472,4 @@ largest win in this whole exercise at 23.2%.
 
 zap's `match_row` was deliberately made branchless earlier in the project for
 the reason that does not apply here. Carrying this over is likely the most
-valuable single thing dzap has produced.
+valuable single thing zap has produced.

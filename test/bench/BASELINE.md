@@ -6,9 +6,9 @@ the two.
 
 | source | zap | ez80asm | ratio | |
 |---|---|---|---|---|
-| bbcbasic | 3.80s | 22.42s | **0.17x** | ez80asm `-m` |
-| rokky | 0.52s | 2.50s | **0.21x** | |
-| synth | 7.04s | 45.64s | **0.15x** | ez80asm `-m` |
+| bbcbasic | 3.86s | 22.42s | **0.17x** | ez80asm `-m` |
+| rokky | 0.54s | 2.50s | **0.22x** | |
+| synth | 7.16s | 45.64s | **0.16x** | ez80asm `-m` |
 
 Two changes moved these from 4.12 / 0.56 / 7.30: a comment stopped being
 walked through an out-parameter, and the assembler's state moved to a fixed
@@ -18,6 +18,11 @@ BASIC's 28%; the second is worth about 4.5% everywhere.
 
 The figures above are the default, which does not check whether a value fits
 where it is written. `-w` asks for the check. Three builds, one source set:
+
+The set moved 1.5% to 1.9% for the validation round -- eight checks the
+reference has and zap did not, the dearest of them its 256-character line
+limit. Item by item, and what two of them cost by being inlined into a
+function with a frame, in .internal/performance-notes.md.
 
 | source | no warning code | default | `-w` |
 |---|---|---|---|

@@ -21,6 +21,10 @@ them too rather than being right and incompatible:
   - **`0bh` is hexadecimal**, not binary: the `h` suffix is claimed before the
     `0b` prefix.
 
+`-color` (or `-colour`) puts the error report in the reference's colours: red
+for what went wrong, yellow for the text it went wrong in. Off by default, so
+a pipe gets plain text and a person gets the escapes they asked for.
+
 Without `-ez80` the defaults are the ones a reader expects. Where the two
 disagree it is on purpose and it is written down; where they disagree by
 accident it is a bug.
@@ -29,6 +33,21 @@ Against the reference's own 507-source corpus, **nothing disagrees**: 128
 assemble to identical bytes and 379 are refused by both. `test/corpus.sh`
 prints that table. So do BBC BASIC and Rokky, assembled whole with their
 include trees.
+
+## When something is wrong
+
+    Macro [m] in "prog.s" line 2 - unexpected text after the instruction
+    ld a, 5 5
+    Invoked from "prog.s" line 4 as
+      m 5
+
+The failing line, the token the message is about, and for a macro the place it
+was invoked from. All of it is captured when the failure happens and none of
+it is kept in advance, so **a source that assembles pays nothing for any of
+it** -- measured, and the three benchmarks do not move by a hundredth.
+
+Errors are `zap_err` codes rather than strings, so a caller that is not the
+command line can branch on one; the text is in a table beside the enum.
 
 ## What it supports
 

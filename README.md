@@ -36,7 +36,6 @@ Copy `bin/zap.bin` to `/bin` on the Agon's SD card and run it as `zap`.
 ## Usage
 
     zap <source> <output> [options]
-    zap <source> [options]              # output defaults to <source>.bin
 
     zap game.s game.bin                 # assemble
     zap game.s game.bin -l -s           # ... with a listing and a symbol file
@@ -76,10 +75,10 @@ so on).
 (`@name`), and anonymous labels (`@@` to define, `@f` and `@b` to refer
 forwards and backwards).
 
-**Expressions.** The usual arithmetic, bitwise and comparison operators,
+**Expressions.** `+` `-` `*` `/` `<<` `>>` `&` `|` `^`, unary `-` and `~`,
 parentheses, `$` for the current address, character literals with escapes, and
-numbers written as `1234`, `0x1234`, `$1234`, `1234h`, `0b1010`, `%1010`,
-`1010b` or `0o17`.
+numbers written as `1234`, `0x1234`, `$1234`, `1234h`, `0b1010`, `%1010` or
+`1010b`. `IF` takes an expression and treats a non-zero value as true.
 
 **Directives.**
 

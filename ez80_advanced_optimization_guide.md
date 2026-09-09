@@ -308,15 +308,17 @@ and keep".
 
 ### Branchless is not unconditional -- *measured*
 
-Section 2's advice that data-driven code beats chains of `if`/`else` holds for a
-branch that **selects a value**, where both alternatives cost about the same and
-the branch buys nothing.
+The usual advice for a machine with no branch predictor is to prefer
+data-driven code -- a table lookup, arithmetic on a flag -- over a chain of
+`if`/`else`. That holds for a branch that **selects a value**, where both
+alternatives cost about the same and the branch buys nothing.
 
 It does not hold for a branch that **skips work**. zap's instruction-row
 selection evaluated every term of its test so the whole thing could be one
 branch. Rejecting a candidate on the cheapest term first, and only then paying
-for the expensive ones, was worth **23.2% on the stripped assembler it was first measured on
-and 6.4% on zap's instruction-dense benchmark** -- on a chip with no branch predictor.
+for the expensive ones, was worth **6.4% on zap's instruction-dense
+benchmark**, and 23.2% on the stripped version it was first measured on -- on
+a chip with no branch predictor.
 
 The distinction is whether the branch avoids computation. If it does, take it.
 
@@ -483,7 +485,8 @@ HL's upper byte is not directly addressable, so the compiler has the byte trick 
 ### Inline Small, Critical Functions
 * **The Problem:** Function calls introduce a heavy penalty because the CPU must push the 24-bit program counter onto the stack, jump, and pop it back off upon returning.
 * **The Fix:** Use the `inline` or `static inline` keyword for small, frequently called helper functions (such as pixel plotting, bit masking, or mathematical macros) inside inner loops. This eliminates the `CALL` and `RET` overhead entirely by embedding the code directly into the instruction flow.
-* **The limit:** only while the resulting frame stays under 128 bytes. See below.
+* **The limit:** only while the resulting frame stays under 128 bytes -- see
+  the next heading, and section 2a for the two ways inlining gets that wrong.
 
 ### Keep Every Stack Frame Under 128 Bytes
 * **The Problem:** `ix` displacement is a **signed byte** (see section 0). A function whose frame exceeds 128 bytes cannot reach most of its own locals with `ld a, (ix-9)`, and the compiler falls back to computing the address:
@@ -736,9 +739,10 @@ work). Readings are deterministic to the centisecond.
   measured 1.36x on the host and 3.20x on the Agon.
 
 ### Contradicted by measurement
-* **"Data-driven beats branching" is too simple.** Replacing a chain of ~8
-  failing character comparisons with two lookups in a 256-byte table was
-  **0.3% slower**. Replacing short-circuit `&&`/`||` with bitwise operators on
+* **"Data-driven beats branching" is too simple**, taking that as the general
+  advice it usually is rather than as a claim made anywhere here. Replacing a
+  chain of ~8 failing character comparisons with two lookups in a 256-byte
+  table was **0.3% slower**. Replacing short-circuit `&&`/`||` with bitwise operators on
   values already in registers was **0.8% faster**.
 * The rule that fits both: **not-taken branches are cheap, memory accesses are
   not.** Replace a branch with register arithmetic and you win; replace it with

@@ -49,10 +49,24 @@
  * generated assembly shows it. `test/run.sh` checks that every scan here keeps
  * its bound.
  *
- * The layout below follows the pipeline: types and state, then the symbol
- * table, the expression evaluator, the operand parser, the instruction
- * matcher and emitter, the directives, macros, the line loop, and finally the
- * reporting and the command line. docs/DESIGN.md is the map.
+ * THE ORDER OF THIS FILE. Each section is introduced by a banner comment:
+ *
+ *     types and state          what an operand, a symbol and a fixup are,
+ *                              and the one state object everything reads
+ *     symbols                  the global table, its storage, and fixups
+ *     local labels             @name, @@, @f and @b, and their scopes
+ *     output                   the buffer the bytes are built in
+ *     mnemonics                the instruction table and its lookup
+ *     registers and flags      recognising operands that are registers
+ *     scanning                 character classes and literal readers
+ *     expressions              the evaluator and its forward references
+ *     equ
+ *     macros                   definition and expansion
+ *     directives               everything that is not an instruction
+ *     selecting and emitting   row matching and byte output
+ *     the line loop            assemble_line, reporting, and main
+ *
+ * docs/DESIGN.md describes how those parts fit together.
  */
 
 #include <stdbool.h>
@@ -226,7 +240,13 @@ _Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
  * is copied into a frame that has to outlive the line it came from, and into
  * `zap_state.errpath` when an include fails. */
 
-/* ------------------------------------------------------------- symbols */
+/* ======================================================================
+ * SYMBOLS
+ *
+ * Global labels and EQU values: the table they live in, the key that finds
+ * a bucket, and the fixups that record a reference to a label the source
+ * has not defined yet.
+ * ====================================================================== */
 
 /* A label and its address.
  *
@@ -1310,7 +1330,13 @@ static const char* volatile dup_hash_name;
 #define DUP_HASH_CALL(n, l) ((void) 0)
 #endif
 
-/* ------------------------------------------------- symbols, continued */
+/* ======================================================================
+ * SYMBOLS: STORAGE
+ *
+ * Where the nodes and the names come from. Both are arenas of blocks that
+ * never move, because a growing array cannot be reallocated on a machine
+ * with 512 KB and no virtual memory.
+ * ====================================================================== */
 
 /* Grown in blocks rather than one allocation per label. A label is a few
  * bytes and there are thousands of them; malloc per label would cost more in
@@ -1476,7 +1502,13 @@ static sym* sym_intern(const char* name, int len) {
     return sp;
 }
 
-/* ------------------------------------------------------------ local labels */
+/* ======================================================================
+ * LOCAL LABELS
+ *
+ * `@name` labels, scoped to the global label above them, plus the
+ * anonymous `@@`, `@f` and `@b`. A scope ends at the next global label and
+ * its whole table empties in constant time.
+ * ====================================================================== */
 
 /* Eight bits of the same key the global table uses. The high three bits it
  * composes are the ones this table does not have room for, so they are simply
@@ -2001,7 +2033,12 @@ static bool fix_add(const sym* target, const sym* sub, int addend,
     return true;
 }
 
-/* ---------------------------------------------------------------- output */
+/* ======================================================================
+ * OUTPUT
+ *
+ * The buffer the assembled bytes are built in, and the reserved runs that
+ * `DS` and `ALIGN` leave in it.
+ * ====================================================================== */
 
 /* `need` is how many bytes the caller is about to write beyond the twelve an
  * instruction is allowed. A directive can ask for a whole string or a `DS` of
@@ -2062,7 +2099,12 @@ static bool out_reserve_n(int n) {
     return out_grow(n);
 }
 
-/* ------------------------------------------------------------- mnemonics */
+/* ======================================================================
+ * MNEMONICS
+ *
+ * The instruction table and the lookup that finds a mnemonic in it: rows
+ * grouped by operand mode, buckets keyed by first letter and length.
+ * ====================================================================== */
 
 #if defined(TRUNC) || defined(PTRUNC) || defined(LTRUNC) || defined(ETRUNC) \
     || defined(MTRUNC)
@@ -2699,7 +2741,12 @@ static inline const insninfo* mnemonic_of(const char* s, int n) {
     return NULL;
 }
 
-/* ------------------------------------------------------- registers, flags */
+/* ======================================================================
+ * REGISTERS AND CONDITION CODES
+ *
+ * Recognising `hl`, `(ix+d)`, `nz` and the rest straight from the text,
+ * with the bits and indices the encoder wants.
+ * ====================================================================== */
 
 /* Recognised straight from the text, with the bit and the index the encoder
  * wants. zap reaches these through a token type and then a switch; there is no
@@ -2798,7 +2845,12 @@ static bool reg_of_text(const char* s, int n, dop* op, bool* is_cc,
     return false;
 }
 
-/* --------------------------------------------------------------- scanning */
+/* ======================================================================
+ * SCANNING
+ *
+ * The character class table every scan uses, the literal readers, and the
+ * escape handling shared by strings and character literals.
+ * ====================================================================== */
 
 /* What each byte can be, in one table.
  *
@@ -3131,7 +3183,13 @@ static bool numeric_token(const char* s, int n) {
     return num_parse(s, n, &gv);
 }
 
-/* ------------------------------------------------------------- expressions */
+/* ======================================================================
+ * EXPRESSIONS
+ *
+ * The precedence climb, the atoms it is built from, and the bookkeeping
+ * that decides whether an expression naming labels ahead can still be
+ * turned into a fixup.
+ * ====================================================================== */
 
 /* Defined with the directives, because that is where strings are written out.
  * A character literal uses the same table; see the comment there. */
@@ -4320,7 +4378,9 @@ have_value:
 __attribute__((always_inline))
 static inline const char* lit_value(const char* p, const char* e, evalue* out);
 
-/* ----------------------------------------------------------------- equ */
+/* ======================================================================
+ * EQU
+ * ====================================================================== */
 
 /* `EQU`, or `.EQU`, in any case: tested in place, and advancing past it if it
  * is one.
@@ -4633,7 +4693,13 @@ static bool scope_pop(locsave* sv) {
 #define DIR_ELSE     23
 #define DIR_ENDIF    24
 
-/* ---------------------------------------------------------------- macros */
+/* ======================================================================
+ * MACROS
+ *
+ * Definition -- the body captured as text, with the places its parameters
+ * occur marked once -- and expansion, which substitutes the arguments and
+ * assembles the body a line at a time in a scope of its own.
+ * ====================================================================== */
 
 /* Both defined with the directives below. A macro parameter may not be a
  * mnemonic or a directive, and that is asked where the parameters are read. */
@@ -5343,7 +5409,12 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
     return true;
 }
 
-/* ---------------------------------------------------------- directives */
+/* ======================================================================
+ * DIRECTIVES
+ *
+ * Everything that is not an instruction: the data and space directives,
+ * ORG and ALIGN, INCLUDE and INCBIN, the conditionals, ASSUME and .CPU.
+ * ====================================================================== */
 
 
 /* How deep INCLUDE may go, and how much buffer a file below the first gets.
@@ -6693,7 +6764,12 @@ static bool directive_line(const char* s, int n, const char* p,
     return true;
 }
 
-/* ------------------------------------------------------------- selecting */
+/* ======================================================================
+ * SELECTING AND EMITTING AN INSTRUCTION
+ *
+ * Matching the parsed operands against the rows of a mnemonic, folding
+ * operands into the opcode, and writing the bytes out.
+ * ====================================================================== */
 
 
 
@@ -7443,7 +7519,13 @@ static bool third_operand(const insninfo* insn, dop* a, dop* b,
     return emit_row(row, b, &c, 0);
 }
 
-/* ------------------------------------------------------------------ main */
+/* ======================================================================
+ * THE LINE LOOP, REPORTING, AND MAIN
+ *
+ * assemble_line and the loop that feeds it, then everything that happens
+ * once the source has run out: patching fixups, writing the output, the
+ * listing, the symbol file, and the command line.
+ * ====================================================================== */
 
 /* Assembles one line and reports where it stopped.
  *

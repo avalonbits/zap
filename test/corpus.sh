@@ -17,8 +17,17 @@
 # network and nothing to build first -- see test/ref/README.md. Both are MIT
 # licensed, from AgonPlatform/agon-ez80asm.
 #
+# test/regress is zap's own, in the same shape and run in the same pass. The
+# corpus is somebody else's tests and can only find a divergence somebody else
+# already wrote down; that tree holds the ones found by reading the
+# reference's diagnostic table instead.
+#
 #   test/corpus.sh
 #       The whole corpus, against the vendored ez80asm for this architecture.
+#
+#   test/corpus.sh --regress
+#       zap's own sources only -- test/regress -- which is the half that moves
+#       while a change is being made, and runs in a few seconds.
 #
 #   test/corpus.sh <real-source.s ...>
 #       Whole programs as well, each assembled in place with its include tree.
@@ -39,6 +48,22 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 CORPUS="test/corpus"
+ONLY=""
+
+# zap's own sources, in a tree of their own.
+#
+# The corpus is vendored -- it is the reference's test suite, MIT licensed,
+# and belongs to somebody else -- so nothing zap writes goes in it. These are
+# the cases the corpus could not have: every divergence found by reading the
+# reference's diagnostic table rather than by running its tests, each one
+# written so that the two assemblers either produce the same bytes or refuse
+# the same file. A regression in any of them shows up here as a DIFFER, in
+# the runner that has to stay green, rather than only in run.sh.
+#
+# What is deliberately *not* here: the four differences zap keeps on purpose,
+# which are in .internal/completeness.md. A negative reservation would want
+# four gigabytes of disk to compare.
+REGRESS="test/regress"
 EZ=""
 
 while [ $# -gt 0 ]; do
@@ -46,6 +71,13 @@ while [ $# -gt 0 ]; do
         --ref)
             EZ="${2:-}/bin/ez80asm"
             shift 2
+            ;;
+        --regress)
+            # zap's own tree only, which is the one that moves while a change
+            # is being made. The vendored corpus is the slow half and does not
+            # need re-running to see whether a new case bites.
+            ONLY=regress
+            shift
             ;;
         -h|--help)
             sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
@@ -118,29 +150,61 @@ fi
 # than two producing the same bytes, so they are counted apart. A negative test
 # that both reject is a pass, but calling it "assembles identically" would
 # overstate what was compared.
-total=0; same=0; rejected=0; differ=0
+total=0; same=0; rejected=0; differ=0; ours=0
 
-for dir in "$CORPUS"/*/; do
+for dir in "$CORPUS"/*/ "$REGRESS"/*/; do
     name=$(basename "$dir")
     [ -d "$dir/tests" ] || continue
+    case "$dir" in "$REGRESS"/*) mine=1 ;; *) mine=0 ;; esac
+    [ "$ONLY" = regress ] && [ "$mine" = 0 ] && continue
 
     for src in "$dir"/tests/*.s; do
         [ -f "$src" ] || continue
         base=$(basename "$src" .s)
         total=$((total + 1))
+        ours=$((ours + mine))
 
         rm -rf "$OUT/z"
         mkdir -p "$OUT/z"
         cp -r "$dir"/tests/* "$OUT/z/" 2>/dev/null
 
-        (cd "$OUT/z" && rm -f "$base.bin" && timeout 30 "$OUT/zap" -ez80 "$base.s" "$base.bin" >/dev/null 2>&1)
+        # The listing is compared for one group of zap's own sources and no
+        # others -- test/regress/listing, whose files are written to be
+        # comparable. Four things a one-pass assembler cannot put in a listing
+        # the way a two-pass one does, all of them in .internal/completeness.md
+        # and none of them a regression: the reference widens the line-number
+        # column for the whole file when it lists an expansion, a macro body
+        # loses the indentation it was written with, a forward reference shows
+        # the bytes as they were emitted rather than as they were patched, and
+        # a reservation's fill is listed differently again. A file in that
+        # group avoids all four.
+        #
+        # It is worth having even so: the .lst is the reference's bytes, LF
+        # with one stray CR after the header, and nothing short of comparing
+        # against its own file would have caught that they were CRLF here.
+        lst=0
+        [ "$name" = listing ] && lst=1
+
+        zl=""
+        [ "$lst" = 1 ] && zl="-l"
+        (cd "$OUT/z" && rm -f "$base.bin" "$base.lst" \
+            && timeout 30 "$OUT/zap" -ez80 $zl "$base.s" "$base.bin" >/dev/null 2>&1)
         z=$([ -f "$OUT/z/$base.bin" ] && md5sum < "$OUT/z/$base.bin" | cut -d' ' -f1 || echo rejected)
 
         rm -rf "$OUT/e"
         mkdir -p "$OUT/e"
         cp -r "$dir"/tests/* "$OUT/e/" 2>/dev/null
-        (cd "$OUT/e" && rm -f "$base.bin" && timeout 30 "$EZ" "$base.s" -c >/dev/null 2>&1)
+        (cd "$OUT/e" && rm -f "$base.bin" "$base.lst" \
+            && timeout 30 "$EZ" "$base.s" -c $zl >/dev/null 2>&1)
         e=$([ -f "$OUT/e/$base.bin" ] && md5sum < "$OUT/e/$base.bin" | cut -d' ' -f1 || echo rejected)
+
+        if [ "$lst" = 1 ] && [ "$z" = "$e" ] && [ "$z" != rejected ]; then
+            if ! cmp -s "$OUT/z/$base.lst" "$OUT/e/$base.lst"; then
+                differ=$((differ + 1))
+                echo "DIFFER $name/$base: bytes agree, the listing does not"
+                continue
+            fi
+        fi
 
         if [ "$z" = "$e" ]; then
             if [ "$z" = "rejected" ]; then
@@ -203,7 +267,7 @@ for src in "$@"; do
 done
 
 echo "-----"
-echo "$total sources compared"
+echo "$total sources compared, $ours of them zap's own"
 echo "  $same produced identical bytes"
 echo "  $rejected rejected by both"
 echo "  $differ disagreed"

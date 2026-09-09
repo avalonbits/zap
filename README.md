@@ -26,9 +26,13 @@ disagree it is on purpose and it is written down; where they disagree by
 accident it is a bug.
 
 Against the reference's own 507-source corpus, **nothing disagrees**: 128
-assemble to identical bytes and 379 are refused by both. `test/corpus.sh`
-prints that table. So do BBC BASIC and Rokky, assembled whole with their
-include trees.
+assemble to identical bytes and 379 are refused by both. So do BBC BASIC and
+Rokky, assembled whole with their include trees.
+
+`test/corpus.sh` prints that table, and runs 49 sources of zap's own beside
+it -- `test/regress`, the cases a corpus written to test ez80asm could not
+have. Those came from reading the reference's diagnostic table rather than
+running its tests, and three of them were wrong bytes with nothing said.
 
 ## Options
 
@@ -111,7 +115,9 @@ neither the Z80 nor the Z180 has ADL or a mode suffix.
     test/run.sh        host tests: unit, CLI, and every source in test/cases
                        assembled against a vendored ez80asm and compared byte
                        for byte
-    test/corpus.sh     the reference's whole corpus, the same way
+    test/corpus.sh     the reference's whole corpus, the same way, plus
+                       zap's own sources in test/regress
+    test/corpus.sh --regress    only those, in about two seconds
     test/bench/bench.sh    throughput against ez80asm on fab-agon-emulator
 
 The reference assembler and its corpus are vendored under `test/ref` and

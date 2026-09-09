@@ -225,6 +225,15 @@ local -- three bytes in 31,520 with both assemblers accepting the file -- and
 BBC BASIC, which needed an index displacement to be an expression and an
 expression to be kept as text when a fixup could not hold it.
 
+## Where these are pinned
+
+Every divergence in this section has a source in `test/regress` that fails if
+it comes back -- zap's own tree, run by test/corpus.sh beside the vendored
+corpus, 49 sources. Each was checked by reverting the fix and watching the
+case turn red. What that tree cannot see is written in its README: a
+difference that is only in a message, and anything that depends on a
+command-line flag. test/run.sh covers both.
+
 ## What the corpus could not see, and what it cost to look
 
 The corpus is 507 sources of valid code and negative tests, so it can only
@@ -285,7 +294,24 @@ file is the reference's bytes, LF-terminated with one stray CR after the
 header. A listing of a source with no macros is byte-identical to the
 reference's and run.sh compares them.
 
-Two differences are left and both are structural.
+Four differences are left and all four are the same wall: the reference lists
+on its second pass and knows everything before it writes line 1, while zap
+writes each line as it assembles it.
+
+**A forward reference is listed with the bytes as they were emitted, not as
+they were patched.** `ld hl, ahead` is `21 00 00 00` here and `21 17 00 04`
+there. This one is not about macros at all and reaches every listing of every
+real program; it was found by comparing .lst files in the corpus runner, which
+is what that comparison is for. Closing it means either buffering the listing
+or recording a file offset per fixup and seeking back to rewrite twelve
+characters -- and `-d`, which goes to the console, could not be fixed either
+way.
+
+**A reservation's fill is listed differently again.** `ds 4` there leaves the
+first row's byte field empty and puts the fill on a continuation row, unpadded;
+`align 4` does the same; an ORG's pad is listed inline and padded, which zap
+matches. zap lists all three inline. And a reservation at the end of a file,
+which both assemblers drop, is listed with its bytes here and with none there.
 
 **The reference widens the line-number column by two characters for the whole
 file when any expansion is listed.** It can do that because it lists on the
@@ -301,8 +327,13 @@ are offsets into that. The listing shows `db x` where the reference shows
 `  db x`.
 
 The console listing keeps CRLF rather than the reference's bare LF, which is
-a third difference and a deliberate one: `-d` there staircases down an Agon
-screen.
+a fifth difference and the only deliberate one: `-d` there staircases down an
+Agon screen.
+
+The `listing/` group in test/regress is the sources that avoid all four
+structural ones, so their `.lst` can be compared byte for byte. That
+comparison is what caught zap writing CRLF where the reference writes LF, and
+what found the forward-reference difference above.
 
 ## The one warning the reference has, and the one place zap does not copy it
 

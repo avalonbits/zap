@@ -19,49 +19,39 @@
 /*
  * zap -- an assembler for the Agon Light, in one pass and one file.
  *
- * It exists to agree with `ez80asm` byte for byte and to be fast enough that
- * assembling on the machine itself is not something to avoid. Both halves of
- * that are load-bearing: where the reference does something surprising -- no
- * operator precedence, `IF a == b` evaluating `a` and discarding the rest,
- * `0bh` reading as hex before binary -- this reproduces it under `-ez80`
- * rather than being right and incompatible. What the two disagree about on
- * purpose is listed at the option below.
+ * Two goals, both load-bearing: agree with `ez80asm` byte for byte, and be
+ * fast enough that assembling on the Agon itself is practical. Where the
+ * reference does something surprising -- no operator precedence, `IF a == b`
+ * evaluating `a` and discarding the rest, `0bh` reading as hex before binary
+ * -- `-ez80` reproduces it rather than being right and incompatible.
  *
- * ONE PASS. A reference to a label further down cannot be resolved where it
- * is read, so the output is held in memory and patched at the end. That is
- * the whole design: everything else follows from never looking at a line
- * twice.
+ * ONE PASS. A reference to a label further down cannot be resolved where it is
+ * read, so the output is built in memory and the references to it are patched
+ * at the end. Everything else follows from never looking at a line twice.
  *
  * ONE FILE, and not for the usual reasons. The eZ80 has no cache and a
- * function call is expensive, so what matters is which of the hot path the
- * compiler can see at once -- `assemble_line` has the operand parser, the row
- * match and the emitter inlined into it, and the measurements that say why are
- * in .internal/performance-notes.md. Splitting it would be tidier and slower,
- * and the second part has been measured more than once.
+ * function call is expensive, so what matters is how much of the hot path the
+ * compiler can see at once: `assemble_line` has the operand parser, the row
+ * match and the emitter inlined into it.
  *
- * EVERY SCAN IS BOUNDED. A loop that walks a character pointer compares that
- * pointer against the end of the buffer as well as testing what it points at,
- * and that is not defensive programming -- unbounded, these loops have come
- * out of the compiler rotated the wrong way: the pointer pre-decremented and
- * each turn testing one character past it, so the first is never examined and
- * the scan stops one short. It has happened five times on five different
- * loops, it reduces to nothing, and **the host build is correct every time**,
- * so nothing here can catch it except reading the source or the assembly. The
- * last occasion rotated four loops in a function whose source was unchanged,
- * because a function was added between two others and the allocation moved.
- * Two conditions are what stops it. `test/run.sh` checks that the source
- * keeps them, and the price is in .internal/performance-notes.md.
+ * EVERY CHARACTER SCAN IS BOUNDED. A loop that walks a character pointer must
+ * compare that pointer against the end of the buffer as well as testing what
+ * it points at:
  *
- * WHERE THIS CAME FROM. It began as `dzap`, a stripped assembler written to
- * find a floor: the earlier zap spent about 830 cycles per source byte and it
- * was not clear how much of that was assembling and how much was machinery.
- * Building the same instruction stream with the machinery gone answered it,
- * and then every feature -- labels, expressions, directives, EQU, INCLUDE,
- * ASSUME, conditionals, macros, mode suffixes -- was added back one at a time
- * and priced on the Agon before the next one started. It arrived at the same
- * feature set for a third of the cycles, so it replaced what it was measuring.
- * The prices are all in the notes, and so are the things that were tried and
- * put back.
+ *     while (p < e && is_space_ch(*p)) { p++; }     yes
+ *     while (is_space_ch(*p)) { p++; }              no
+ *
+ * This is not defensive programming. Without the bound the compiler is free to
+ * rotate the loop -- pre-decrementing the pointer and testing one character
+ * past it -- so the first character is never examined and the scan stops one
+ * short. The host build is correct either way, so only the source or the
+ * generated assembly shows it. `test/run.sh` checks that every scan here keeps
+ * its bound.
+ *
+ * The layout below follows the pipeline: types and state, then the symbol
+ * table, the expression evaluator, the operand parser, the instruction
+ * matcher and emitter, the directives, macros, the line loop, and finally the
+ * reporting and the command line. docs/DESIGN.md is the map.
  */
 
 #include <stdbool.h>
@@ -91,34 +81,24 @@
 
 /* The word an expression is evaluated in.
  *
- * Four bytes, and the eZ80's is three, so this is deliberately wider than the
- * machine -- which is the opposite of what the rest of this file does. Every
- * other quantity here is the machine's word on purpose: an address, a count,
- * an immediate and a displacement all fit in 24 bits and paying for 32 would
- * be paying on every line.
+ * Four bytes, where the eZ80's word is three. This is deliberately wider than
+ * the machine, and it is the only quantity here that is: an address, a count,
+ * an immediate and a displacement all fit in 24 bits, and widening those would
+ * cost something on every line.
  *
- * An expression is the one place they do not. `DW32` and `BLKL` are four bytes
- * wide, the reference fills them with `0x55555555`, `~0` and `-2147483648`,
- * and no amount of care at the emitter recovers a bit the evaluator has
- * already dropped. The reference evaluates in 32 bits, so this is also the
- * width that agrees with it wherever the two would otherwise differ.
+ * An expression has to be wider because `DW32` and `BLKL` are four bytes wide.
+ * The reference fills them with values like `0x55555555` and `-2147483648`,
+ * and no care at the emitter recovers a bit the evaluator has already dropped.
+ * The reference evaluates in 32 bits, so this is the width that agrees with it.
  *
- * It costs **0.10s of isa_real's 5.74**, 1.8%, and it cost 0.42 before three
- * rounds of taking it off the paths that do not need it: the fast literal
- * readers decline anything wider than the machine and let num_parse have it,
- * and the emitters narrow once when the width is three or less. See
- * .internal/performance-notes.md, which has the decomposition and the two
- * things that measured and were not kept.
+ * Most operands never reach the evaluator: a register, a plain literal and a
+ * bare name each have a reader of their own. Those readers work in the
+ * machine's word and hand anything wider to `num_parse`, which is what keeps
+ * the extra width off the common path.
  *
- * The evaluator is not on the path most operands take: a register, a plain
- * literal and a bare name each have a reader of their own that never enters
- * it, and keeping those readers narrow is most of why the price is 1.8% and
- * not 7.4%.
- *
- * Narrowing this is a one-line edit and would look like free speed, which is
- * why the assertion is here rather than in a comment. It fires on the target
- * and not on the host, where `int` is already four bytes -- and that asymmetry
- * is the whole reason the width was a question at all. */
+ * The assertion is here rather than in a comment because narrowing this is a
+ * one-line edit that would look like free speed. It fires on the target and
+ * not on the host, where `int` is four bytes already. */
 typedef value evalue;
 _Static_assert(sizeof(evalue) >= 4,
                "DW32 and BLKL need an evaluator wider than the eZ80 word");
@@ -155,23 +135,21 @@ _Static_assert(sizeof(evalue) >= 4,
 typedef struct sym sym;
 
 typedef struct _dop {
-    /* The register set, split into byte planes and kept that way.
+    /* The register set, as three byte-wide planes of one bitmask.
      *
-     * It is a bitmask whose highest bit is R_I at 2^20, and every use of it is
-     * a mask or a test against zero -- never arithmetic. Held as one 24-bit
-     * word each of those is a call, because AND is an 8-bit instruction here;
-     * split, they are the byte operations the chip has.
+     * The mask's highest bit is R_I at 2^20, and every use of it is a mask or
+     * a test against zero, never arithmetic. Held as a single 24-bit word each
+     * of those would be a helper call, because AND on this chip is an 8-bit
+     * instruction; split into bytes they are instructions the chip has.
      *
-     * Split at the point the register is recognised rather than where it is
-     * used. match_row used to do it for both operands on every instruction,
-     * which cost two calls to __ishru even for `nop`, an instruction with no
-     * register operands at all. */
+     * The split happens where the register is recognised, not where it is
+     * used, so an instruction with no register operands never pays for it. */
     uint8_t r0, r1, r2;
 
-    /* Whether the three above are all zero, decided where they are set rather
-     * than re-derived. match_row wanted it for both operands on every
-     * instruction, which is six loads and four ORs to learn something the
-     * operand has known since it was built. */
+    /* Whether the three planes above are all zero, recorded where they are set
+     * rather than re-derived. The row matcher asks this for both operands of
+     * every instruction; deriving it there would be six loads and four ORs to
+     * learn something the operand has known since it was built. */
     uint8_t noreg;
     uint8_t reg_index;
     bool cc;
@@ -196,24 +174,22 @@ typedef struct _dop {
     bool fwd2_neg;
 
     /* An instruction's immediate is at most three bytes -- a 24-bit address in
-     * ADL mode -- so it is held in the machine's own word rather than the
-     * 32-bit `value` the expression evaluator deals in. Same reasoning as the
-     * register mask above, and the same invisibility on a host where int is 32
-     * bits anyway.
+     * ADL mode -- so it is held in the machine's own word rather than in the
+     * evaluator's wider one.
      *
-     * Truncating from `value` on the way in is what the emitter would do
-     * regardless: it writes the low one, two or three bytes and the rest was
-     * never going to be looked at. */
+     * Truncating from `evalue` on the way in is what the emitter would do
+     * anyway: it writes the low one, two or three bytes and never looks at the
+     * rest. */
     int imm;
 } dop;
 
 #ifdef AGONDEV
-/* Pinned, because the way a struct like this grows is one innocent `bool` at a
- * time, and every byte of it is copied twice a line from the empty template.
+/* Pinned, because every byte of this struct is copied twice a line from the
+ * empty template, and the way a struct like this grows is one innocent `bool`
+ * at a time. A new flag belongs in `mode` if a bit will do.
  *
- * Twenty-three until two of those bools turned out to be bits that were
- * already here; see `mode`. Twenty-one is not a power of two and does not need
- * to be -- nothing indexes an array of these. */
+ * Twenty-one is not a power of two and does not need to be: nothing indexes an
+ * array of these. */
 _Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
 #endif
 
@@ -223,8 +199,8 @@ _Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
  * instruction knows in advance that it cannot need more than a handful. The
  * longest form here is two prefixes, an opcode, two displacements and two
  * three-byte immediates. */
-/* Twelve was the longest instruction; a mode suffix puts one more byte in
- * front of it. */
+/* The longest instruction is twelve bytes, and a mode suffix puts one more
+ * byte in front of it. */
 /* The longest label the reference takes, counting the `@` of a local. */
 #define LABEL_MAX 64
 
@@ -241,7 +217,7 @@ _Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
 
 /* A listing row under the first one: six characters of address left blank, a
  * space, twelve of output field, and the newline. The first row is longer by
- * whatever its source line was, which is why it is measured rather than
+ * whatever its source line was, so its length is recorded rather than
  * computed. */
 #define LIST_ROW_LEN 20
 
@@ -251,11 +227,11 @@ _Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
 
 /* ------------------------------------------------------------- symbols */
 
-/* A label, and where it turned out to be.
+/* A label and its address.
  *
- * The name is copied. Source lines live in the reader's buffer and are gone
- * as soon as it refills, so a pointer into one is a pointer into the next
- * line by the time a forward reference is resolved.
+ * The name is copied rather than pointed at: source lines live in the reader's
+ * buffer and are gone as soon as it refills, so a pointer into one would point
+ * at a different line by the time a forward reference is resolved.
  */
 #define INCLUDE_NAME_MAX 80
 
@@ -265,21 +241,19 @@ _Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
 #define MACRO_MAXPARAM 8
 
 typedef struct _macro macro;
-/* Where a parameter appears in the body, found once when the body is read.
+/* Where a parameter appears in a macro body, found once when the body is read.
  *
- * The body does not change after ENDMACRO and neither do the places its
- * parameters occur, so deciding them at expansion time meant classifying every
- * token of every line and asking every parameter about every identifier --
- * **1,940 cycles a parameter**, on every invocation, to rediscover something
- * settled when the macro was written.
+ * A body does not change after ENDMACRO and neither do the places its
+ * parameters occur, so they are located once at definition time. Doing it at
+ * expansion time would mean classifying every token of every body line and
+ * asking every parameter about every identifier, on every invocation.
  *
- * Walked with a pointer and never subscripted, which is why the record is its
- * natural size rather than padded to a power of two. It is five bytes on the
- * Agon and six here, and `marks[i]` on either would be a call to __imulu
- * because the eZ80 multiply is 8-bit -- the expansion steps a cursor instead,
- * and the marks are in body order, so one pass covers every line. Padding it
- * to eight was tried first and does not work: `int` is three bytes there and
- * four here, so no single amount of padding is a power of two on both. */
+ * These are walked with a pointer and never subscripted, which is why the
+ * record is its natural size rather than padded. `marks[i]` would be a call to
+ * __imulu -- the eZ80's multiply is 8-bit -- and no amount of padding makes
+ * the record a power of two on both the Agon and the host, because `int` is
+ * three bytes on one and four on the other. The marks are in body order, so a
+ * single cursor walking forward covers every line. */
 typedef struct {
     int off;        /* where in the body the name starts */
     uint8_t k;      /* which parameter */
@@ -287,8 +261,8 @@ typedef struct {
 } macmark;
 
 /* One listed line that has a fixup in it, and everything needed to write its
- * byte columns again once the fixup is settled: where the line is in the
- * listing file, how long its first row was -- the rows under it are a fixed
+ * byte columns again once the fixup is settled: where the line starts in the
+ * listing file, how long its first row is -- the rows under it are a fixed
  * width -- and which bytes of the output it printed. */
 typedef struct {
     int lstat;      /* offset in the listing file of the line's first row */
@@ -311,15 +285,14 @@ struct _macro {
     int nmarks;
     int markcap;
 
-    /* Where the MACRO directive was, so a failure in the body can be reported
+    /* Where the MACRO directive is, so a failure in the body is reported
      * against the line of the *file* it was written on rather than against its
      * index in the body. The reference does the same: a body line is "line 2"
      * of the source, not "line 1" of the macro.
      *
-     * The name is copied into the arena rather than pointed at. A reader's
-     * file name lives exactly as long as the reader, and a header of macros
-     * is defined in one file and used from another -- which is the normal
-     * shape and the one a borrowed pointer would get wrong. */
+     * The path is copied into the arena rather than pointed at, because a
+     * reader's file name lives exactly as long as the reader and a header of
+     * macros is normally defined in one file and used from another. */
     const char* defpath;
     int defline;
 
@@ -338,19 +311,14 @@ struct _macro {
 
 /* What went wrong, as a code rather than a string.
  *
- * It was a `const char*` for a reason that has gone: zap had to fit in a
- * moslet, and a pointer to a literal is the smallest thing that can carry a
- * message. It costs the same either way on the path that matters -- the store
- * happens only when something has already failed -- and a code is two
- * instructions where a string address is two, one byte where a pointer is
- * three, and the one thing a caller that is not `main` can act on.
+ * A code is what a caller other than `main` can branch on: zap is meant to be
+ * usable as a library, and a library that reports faults by handing back
+ * English is one nobody can act on. It is also a byte where a pointer is three,
+ * and the store happens only after something has already failed, so it costs
+ * nothing on the path that matters.
  *
- * zap is meant to be usable as a library, and a library that reports by
- * handing back English is a library nobody can branch on.
- *
- * The text lives in one table rather than at 120 sites. Eleven of them said
- * "out of memory for labels" and whether the compiler merged those was its
- * business, not ours. */
+ * The message text lives in one table beside the enum, keyed by code, rather
+ * than at the hundred-odd places that detect a fault. */
 typedef enum {
     ZAP_OK = 0,
     ZAP_E_ADL_0_OR_1,
@@ -555,14 +523,13 @@ struct sym {
     uint8_t len;
 
     /* A name is interned on first sight, defined or not, so a reference to a
-     * label that has not appeared yet still gets an entry -- and the fixup
-     * points at the entry rather than carrying another copy of the name.
+     * label that has not appeared yet still gets an entry, and a fixup points
+     * at that entry rather than carrying its own copy of the name.
      *
-     * Copying it per reference was the first shape and it does not fit: the
-     * labelled benchmark has 2,161 definitions and 4,318 references, and at
-     * 26 characters each that is 152 KB of text for 56 KB of distinct names.
-     * The Agon ran out of memory two thirds of the way through. Interning also
-     * removes the lookup at resolve time; the address is simply there. */
+     * One copy per distinct name rather than one per reference is the
+     * difference between fitting in 512 KB and not: a real program has two
+     * references for every definition. Interning also means there is no lookup
+     * when the reference is resolved -- the address is simply there. */
     bool defined;
 
     /* Which table this node came from, and so which arena its name is in and
@@ -571,39 +538,22 @@ struct sym {
      * ldir and this is written once per distinct label. */
     bool islocal;
 
-    /* The value, which for an ordinary label is an address and for an EQU is
-     * whatever was written. Four bytes and not the machine's three, because
-     * the reference keeps four: `X: equ 0x55555555` then `dw32 X` is
-     * 55555555 there, and `dl X` is 555555 with a "Value truncated to 24 bit"
-     * warning -- so the truncation happens at the emitter, on the width the
-     * directive asked for, and not when the name was defined.
+    /* The value: an address for an ordinary label, whatever was written for an
+     * EQU. Four bytes, not the machine's three, because the reference keeps
+     * four -- `X: equ 0x55555555` then `dw32 X` is 55555555 there, and `dl X`
+     * is 555555 with a truncation warning. Truncation happens at the emitter,
+     * on the width the directive asked for, not when the name is defined.
      *
-     * It costs a byte a symbol, which is the one place this file spends
-     * memory rather than saving it. The alternative was to narrow here and it
-     * is worse than it looks: `int` is three bytes on the Agon and four on the
-     * host, so a truncating symbol would give **different bytes on the two
-     * machines** for any EQU above 24 bits, which is the failure mode
-     * everything else in this file is arranged to avoid. */
+     * Narrowing this would also make the Agon and the host disagree about any
+     * EQU above 24 bits, since `int` is three bytes on one and four on the
+     * other. */
     evalue addr;
 };
 
-/* Buckets keyed by first character, last character and length.
+/* How many buckets the symbol table has: 2,048, which is 8 KB of pointers.
  *
- * Not a hash: a hash is a walk over the name, and the scan that found the
- * token has already walked it. Measured over 25 real Agon programs -- 14,063
- * labels and 30,629 resolved references -- this touches 11.8 characters per
- * lookup against a Pearson hash's 17.5, because Pearson wins on probes and
- * loses on having to read the name twice. The workings are in
- * .internal/labels-plan.md.
- *
- * The first two characters would be the obvious key and are a bad one:
- * assembly labels cluster hard on prefixes -- ASC_TO_NUMBER1..4 -- so a
- * first-two-letters key leaves most buckets empty and runs chains of 67. It
- * is the *last* character and the length that discriminate.
- *
- * 2,048 buckets at four bytes is 8 KB. 8,192 was measured slightly better,
- * 10.8 characters against 11.8, and costs 32 KB; the smaller table is the
- * starting point and the trade is recorded rather than assumed. */
+ * A larger table shortens chains a little and costs four times the memory,
+ * which on a 512 KB machine is the wrong trade. */
 #define NSYMB 2048
 
 /* An expression that named something not yet defined and could not be reduced
@@ -625,7 +575,8 @@ typedef struct {
     int line;
 } fillpatch;
 
-/* One bucket as it was before an expansion took it over. See scope_push. */
+/* A saved bucket, so an expansion can take the table over and give it back.
+ * See scope_push. */
 /* How deep INCLUDE and macro expansion may nest. Declared here because the
  * per-level expansion buffers are part of dz; the reasoning for the number is
  * where INCLUDE is. */
@@ -652,46 +603,20 @@ _Static_assert((sizeof(symslot) & (sizeof(symslot) - 1)) == 0,
 _Static_assert(sizeof(symslot) > sizeof(sym*),
                "the pad is what makes the size a power of two");
 
-/* Two ways of keying it, and the measurement that chose between them.
+/* Which of the two bucket keys to use. Build with -DZAP_SYMHASH=0 for the
+ * other one; both index the same 2,048 buckets.
  *
- * Build with -DZAP_SYMHASH=0 for the other one. Both index the same 2,048
- * buckets, so the only difference is how the bucket is chosen and what
- * choosing it costs.
+ * The default is a Pearson hash. The alternative is a structural key -- first
+ * character, last character and length -- which reads fewer characters per
+ * lookup, because the scan that found the token has already walked the name.
  *
- * The plan said the structural key -- first character, last character, length
- * -- because a hash is a walk over the name and the scan has already walked
- * it, and over 25 real programs it touches 11.8 characters a lookup against
- * Pearson's 17.5. Measured on the Agon, on seven sources of identical size,
- * that reasoning does not survive:
+ * The hash wins because assembly labels cluster. Names like `lbl_0001` upward
+ * share their first character, their last character and their length, so the
+ * structural key puts hundreds of them in one bucket and its lookups degrade
+ * by a factor of three. The hash reads every character but spreads them.
  *
- *     source                       structural   Pearson
- *     no labels at all                  1.60s     1.58s
- *     spread names, definitions         1.82s     1.72s
- *     spread names, backward refs       1.94s     1.96s
- *     spread names, forward refs        2.00s     2.02s
- *     four-character names              1.76s     1.60s
- *     fifteen characters, word list     1.92s     1.72s
- *     clustered names                   5.98s     1.84s
- *
- * Pearson is 1% worse on the two rows where the structural key is at its best
- * -- reference-heavy sources whose names spread over all three of its inputs
- * -- and better everywhere else, by 5 to 10% on ordinary names and by **69%**
- * on the last row. That row is 699 labels in one bucket, reached by naming
- * them `lbl_0001` upward, which is a convention rather than an attack.
- *
- * One percent against a factor of three is not a close decision. What the
- * average missed is that the tail is reachable by accident: this file's own
- * benchmark generator produced it on the first attempt.
- *
- * The comparison was run twice. The first Pearson table was `i * 167 + 13`,
- * which is a permutation -- 167 is odd, so it visits every value -- and a poor
- * hash, because a linear table leaves the rounds correlated: it used 234 of
- * the 2,048 buckets against a shuffle's 602. It still won by three times,
- * which says more about the key it replaced than about the table.
- *
- * The structural key is kept, callable and correct, because the argument for
- * it is sound and only the distribution defeats it -- if names are ever known
- * to be well spread it is the cheaper key. */
+ * The structural key is kept, compilable and correct, for a source whose
+ * names are known to be well spread. */
 #ifndef ZAP_SYMHASH
 #define ZAP_SYMHASH 1
 #endif
@@ -727,24 +652,18 @@ static void build_pearson(void) {
 
 /* One pass over the name, which is the whole cost of a Pearson key.
  *
- * A Pearson hash yields eight bits and the table wants eleven, and the obvious
- * way to find three more is a second pass seeded differently. That doubles the
- * per-character work -- and the character loop *is* the key's cost, measured at
- * 6.1% of runtime -- to buy a spread the table does not need.
+ * A Pearson hash yields eight bits and the table wants eleven. The usual way
+ * to find three more is a second pass with a different seed, which doubles the
+ * per-character work -- and that character loop is the key's whole cost.
  *
- * The three bits come from the first character, the last, and the length
- * instead. All three are already in hand, none of them costs a pass, and the
- * measurements say the spread is the same. Over the 7,684 distinct global
- * labels of the Agon corpus, expected probes for a successful lookup are 2.873
- * against the two-pass key's 2.882 -- marginally *better*, and inside the noise
- * of the sample either way. Per file, which is what an assembly run sees, both
- * are 1.000 and the worst file is 1.136 against 1.103.
+ * The three extra bits come from the first character, the last and the length
+ * instead. All three are already in hand and none of them costs another pass,
+ * and they spread the table as well as a second pass does.
  *
- * The length alone is not enough and the difference is not subtle: names of one
- * length then reach only 256 of the 2,048 buckets, which takes this
- * repository's own isa_memory benchmark -- every label four characters -- from
- * 4.478 probes to 28.427. XORing the two characters in is what rescues it, and
- * they cost two loads. */
+ * The length alone is not enough: with only the length, names that are all the
+ * same length reach 256 of the 2,048 buckets, and four-character labels then
+ * probe six times as often. XORing the two characters in is what rescues it,
+ * for two loads. */
 static uint8_t pearson8(const char* name, int len) {
     uint8_t h = 0;
     const char* p = name;
@@ -772,18 +691,18 @@ static inline int sym_bucket(const char* name, int len) {
 
 #else
 
-/* The first character, the last and the length. Not a hash: a hash is a walk
- * over the name and the scan that found the token has already walked it.
+/* The structural key: first character, last character and length. Not a hash
+ * -- a hash walks the name, and the scan that found the token has walked it
+ * already.
  *
- * The index is `f * 64 + l * 2 + (len > 6)`, and written that way it was three
- * library calls: `* 64` is `call __ishl`, `len > 6` on a signed int is
- * `call pe, __setflag`, and the function itself was not inlined. Composed a
- * byte at a time from two small tables it is neither -- the same trick the hex
- * parser uses, for the same reason.
+ * The index is `f * 64 + l * 2 + (len > 6)`. Written that way it would be
+ * three library calls: `* 64` is `call __ishl`, and `len > 6` on a signed int
+ * is `call pe, __setflag`. Composed a byte at a time from two small tables it
+ * is neither.
  *
- * f is five bits and l is five bits, so the low byte holds (f & 3) * 64 plus
- * l * 2 plus the length bit, which is at most 192 + 62 + 1, and the high byte
- * holds f >> 2. Both come from tables because a shift is a call. */
+ * f and l are five bits each, so the low byte holds (f & 3) * 64 plus l * 2
+ * plus the length bit -- at most 192 + 62 + 1 -- and the high byte holds
+ * f >> 2. Both come from tables because a shift is a call. */
 static const uint8_t f_lo[32] = {
     0, 64, 128, 192, 0, 64, 128, 192, 0, 64, 128, 192, 0, 64, 128, 192,
     0, 64, 128, 192, 0, 64, 128, 192, 0, 64, 128, 192, 0, 64, 128, 192,
@@ -810,32 +729,25 @@ __attribute__((always_inline)) static inline int sym_bucket(const char* name,
 
 #endif
 
-/* A reference to a label that was not defined yet.
+/* A reference to a label that is not defined yet.
  *
- * zap makes one pass and never looks at a line twice, which is where its
- * speed comes from, so a forward reference cannot be resolved where it is
- * read. The output is held in memory in full, so it is patched at the end
- * instead -- which keeps the single pass and makes the cost of labels a line
- * item that can be measured on its own.
+ * One pass means a forward reference cannot be resolved where it is read. The
+ * output is held in memory in full, so the bytes are written as zeroes, a
+ * fixup records where they are, and they are patched once the label settles --
+ * at the end of the scope for a local, at the end of the source for a global.
  */
 typedef struct {
     const sym* target;  /* interned, so no name and no lookup to do */
 
-    /* A second symbol, subtracted or added, or NULL. `end - start` with both
-     * still ahead is 61% of the expressions that hold more than one forward
-     * reference, and it is how a program measures a table it has not finished
-     * writing.
+    /* A second symbol, added or subtracted, or NULL. `end - start` with both
+     * labels still ahead is how a program measures a table it has not finished
+     * writing, and it is the common shape among expressions that hold more
+     * than one forward reference.
      *
-     * It costs nothing, because `next_addr` used to sit here and did not need
-     * to: it was only ever read for a relative jump, and there it is always
-     * `org + off + 1` -- the byte after the displacement byte, which `off`
-     * already names. Three bytes that were being stored to say something the
-     * record already knew.
-     *
-     * Next to `target` rather than after `addend` so that the record is a
-     * power of two on the host too, where a pointer is eight bytes and an int
-     * four; the static assert below is checked in both builds and only one
-     * field order satisfies both. */
+     * It sits next to `target` rather than after `addend` so that the record
+     * is a power of two on the host as well, where a pointer is eight bytes
+     * and an int four. The static assert below is checked in both builds and
+     * only this field order satisfies both. */
     const sym* sub;
 
     /* What to add to the address once it is known. `later + 4` is one symbol
@@ -870,32 +782,27 @@ typedef struct {
  * than after it, and could not be folded when the instruction was emitted
  * because the label was still ahead.
  *
- * `bit n, a` with `n` an EQU further down the file used to assemble as
- * `bit 0, a` -- the fold saw nothing, the operand never became an immediate
- * either, and the reference the source made simply vanished. Three bits of
- * wrong instruction with nothing said. These three say to come back to the
- * opcode byte, not to the bytes after it. */
+ * `bit n, a` with `n` an EQU further down the file is the case. The bit number
+ * lives in three bits of the opcode byte, so the fixup has to come back to
+ * that byte rather than to the bytes after it. */
 #define FIX_FOLD_BIT 5   /* (v & 7) << 3 into the opcode */
 #define FIX_FOLD_RST 6   /* v into the opcode */
 #define FIX_FOLD_IM  7   /* 0, 1, 2 as y = 0, 2, 3, shifted into the opcode */
 
 /* The range an addend has to fit, written out rather than derived from `int`,
  * which is three bytes on the Agon and four on the host. Deriving it would
- * make this refuse on one machine and accept on the other -- the failure this
- * whole widening exists to remove.
+ * make this refuse on one machine and accept on the other.
  *
- * Typed, and that is not decoration. Comparing an `evalue` against a bare
- * `int` constant compiled to a test of the wrong part of the value on the
- * Agon and refused `call @skip` -- an addend of zero -- while the host build
- * was correct. Both sides of every comparison here are the same width. */
+ * The constants are typed, and that is not decoration: an `evalue` compared
+ * against a bare `int` constant tests the wrong part of the value on the Agon
+ * while the host build is correct. Both sides of every comparison against an
+ * evalue must be the same width. */
 #define ADDEND_MIN ((evalue) -0x800000L)
 #define ADDEND_MAX ((evalue)  0x7FFFFFL)
 
-/* Sixteen bytes, and the fourth byte of it is the point: `&list[i]` on a
- * thirteen-byte record is a call to __imulu, because the eZ80's multiply is
- * 8-bit. A power of two is a shift. The addend needed three bytes and the
- * padding was already being paid for in cache-free memory nobody was reading;
- * this spends it on something. */
+/* Sixteen bytes, and the size is the point: `&list[i]` on a record whose size
+ * is not a power of two is a call to __imulu, because the eZ80's multiply is
+ * 8-bit. At sixteen it is a shift. */
 _Static_assert((sizeof(fixup) & (sizeof(fixup) - 1)) == 0,
                "fixup size is a power of two, so indexing it is a shift");
 
@@ -935,14 +842,13 @@ struct locblock {
 
 /* A bucket that empties in constant time.
  *
- * Scopes end often -- once per global label, 1,941 of them in isa_real -- so
- * clearing 64 slots each time is 124,000 stores for a table that usually holds
- * two entries. The slot carries the scope it belongs to instead, and a slot
- * whose stamp is not the current one reads as empty however stale its chain.
- * Ending a scope is then an increment.
+ * A scope ends at every global label, so clearing all 64 slots each time would
+ * be thousands of stores for a table that usually holds two entries. Each slot
+ * carries the number of the scope it belongs to instead: a slot whose stamp is
+ * not the current one reads as empty however stale its chain, and ending a
+ * scope is an increment.
  *
- * The stamp goes in the byte that was padding: symslot needs one to make the
- * size a power of two, so this costs nothing at all. */
+ * The stamp goes in a byte that is padding otherwise, so it costs nothing. */
 typedef struct {
     sym* head;
     uint8_t gen;
@@ -956,33 +862,27 @@ typedef struct _dz {
 
     /* The output, as three pointers rather than a base and two offsets.
      *
-     * `pos` was an int, so reserving room was `pos + 12 > cap` -- a signed
-     * comparison, which the compiler cannot do in one subtract: it emitted
-     * eleven instructions and a `call pe, __setflag` to fix the flags up on
-     * overflow, once per instruction assembled. Against a limit held as a
-     * pointer it is a load and an unsigned subtract, and the limit only moves
-     * when the buffer does.
-     *
-     * It pays a second time at both ends of the emitter, which took its cursor
-     * as `out + pos` and put it back as `o - out`. Held as a cursor there is
-     * nothing to add and nothing to subtract. */
+     * Reserving room is then a pointer compare against `lim`, which the
+     * compiler does in one unsigned subtract. As a signed `pos + 12 > cap` it
+     * would be eleven instructions and a `call pe, __setflag` to repair the
+     * flags, once per instruction assembled. The emitter also takes and
+     * returns its cursor directly, with nothing to add or subtract at either
+     * end. */
     uint8_t* out;   /* the buffer, for realloc and for writing it out */
     uint8_t* o;     /* the next byte to write */
     uint8_t* lim;   /* the last address at which a whole instruction still fits */
 
     /* Where the first byte of the output goes, which `ORG` may move.
      *
-     * It was a compile-time constant, and every address in the assembler was
-     * `ZAP_ORG + (o - out)` -- an immediate add. As a field it is a load first,
-     * on every label definition, every `$`, every relative jump and every
-     * fixup patched. That is what ORG costs whether or not a program uses it,
-     * and it is why this sits next to the cursor it is always added to rather
-     * than at the end with the cold fields.
+     * Every address the assembler computes is `org + (o - out)`, so this is
+     * read on every label definition, every `$`, every relative jump and every
+     * fixup patched. It sits next to the cursor it is always added to rather
+     * than among the cold fields at the end.
      *
-     * `org_set` is not "has ORG been seen" for its own sake: the first ORG in
-     * a file relocates the origin and every later one pads out to its address,
-     * and the reference distinguishes them exactly that way -- two ORGs with
-     * nothing in between write the gap between them. */
+     * `org_set` distinguishes the first ORG in a file from the rest: the first
+     * relocates the origin, and every later one pads out to its address. The
+     * reference draws the same distinction -- two ORGs with nothing between
+     * them write the gap. */
     int org;
     bool org_set;
 
@@ -1022,12 +922,11 @@ typedef struct _dz {
     /* Whether an address-sized immediate is three bytes or two.
      *
      * `ASSUME ADL=0` is Z80 mode and makes `ld hl, 0x1234` three bytes rather
-     * than four; `ADL=1` is the eZ80's own. A file may switch as often as it
-     * likes and the reference honours it per line, so this is a field and not
-     * the compile-time constant it was. A forward reference records the width
-     * it had when the instruction was emitted, which is what the fixup carries
-     * -- so switching after the reference and before the definition changes
-     * nothing, which is also what the reference does. */
+     * than four; `ADL=1` is the eZ80's own. A source may switch as often as it
+     * likes and the reference honours it per line, so this is a field rather
+     * than a constant. A forward reference records the width it had when the
+     * instruction was emitted -- the fixup carries it -- so switching modes
+     * between a reference and its definition changes nothing, as there. */
     bool adl;
 
     int cap;
@@ -1067,15 +966,14 @@ typedef struct _dz {
     const char* lst_p;
     bool lst_done;
 
-    /* Where the listing has got to, and where the line being listed started.
+    /* Where the listing has got to, and where the line being listed starts.
      *
-     * A forward reference is emitted as zeroes and patched when its label is
-     * settled, long after its line was listed -- so a listing written as the
-     * assembly goes shows `ld hl, ahead` as 21 00 00 00 where the reference,
-     * which lists on its second pass, shows the address. The fix is to go
-     * back: every listed line that left a fixup behind is remembered here,
-     * and the byte columns are rewritten from the finished output once every
-     * fixup has been settled. See lstfix_apply. */
+     * A forward reference is emitted as zeroes and patched when its label
+     * settles, long after its line was listed, so a listing written as the
+     * assembly goes would show `ld hl, ahead` as 21 00 00 00. Every listed
+     * line that leaves a fixup behind is remembered here, and its byte columns
+     * are written again from the finished output before the listing file is
+     * closed. See lstfix_apply. */
     int lst_pos;      /* bytes written to the listing file so far */
     int lst_lineat;   /* where the current line's first row began */
     int lst_row0;     /* how long that row was, through its newline */
@@ -1110,42 +1008,31 @@ typedef struct _dz {
     bool anon_has_prev;
     sym* anon_fwd;
 
-    /* The line a global label was defined on, while the scope it opens has
-     * not started yet; 0 when there is none pending.
+    /* The line a global label was defined on, while the scope it opens has not
+     * started yet; 0 when there is none pending.
      *
-     * The reference resolves `two: jp @l` against the scope `two` closed, not
-     * the one it opens: a label and an instruction on one line are two things,
-     * and the operand is read before the scope moves. Ending the scope where
-     * the label is defined instead makes that line refuse a local that the
-     * reference assembles, and assemble one that it refuses -- the same bug
-     * from both sides. */
+     * `two: jp @l` resolves `@l` against the scope `two` *closed*, not the one
+     * it opens: a label and an instruction on one line are two things, and the
+     * operand is read before the scope moves. The reference does the same, so
+     * the scope change is held back until the end of the line. */
     int scope_line;
 
     /* The local table: buckets, the blocks the nodes come from, their own name
-     * arena, and the references waiting on a definition in this scope. Every
-     * one of the used counters is reset when the scope ends; none of the
-     * capacities are.
+     * arena, and the references waiting on a definition in this scope. The
+     * used counters are reset when a scope ends; the capacities are not.
      *
-     * LAST IN THE STRUCT, AND THAT IS NOT TIDINESS. dz is reached through a
-     * pointer and `iy` displacement is a signed byte, so a field past 127 has
-     * its address computed instead of being read in one instruction. The
-     * buckets are 256 bytes on their own; put in the middle they pushed `line`
-     * and `err` out of range, and `line` is written on every line of the
-     * source. That cost 1.3% -- more than the whole feature -- for a table
-     * this program touches only where a label is. */
+     * LAST IN THE STRUCT, DELIBERATELY. Where `dz` is reached through a
+     * pointer, an `iy` displacement is a signed byte, so a field past 127 has
+     * its address computed instead of being read in one instruction. These
+     * buckets are 256 bytes on their own, and in the middle of the struct they
+     * push hot fields like `line` -- written on every line of the source --
+     * out of that range. Cold and bulky fields go at the end. */
 
     /* The file being read and how deep the includes go. `path` is what an
-     * error message names, so it follows the reader down and back up; `depth`
-     * is what stops a file that includes itself from taking the stack out.
-     * Both are written once per file entered and read once per file left.
-     *
-     * Down here on principle rather than on evidence. They started beside
-     * `org`, four bytes pushing every field after them along including the
-     * symbol buckets, which looked like the explanation for INCLUDE costing
-     * 0.8% on isa_memory. Moving them here changed the measurement by exactly
-     * nothing -- 343/353/347/387 either way. They stay because a field written
-     * once per *file* belongs with the cold ones, not because it was worth
-     * anything. */
+     * error message names, so it follows the reader down and back up again;
+     * `depth` is what stops a file that includes itself from exhausting the
+     * stack. Both are written once per file entered, so they belong down here
+     * with the cold fields rather than among the ones a line touches. */
     const char* path;
     uint8_t depth;
 
@@ -1153,15 +1040,14 @@ typedef struct _dz {
      * with one.
      *
      * `DS` and `ALIGN` reserve space rather than emit it, and the reference
-     * only ever materialises that space when something is written after it: a
-     * file ending in `DS 4` is four bytes shorter there, and `ALIGN` at the end
-     * emits nothing at all. `ORG` is not the same and does pad -- all three
-     * measured.
+     * materialises that space only when something is written after it: a file
+     * ending in `DS 4` is four bytes shorter there, and a trailing `ALIGN`
+     * emits nothing. `ORG` is different and does pad.
      *
-     * Kept as where the run ends and how long it is, rather than as a flag on
+     * Held as where the run ends and how long it is, rather than as a flag on
      * every write. Only `emit_fill` touches these, so nothing on the path an
-     * instruction takes has to know they exist, and the trailing run is
-     * dropped once, at the end. */
+     * instruction takes has to know they exist, and a trailing run is dropped
+     * once, at the end. */
     int fill_end;
     int fill_len;
     /* What DS, ALIGN, ORG padding and a BLK with no fill of its own write.
@@ -1179,14 +1065,11 @@ typedef struct _dz {
     /* Where `path` points when an include fails.
      *
      * The name of an included file lives in the frame of the include that
-     * opened it, which is the right lifetime while the file is being read and
-     * the wrong one afterwards: a failure unwinds every one of those frames
-     * and then reports, and `path` would name freed stack. It printed as
-     * `inc_ .in`, which is how it was found.
-     *
-     * Copied here on the way out of a failure and nowhere else. The arena the
-     * label names live in cannot be used -- it is grown with realloc and
-     * moves. */
+     * opened it. That is the right lifetime while the file is being read and
+     * the wrong one afterwards: a failure unwinds those frames and then
+     * reports, so `path` would name dead stack. The name is copied here on the
+     * way out of a failure and nowhere else. The label arena cannot hold it --
+     * that one is grown with realloc and moves. */
     char errpath[INCLUDE_NAME_MAX];
 
     locslot locs[NLOCB];
@@ -1224,10 +1107,10 @@ typedef struct _dz {
     int fillp_used;
     int fillp_cap;
     /* One expansion buffer per level of nesting, kept and grown rather than
-     * allocated per invocation: a malloc and a free were 2,200 cycles of the
-     * 7,900 an expansion cost. The level in use is `depth`, which is why there
-     * is one each -- an outer expansion is still being read from while an
-     * inner one is built. */
+     * allocated per invocation, because a malloc and a free are a large part
+     * of what an expansion costs. There is one per level because an outer
+     * expansion is still being read from while an inner one is built; the
+     * level in use is `depth`. */
     char* expbuf[INCLUDE_MAXDEPTH];
     int expcap[INCLUDE_MAXDEPTH];
 
@@ -1237,19 +1120,16 @@ typedef struct _dz {
     int margn[INCLUDE_MAXDEPTH * MACRO_MAXPARAM];
 } dz;
 
-/* The one of these there is, at a fixed address.
+/* The assembler's whole state, as one file-scope object.
  *
- * It was a local in main, reached everywhere through a `dz*` parameter -- so
- * every `zz.field` was `ld iy, (ix + 6)` to fetch the pointer out of the frame
- * and then an offset load through it, and there are 463 of those pointer
- * fetches in this translation unit with a handful on every line. A file-scope
- * object is addressed absolutely: the field's address is a constant the
- * assembler writes into the instruction, there is no base register to hold and
- * `iy` is freed for the line pointer that wants it.
+ * A file-scope object is addressed absolutely: the address of a field is a
+ * constant written into the instruction. Reached instead through a pointer
+ * parameter, every access would first fetch that pointer out of the frame --
+ * hundreds of times in this file, several per source line -- and would tie up
+ * `iy`, which the line loop wants for the line pointer.
  *
- * There is exactly one assembly per process, so this loses nothing that was
- * being used. Zero-initialised by being static, which is what the memset in
- * main did. */
+ * The cost is that there is one assembly per process. Being static also
+ * zero-initialises it. */
 static dz zz;
 
 /* The failing line, copied out of whatever held it.
@@ -1274,15 +1154,14 @@ static void err_line(char* dst, const char* p, const char* e) {
 
 /* Whether a value survives being written in `width` bytes.
  *
- * It fits if the bytes that come out mean the same number read either way --
- * as signed, or as unsigned. `ld a, -1` and `ld a, 255` are both one byte and
- * neither loses anything; `ld a, 256` and `ld a, -129` are both a byte that
- * says something else. The reference draws the line in the same two places,
- * measured at all six boundaries.
+ * It fits if the bytes that come out mean the same number read either way, as
+ * signed or as unsigned: `ld a, -1` and `ld a, 255` are both one byte and lose
+ * nothing, while `ld a, 256` and `ld a, -129` are both a byte that says
+ * something else. The reference draws the line in the same two places.
  *
- * Written as two casts rather than as a pair of range compares, which on the
- * eZ80 are signed compares and cost a `call pe, __setflag` apiece to repair
- * the flags. */
+ * Written as two casts rather than as a pair of range compares: signed
+ * compares on the eZ80 cost a `call pe, __setflag` apiece to repair the
+ * flags. */
 static inline bool fits_width(evalue v, int width) {
     const uint32_t u = (uint32_t) v;
     if (width == 1) {
@@ -1313,99 +1192,66 @@ static inline bool fits_width(evalue v, int width) {
 static inline bool fits_imm(int v, int width) {
     /* One add and one unsigned compare.
      *
-     * The range that survives `width` bytes is -2^(8w-1) to 2^8w-1, and
-     * sliding it down by its lower bound makes that one test: `ld a, -1`
-     * lands on 127, `ld a, 255` on 383, and anything outside walks off the
-     * end. Written as four casts and four compares it was sixty-six more
-     * instructions in emit_imm, which doubled it and gave it a frame it had
-     * not needed -- 7.5% of isa_real, on a function that runs for every
-     * immediate in the file.
+     * The range that survives `width` bytes is -2^(8w-1) to 2^8w-1. Sliding it
+     * down by its lower bound turns the pair of bounds into a single test:
+     * `ld a, -1` lands on 127, `ld a, 255` on 383, and anything outside walks
+     * off the end.
      *
-     * Unsigned throughout, so the addition wraps rather than overflowing, and
-     * so the compare is one subtract without a `call pe, __setflag` to repair
-     * the flags after it. */
+     * Unsigned throughout, so the addition wraps rather than overflowing and
+     * the compare is one subtract with no `call pe, __setflag` after it. */
     if (width == 1) {
         return ((unsigned) v + 128u) <= 383u;
     }
     if (width == 2) {
         return ((unsigned) v + 32768u) <= 98303u;
     }
-    /* Three bytes always fits, and this is not the machine word talking.
+    /* Three bytes always fits, and this is the reference's rule rather than
+     * the machine's word.
      *
-     * The reference does not check an instruction's immediate against 24
-     * bits: `ld hl, 0x12345678` is 21 78 56 34 there with nothing said, while
-     * `dw24 0x1234567` -- the directive -- is a truncation warning. Only the
-     * directive path checks, which is fits_width and not this.
-     *
-     * It was written the other way first, guarded by `sizeof(int) <= 3` so
-     * that the Agon folded it away and the host kept it. That made zap
-     * disagree with itself: the host warned about `ld hl, 0x12345678` and the
-     * Agon, where an `int` is three bytes and the value arrived already
-     * truncated, did not -- and the Agon was the one that matched the
-     * reference. A test that only fires on the machine the tests run on is
-     * worse than no test. */
+     * The reference does not check an instruction's immediate against 24 bits:
+     * `ld hl, 0x12345678` is 21 78 56 34 there with nothing said, while the
+     * directive `dw24 0x1234567` is a truncation warning. Only the directive
+     * path checks, and that is fits_width rather than this. */
     return true;
 }
 
 /* The check and the complaint, kept apart.
  *
- * emit_imm writes the bytes and is a leaf: no frame, no calls. Putting the
- * warning inside it made it a *non*-leaf -- 47 instructions became 113 and it
- * gained a four-byte frame, for every immediate in the file, and that was
- * 7.5% of isa_real. The arithmetic was never the cost; the possibility of a
- * call was.
+ * `emit_imm` writes the bytes and is a leaf: no frame, no calls. A warning
+ * inside it would make it a caller, which costs a frame and a longer prologue
+ * for every immediate in the file. The test therefore lives in `emit_row`,
+ * which is inlined into `assemble_line` where there is a frame already and one
+ * more cold branch costs nothing.
  *
- * So the test lives where there is a frame already. emit_row is inlined into
- * assemble_line, which has one and makes a dozen calls, and one more cold
- * branch there costs it nothing.
+ * The assembly carries on afterwards, which is what makes this a warning
+ * rather than an error.
  *
- * Said and carried on, which is the whole of what makes it a warning.
- *
- * Defined below, beside the report it borrows its shape from; declared here
- * because the fixup patcher is the first thing that needs it. */
+ * Defined below, beside the error report it borrows its shape from; declared
+ * here because the fixup patcher is the first thing that needs it. */
 static void warn_trunc(evalue v, int width);
 static void warn_initializer(const char* t, int n);
 
 /* Whether `-w` was given, and the one place zap deliberately does not behave
  * like the reference.
  *
- * There, truncation warnings are on and `-i` turns them off -- but only the
- * printing: the check still runs, so `-i` buys nothing but quiet. Here the
- * check *is* the cost, and it is the largest single cost of any diagnostic in
- * the program: 2.1% of bbcbasic and 6.7% of a file that is nothing but
- * immediates, because unlike every other diagnostic it asks a question of
- * every source rather than doing work after one has gone wrong.
+ * There, truncation warnings are on and `-i` turns off the printing while the
+ * check still runs. Here the check is the cost -- it is the only diagnostic
+ * that asks a question of every value in every source rather than doing work
+ * after something has gone wrong, and it is worth about 2% of a real assembly
+ * -- so it is off unless `-w` asks for it.
  *
- * So it is off unless asked for, and asking is `-w`. A source that wants
- * checking says so and pays for it; a source that does not is not charged for
- * a question nobody asked. `-i` is still accepted, because a command line
- * written for the reference must still run -- and with the check already off
- * it does exactly what it says.
- *
- * The cost of the flag itself is a load and a branch that predicts, in front
- * of arithmetic that is longer than it. See .internal/performance-notes.md. */
+ * `-i` is still accepted, so a command line written for the reference runs
+ * unaltered, and with the check already off it does what it says. */
 static bool want_warn = false;
 
-/* The flag test lives inside, and the compiler makes this a call whatever the
- * keyword says. Both halves of that were measured on isa_real, which is the
- * worst case the instruction set can produce -- an immediate on nearly every
- * line:
+/* The `-w` test lives inside this function rather than at the call site, and
+ * the compiler makes it a real call whatever the `inline` keyword says.
  *
- *   no warning code at all   5.36    (the branch before this one)
- *   test here, a call        5.42    kept
- *   test at the call site    5.44    a macro in emit_row, so the call never
- *                                    happens -- and it is slower
- *
- * The middle one pays a call per immediate to be told there is nothing to do.
- * The last one does not pay the call, and pays for it anyway: hoisting the
- * test into emit_row took assemble_line's frame from 108 bytes to 111, and on
- * this machine three bytes of frame has cost 1.8% more than once. The frame is
- * a signed `ix` displacement and the cliff is at 128; everything in the hot
- * path is already leaning on it.
- *
- * So the residual 1.1% is a call, and buying it back costs more than it is
- * worth. On a real program it is 3.78s against 3.80, which is the emulator's
- * resolution. */
+ * Hoisting the test into `emit_row` would avoid the call, and costs more than
+ * it saves: it takes `assemble_line`'s frame from 108 bytes to 111, and an
+ * `ix` displacement is a signed byte, so a frame near 128 is where the hot
+ * path starts paying for every access past the edge. A call per immediate is
+ * the cheaper of the two. */
 static void warn_imm(int v, int width) {
     if (want_warn && !fits_imm(v, width)) {
         warn_trunc(v, width);
@@ -1496,17 +1342,16 @@ struct symblock {
     sym nodes[SYMS_STEP];
 };
 
-/* The names, in blocks that never move, for the reason the nodes are.
+/* The names, in blocks that never move, for the same reason the nodes are.
  *
- * They were one array grown with realloc, and that is what a machine with
- * 512 KB and no virtual memory cannot afford: a realloc that has to move
- * holds the old block and the new one at once, so an arena of 110 KB needs
- * 228 KB to grow by eight. 14,616 labels ran out of memory at the 9,521st,
- * with the arena about two thirds of the way there.
+ * On a machine with 512 KB and no virtual memory, one array grown with realloc
+ * is unaffordable: a realloc that has to move holds the old block and the new
+ * one at the same time, so an arena of 110 KB needs 228 KB to grow by eight
+ * bytes. A block here is never resized and never copied, so the peak is the
+ * total.
  *
- * A block is never resized and never copied, so the peak is the total. A name
- * is at most 255 characters, so one always fits in a block and there is no
- * oversized case to write. */
+ * A name is at most 255 characters, so one always fits in a block and there is
+ * no oversized case to handle. */
 /* Room for `len` characters in the newest block, or a new block.
  *
  * `used` is the offset within the newest one, so the blocks below it are full
@@ -1552,11 +1397,8 @@ static const sym* sym_at(int b, const char* name, int len) {
         if (sp->len != (uint8_t) len) {
             continue;
         }
-        /* The pointer walk, which the local lookup has always used and this
-         * one measured worse at -- when the name had to be computed as
-         * `&zz.names[sp->nameoff]` and three live pointers would not fit where
-         * two and an index did. The name is a pointer in the node now, so the
-         * third one is free. */
+        /* Walked with pointers rather than indices: the node holds the name as
+         * a pointer, so the compare needs no address arithmetic. */
         const char* t = sp->name;
         const char* q = name;
         const char* const qend = name + len;
@@ -1574,10 +1416,9 @@ static const sym* sym_at(int b, const char* name, int len) {
 
 /* The entry for a name, made if there is not one. */
 static sym* sym_intern(const char* name, int len) {
-    /* Hashed once. It was hashed twice: sym_find computed the bucket to search
-     * and this computed it again to insert, so every name a source mentioned
-     * for the first time was walked twice by the hash -- which is the whole
-     * cost of a Pearson key. */
+    /* The bucket is passed in rather than computed again. `sym_find` has
+     * already hashed the name to know where to search, and hashing is a pass
+     * over the name -- the whole cost of the key. */
     DUP_HASH_CALL(name, len);
     const int b = sym_bucket(name, len);
 
@@ -1645,12 +1486,9 @@ static sym* sym_intern(const char* name, int len) {
 /* Eight bits of the same key the global table uses. The high three bits it
  * composes are the ones this table does not have room for, so they are simply
  * not asked for; sym_bucket's low byte is the Pearson result itself. */
-/* Six bits of the same pass, and none of the composing.
- *
- * It used to mask sym_bucket's answer, which built the eleven-bit key and then
- * threw five bits away -- and masking an `int` is `call __iand` here, so it
- * paid a library call for the privilege. The byte the pass produces is what
- * this wants; masking that is one instruction. */
+/* Six bits, taken from the byte the hash pass produces rather than from the
+ * composed eleven-bit key. Masking a byte is one instruction; masking an `int`
+ * is a call to __iand. */
 static inline int loc_bucket(const char* name, int len) {
     return pearson8(name, len) & (NLOCB - 1);
 }
@@ -1683,15 +1521,13 @@ static bool loc_room(void) {
 /* The three folds, settled the way the emitter would have settled them if the
  * label had been behind rather than ahead.
  *
- * Out of line and out of patch_fixup's own body: it runs once per forward
- * reference in the file -- 843 of them in isa_real, every one of them an
- * ordinary three-byte address -- and none of those is a fold. One compare
- * sends the rare case here.
+ * Out of line, and out of `patch_fixup`'s own body: almost every fixup in a
+ * file is an ordinary address rather than a fold, so one compare sends the
+ * rare case here.
  *
  * The range checks are the emitter's, and so are their limits: the reference
  * refuses a bit number above 7 and an interrupt mode above 2 while masking
- * negatives into range, which is not what a careful assembler would do and is
- * what this one has to do. */
+ * negative ones into range. */
 static bool patch_fold(const fixup* f, evalue val, uint8_t w, uint8_t* at) {
     const int v = (int) val;
     if (w == FIX_FOLD_BIT) {
@@ -1778,14 +1614,11 @@ static bool patch_fixup(const fixup* f) {
     }
 
     if (want_warn && !fits_width(val, (int) w)) {
-        /* Against the line that *used* the label, not the one that defined
-         * it. The fixup carries the number for exactly this, and until now
-         * only the failure paths read it -- so a truncated forward reference
-         * was reported against whatever line the patching happened to be on.
+        /* Reported against the line that *used* the label rather than the one
+         * that defined it; the fixup carries the number for exactly this.
          *
-         * Set here rather than at the top of the function: this loop runs
-         * once per forward reference and the store belongs on the path that
-         * needs it. */
+         * Set here rather than at the top of the function, so that the store
+         * happens only on the path that needs it. */
         zz.line = f->line;
         warn_trunc(val, (int) w);
     }
@@ -1824,21 +1657,17 @@ static bool patch_fixup(const fixup* f) {
  * Emptying is three counters and an increment. The nodes and the names are
  * handed back to be written over, and the buckets are left exactly as they
  * are: the stamp is what makes them empty. */
-/* Folds the local half of every fixup that names a global and a local.
+/* Folds the local half of every fixup that names both a global and a local.
  *
- * `end - @loop` puts the fixup on the global list, because that is where its
- * target belongs, and it is patched when the source runs out. By then the node
- * `@loop` points at has been handed back to the allocator and belongs to some
- * later scope's `@loop` -- so the subtraction came out against the wrong
- * address, with both addresses individually right.
+ * `end - @loop` goes on the *global* list, because that is where its target
+ * belongs, and is patched when the source runs out. By then the node `@loop`
+ * points at has been handed back to the allocator and may belong to a later
+ * scope's `@loop`, so the subtraction would come out against the wrong address
+ * with both halves individually right.
  *
- * That is not hypothetical: it is three bytes of Rokky, `ld bc, vdp_cls-@cmd`,
- * where the local resolved against the last `@cmd` in the program. It cost
- * nothing to spot and would have shipped, because both assemblers accepted the
- * file and only 3 bytes of 31,520 differed.
- *
- * So the local half is settled here, where the node still means what it said,
- * and folded into the addend. What is left is an ordinary global fixup. */
+ * The local half is therefore settled here, at the end of the scope where the
+ * node still means what it said, and folded into the addend. What is left is
+ * an ordinary global fixup. */
 static bool fold_subs(int from) {
     for (int i = from; i < zz.subfix_used; i++) {
         fixup* f = &zz.fixups[zz.subfix[i]];
@@ -1937,15 +1766,13 @@ static bool undo_note(int b) {
  * still holds from an earlier one -- those nodes have been handed back to the
  * allocator and may already be something else. */
 static sym* loc_intern(const char* name, int len) {
-    /* A scope a global label opened has to have started before this, and this
-     * is the first moment it can matter: nothing but a local can tell the
-     * difference. Asked here rather than on every line of the source, where it
-     * cost 3.5% to answer a question only a line with an `@` on it can ask.
+    /* A scope opened by a global label starts here, at the first moment it can
+     * matter: nothing but a local reference can tell the difference. Doing it
+     * here rather than on every line means only a line with an `@` on it pays.
      *
-     * On a later line than the label, though, and that is the whole point of
-     * the deferral -- `two: jp @l` reads its operand in the scope `two` is
-     * closing, not the one it opens, so the line the label was on is what has
-     * to be compared and not merely whether there was one. */
+     * It must be a *later* line than the label, which is the point of the
+     * deferral: `two: jp @l` reads its operand in the scope `two` is closing,
+     * not the one it opens. */
     if (zz.scope_line != 0 && zz.scope_line != zz.line) {
         zz.scope_line = 0;
         if (!scope_end()) {
@@ -2190,16 +2017,11 @@ static bool out_grow(int need) {
     /* Doubled, not stepped.
      *
      * A realloc that has to move holds the old block and the new one at once,
-     * so the transient peak is what decides whether a growth fits rather than
-     * the final size. Stepping by 32 KB reaches a 197 KB output through five
-     * growths and the last of them asks for 192 + 224 = 416 KB; doubling
-     * reaches it in two and the last asks for 128 + 256 = 384 KB. The peak
-     * goes from about twice the final size to about 1.5 times it.
-     *
-     * `DB "row 1 of the table", 0` produces two thirds of a byte of output per
-     * byte of source, against the fifth that the initial size below is
-     * reckoned from -- the constant was set when the only thing a source could
-     * hold was instructions. That is what made this reachable. */
+     * so what decides whether a growth fits is the transient peak rather than
+     * the final size. Doubling reaches a given size in fewer growths, and the
+     * largest of them asks for less: for a 197 KB output the peak is about
+     * 1.5 times the final size, where stepping by a fixed amount makes it
+     * about twice. */
     int want = zz.cap + (zz.cap < OUT_STEP ? OUT_STEP : zz.cap);
     const int least = (int) (zz.o - zz.out) + need + OUT_MAX_INSN;
     if (want < least) {
@@ -2207,9 +2029,8 @@ static bool out_grow(int need) {
     }
     uint8_t* grown = (uint8_t*) realloc(zz.out, (size_t) want);
     if (grown == NULL) {
-        /* The one failure that used to travel without a code: main printed
-         * "out of memory for the output" when it found none set, which is a
-         * fallback standing in for a message nobody had written. */
+        /* Set here rather than left to a fallback in main, so that every
+         * failure leaves a code behind it. */
         zz.err = ZAP_E_OUT_MEMORY_OUTPUT;
 
         return false;
@@ -2258,43 +2079,32 @@ static volatile int trunc_sink;
 
 /* Mnemonics bucketed by first letter.
  *
- * zap reaches its instruction table through the same hash that holds every
- * reserved word, which on a machine with no cache is about a thousand cycles a
- * lookup. Here the first letter picks a bucket of four or five and the rest is
- * a length test and a compare. It is not a better idea in general -- it works
- * because the set is closed and small -- but it is what the floor should pay.
+ * The instruction set is closed and small, so the first letter picks a bucket
+ * of four or five and the rest is a length test and a compare. A general hash
+ * over every reserved word would be about a thousand cycles a lookup on a
+ * machine with no cache.
  */
 /* Bucketed by first letter and length together.
  *
- * By first letter alone, a bucket held four or five and every one of them had
- * its length measured before it could be rejected -- which the compiler turned
- * into a strlen call per candidate, 85,407 of them and 8% of all work, to
- * re-derive something fixed at compile time. Lengths are taken once here, and
- * folding the length into the bucket leaves one or two candidates rather than
- * five.
+ * By first letter alone a bucket holds four or five candidates, and rejecting
+ * one means measuring its length -- a strlen per candidate, to re-derive
+ * something fixed when the table was written. Folding the length into the
+ * bucket key leaves one or two candidates and no length to measure.
  */
-/* Marginal pricing of the table walks.
+/* Measuring what a table walk costs, without instrumenting the code.
  *
- * Each DUP_ flag below writes one of the tables with every entry duplicated,
- * so the walk over it does twice the work and the program does nothing else
- * differently. A matching entry is still found at its first copy, so the
- * output is byte-identical -- which is the check that the measurement is
- * valid, and every bench run prints the md5 for it. The extra time is then
- * that walk's cost, with no instrumentation in the code being measured.
- *
- * That last part is the point. The same thing attempted by calling a function
- * twice from assemble_line measures something else: everything there is
- * inlined into one 3,500-line function, so a second call makes the compiler
- * outline it and the difference includes the outlining, paid on every line.
- * That showed up as a fixed 0.49s offset on match_row before the slope did.
+ * Each DUP_ flag below builds one of the tables with every entry duplicated,
+ * so the walk over it does twice the work and nothing else changes. A matching
+ * entry is still found at its first copy, so the output stays byte-identical
+ * -- which is what says the measurement is valid, and the benchmark runner
+ * prints the md5 to check it. The extra time is that walk's cost.
  *
  *   make EXTRA_CFLAGS=-DDUP_ROW      the register test in match_row
  *   make EXTRA_CFLAGS=-DDUP_GROUP    the mode group walk
  *   make EXTRA_CFLAGS=-DDUP_BUCKET   the mnemonic bucket chain
  *
- * Measured on isa_real, 4.70s: 3.4%, 0.4% and 6.4%. test/run.sh builds all
- * three and checks the bytes are unchanged, because a flag that alters the
- * output prices nothing.
+ * test/run.sh builds all three and checks the bytes are unchanged, because a
+ * flag that alters the output prices nothing.
  */
 #ifdef DUP_ROW
 #define DUP_ROW_N 2
@@ -2343,19 +2153,14 @@ static rowinfo rowtab[NROW];
 
 /* The rows of one mnemonic that share an operand mode.
  *
- * The rows used to be walked as a single list with a skip count, so rejecting
- * a mode cost a whole turn of the loop -- the counter test, moving the row
- * pointer into iy, loading ccok and the mode, then loading the skip and the
- * next pointer. Twenty instructions to learn that a group was the wrong shape.
+ * The modes live in a table of their own, so rejecting a mode is a compare and
+ * a five-byte step rather than a turn of the row loop. The rows in a group
+ * carry no mode test at all: being in the group is the answer.
  *
- * Lifting the modes out into their own table makes that a compare and a five
- * byte step, and the rows in the group no longer carry a mode test at all:
- * being in the group is the answer. The whole table is 170 of these.
- *
- * Sorting the rows by mode is what makes a group contiguous, and it is safe
- * because the mode test is an equality: rows outside the group can never
- * match, and a stable sort leaves the rows inside it in the order the table
- * gave them, so the first match is still the same row. */
+ * What makes a group contiguous is that the rows are sorted by mode, and that
+ * is safe because the mode test is an equality -- rows outside the group can
+ * never match, and the sort is stable, so the first matching row is the same
+ * row the unsorted table would have found. */
 typedef struct {
     uint8_t modes;
     uint8_t count;
@@ -2367,14 +2172,10 @@ static grpinfo grptab[NGRP];
 /* One record per mnemonic, holding everything the hot path needs about it and
  * reached only by pointer.
  *
- * The lookup used to hand back an index, and every use of that index was an
- * array subscript: `isa_table[i].name` once per candidate examined,
- * `isa_table[idx]` and `rowtab[row_base[idx]]` once the mnemonic was known.
- * Each of those is the index times a struct size, and the eZ80's multiply is
- * 8-bit, so each is a call to __imulu.
- *
- * Chaining the buckets through pointers and carrying the row block as a
- * pointer leaves one subscript in the whole path -- the bucket head itself. */
+ * An index would have to be multiplied by a struct size at every use, and the
+ * eZ80's multiply is 8-bit, so each of those is a call to __imulu. Chaining
+ * the buckets through pointers and carrying the row block as a pointer leaves
+ * exactly one subscript in the whole lookup: the bucket head. */
 typedef struct insninfo insninfo;
 
 struct insninfo {
@@ -2420,12 +2221,12 @@ _Static_assert(sizeof(bucketslot) > sizeof(const insninfo*),
 
 static bucketslot bucket_head[NBUCKET];
 
-/* What each row demands of the two operands' modes, in one value.
+/* What each row demands of the two operands' modes, as one value.
  *
- * Selecting a row asked `(row->condA & MODECHECK) == modeA` and the same for
- * B: four loads and two masks per candidate row, to compare against something
- * fixed when the table was generated. Both sides are folded here into one
- * 16-bit value per row, so the test becomes a single compare -- and rows are
+ * Asking it directly would be `(row->condA & MODECHECK) == modeA` and the same
+ * for B: four loads and two masks per candidate row, against something fixed
+ * when the table was generated. Both sides are folded here into a single
+ * 16-bit value per row, so selecting a row is one compare -- and rows are
  * scanned three or four deep for every instruction in the source.
  *
  * Indexed by a row number assigned here, since the rows live in 114 separate
@@ -2440,18 +2241,14 @@ static bucketslot bucket_head[NBUCKET];
 /* The same register sets the table holds, narrowed to the machine's word. */
 /* Everything the row loop reads, in one record per row, walked by a pointer.
  *
- * Three separate problems led here. Holding the register sets as `uint24_t`
- * made `regset & reg` a call to __iand -- AND is an 8-bit instruction on this
- * chip -- and made indexing cost r * 3, a call to __imulu. Splitting them into
- * byte planes fixed both and was still slower (+8.5% on the row-heavy shape),
- * because eight separate arrays mean eight `ld hl, base; add hl, bc;
- * ld a, (hl)` sequences per row.
+ * One record rather than parallel arrays: every field is then `ld a, (iy+n)`
+ * off the same base, and advancing to the next row is a single lea. Separate
+ * arrays would each need their own `ld hl, base; add hl, bc; ld a, (hl)`.
  *
- * One record indexed off iy is the shape that wins: every field is `ld a,
- * (iy+n)`, and advancing to the next row is a single lea. The fields stay
- * separate bytes rather than packed into a word -- packing two of them into a
- * uint16_t was tried and cost 18.8%, because ADL mode has no 16-bit truncation
- * and the compiler masks. Bytes are the native width for all of this. */
+ * The fields are separate bytes rather than packed into wider words. A byte is
+ * the native width for all of this: masks are 8-bit instructions here, and ADL
+ * mode has no 16-bit truncation, so a 16-bit field makes the compiler mask on
+ * every access. */
 
 
 static bool tables_ready = false;
@@ -2473,12 +2270,12 @@ static const uint8_t shl4[16] = {
     0, 16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240
 };
 
-/* First letter to the base of its bucket run, folded into one table.
+/* First letter to the base of its bucket run, precomputed into one table.
  *
- * This was `letter_of(first) * NLEN`: a case fold, two compares and a
- * multiply, and the multiply is a call to __imulu because the eZ80's MLT is
- * 8-bit and this is an int. All of it is a function of the character alone, so
- * all of it precomputes. 26 * 8 = 208 fits in a byte. */
+ * Computed at run time it would be `letter_of(first) * NLEN`: a case fold, two
+ * compares and a multiply, and the multiply is a call to __imulu because the
+ * eZ80's MLT is 8-bit. All of it depends on the character alone, and
+ * 26 * 8 = 208 fits in a byte. */
 /* Which characters begin a binary operator, as a table because cclass has no
  * bit left -- all eight are taken -- and because the question is asked once
  * per operand, right where the term ended. A compare chain of nine would be

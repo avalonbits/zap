@@ -233,7 +233,7 @@ Value truncation, now emitted:
 
 Same rule as the reference -- a value fits `width` bytes if it lies in
 `-2^(8w-1) .. 2^(8w)-1`, so `ld a, -1` and `ld a, 255` both pass and
-`ld a, 256` and `ld a, -129` do not -- and all six boundaries are checked
+`ld a, 256` and `ld a, -129` do not -- and every boundary is checked
 against it in test/run.sh. `-i` silences the printing, as it does there.
 
 Two differences in the text, both deliberate:

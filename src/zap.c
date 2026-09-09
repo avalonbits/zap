@@ -224,7 +224,7 @@ _Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
 
 /* The longest file name INCLUDE and INCBIN will take. Fixed, because the name
  * is copied into a frame that has to outlive the line it came from, and into
- * `dz.errpath` when an include fails. */
+ * `zap_state.errpath` when an include fails. */
 
 /* ------------------------------------------------------------- symbols */
 
@@ -268,7 +268,7 @@ typedef struct {
 typedef struct {
     int lstat;      /* offset in the listing file of the line's first row */
     int row0;       /* length of that row, through its newline */
-    int outoff;     /* the line's first byte, as an index into zz.out */
+    int outoff;     /* the line's first byte, as an index into state.out */
     int nbytes;     /* how many bytes it printed */
 } lstfix;
 
@@ -499,7 +499,7 @@ _Static_assert(sizeof(zap_err_text) / sizeof(zap_err_text[0]) == ZAP_E_COUNT,
 typedef struct symblock symblock;
 
 /* Names live in blocks of this size; see namblock below for why. Declared here
- * because `dz` holds the list. */
+ * because `zap_state` holds the list. */
 #define NAMES_BLOCK 4096
 
 typedef struct _namblock namblock;
@@ -576,12 +576,12 @@ typedef struct {
 /* A saved bucket, so an expansion can take the table over and give it back.
  * See scope_push. */
 /* How deep INCLUDE and macro expansion may nest. Declared here because the
- * per-level expansion buffers are part of dz; the reasoning for the number is
+ * per-level expansion buffers are part of zap_state; the reasoning for the number is
  * where INCLUDE is. */
 /* How deep INCLUDE and macro expansion may nest -- shared, because an
  * expansion is read the same way an included file is and re-enters the same
  * loop. Declared up here because the per-level expansion buffers are fields
- * of dz. */
+ * of zap_state. */
 #define INCLUDE_MAXDEPTH 8
 
 #define UNDO_STEP 32
@@ -855,7 +855,7 @@ typedef struct {
 _Static_assert((sizeof(locslot) & (sizeof(locslot) - 1)) == 0,
                "local slot size is a power of two, so indexing is a shift");
 
-typedef struct _dz {
+typedef struct _zap_state {
     buf_reader rd;
 
     /* The output, as three pointers rather than a base and two offsets.
@@ -1019,7 +1019,7 @@ typedef struct _dz {
      * arena, and the references waiting on a definition in this scope. The
      * used counters are reset when a scope ends; the capacities are not.
      *
-     * LAST IN THE STRUCT, DELIBERATELY. Where `dz` is reached through a
+     * LAST IN THE STRUCT, DELIBERATELY. Where `zap_state` is reached through a
      * pointer, an `iy` displacement is a signed byte, so a field past 127 has
      * its address computed instead of being read in one instruction. These
      * buckets are 256 bytes on their own, and in the middle of the struct they
@@ -1116,7 +1116,7 @@ typedef struct _dz {
      * rather than in a frame; see macro_args. */
     const char* margp[INCLUDE_MAXDEPTH * MACRO_MAXPARAM];
     int margn[INCLUDE_MAXDEPTH * MACRO_MAXPARAM];
-} dz;
+} zap_state;
 
 /* The assembler's whole state, as one file-scope object.
  *
@@ -1128,7 +1128,7 @@ typedef struct _dz {
  *
  * The cost is that there is one assembly per process. Being static also
  * zero-initialises it. */
-static dz zz;
+static zap_state state;
 
 /* The failing line, copied out of whatever held it.
  *
@@ -1259,13 +1259,13 @@ static void warn_imm(int v, int width) {
  * gone -- so this is set where it is cheap and true, and the report simply
  * leaves the quotation off where it is not. */
 static void err_tok(const char* s, int n) {
-    zz.errat = s;
-    zz.erratlen = n;
+    state.errat = s;
+    state.erratlen = n;
 }
 
 /* The fields touched on every line have to be reachable in one instruction.
  *
- * dz is reached through a pointer and `iy` displacement is a signed byte, so a
+ * zap_state is reached through a pointer and `iy` displacement is a signed byte, so a
  * field past 127 has its address computed instead. `line` is written once per
  * line of the source and the output cursor is read and written several times,
  * which is why those three are named here rather than the struct being trusted
@@ -1274,19 +1274,19 @@ static void err_tok(const char* s, int n) {
  * and it caught it. */
 /* The rule itself, which holds on any machine: the 256 bytes of local buckets
  * come after every field that is touched per line, not before them. */
-_Static_assert(__builtin_offsetof(dz, locs) > __builtin_offsetof(dz, line),
+_Static_assert(__builtin_offsetof(zap_state, locs) > __builtin_offsetof(zap_state, line),
                "the local table must come after the per-line fields");
-_Static_assert(__builtin_offsetof(dz, locs) > __builtin_offsetof(dz, lim),
+_Static_assert(__builtin_offsetof(zap_state, locs) > __builtin_offsetof(zap_state, lim),
                "the local table must come after the output cursor");
 
 /* And the displacement itself, where a displacement is what it is. The host
- * has eight-byte pointers and a dz twice the size, so the number only means
+ * has eight-byte pointers and a zap_state twice the size, so the number only means
  * anything on the machine this is for. */
 #ifdef AGONDEV
-_Static_assert(__builtin_offsetof(dz, line) < 128, "dz.line is out of range");
-_Static_assert(__builtin_offsetof(dz, o) < 128, "dz.o is out of range");
-_Static_assert(__builtin_offsetof(dz, lim) < 128, "dz.lim is out of range");
-_Static_assert(__builtin_offsetof(dz, org) < 128, "dz.org is out of range");
+_Static_assert(__builtin_offsetof(zap_state, line) < 128, "zap_state.line is out of range");
+_Static_assert(__builtin_offsetof(zap_state, o) < 128, "zap_state.o is out of range");
+_Static_assert(__builtin_offsetof(zap_state, lim) < 128, "zap_state.lim is out of range");
+_Static_assert(__builtin_offsetof(zap_state, org) < 128, "zap_state.org is out of range");
 #endif
 
 /* Marginal pricing of the label paths. Each duplicates a call to a function
@@ -1371,15 +1371,15 @@ static char* nam_take(namblock** head, int* used, int len) {
 }
 
 static bool sym_room(void) {
-    if (zz.syms_used == SYMS_STEP) {
+    if (state.syms_used == SYMS_STEP) {
         Z_SITE("symbol blocks");
         symblock* b = (symblock*) malloc(sizeof(symblock));
         if (b == NULL) {
             return false;
         }
-        b->next = zz.blocks;
-        zz.blocks = b;
-        zz.syms_used = 0;
+        b->next = state.blocks;
+        state.blocks = b;
+        state.syms_used = 0;
     }
 
     return true;
@@ -1388,7 +1388,7 @@ static bool sym_room(void) {
 /* Case-sensitive, unlike a mnemonic: the reference refuses `jp foo` against a
  * label written FOO. */
 static const sym* sym_at(int b, const char* name, int len) {
-    for (const sym* sp = zz.syms[b].head; sp != NULL; sp = sp->next) {
+    for (const sym* sp = state.syms[b].head; sp != NULL; sp = sp->next) {
         if (sp->len != (uint8_t) len) {
             continue;
         }
@@ -1424,19 +1424,19 @@ static sym* sym_intern(const char* name, int len) {
      * found, so the output does not change. */
     char* dtext;
     if (sym_at(b, name, len) == NULL && sym_room()
-        && (dtext = nam_take(&zz.names, &zz.names_used, len)) != NULL) {
+        && (dtext = nam_take(&state.names, &state.names_used, len)) != NULL) {
         for (int i = 0; i < len; i++) {
             dtext[i] = name[i];
         }
         dtext[len - 1] = (char) (name[len - 1] == 'z' ? 'y' : 'z');
-        sym* dec = &zz.blocks->nodes[zz.syms_used++];
+        sym* dec = &state.blocks->nodes[state.syms_used++];
         dec->name = dtext;
         dec->len = (uint8_t) len;
         dec->defined = false;
         dec->islocal = false;
         dec->addr = 0;
-        dec->next = zz.syms[b].head;
-        zz.syms[b].head = dec;
+        dec->next = state.syms[b].head;
+        state.syms[b].head = dec;
     }
 #endif
 
@@ -1445,14 +1445,14 @@ static sym* sym_intern(const char* name, int len) {
         return found;
     }
     if (!sym_room()) {
-        zz.err = ZAP_E_OUT_MEMORY_LABELS;
+        state.err = ZAP_E_OUT_MEMORY_LABELS;
 
         return NULL;
     }
 
-    char* text = nam_take(&zz.names, &zz.names_used, len);
+    char* text = nam_take(&state.names, &state.names_used, len);
     if (text == NULL) {
-        zz.err = ZAP_E_OUT_MEMORY_LABELS;
+        state.err = ZAP_E_OUT_MEMORY_LABELS;
 
         return NULL;
     }
@@ -1460,7 +1460,7 @@ static sym* sym_intern(const char* name, int len) {
         text[i] = name[i];
     }
 
-    sym* sp = &zz.blocks->nodes[zz.syms_used++];
+    sym* sp = &state.blocks->nodes[state.syms_used++];
     sp->name = text;
     sp->len = (uint8_t) len;
     sp->defined = false;
@@ -1470,8 +1470,8 @@ static sym* sym_intern(const char* name, int len) {
     sp->islocal = false;
     sp->addr = 0;
 
-    sp->next = zz.syms[b].head;
-    zz.syms[b].head = sp;
+    sp->next = state.syms[b].head;
+    state.syms[b].head = sp;
 
     return sp;
 }
@@ -1491,8 +1491,8 @@ static inline int loc_bucket(const char* name, int len) {
 /* Room for one more local node and its name. Blocks are threaded once and
  * then reused: after a scope ends loccur walks the same list again. */
 static bool loc_room(void) {
-    if (zz.locs_used == LOCS_STEP || zz.loccur == NULL) {
-        locblock* next = zz.loccur != NULL ? zz.loccur->next : zz.locfirst;
+    if (state.locs_used == LOCS_STEP || state.loccur == NULL) {
+        locblock* next = state.loccur != NULL ? state.loccur->next : state.locfirst;
         if (next == NULL) {
             Z_SITE("local label blocks");
             next = (locblock*) malloc(sizeof(locblock));
@@ -1500,14 +1500,14 @@ static bool loc_room(void) {
                 return false;
             }
             next->next = NULL;
-            if (zz.loccur != NULL) {
-                zz.loccur->next = next;
+            if (state.loccur != NULL) {
+                state.loccur->next = next;
             } else {
-                zz.locfirst = next;
+                state.locfirst = next;
             }
         }
-        zz.loccur = next;
-        zz.locs_used = 0;
+        state.loccur = next;
+        state.locs_used = 0;
     }
 
     return true;
@@ -1527,8 +1527,8 @@ static bool patch_fold(const fixup* f, evalue val, uint8_t w, uint8_t* at) {
     const int v = (int) val;
     if (w == FIX_FOLD_BIT) {
         if (v > 7) {
-            zz.line = f->line;
-            zz.err = ZAP_E_INVALID_BIT_NUMBER;
+            state.line = f->line;
+            state.err = ZAP_E_INVALID_BIT_NUMBER;
 
             return false;
         }
@@ -1538,8 +1538,8 @@ static bool patch_fold(const fixup* f, evalue val, uint8_t w, uint8_t* at) {
     }
     if (w == FIX_FOLD_RST) {
         if (((unsigned) v & ~0x38u) != 0) {
-            zz.line = f->line;
-            zz.err = ZAP_E_RESTART_ADDRESS;
+            state.line = f->line;
+            state.err = ZAP_E_RESTART_ADDRESS;
 
             return false;
         }
@@ -1549,8 +1549,8 @@ static bool patch_fold(const fixup* f, evalue val, uint8_t w, uint8_t* at) {
     }
 
     if (v > 2) {
-        zz.line = f->line;
-        zz.err = ZAP_E_INTERRUPT_MODE;
+        state.line = f->line;
+        state.err = ZAP_E_INTERRUPT_MODE;
 
         return false;
     }
@@ -1568,9 +1568,9 @@ static bool patch_fixup(const fixup* f) {
         /* Reported against the line that used it, which is long gone; the
          * fixup carries the number for exactly this. The name is still on the
          * symbol, which is the whole reason a reference points at one. */
-        zz.line = f->line;
+        state.line = f->line;
         err_tok(sp->name, sp->len);
-        zz.err = ZAP_E_UNKNOWN_LABEL;
+        state.err = ZAP_E_UNKNOWN_LABEL;
 
         return false;
     }
@@ -1578,9 +1578,9 @@ static bool patch_fixup(const fixup* f) {
     evalue val = sp->addr + f->addend;
     if (f->sub != NULL) {
         if (!f->sub->defined) {
-            zz.line = f->line;
+            state.line = f->line;
             err_tok(f->sub->name, f->sub->len);
-            zz.err = ZAP_E_UNKNOWN_LABEL;
+            state.err = ZAP_E_UNKNOWN_LABEL;
 
             return false;
         }
@@ -1588,14 +1588,14 @@ static bool patch_fixup(const fixup* f) {
     }
 
     const uint8_t w = (uint8_t) (f->width & FIX_WIDTH);
-    uint8_t* at = zz.out + f->off;
+    uint8_t* at = state.out + f->off;
     if (w == 0) {
         /* The byte after the displacement byte, which is where a relative
          * jump is measured from. */
-        const evalue d = val - (zz.org + f->off + 1);
+        const evalue d = val - (state.org + f->off + 1);
         if (d < -128 || d > 127) {
-            zz.line = f->line;
-            zz.err = ZAP_E_RELATIVE_JUMP_TOO_FAR;
+            state.line = f->line;
+            state.err = ZAP_E_RELATIVE_JUMP_TOO_FAR;
 
             return false;
         }
@@ -1614,7 +1614,7 @@ static bool patch_fixup(const fixup* f) {
          *
          * Set here rather than at the top of the function, so that the store
          * happens only on the path that needs it. */
-        zz.line = f->line;
+        state.line = f->line;
         warn_trunc(val, (int) w);
     }
 
@@ -1664,15 +1664,15 @@ static bool patch_fixup(const fixup* f) {
  * node still means what it said, and folded into the addend. What is left is
  * an ordinary global fixup. */
 static bool fold_subs(int from) {
-    for (int i = from; i < zz.subfix_used; i++) {
-        fixup* f = &zz.fixups[zz.subfix[i]];
+    for (int i = from; i < state.subfix_used; i++) {
+        fixup* f = &state.fixups[state.subfix[i]];
         if (f->sub == NULL) {
             continue;
         }
         if (!f->sub->defined) {
-            zz.line = f->line;
+            state.line = f->line;
             err_tok(f->sub->name, f->sub->len);
-            zz.err = ZAP_E_UNKNOWN_LABEL;
+            state.err = ZAP_E_UNKNOWN_LABEL;
 
             return false;
         }
@@ -1683,8 +1683,8 @@ static bool fold_subs(int from) {
             /* The local half of a global-minus-local, settled here. It is an
              * address difference in every real case and fits; an EQU wide
              * enough to leave the machine word does not, and says so. */
-            zz.line = f->line;
-            zz.err = ZAP_E_CONSTANT_TOO_LARGE_ADD_LABEL;
+            state.line = f->line;
+            state.err = ZAP_E_CONSTANT_TOO_LARGE_ADD_LABEL;
 
             return false;
         }
@@ -1692,7 +1692,7 @@ static bool fold_subs(int from) {
         f->width &= (uint8_t) ~FIX_SUB2;
         f->sub = NULL;
     }
-    zz.subfix_used = from;
+    state.subfix_used = from;
 
     return true;
 }
@@ -1701,27 +1701,27 @@ static bool scope_end(void) {
     if (!fold_subs(0)) {
         return false;
     }
-    for (int i = 0; i < zz.lfix_used; i++) {
-        if (!patch_fixup(&zz.lfixups[i])) {
+    for (int i = 0; i < state.lfix_used; i++) {
+        if (!patch_fixup(&state.lfixups[i])) {
             return false;
         }
     }
-    zz.lfix_used = 0;
-    zz.locs_used = LOCS_STEP;   /* forces loc_room back to the first block */
-    zz.loccur = NULL;
+    state.lfix_used = 0;
+    state.locs_used = LOCS_STEP;   /* forces loc_room back to the first block */
+    state.loccur = NULL;
     /* Back to the first block rather than freeing them: a scope ends on every
      * global label, and the blocks are the same size every time. */
-    zz.locnames = zz.locnamfirst;
-    zz.locnames_used = 0;
-    if (++zz.gen == 0) {
+    state.locnames = state.locnamfirst;
+    state.locnames_used = 0;
+    if (++state.gen == 0) {
         /* The stamp has wrapped, so a slot left over from 256 scopes ago would
          * read as belonging to this one. Once every 256 scopes, empty them
          * properly. */
         for (int b = 0; b < NLOCB; b++) {
-            zz.locs[b].gen = 0;
-            zz.locs[b].head = NULL;
+            state.locs[b].gen = 0;
+            state.locs[b].head = NULL;
         }
-        zz.gen = 1;
+        state.gen = 1;
     }
 
     return true;
@@ -1731,26 +1731,26 @@ static bool scope_end(void) {
  * reached at most once per bucket per expansion. */
 __attribute__((noinline))
 static bool undo_note(int b) {
-    if (zz.undo_used == zz.undo_cap) {
+    if (state.undo_used == state.undo_cap) {
         /* Grown rather than capped. One entry per distinct bucket per level of
          * nesting is at most 64 times the nesting limit, but a body with sixty
          * local labels is legal -- the reference assembles one -- and a fixed
          * table would refuse it. */
-        const int want = zz.undo_cap == 0 ? UNDO_STEP : zz.undo_cap + zz.undo_cap;
+        const int want = state.undo_cap == 0 ? UNDO_STEP : state.undo_cap + state.undo_cap;
         Z_SITE("macro scope");
-        locundo* grown = (locundo*) realloc(zz.undo, sizeof(locundo) * (size_t) want);
+        locundo* grown = (locundo*) realloc(state.undo, sizeof(locundo) * (size_t) want);
         if (grown == NULL) {
-            zz.err = ZAP_E_OUT_MEMORY_MACROS;
+            state.err = ZAP_E_OUT_MEMORY_MACROS;
 
             return false;
         }
-        zz.undo = grown;
-        zz.undo_cap = want;
+        state.undo = grown;
+        state.undo_cap = want;
     }
-    locundo* u = &zz.undo[zz.undo_used++];
-    u->head = zz.locs[b].head;
+    locundo* u = &state.undo[state.undo_used++];
+    u->head = state.locs[b].head;
     u->b = (uint8_t) b;
-    u->gen = zz.locs[b].gen;
+    u->gen = state.locs[b].gen;
 
     return true;
 }
@@ -1768,8 +1768,8 @@ static sym* loc_intern(const char* name, int len) {
      * It must be a *later* line than the label, which is the point of the
      * deferral: `two: jp @l` reads its operand in the scope `two` is closing,
      * not the one it opens. */
-    if (zz.scope_line != 0 && zz.scope_line != zz.line) {
-        zz.scope_line = 0;
+    if (state.scope_line != 0 && state.scope_line != state.line) {
+        state.scope_line = 0;
         if (!scope_end()) {
             return NULL;
         }
@@ -1777,8 +1777,8 @@ static sym* loc_intern(const char* name, int len) {
 
     DUP_HASH_CALL(name, len);
     const int b = loc_bucket(name, len);
-    if (zz.locs[b].gen == zz.gen) {
-        for (sym* sp = zz.locs[b].head; sp != NULL; sp = (sym*) sp->next) {
+    if (state.locs[b].gen == state.gen) {
+        for (sym* sp = state.locs[b].head; sp != NULL; sp = (sym*) sp->next) {
             if (sp->len != (uint8_t) len) {
                 continue;
             }
@@ -1797,40 +1797,40 @@ static sym* loc_intern(const char* name, int len) {
         /* The bucket belonged to an older scope and is about to belong to this
          * one. Inside an expansion the older scope is the caller's and is not
          * finished with, so what is here is written down first. */
-        if (zz.expanding != 0 && !undo_note(b)) {
+        if (state.expanding != 0 && !undo_note(b)) {
             return NULL;
         }
-        zz.locs[b].gen = zz.gen;
-        zz.locs[b].head = NULL;
+        state.locs[b].gen = state.gen;
+        state.locs[b].head = NULL;
     }
 
     if (!loc_room()) {
-        zz.err = ZAP_E_OUT_MEMORY_LABELS;
+        state.err = ZAP_E_OUT_MEMORY_LABELS;
 
         return NULL;
     }
 
-    char* text = nam_take(&zz.locnames, &zz.locnames_used, len);
+    char* text = nam_take(&state.locnames, &state.locnames_used, len);
     if (text == NULL) {
-        zz.err = ZAP_E_OUT_MEMORY_LABELS;
+        state.err = ZAP_E_OUT_MEMORY_LABELS;
 
         return NULL;
     }
-    if (zz.locnamfirst == NULL) {
-        zz.locnamfirst = zz.locnames;
+    if (state.locnamfirst == NULL) {
+        state.locnamfirst = state.locnames;
     }
     for (int i = 0; i < len; i++) {
         text[i] = name[i];
     }
 
-    sym* sp = &zz.loccur->nodes[zz.locs_used++];
+    sym* sp = &state.loccur->nodes[state.locs_used++];
     sp->name = text;
     sp->len = (uint8_t) len;
     sp->defined = false;
     sp->islocal = true;
     sp->addr = 0;
-    sp->next = zz.locs[b].head;
-    zz.locs[b].head = sp;
+    sp->next = state.locs[b].head;
+    state.locs[b].head = sp;
 
     return sp;
 }
@@ -1846,7 +1846,7 @@ static inline sym* sym_define(const char* name, int len, int addr) {
         return NULL;
     }
     if (sp->defined) {
-        zz.err = ZAP_E_LABEL_DEFINED_TWICE;
+        state.err = ZAP_E_LABEL_DEFINED_TWICE;
 
         return NULL;
     }
@@ -1863,12 +1863,12 @@ static inline sym* sym_define(const char* name, int len, int addr) {
  * is closing. And `@f` on the same line means the *next* one, which falls out
  * of resolving the pending symbol before a new one is made for what follows. */
 static bool anon_define(int addr) {
-    zz.anon_prev = addr;
-    zz.anon_has_prev = true;
-    if (zz.anon_fwd != NULL) {
-        zz.anon_fwd->defined = true;
-        zz.anon_fwd->addr = addr;
-        zz.anon_fwd = NULL;
+    state.anon_prev = addr;
+    state.anon_has_prev = true;
+    if (state.anon_fwd != NULL) {
+        state.anon_fwd->defined = true;
+        state.anon_fwd->addr = addr;
+        state.anon_fwd = NULL;
     }
 
     return true;
@@ -1878,23 +1878,23 @@ static bool anon_define(int addr) {
  * not one. Nameless and in no bucket: nothing ever looks it up, and the only
  * thing that finds it again is this field. */
 static sym* anon_next(void) {
-    if (zz.anon_fwd == NULL) {
+    if (state.anon_fwd == NULL) {
         if (!sym_room()) {
-            zz.err = ZAP_E_OUT_MEMORY_LABELS;
+            state.err = ZAP_E_OUT_MEMORY_LABELS;
 
             return NULL;
         }
-        sym* sp = &zz.blocks->nodes[zz.syms_used++];
+        sym* sp = &state.blocks->nodes[state.syms_used++];
         sp->next = NULL;
         sp->name = NULL;
         sp->len = 0;
         sp->defined = false;
         sp->islocal = false;
         sp->addr = 0;
-        zz.anon_fwd = sp;
+        state.anon_fwd = sp;
     }
 
-    return zz.anon_fwd;
+    return state.anon_fwd;
 }
 
 /* Defines a local in the current scope. Same shape as sym_define, against the
@@ -1907,7 +1907,7 @@ static inline sym* loc_define(const char* name, int len, int addr) {
         return NULL;
     }
     if (sp->defined) {
-        zz.err = ZAP_E_LABEL_DEFINED_TWICE;
+        state.err = ZAP_E_LABEL_DEFINED_TWICE;
 
         return NULL;
     }
@@ -1947,15 +1947,15 @@ static bool fix_add(const sym* target, const sym* sub, int addend,
      * once per forward reference -- 843 of them in isa_real -- is cheaper
      * than the test that would avoid it, never mind moving the option flags
      * above this function to make the test possible. */
-    zz.fix_touched = true;
+    state.fix_touched = true;
 
-    fixup** list = &zz.fixups;
-    int* used = &zz.fix_used;
-    int* cap = &zz.fix_cap;
+    fixup** list = &state.fixups;
+    int* used = &state.fix_used;
+    int* cap = &state.fix_cap;
     if (target->islocal) {
-        list = &zz.lfixups;
-        used = &zz.lfix_used;
-        cap = &zz.lfix_cap;
+        list = &state.lfixups;
+        used = &state.lfix_used;
+        cap = &state.lfix_cap;
     }
 
     if (*used == *cap) {
@@ -1963,7 +1963,7 @@ static bool fix_add(const sym* target, const sym* sub, int addend,
         const int want = *cap + FIX_STEP;
         fixup* grown = (fixup*) realloc(*list, (size_t) want * sizeof(fixup));
         if (grown == NULL) {
-            zz.err = ZAP_E_OUT_MEMORY_LABELS;
+            state.err = ZAP_E_OUT_MEMORY_LABELS;
 
             return false;
         }
@@ -1974,20 +1974,20 @@ static bool fix_add(const sym* target, const sym* sub, int addend,
     /* A fixup on the global list whose `sub` is a local has to be settled in
      * two halves; scope_end does the local one. Recorded by index because the
      * list is realloc'd out from under any pointer. */
-    if (list == &zz.fixups && sub != NULL && sub->islocal) {
-        if (zz.subfix_used == zz.subfix_cap) {
+    if (list == &state.fixups && sub != NULL && sub->islocal) {
+        if (state.subfix_used == state.subfix_cap) {
             Z_SITE("fixups");
-            const int want = zz.subfix_cap == 0 ? 8 : zz.subfix_cap + zz.subfix_cap;
-            int* grown = (int*) realloc(zz.subfix, (size_t) want * sizeof(int));
+            const int want = state.subfix_cap == 0 ? 8 : state.subfix_cap + state.subfix_cap;
+            int* grown = (int*) realloc(state.subfix, (size_t) want * sizeof(int));
             if (grown == NULL) {
-                zz.err = ZAP_E_OUT_MEMORY_LABELS;
+                state.err = ZAP_E_OUT_MEMORY_LABELS;
 
                 return false;
             }
-            zz.subfix = grown;
-            zz.subfix_cap = want;
+            state.subfix = grown;
+            state.subfix_cap = want;
         }
-        zz.subfix[zz.subfix_used++] = *used;
+        state.subfix[state.subfix_used++] = *used;
     }
 
     fixup* f = &(*list)[(*used)++];
@@ -1996,7 +1996,7 @@ static bool fix_add(const sym* target, const sym* sub, int addend,
     f->addend = addend;
     f->width = width;
     f->off = off;
-    f->line = zz.line;
+    f->line = state.line;
 
     return true;
 }
@@ -2017,26 +2017,26 @@ static bool out_grow(int need) {
      * largest of them asks for less: for a 197 KB output the peak is about
      * 1.5 times the final size, where stepping by a fixed amount makes it
      * about twice. */
-    int want = zz.cap + (zz.cap < OUT_STEP ? OUT_STEP : zz.cap);
-    const int least = (int) (zz.o - zz.out) + need + OUT_MAX_INSN;
+    int want = state.cap + (state.cap < OUT_STEP ? OUT_STEP : state.cap);
+    const int least = (int) (state.o - state.out) + need + OUT_MAX_INSN;
     if (want < least) {
         want = least;
     }
-    uint8_t* grown = (uint8_t*) realloc(zz.out, (size_t) want);
+    uint8_t* grown = (uint8_t*) realloc(state.out, (size_t) want);
     if (grown == NULL) {
         /* Set here rather than left to a fallback in main, so that every
          * failure leaves a code behind it. */
-        zz.err = ZAP_E_OUT_MEMORY_OUTPUT;
+        state.err = ZAP_E_OUT_MEMORY_OUTPUT;
 
         return false;
     }
 
     /* realloc is allowed to move the buffer, so the cursor and the limit are
      * both relative to a base that may no longer be there. */
-    zz.o = grown + (zz.o - zz.out);
-    zz.out = grown;
-    zz.cap = want;
-    zz.lim = grown + want - OUT_MAX_INSN;
+    state.o = grown + (state.o - state.out);
+    state.out = grown;
+    state.cap = want;
+    state.lim = grown + want - OUT_MAX_INSN;
 
     return true;
 }
@@ -2044,7 +2044,7 @@ static bool out_grow(int need) {
 /* One `if`, not a loop: OUT_STEP is 32 KB and an instruction is at most 12
  * bytes, so one growth always leaves room. */
 static bool out_reserve(void) {
-    if (zz.o <= zz.lim) {
+    if (state.o <= state.lim) {
         return true;
     }
 
@@ -2055,7 +2055,7 @@ static bool out_reserve(void) {
  * more than an instruction's worth at once. Also one `if`, because out_grow
  * takes the amount and asks for it all in one go. */
 static bool out_reserve_n(int n) {
-    if (zz.o + n <= zz.lim) {
+    if (state.o + n <= state.lim) {
         return true;
     }
 
@@ -2296,7 +2296,7 @@ static uint8_t exop[256];
 static uint8_t exprec[256];
 
 /* Set once, from the command line, and read in the operator loop. A file-scope
- * flag rather than a field on dz, because dz is reached through a pointer on
+ * flag rather than a field on zap_state, because zap_state is reached through a pointer on
  * every line and this is read only where an expression has an operator in it. */
 /* Printed by -v. One place, so a release cannot say two things. */
 #define ZAP_VERSION "1.0"
@@ -2345,7 +2345,7 @@ static uint8_t list_fh = 0;
  * forms, BIT_Z180, BIT_EZ80 -- so the directive is this mask and the two tests
  * in match_row that read it.
  *
- * A file-scope static rather than a field of `dz`, for the same reason as
+ * A file-scope static rather than a field of `zap_state`, for the same reason as
  * `compat_ez80`: match_row is inlined into assemble_line, and anything passed
  * to it is paid for on every instruction in the file. This is set at most once
  * per assembly.
@@ -3250,13 +3250,13 @@ static inline bool fwd_result(const sym** target, const sym** sub,
     *sub = NULL;
     *subneg = false;
     if (expr_fwd_bad) {
-        zz.err = ZAP_E_LABEL_DEFINED_ALREADY;
+        state.err = ZAP_E_LABEL_DEFINED_ALREADY;
 
         return false;
     }
     if (expr_fwd2 == NULL) {
         if (expr_fwd_neg) {
-            zz.err = ZAP_E_LABEL_CANNOT_NEGATED;
+            state.err = ZAP_E_LABEL_CANNOT_NEGATED;
 
             return false;
         }
@@ -3275,7 +3275,7 @@ static inline bool fwd_result(const sym** target, const sym** sub,
     } else {
         /* Both subtracted. A fixup adds its first symbol, so there is nowhere
          * for `-a - b` to go. */
-        zz.err = ZAP_E_LABEL_CANNOT_NEGATED;
+        state.err = ZAP_E_LABEL_CANNOT_NEGATED;
 
         return false;
     }
@@ -3310,26 +3310,26 @@ static void fwd_reset(const sym* seed);
 __attribute__((noinline))
 static sym* defer_text(const char* text, int n) {
     if (!sym_room()) {
-        zz.err = ZAP_E_OUT_MEMORY_LABELS;
+        state.err = ZAP_E_OUT_MEMORY_LABELS;
 
         return NULL;
     }
-    if (zz.defer_used == zz.defer_cap) {
+    if (state.defer_used == state.defer_cap) {
         Z_SITE("deferred expressions");
-        const int want = zz.defer_cap == 0 ? 8 : zz.defer_cap + zz.defer_cap;
+        const int want = state.defer_cap == 0 ? 8 : state.defer_cap + state.defer_cap;
         defexpr* grown =
-            (defexpr*) realloc(zz.defer, (size_t) want * sizeof(defexpr));
+            (defexpr*) realloc(state.defer, (size_t) want * sizeof(defexpr));
         if (grown == NULL) {
-            zz.err = ZAP_E_OUT_MEMORY_LABELS;
+            state.err = ZAP_E_OUT_MEMORY_LABELS;
 
             return NULL;
         }
-        zz.defer = grown;
-        zz.defer_cap = want;
+        state.defer = grown;
+        state.defer_cap = want;
     }
-    char* copy = nam_take(&zz.names, &zz.names_used, n + 1);
+    char* copy = nam_take(&state.names, &state.names_used, n + 1);
     if (copy == NULL) {
-        zz.err = ZAP_E_OUT_MEMORY_LABELS;
+        state.err = ZAP_E_OUT_MEMORY_LABELS;
 
         return NULL;
     }
@@ -3338,7 +3338,7 @@ static sym* defer_text(const char* text, int n) {
     }
     copy[n] = 0;
 
-    sym* sp = &zz.blocks->nodes[zz.syms_used++];
+    sym* sp = &state.blocks->nodes[state.syms_used++];
     sp->next = NULL;
     sp->name = NULL;
     sp->len = 0;
@@ -3346,12 +3346,12 @@ static sym* defer_text(const char* text, int n) {
     sp->islocal = false;
     sp->addr = 0;
 
-    defexpr* d = &zz.defer[zz.defer_used++];
+    defexpr* d = &state.defer[state.defer_used++];
     d->sp = sp;
     d->text = copy;
     d->len = n;
-    d->line = zz.line;
-    zz.err = ZAP_OK;
+    d->line = state.line;
+    state.err = ZAP_OK;
     fwd_reset(NULL);
 
     return sp;
@@ -3463,12 +3463,12 @@ static bool expr_atom(evalue* out, const char* ns, int nn) {
         if (ns[0] == '@') {
             const char k = nn == 2 ? (char) (ns[1] | 0x20) : 0;
             if (k == 'b' || k == 'p') {
-                if (!zz.anon_has_prev) {
-                    zz.err = ZAP_E_NO_ANONYMOUS_LABEL_ABOVE_ONE;
+                if (!state.anon_has_prev) {
+                    state.err = ZAP_E_NO_ANONYMOUS_LABEL_ABOVE_ONE;
 
                     return false;
                 }
-                *out = zz.anon_prev;
+                *out = state.anon_prev;
 
                 return true;
             }
@@ -3504,7 +3504,7 @@ static bool expr_atom(evalue* out, const char* ns, int nn) {
 
     value gv = 0;
     if (!num_parse(ns, nn, &gv)) {
-        zz.err = ZAP_E_EXPECTED_VALUE;
+        state.err = ZAP_E_EXPECTED_VALUE;
 
         return false;
     }
@@ -3538,7 +3538,7 @@ static bool expr_term(evalue* out, const char** pp, const char* e,
             p++;
         }
         if (*p == '-' || *p == '+' || *p == '~' || exop[(uint8_t) *p] != 0) {
-            zz.err = ZAP_E_UNARY_OPERATOR_VALUE;
+            state.err = ZAP_E_UNARY_OPERATOR_VALUE;
 
             return false;
         }
@@ -3553,7 +3553,7 @@ static bool expr_term(evalue* out, const char** pp, const char* e,
          * inside an expression there is nothing left for it to be. */
         const bool square = *p == '[';
         if (expr_depth >= EXPR_MAXDEPTH) {
-            zz.err = ZAP_E_EXPRESSION_NESTED_TOO_DEEPLY;
+            state.err = ZAP_E_EXPRESSION_NESTED_TOO_DEEPLY;
 
             return false;
         }
@@ -3568,7 +3568,7 @@ static bool expr_term(evalue* out, const char** pp, const char* e,
             p++;
         }
         if (*p != (square ? ']' : ')')) {
-            zz.err = square ? ZAP_E_EXPECTEDX : ZAP_E_EXPECTED;
+            state.err = square ? ZAP_E_EXPECTEDX : ZAP_E_EXPECTED;
 
             return false;
         }
@@ -3589,7 +3589,7 @@ static bool expr_term(evalue* out, const char** pp, const char* e,
              * the backslash was its content. */
             const int esc = str_escape(p[2]);
             if (esc < 0 || p[3] != '\'') {
-                zz.err = ZAP_E_EXPECTED_CHARACTER;
+                state.err = ZAP_E_EXPECTED_CHARACTER;
 
                 return false;
             }
@@ -3600,7 +3600,7 @@ static bool expr_term(evalue* out, const char** pp, const char* e,
             p += 3;
         } else {
             if (p[1] == '\n' || p[1] == 0 || p[2] != '\'') {
-                zz.err = ZAP_E_EXPECTED_CHARACTER;
+                state.err = ZAP_E_EXPECTED_CHARACTER;
 
                 return false;
             }
@@ -3614,7 +3614,7 @@ static bool expr_term(evalue* out, const char** pp, const char* e,
         }
         const int n = (int) (p - ts);
         if (n == 0) {
-            zz.err = ZAP_E_EXPECTED_VALUE;
+            state.err = ZAP_E_EXPECTED_VALUE;
 
             return false;
         }
@@ -3622,7 +3622,7 @@ static bool expr_term(evalue* out, const char** pp, const char* e,
             /* The address of the instruction being assembled. `$` on its own;
              * with hex digits after it, it is the radix prefix instead, and
              * the scan above has already taken them. */
-            v = zz.org + (int) (zz.o - zz.out);
+            v = state.org + (int) (state.o - state.out);
         } else if (!expr_atom(&v, ts, n)) {
             return false;
         }
@@ -3659,7 +3659,7 @@ static bool expr_climb(evalue* total, const char** pp, const char* e,
                        uint8_t minprec, int depth, uint8_t* fwdmask) {
     const char* p = *pp;
     if (depth > EXPR_MAXDEPTH) {
-        zz.err = ZAP_E_EXPRESSION_NESTED_TOO_DEEPLY;
+        state.err = ZAP_E_EXPRESSION_NESTED_TOO_DEEPLY;
 
         return false;
     }
@@ -3680,7 +3680,7 @@ static bool expr_climb(evalue* total, const char** pp, const char* e,
             /* Doubled or nothing: the reference refuses a single one rather
              * than reading it as a comparison, so `1<4` is an error. */
             if (*p != c) {
-                zz.err = ZAP_E_EXPECTED_OR;
+                state.err = ZAP_E_EXPECTED_OR;
 
                 return false;
             }
@@ -3726,7 +3726,7 @@ static bool expr_climb(evalue* total, const char** pp, const char* e,
                  * this deliberately does not match: there is no byte sequence
                  * to agree with. */
                 if (t == 0) {
-                    zz.err = ZAP_E_DIVISION_BY_ZERO;
+                    state.err = ZAP_E_DIVISION_BY_ZERO;
 
                     return false;
                 }
@@ -3952,7 +3952,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dop* op, const c
                     }
                     d = (int) dv32;
                     if (expr_fwd != NULL) {
-                        zz.err = ZAP_E_LABEL_DEFINED_ALREADY;
+                        state.err = ZAP_E_LABEL_DEFINED_ALREADY;
 
                         return false;
                     }
@@ -3962,7 +3962,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dop* op, const c
                     /* "Index register offset exceeded" there. One signed byte
                      * is what the instruction has room for, so anything else
                      * would be emitted truncated and silently wrong. */
-                    zz.err = ZAP_E_INDEX_OFFSET_OUT_RANGE;
+                    state.err = ZAP_E_INDEX_OFFSET_OUT_RANGE;
 
                     return false;
                 }
@@ -3973,7 +3973,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dop* op, const c
 
             if ((op->mode & INDIRECT) != 0) {
                 if (*p != ')') {
-                    zz.err = ZAP_E_EXPECTED;
+                    state.err = ZAP_E_EXPECTED;
 
                     return false;
                 }
@@ -4091,7 +4091,7 @@ full_expression:
             /* The address of the instruction being assembled. `$` alone; with
              * hex digits after it the scan has already taken them and it is
              * the radix prefix instead. */
-            v = zz.org + (int) (zz.o - zz.out);
+            v = state.org + (int) (state.o - state.out);
             got = true;
         } else if (ns[0] == '@') {
             /* `@f` and `@n` are the next anonymous label, `@b` and `@p` the
@@ -4104,12 +4104,12 @@ full_expression:
             if (k2 == 'b' || k2 == 'p') {
                 /* Backward is not a reference at all: the address is already
                  * known, so this is the same as a label defined above. */
-                if (!zz.anon_has_prev) {
-                    zz.err = ZAP_E_NO_ANONYMOUS_LABEL_ABOVE_ONE;
+                if (!state.anon_has_prev) {
+                    state.err = ZAP_E_NO_ANONYMOUS_LABEL_ABOVE_ONE;
 
                     return false;
                 }
-                v = zz.anon_prev;
+                v = state.anon_prev;
             } else {
                 const sym* sp;
                 if (k2 == 'f' || k2 == 'n') {
@@ -4218,7 +4218,7 @@ full_expression:
         if (!got) {
             value gv = 0;
             if (nn <= 0 || !num_parse(ns, nn, &gv)) {
-                zz.err = ZAP_E_EXPECTED_VALUE;
+                state.err = ZAP_E_EXPECTED_VALUE;
 
                 return false;
             }
@@ -4274,7 +4274,7 @@ have_value:
         }
         if ((op->mode & INDIRECT) != 0) {
             if (*p != ')') {
-                zz.err = ZAP_E_EXPECTED;
+                state.err = ZAP_E_EXPECTED;
 
                 return false;
             }
@@ -4391,7 +4391,7 @@ static bool equ_line(const char* name, int nlen, const char* p,
         if (nlen == 2 && name[1] == '@') {
             /* An anonymous label has no name to attach a value to, and the
              * reference refuses this too. */
-            zz.err = ZAP_E_INVALID_LABEL;
+            state.err = ZAP_E_INVALID_LABEL;
 
             return false;
         }
@@ -4420,7 +4420,7 @@ static bool equ_line(const char* name, int nlen, const char* p,
             return false;
         }
         if (expr_fwd != NULL) {
-            zz.err = ZAP_E_LABEL_DEFINED_ALREADY;
+            state.err = ZAP_E_LABEL_DEFINED_ALREADY;
 
             return false;
         }
@@ -4445,7 +4445,7 @@ static bool equ_line(const char* name, int nlen, const char* p,
  * over-long line through an out-parameter, and holding that across the call
  * inside `run` took its frame from 13 bytes to 16 -- in the function that
  * holds the line loop. Here it costs nothing, because this is entered once per
- * 16 KB of source. A failure is told from an end of file by `zz.err`, which
+ * 16 KB of source. A failure is told from an end of file by `state.err`, which
  * exists either way.
  *
  * The check itself is new. The reader has always said when one line does not
@@ -4459,10 +4459,10 @@ static bool line_fill(buf_reader* r) {
         return true;
     }
     if (too_long) {
-        /* zz.line counts the lines already assembled, so this names the one
+        /* state.line counts the lines already assembled, so this names the one
          * before the offending line. That is still where to start looking. */
-        zz.line++;
-        zz.err = ZAP_E_LINE_TOO_LONG;
+        state.line++;
+        state.err = ZAP_E_LINE_TOO_LONG;
     }
 
     return false;
@@ -4507,32 +4507,32 @@ typedef struct {
 
 __attribute__((noinline))
 static bool scope_push(locsave* sv) {
-    sv->loccur = zz.loccur;
-    sv->locnames = zz.locnames;
-    sv->locs_used = zz.locs_used;
-    sv->locnames_used = zz.locnames_used;
-    sv->lfix_used = zz.lfix_used;
-    sv->subfix_used = zz.subfix_used;
-    sv->undo_used = zz.undo_used;
-    sv->gen = zz.gen;
+    sv->loccur = state.loccur;
+    sv->locnames = state.locnames;
+    sv->locs_used = state.locs_used;
+    sv->locnames_used = state.locnames_used;
+    sv->lfix_used = state.lfix_used;
+    sv->subfix_used = state.subfix_used;
+    sv->undo_used = state.undo_used;
+    sv->gen = state.gen;
     /* The scope end a global label left pending belongs to the caller. Left
      * standing, the first local in the body would notice it -- the body counts
      * its own line numbers, so the comparison that defers it never matches --
      * and end the expansion's scope in the caller's name, clearing the flag.
      * The caller's next local then would not open a scope at all, and the one
      * above it would still hold whatever the previous scope defined. */
-    sv->scope_line = zz.scope_line;
-    zz.scope_line = 0;
+    sv->scope_line = state.scope_line;
+    state.scope_line = 0;
 
-    if (++zz.gen == 0) {
+    if (++state.gen == 0) {
         /* The stamp has wrapped, so a bucket left over from 256 scopes ago
          * would read as belonging to this one. The undo log is what puts them
          * back, and it records what it finds, so emptying them here is safe. */
         for (int b = 0; b < NLOCB; b++) {
-            zz.locs[b].gen = 0;
-            zz.locs[b].head = NULL;
+            state.locs[b].gen = 0;
+            state.locs[b].head = NULL;
         }
-        zz.gen = 1;
+        state.gen = 1;
     }
 
     return true;
@@ -4549,29 +4549,29 @@ static bool scope_pop(locsave* sv) {
      * ones this expansion added: the caller's are still outstanding and its
      * locals are not defined yet. */
     bool ok = fold_subs(sv->subfix_used);
-    for (int i = sv->lfix_used; ok && i < zz.lfix_used; i++) {
-        if (!patch_fixup(&zz.lfixups[i])) {
+    for (int i = sv->lfix_used; ok && i < state.lfix_used; i++) {
+        if (!patch_fixup(&state.lfixups[i])) {
             ok = false;
             break;
         }
     }
 
-    while (zz.undo_used > sv->undo_used) {
-        const locundo* u = &zz.undo[--zz.undo_used];
-        zz.locs[u->b].head = u->head;
-        zz.locs[u->b].gen = u->gen;
+    while (state.undo_used > sv->undo_used) {
+        const locundo* u = &state.undo[--state.undo_used];
+        state.locs[u->b].head = u->head;
+        state.locs[u->b].gen = u->gen;
     }
-    zz.gen = sv->gen;
-    zz.scope_line = sv->scope_line;
-    zz.lfix_used = sv->lfix_used;
+    state.gen = sv->gen;
+    state.scope_line = sv->scope_line;
+    state.lfix_used = sv->lfix_used;
 
     /* The arena counters go back so the space is handed out again. The name
      * blocks only rewind if the body did not need a new one: nam_take pushes a
      * new block in front of the list, and rewinding past it would lose it. */
-    zz.loccur = sv->loccur;
-    zz.locs_used = sv->locs_used;
-    if (zz.locnames == sv->locnames) {
-        zz.locnames_used = sv->locnames_used;
+    state.loccur = sv->loccur;
+    state.locs_used = sv->locs_used;
+    if (state.locnames == sv->locnames) {
+        state.locnames_used = sv->locnames_used;
     }
 
     return ok;
@@ -4682,7 +4682,7 @@ static bool macro_room(macro* m, int need) {
 static const macro* macro_at(const char* s, int n) {
     const char c0 = (char) (*s | 0x20);
     macro* prev = NULL;
-    for (macro* m = zz.macros; m != NULL; prev = m, m = m->next) {
+    for (macro* m = state.macros; m != NULL; prev = m, m = m->next) {
         /* Length and first character before the call, for the same reason the
          * substitution loop asks them: the list is walked once per invocation
          * and most of it is not this macro. */
@@ -4706,8 +4706,8 @@ static const macro* macro_at(const char* s, int n) {
          * match. */
         if (prev != NULL) {
             prev->next = m->next;
-            m->next = zz.macros;
-            zz.macros = m;
+            m->next = state.macros;
+            state.macros = m;
         }
 
         return m;
@@ -4723,9 +4723,9 @@ static const macro* macro_at(const char* s, int n) {
  * them needs no second array and no terminator. */
 __attribute__((noinline))
 static bool macro_begin(const char** pp, const char* e) {
-    if (zz.defining != NULL) {
+    if (state.defining != NULL) {
         /* "No macro definitions allowed inside a macro" there. */
-        zz.err = ZAP_E_MACROS_DO_NOT_NEST;
+        state.err = ZAP_E_MACROS_DO_NOT_NEST;
 
         return false;
     }
@@ -4739,7 +4739,7 @@ static bool macro_begin(const char** pp, const char* e) {
     }
     const int nn = (int) (p - ns);
     if (nn == 0) {
-        zz.err = ZAP_E_EXPECTED_MACRO_NAME;
+        state.err = ZAP_E_EXPECTED_MACRO_NAME;
 
         return false;
     }
@@ -4747,7 +4747,7 @@ static bool macro_begin(const char** pp, const char* e) {
      * reference draws the line: "Macro name too long" at sixty-five. */
     if (nn > LABEL_MAX) {
         err_tok(ns, nn);
-        zz.err = ZAP_E_MACRO_NAME_TOO_LONG;
+        state.err = ZAP_E_MACRO_NAME_TOO_LONG;
 
         return false;
     }
@@ -4755,7 +4755,7 @@ static bool macro_begin(const char** pp, const char* e) {
     if (macro_at(ns, nn) != NULL) {
         /* "Macro already defined" there, and case-blind, as the lookup is. */
         err_tok(ns, nn);
-        zz.err = ZAP_E_MACRO_ALREADY_DEFINED;
+        state.err = ZAP_E_MACRO_ALREADY_DEFINED;
 
         return false;
     }
@@ -4763,19 +4763,19 @@ static bool macro_begin(const char** pp, const char* e) {
     Z_SITE("macro table");
     macro* m = (macro*) calloc(1, sizeof(macro));
     if (m == NULL) {
-        zz.err = ZAP_E_OUT_MEMORY_MACROS;
+        state.err = ZAP_E_OUT_MEMORY_MACROS;
 
         return false;
     }
     /* One byte more than the name, for a terminator. Nothing else in the name
      * blocks carries one -- a label is a pointer and a length -- but an
-     * expansion puts this name in `zz.path`, where a failure inside the body
+     * expansion puts this name in `state.path`, where a failure inside the body
      * reports it, and that is read as a string. Without the nul the message
      * came out as the whole arena from the name onwards. */
-    char* nm = nam_take(&zz.names, &zz.names_used, nn + 1);
+    char* nm = nam_take(&state.names, &state.names_used, nn + 1);
     if (nm == NULL) {
         free(m);
-        zz.err = ZAP_E_OUT_MEMORY_MACROS;
+        state.err = ZAP_E_OUT_MEMORY_MACROS;
 
         return false;
     }
@@ -4808,7 +4808,7 @@ static bool macro_begin(const char** pp, const char* e) {
              * its body has been captured: nothing else can see it yet, so
              * nothing else would ever free it. */
             free(m);
-            zz.err = ZAP_E_MACRO_PARAMETER_NAME_TOO_LONG;
+            state.err = ZAP_E_MACRO_PARAMETER_NAME_TOO_LONG;
 
             return false;
         }
@@ -4823,14 +4823,14 @@ static bool macro_begin(const char** pp, const char* e) {
         if (numeric_token(ps, pn) || mnemonic_of(ps, pn) != NULL
             || directive_of(ps, pn) != DIR_NONE || is_equ_at(ps)) {
             free(m);
-            zz.err = ZAP_E_MACRO_PARAMETER_NOT_NUMBER_OR_MNEM;
+            state.err = ZAP_E_MACRO_PARAMETER_NOT_NUMBER_OR_MNEM;
 
             return false;
         }
-        char* at = nam_take(&zz.names, &zz.names_used, pn + 1);
+        char* at = nam_take(&state.names, &state.names_used, pn + 1);
         if (at == NULL) {
             free(m);
-            zz.err = ZAP_E_OUT_MEMORY_MACROS;
+            state.err = ZAP_E_OUT_MEMORY_MACROS;
 
             return false;
         }
@@ -4844,30 +4844,30 @@ static bool macro_begin(const char** pp, const char* e) {
         m->nparam++;
     }
 
-    m->defline = zz.line;
-    if (zz.path != NULL) {
+    m->defline = state.line;
+    if (state.path != NULL) {
         int pn = 0;
-        while (zz.path[pn] != 0) {
+        while (state.path[pn] != 0) {
             pn++;
         }
-        char* dp = nam_take(&zz.names, &zz.names_used, pn + 1);
+        char* dp = nam_take(&state.names, &state.names_used, pn + 1);
         if (dp == NULL) {
             free(m);
-            zz.err = ZAP_E_OUT_MEMORY_MACROS;
+            state.err = ZAP_E_OUT_MEMORY_MACROS;
 
             return false;
         }
         for (int i = 0; i < pn; i++) {
-            dp[i] = zz.path[i];
+            dp[i] = state.path[i];
         }
         dp[pn] = 0;
         m->defpath = dp;
     }
 
-    m->next = zz.macros;
-    zz.macros = m;
-    zz.defining = m;
-    zz.line_mode = LINE_CAPTURE;
+    m->next = state.macros;
+    state.macros = m;
+    state.defining = m;
+    state.line_mode = LINE_CAPTURE;
     *pp = p;
 
     return true;
@@ -4928,32 +4928,32 @@ static bool macro_line(const char* p, const char* e) {
         q++;
     }
     const int n = (int) (q - p) + 1;
-    if (!macro_room(zz.defining, n)) {
-        zz.err = ZAP_E_OUT_MEMORY_MACROS;
+    if (!macro_room(state.defining, n)) {
+        state.err = ZAP_E_OUT_MEMORY_MACROS;
 
         return false;
     }
-    const int at = zz.defining->bodylen;
+    const int at = state.defining->bodylen;
     for (int i = 0; i < n - 1; i++) {
-        zz.defining->body[at + i] = p[i];
+        state.defining->body[at + i] = p[i];
     }
-    zz.defining->body[at + n - 1] = '\n';
-    zz.defining->bodylen = at + n;
+    state.defining->body[at + n - 1] = '\n';
+    state.defining->bodylen = at + n;
 
     /* Only where a parameter could be found: a macro with none has nothing to
      * mark and pays nothing for the feature. */
-    if (zz.defining->nparam != 0 && !macro_marks(zz.defining, at, at + n - 1)) {
-        zz.err = ZAP_E_OUT_MEMORY_MACROS;
+    if (state.defining->nparam != 0 && !macro_marks(state.defining, at, at + n - 1)) {
+        state.err = ZAP_E_OUT_MEMORY_MACROS;
 
         return false;
     }
 
     /* Every spelling of a local starts with one: `@name`, `@@`, `@f`, `@b`.
      * So one character decides whether the expansion needs a scope. */
-    if (!zz.defining->haslocal) {
+    if (!state.defining->haslocal) {
         for (int i = at; i < at + n - 1; i++) {
-            if (zz.defining->body[i] == '@') {
-                zz.defining->haslocal = true;
+            if (state.defining->body[i] == '@') {
+                state.defining->haslocal = true;
                 break;
             }
         }
@@ -4988,7 +4988,7 @@ static bool assemble_line(const char* p, const char* e, const char** stop);
 
 /* The invocation's arguments, as spans of the line that carried them.
  *
- * Held in `dz` rather than in a frame: eight pointers and eight lengths is 48
+ * Held in `zap_state` rather than in a frame: eight pointers and eight lengths is 48
  * bytes, which in the expansion's own frame would push everything else past
  * the 128 bytes an `ix` displacement reaches. Indexed by depth times
  * MACRO_MAXPARAM, which is eight and therefore a shift rather than a call to
@@ -5012,7 +5012,7 @@ static bool macro_args(const macro* m, const char* p, const char* e,
             continue;
         }
         if (nargs == MACRO_MAXPARAM) {
-            zz.err = ZAP_E_TOO_MANY_MACRO_ARGUMENTS;
+            state.err = ZAP_E_TOO_MANY_MACRO_ARGUMENTS;
 
             return false;
         }
@@ -5033,13 +5033,13 @@ static bool macro_args(const macro* m, const char* p, const char* e,
             }
             p++;
         }
-        zz.margp[base + nargs] = as;
-        zz.margn[base + nargs] = (int) (ae - as);
+        state.margp[base + nargs] = as;
+        state.margn[base + nargs] = (int) (ae - as);
         nargs++;
     }
     *stop = p;
     if (nargs != m->nparam) {
-        zz.err = ZAP_E_WRONG_NUMBER_MACRO_ARGUMENTS;
+        state.err = ZAP_E_WRONG_NUMBER_MACRO_ARGUMENTS;
 
         return false;
     }
@@ -5074,7 +5074,7 @@ static int macro_subst(const macro* m, int lo, int hi, int base,
 
     while (mk < mkend && mk->off < hi) {
         const int span = mk->off - cur;
-        const int need = zz.margn[base + mk->k];
+        const int need = state.margn[base + mk->k];
         /* Two spare: the newline this line is finished with, and room for the
          * tail copied after the loop to ask for its own. */
         if (len + span + need + 2 > cap) {
@@ -5082,7 +5082,7 @@ static int macro_subst(const macro* m, int lo, int hi, int base,
             Z_SITE("macro expansion");
             char* grown = (char*) realloc(out, (size_t) cap);
             if (grown == NULL) {
-                zz.err = ZAP_E_OUT_MEMORY_MACROS;
+                state.err = ZAP_E_OUT_MEMORY_MACROS;
 
                 return -1;
             }
@@ -5094,7 +5094,7 @@ static int macro_subst(const macro* m, int lo, int hi, int base,
             o[i] = b[i];
         }
         len += span;
-        const char* const arg = zz.margp[base + mk->k];
+        const char* const arg = state.margp[base + mk->k];
         o = out + len;
         for (int i = 0; i < need; i++) {
             o[i] = arg[i];
@@ -5111,7 +5111,7 @@ static int macro_subst(const macro* m, int lo, int hi, int base,
         Z_SITE("macro expansion");
         char* grown = (char*) realloc(out, (size_t) cap);
         if (grown == NULL) {
-            zz.err = ZAP_E_OUT_MEMORY_MACROS;
+            state.err = ZAP_E_OUT_MEMORY_MACROS;
 
             return -1;
         }
@@ -5148,26 +5148,26 @@ static int macro_subst(const macro* m, int lo, int hi, int base,
 __attribute__((noinline))
 static bool macro_expand(const macro* m, const char* p, const char* e,
                          const char** stop) {
-    if (zz.depth >= INCLUDE_MAXDEPTH) {
-        zz.err = ZAP_E_MACROS_NESTED_TOO_DEEPLY;
+    if (state.depth >= INCLUDE_MAXDEPTH) {
+        state.err = ZAP_E_MACROS_NESTED_TOO_DEEPLY;
 
         return false;
     }
-    const int base = zz.depth * MACRO_MAXPARAM;
+    const int base = state.depth * MACRO_MAXPARAM;
     if (!macro_args(m, p, e, stop, base)) {
         return false;
     }
 
-    const char* const saved_path = zz.path;
-    const int saved_line = zz.line;
-    zz.path = m->name;
-    zz.line = 0;
-    zz.expanding++;
+    const char* const saved_path = state.path;
+    const int saved_line = state.line;
+    state.path = m->name;
+    state.line = 0;
+    state.expanding++;
 
-    char* buf = zz.expbuf[zz.depth];
-    int cap = zz.expcap[zz.depth];
-    const int slot = zz.depth;
-    zz.depth++;
+    char* buf = state.expbuf[state.depth];
+    int cap = state.expcap[state.depth];
+    const int slot = state.depth;
+    state.depth++;
 
     /* A scope of its own for the body, with the caller's kept and put back,
      * and only for a body that has a local label in it. See `haslocal`. */
@@ -5223,38 +5223,38 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
             ls = buf;
             lend = buf + len;
         }
-        zz.line++;
+        state.line++;
 
-        /* Where this body line starts writing, kept in `dz` and not in two
+        /* Where this body line starts writing, kept in `zap_state` and not in two
          * locals: live across assemble_line they are two more slots in the
          * body loop, and the loop pays for them on every expansion in the
          * file whether or not anyone asked for a listing. That cost isa_real
          * 5.48 -> 5.52 and bbcbasic 3.84 -> 3.86. The same fields the line
          * loop uses serve here, because a line that is listed by an inner
          * expansion is not listed again by this one. */
-        const uint8_t* bo = zz.o;
+        const uint8_t* bo = state.o;
         int bpc = 0;
         if (listing) {
-            bpc = zz.org + (int) (zz.o - zz.out);
-            zz.lst_p = ls;
+            bpc = state.org + (int) (state.o - state.out);
+            state.lst_p = ls;
         }
         /* Two locals: this frame has room for them. */
 
         const char* st = ls;
         if (!assemble_line(ls, lend, &st)) {
-            if (!zz.errhave) {
-                err_line(zz.errline, ls, lend);
-                zz.errhave = true;
+            if (!state.errhave) {
+                err_line(state.errline, ls, lend);
+                state.errhave = true;
                 /* The body line, named as a line of the file it was written
                  * in rather than as an index into the body. */
-                zz.line = m->defline + zz.line;
-                zz.errfile = m->defpath;
-                zz.errmacro = m->name;
+                state.line = m->defline + state.line;
+                state.errfile = m->defpath;
+                state.errmacro = m->name;
                 /* And the other end of it. This is the only place that holds
                  * both -- by the time the line loop sees the failure, the
                  * path and the line have been given to the macro. */
-                zz.errfrompath = saved_path;
-                zz.errfromline = saved_line;
+                state.errfrompath = saved_path;
+                state.errfromline = saved_line;
             }
             ok = false;
             break;
@@ -5274,15 +5274,15 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
                     q++;
                 }
             } else if (*q != '\n') {
-                zz.err = ZAP_E_UNEXPECTED_TEXT_AFTER_INSTRUCTION;
-                if (!zz.errhave) {
-                    err_line(zz.errline, ls, lend);
-                    zz.errhave = true;
-                    zz.line = m->defline + zz.line;
-                    zz.errfile = m->defpath;
-                    zz.errmacro = m->name;
-                    zz.errfrompath = saved_path;
-                    zz.errfromline = saved_line;
+                state.err = ZAP_E_UNEXPECTED_TEXT_AFTER_INSTRUCTION;
+                if (!state.errhave) {
+                    err_line(state.errline, ls, lend);
+                    state.errhave = true;
+                    state.line = m->defline + state.line;
+                    state.errfile = m->defpath;
+                    state.errmacro = m->name;
+                    state.errfrompath = saved_path;
+                    state.errfromline = saved_line;
                 }
                 ok = false;
                 break;
@@ -5293,18 +5293,18 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
          * at -- unless it was itself an invocation, which has already written
          * its own listing and its body's. */
         if (listing) {
-            if (!zz.lst_done) {
+            if (!state.lst_done) {
                 /* The body **as written**, parameters and all, which is what
                  * the reference shows: `db x`, not `db 7`. What x was is on
                  * the Args line above it. */
-                list_line(bpc, bo, zz.o, zz.line, zz.depth,
+                list_line(bpc, bo, state.o, state.line, state.depth,
                           m->body + b, m->body + le + 1);
-                if (zz.fix_touched) {
-                    lstfix_add(bo, zz.o);
+                if (state.fix_touched) {
+                    lstfix_add(bo, state.o);
                 }
             }
-            zz.lst_done = false;
-            zz.fix_touched = false;
+            state.lst_done = false;
+            state.fix_touched = false;
         }
         b = le + 1;
     }
@@ -5312,33 +5312,33 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
     if (listing) {
         /* Everything this invocation had to say is said; the line loop above
          * must not say it again with the whole expansion's bytes on it. */
-        zz.lst_done = true;
+        state.lst_done = true;
     }
 
     if (m->haslocal && !scope_pop(&sv)) {
         ok = false;
     }
 
-    zz.expbuf[slot] = buf;
-    zz.expcap[slot] = cap;
-    zz.depth--;
-    zz.expanding--;
+    state.expbuf[slot] = buf;
+    state.expcap[slot] = cap;
+    state.depth--;
+    state.expanding--;
 
     if (!ok) {
-        if (zz.path != zz.errpath) {
+        if (state.path != state.errpath) {
             int i = 0;
-            while (i + 1 < (int) sizeof(zz.errpath) && zz.path[i] != 0) {
-                zz.errpath[i] = zz.path[i];
+            while (i + 1 < (int) sizeof(state.errpath) && state.path[i] != 0) {
+                state.errpath[i] = state.path[i];
                 i++;
             }
-            zz.errpath[i] = 0;
-            zz.path = zz.errpath;
+            state.errpath[i] = 0;
+            state.path = state.errpath;
         }
 
         return false;
     }
-    zz.path = saved_path;
-    zz.line = saved_line;
+    state.path = saved_path;
+    state.line = saved_line;
 
     return true;
 }
@@ -5469,7 +5469,7 @@ static bool emit_string(const char** pp, const char* e) {
         q += (*q == '\\') ? 2 : 1;
     }
     if (q >= e || *q != '"') {
-        zz.err = ZAP_E_STRING_NOT_TERMINATED;
+        state.err = ZAP_E_STRING_NOT_TERMINATED;
 
         return false;
     }
@@ -5477,12 +5477,12 @@ static bool emit_string(const char** pp, const char* e) {
         return false;
     }
 
-    uint8_t* o = zz.o;
+    uint8_t* o = state.o;
     while (p < q) {
         if (*p == '\\') {
             const int v = str_escape(p[1]);
             if (v < 0) {
-                zz.err = ZAP_E_BAD_ESCAPE_IN_STRING;
+                state.err = ZAP_E_BAD_ESCAPE_IN_STRING;
 
                 return false;
             }
@@ -5492,7 +5492,7 @@ static bool emit_string(const char** pp, const char* e) {
             *o++ = (uint8_t) *p++;
         }
     }
-    zz.o = o;
+    state.o = o;
     *pp = q + 1;
 
     return true;
@@ -5643,7 +5643,7 @@ static bool emit_data(uint8_t width, const char** pp, const char* e) {
                 /* The reference says "String type not allowed", and means it:
                  * a string is bytes and DW would have to invent a padding
                  * rule. */
-                zz.err = ZAP_E_STRING_DB;
+                state.err = ZAP_E_STRING_DB;
 
                 return false;
             }
@@ -5703,13 +5703,13 @@ static bool emit_data(uint8_t width, const char** pp, const char* e) {
                      * than saying so. This is the only place a value wider
                      * than the machine can reach a fixup: an instruction's
                      * immediate is three bytes by the time it gets here. */
-                    zz.err = ZAP_E_CONSTANT_TOO_LARGE_ADD_LABEL;
+                    state.err = ZAP_E_CONSTANT_TOO_LARGE_ADD_LABEL;
 
                     return false;
                 }
                 if (!fix_add(target, sub, (int) value,
                              (uint8_t) (width | (subneg ? FIX_SUB2 : 0)),
-                             (int) (zz.o - zz.out))) {
+                             (int) (state.o - state.out))) {
                     return false;
                 }
                 value = 0;
@@ -5721,7 +5721,7 @@ static bool emit_data(uint8_t width, const char** pp, const char* e) {
                 warn_trunc(value, width);
             }
 
-            uint8_t* o = zz.o;
+            uint8_t* o = state.o;
             if (width > 3) {
                 *o++ = (uint8_t) value;
                 *o++ = (uint8_t) (value >> 8);
@@ -5737,7 +5737,7 @@ static bool emit_data(uint8_t width, const char** pp, const char* e) {
                     *o++ = (uint8_t) (v >> 16);
                 }
             }
-            zz.o = o;
+            state.o = o;
         }
 
         while (p < e && is_space_ch(*p)) {
@@ -5765,16 +5765,16 @@ static bool emit_fill(int n) {
 
     /* A run that starts where the last one ended is the same run. `DS 4` twice
      * at the end of a file is eight bytes to drop, not four. */
-    const int at = (int) (zz.o - zz.out);
-    zz.fill_len = (at == zz.fill_end) ? zz.fill_len + n : n;
+    const int at = (int) (state.o - state.out);
+    state.fill_len = (at == state.fill_end) ? state.fill_len + n : n;
 
-    zz.filled = true;
-    uint8_t* o = zz.o;
+    state.filled = true;
+    uint8_t* o = state.o;
     while (n-- != 0) {
-        *o++ = zz.fill;
+        *o++ = state.fill;
     }
-    zz.o = o;
-    zz.fill_end = (int) (zz.o - zz.out);
+    state.o = o;
+    state.fill_end = (int) (state.o - state.out);
 
     return true;
 }
@@ -5803,7 +5803,7 @@ static bool emit_block(int n, int width, evalue fill) {
 
     /* Narrowed once, outside the loop, for the reason emit_data splits its
      * write: three of the four widths fit the machine and only BLKL does not. */
-    uint8_t* o = zz.o;
+    uint8_t* o = state.o;
     if (width > 3) {
         while (n-- != 0) {
             *o++ = (uint8_t) fill;
@@ -5811,7 +5811,7 @@ static bool emit_block(int n, int width, evalue fill) {
             *o++ = (uint8_t) (fill >> 16);
             *o++ = (uint8_t) (fill >> 24);
         }
-        zz.o = o;
+        state.o = o;
 
         return true;
     }
@@ -5825,7 +5825,7 @@ static bool emit_block(int n, int width, evalue fill) {
             *o++ = (uint8_t) (f >> 16);
         }
     }
-    zz.o = o;
+    state.o = o;
 
     /* Nothing to do about a reservation still pending. The drop at the end of
      * the file only fires when the run ends exactly where the output does, and
@@ -5853,7 +5853,7 @@ static bool file_name(const char** pp, const char* e,
         p++;
     }
     if (*p != '"') {
-        zz.err = ZAP_E_EXPECTED_QUOTED_FILE_NAME;
+        state.err = ZAP_E_EXPECTED_QUOTED_FILE_NAME;
 
         return false;
     }
@@ -5862,19 +5862,19 @@ static bool file_name(const char** pp, const char* e,
     int n = 0;
     while (p < e && *p != '"' && *p != '\n') {
         if (n + 1 >= cap) {
-            zz.err = ZAP_E_FILE_NAME_TOO_LONG;
+            state.err = ZAP_E_FILE_NAME_TOO_LONG;
 
             return false;
         }
         out[n++] = *p++;
     }
     if (*p != '"') {
-        zz.err = ZAP_E_STRING_NOT_TERMINATED;
+        state.err = ZAP_E_STRING_NOT_TERMINATED;
 
         return false;
     }
     if (n == 0) {
-        zz.err = ZAP_E_EXPECTED_FILE_NAME;
+        state.err = ZAP_E_EXPECTED_FILE_NAME;
 
         return false;
     }
@@ -5893,33 +5893,33 @@ static bool file_name(const char** pp, const char* e,
 static bool incbin_file(const char* name) {
     const uint8_t fh = mos_fopen(name, FA_READ);
     if (fh == 0) {
-        zz.err = ZAP_E_CANNOT_OPEN_FILE;
+        state.err = ZAP_E_CANNOT_OPEN_FILE;
 
         return false;
     }
     FIL* fil = mos_getfil(fh);
     if (fil == NULL) {
         mos_fclose(fh);
-        zz.err = ZAP_E_CANNOT_OPEN_FILE;
+        state.err = ZAP_E_CANNOT_OPEN_FILE;
 
         return false;
     }
     const int n = (int) fil->obj.objsize;
     if (n < 0 || !out_reserve_n(n)) {
         mos_fclose(fh);
-        zz.err = ZAP_E_OUT_MEMORY;
+        state.err = ZAP_E_OUT_MEMORY;
 
         return false;
     }
     if (n > 0) {
-        const unsigned got = mos_fread(fh, (char*) zz.o, (unsigned) n);
+        const unsigned got = mos_fread(fh, (char*) state.o, (unsigned) n);
         if ((int) got != n) {
             mos_fclose(fh);
-            zz.err = ZAP_E_CANNOT_READ_FILE;
+            state.err = ZAP_E_CANNOT_READ_FILE;
 
             return false;
         }
-        zz.o += n;
+        state.o += n;
     }
     mos_fclose(fh);
 
@@ -5928,7 +5928,7 @@ static bool incbin_file(const char* name) {
 
 /* `INCLUDE "file"`: the file's lines, assembled here.
  *
- * The reader lives in `dz` so that the line loop reaches it without an
+ * The reader lives in `zap_state` so that the line loop reaches it without an
  * indirection, so an include saves the reader it displaces in this function's
  * own frame -- which lives exactly as long as the included file does, as does
  * `name`, whose storage the caller owns for the same reason.
@@ -5942,44 +5942,44 @@ static bool incbin_file(const char* name) {
  * `sub/b.inc`. */
 __attribute__((noinline))
 static bool include_file(const char* name) {
-    if (zz.depth >= INCLUDE_MAXDEPTH) {
+    if (state.depth >= INCLUDE_MAXDEPTH) {
         /* A file that includes itself, most likely. Each level costs a frame
          * for this, one for the line loop and one for assemble_line, which is
          * 111 bytes on its own; the machine has no memory protection and would
          * simply stop. */
-        zz.err = ZAP_E_INCLUDES_NESTED_TOO_DEEPLY;
+        state.err = ZAP_E_INCLUDES_NESTED_TOO_DEEPLY;
 
         return false;
     }
 
-    const char* const saved_path = zz.path;
-    const int saved_line = zz.line;
+    const char* const saved_path = state.path;
+    const int saved_line = state.line;
 
     /* Suspended *before* the copy is taken, and that order is the whole of it.
      * br_suspend closes the handle and zeroes `fh_`, and br_resume refuses a
      * reader whose `fh_` is not zero -- it reads that as "not suspended". A
      * copy made first carries the old handle back over the zero, so the resume
      * is refused and the handle it names has already been closed. */
-    const bool was_file = !zz.rd.mem_;
-    if (was_file && !br_suspend(&zz.rd)) {
-        zz.err = ZAP_E_CANNOT_SET_FILE_ASIDE;
+    const bool was_file = !state.rd.mem_;
+    if (was_file && !br_suspend(&state.rd)) {
+        state.err = ZAP_E_CANNOT_SET_FILE_ASIDE;
 
         return false;
     }
-    const buf_reader saved = zz.rd;
+    const buf_reader saved = state.rd;
     Z_SITE("include reader");
-    if (br_open(&zz.rd, name, INCLUDE_BUF_KB) == NULL) {
-        zz.rd = saved;
+    if (br_open(&state.rd, name, INCLUDE_BUF_KB) == NULL) {
+        state.rd = saved;
         if (was_file) {
-            br_resume(&zz.rd);
+            br_resume(&state.rd);
         }
-        zz.err = ZAP_E_CANNOT_OPEN_FILE;
+        state.err = ZAP_E_CANNOT_OPEN_FILE;
 
         return false;
     }
-    zz.path = name;
-    zz.line = 0;
-    zz.depth++;
+    state.path = name;
+    state.line = 0;
+    state.depth++;
 
     /* A conditional belongs to the file it is written in, so the state is
      * saved and restored around an include: `IF 1 / INCLUDE "x.inc"` where
@@ -5987,49 +5987,49 @@ static bool include_file(const char* name) {
      * set. Both halves of the rule are the reference's -- an IF left open at
      * the end of an included file is an error, and so is an ENDIF in one that
      * would close the caller's. */
-    const bool saved_cond = zz.in_cond;
-    const bool saved_emit = zz.cond_emit;
-    zz.in_cond = false;
-    zz.cond_emit = true;
+    const bool saved_cond = state.in_cond;
+    const bool saved_emit = state.cond_emit;
+    state.in_cond = false;
+    state.cond_emit = true;
 
     bool ok = run_lines();
-    if (ok && zz.in_cond) {
-        zz.err = ZAP_E_IF_LEFT_OPEN_AT_END_FILE;
+    if (ok && state.in_cond) {
+        state.err = ZAP_E_IF_LEFT_OPEN_AT_END_FILE;
         ok = false;
     }
-    zz.in_cond = saved_cond;
-    zz.cond_emit = saved_emit;
-    zz.line_mode = saved_emit ? LINE_ASSEMBLE : LINE_SKIP;
+    state.in_cond = saved_cond;
+    state.cond_emit = saved_emit;
+    state.line_mode = saved_emit ? LINE_ASSEMBLE : LINE_SKIP;
 
     /* The child's buffer goes back whether it worked or not; on the way out of
-     * a failure the message has already been kept, and zz.path still names the
+     * a failure the message has already been kept, and state.path still names the
      * file it happened in, which is what the report wants. */
-    br_destroy(&zz.rd);
-    zz.depth--;
-    zz.rd = saved;
+    br_destroy(&state.rd);
+    state.depth--;
+    state.rd = saved;
     if (!ok) {
-        /* `zz.path` names this file and points into this frame, which goes
+        /* `state.path` names this file and points into this frame, which goes
          * away as soon as this returns. The report happens after every frame
          * has unwound, so it is copied somewhere that outlives them. */
-        if (zz.path != zz.errpath) {
+        if (state.path != state.errpath) {
             int i = 0;
-            while (i + 1 < (int) sizeof(zz.errpath) && zz.path[i] != 0) {
-                zz.errpath[i] = zz.path[i];
+            while (i + 1 < (int) sizeof(state.errpath) && state.path[i] != 0) {
+                state.errpath[i] = state.path[i];
                 i++;
             }
-            zz.errpath[i] = 0;
-            zz.path = zz.errpath;
+            state.errpath[i] = 0;
+            state.path = state.errpath;
         }
 
         return false;
     }
-    if (!br_resume(&zz.rd)) {
-        zz.err = ZAP_E_CANNOT_REOPEN_FILE;
+    if (!br_resume(&state.rd)) {
+        state.err = ZAP_E_CANNOT_REOPEN_FILE;
 
         return false;
     }
-    zz.path = saved_path;
-    zz.line = saved_line;
+    state.path = saved_path;
+    state.line = saved_line;
 
     return true;
 }
@@ -6054,7 +6054,7 @@ static bool cond_value(evalue* out, const char** pp, const char* e) {
         return false;
     }
     if (expr_fwd != NULL) {
-        zz.err = ZAP_E_LABEL_DEFINED_ALREADY;
+        state.err = ZAP_E_LABEL_DEFINED_ALREADY;
 
         return false;
     }
@@ -6082,7 +6082,7 @@ static bool cond_value(evalue* out, const char** pp, const char* e) {
                 return false;
             }
             if (expr_fwd != NULL) {
-                zz.err = ZAP_E_LABEL_DEFINED_ALREADY;
+                state.err = ZAP_E_LABEL_DEFINED_ALREADY;
 
                 return false;
             }
@@ -6136,7 +6136,7 @@ static bool asciz_line(const char** pp, const char* e,
     if (!out_reserve()) {
         return false;
     }
-    *zz.o++ = 0;
+    *state.o++ = 0;
     *stop = *pp;
 
     return true;
@@ -6169,7 +6169,7 @@ static bool directive_line(const char* s, int n, const char* p,
                  * NULL for a token that is not a suffixed mnemonic at all --
                  * `read.next` may be a macro. Refusing there would report this
                  * as an unknown instruction and lose which fault it was. */
-                zz.err = ZAP_E_NO_MODE_SUFFIX_CPU;
+                state.err = ZAP_E_NO_MODE_SUFFIX_CPU;
 
                 return false;
             }
@@ -6184,7 +6184,7 @@ static bool directive_line(const char* s, int n, const char* p,
         const macro* m = macro_at(s, n);
         if (m == NULL) {
             err_tok(s, n);
-            zz.err = ZAP_E_UNKNOWN_INSTRUCTION;
+            state.err = ZAP_E_UNKNOWN_INSTRUCTION;
 
             return false;
         }
@@ -6203,28 +6203,28 @@ static bool directive_line(const char* s, int n, const char* p,
     if (kind == DIR_ENDMACRO) {
         /* Only ever reached outside a definition, since inside one the line
          * loop hands it to macro_capture instead. */
-        zz.err = ZAP_E_NO_MACRO_OPEN;
+        state.err = ZAP_E_NO_MACRO_OPEN;
 
         return false;
     }
 
     if (kind >= DIR_IF) {
         if (kind == DIR_ENDIF || kind == DIR_ELSE) {
-            if (!zz.in_cond) {
+            if (!state.in_cond) {
                 /* "Missing IF directive" there, and the same here. */
-                zz.err = ZAP_E_NO_IF_OPEN;
+                state.err = ZAP_E_NO_IF_OPEN;
 
                 return false;
             }
             if (kind == DIR_ENDIF) {
-                zz.in_cond = false;
-                zz.cond_emit = true;
+                state.in_cond = false;
+                state.cond_emit = true;
             } else {
                 /* ELSE toggles, and toggles again: `IF 1 / a / ELSE / b /
                  * ELSE / c / ENDIF` assembles a and c in the reference. */
-                zz.cond_emit = !zz.cond_emit;
+                state.cond_emit = !state.cond_emit;
             }
-            zz.line_mode = zz.cond_emit ? LINE_ASSEMBLE : LINE_SKIP;
+            state.line_mode = state.cond_emit ? LINE_ASSEMBLE : LINE_SKIP;
             *stop = p;
 
             return true;
@@ -6232,8 +6232,8 @@ static bool directive_line(const char* s, int n, const char* p,
 
         /* IF. Nesting is refused because the reference refuses it, and that is
          * what makes this a flag rather than a stack. */
-        if (zz.in_cond) {
-            zz.err = ZAP_E_CONDITIONALS_DO_NOT_NEST;
+        if (state.in_cond) {
+            state.err = ZAP_E_CONDITIONALS_DO_NOT_NEST;
 
             return false;
         }
@@ -6244,9 +6244,9 @@ static bool directive_line(const char* s, int n, const char* p,
         if (!cond_value(&cond, &p, e)) {
             return false;
         }
-        zz.in_cond = true;
-        zz.cond_emit = cond != 0;
-        zz.line_mode = zz.cond_emit ? LINE_ASSEMBLE : LINE_SKIP;
+        state.in_cond = true;
+        state.cond_emit = cond != 0;
+        state.line_mode = state.cond_emit ? LINE_ASSEMBLE : LINE_SKIP;
         *stop = p;
 
         return true;
@@ -6269,17 +6269,17 @@ static bool directive_line(const char* s, int n, const char* p,
         const int cn = (int) (p - cs);
         if (cn == 4 && same_ci_full("ez80", cs, 4)) {
             cpu_mask = CPU_EZ80;
-            zz.adl = ZAP_ADL;
+            state.adl = ZAP_ADL;
         } else if (cn == 3 && same_ci_full("z80", cs, 3)) {
             cpu_mask = CPU_Z80;
-            zz.adl = false;
+            state.adl = false;
         } else if (cn == 4 && same_ci_full("z180", cs, 4)) {
             cpu_mask = CPU_Z180;
-            zz.adl = false;
+            state.adl = false;
         } else {
             /* "Unsupported CPU type" there. The Z280 has a bit in the table
              * and no rows tagged with it, so it is not offered. */
-            zz.err = ZAP_E_UNSUPPORTED_CPU_TYPE;
+            state.err = ZAP_E_UNSUPPORTED_CPU_TYPE;
 
             return false;
         }
@@ -6289,14 +6289,14 @@ static bool directive_line(const char* s, int n, const char* p,
     }
 
     if (kind == DIR_ENDRELOCATE) {
-        if (!zz.reloc) {
+        if (!state.reloc) {
             /* "Missing RELOCATE directive" there. */
-            zz.err = ZAP_E_NO_RELOCATE_OPEN;
+            state.err = ZAP_E_NO_RELOCATE_OPEN;
 
             return false;
         }
-        zz.org = zz.reloc_org;
-        zz.reloc = false;
+        state.org = state.reloc_org;
+        state.reloc = false;
         *stop = p;
 
         return true;
@@ -6310,7 +6310,7 @@ static bool directive_line(const char* s, int n, const char* p,
             /* "No ADL mode for CPU type" there, and for *either* value: the
              * Z80 and the Z180 have no ADL to select, so `ADL=0` is refused as
              * well, even though it names the mode they are already in. */
-            zz.err = ZAP_E_NO_ADL_MODE_CPU;
+            state.err = ZAP_E_NO_ADL_MODE_CPU;
 
             return false;
         }
@@ -6318,7 +6318,7 @@ static bool directive_line(const char* s, int n, const char* p,
             p++;
         }
         if (!dir_is(p, "adl", 3) || (cclass[(uint8_t) p[3]] & C_MNEM) != 0) {
-            zz.err = ZAP_E_EXPECTED_ADL;
+            state.err = ZAP_E_EXPECTED_ADL;
 
             return false;
         }
@@ -6327,7 +6327,7 @@ static bool directive_line(const char* s, int n, const char* p,
             p++;
         }
         if (*p != '=') {
-            zz.err = ZAP_E_EXPECTED_AFTER_ADL;
+            state.err = ZAP_E_EXPECTED_AFTER_ADL;
 
             return false;
         }
@@ -6354,17 +6354,17 @@ static bool directive_line(const char* s, int n, const char* p,
                 return false;
             }
             if (expr_fwd != NULL) {
-                zz.err = ZAP_E_LABEL_DEFINED_ALREADY;
+                state.err = ZAP_E_LABEL_DEFINED_ALREADY;
 
                 return false;
             }
         }
         if (mode != 0 && mode != 1) {
-            zz.err = ZAP_E_ADL_0_OR_1;
+            state.err = ZAP_E_ADL_0_OR_1;
 
             return false;
         }
-        zz.adl = mode == 1;
+        state.adl = mode == 1;
         *stop = p;
 
         return true;
@@ -6420,7 +6420,7 @@ static bool directive_line(const char* s, int n, const char* p,
             return false;
         }
         if (expr_fwd != NULL) {
-            zz.err = ZAP_E_LABEL_DEFINED_ALREADY;
+            state.err = ZAP_E_LABEL_DEFINED_ALREADY;
 
             return false;
         }
@@ -6441,7 +6441,7 @@ static bool directive_line(const char* s, int n, const char* p,
          * On a 512 KB machine there is no byte sequence there worth agreeing
          * with, so this says so instead. Same position as division by zero. */
         if (value < 0) {
-            zz.err = ZAP_E_DS_POSITIVE_NUMBER;
+            state.err = ZAP_E_DS_POSITIVE_NUMBER;
 
             return false;
         }
@@ -6501,21 +6501,21 @@ static bool directive_line(const char* s, int n, const char* p,
          * value changes nothing and is allowed. Blocks are unaffected either
          * way: BLKB writes data, and takes the value in force where it
          * stands. */
-        if (zz.filled && (uint8_t) value != zz.fill) {
-            zz.err = ZAP_E_FILLBYTE_COME_BEFORE_SPACE_FILLS;
+        if (state.filled && (uint8_t) value != state.fill) {
+            state.err = ZAP_E_FILLBYTE_COME_BEFORE_SPACE_FILLS;
 
             return false;
         }
-        zz.fill = (uint8_t) value;
+        state.fill = (uint8_t) value;
         *stop = p;
 
         return true;
     }
 
     if (kind == DIR_RELOCATE) {
-        if (zz.reloc) {
+        if (state.reloc) {
             /* "Nested relocate not allowed" there. */
-            zz.err = ZAP_E_RELOCATE_DOES_NOT_NEST;
+            state.err = ZAP_E_RELOCATE_DOES_NOT_NEST;
 
             return false;
         }
@@ -6525,7 +6525,7 @@ static bool directive_line(const char* s, int n, const char* p,
              * space is exactly that, so this is the reference being right
              * rather than a quirk to reproduce. `$1000000` is one past it and
              * `-1` is the other end. */
-            zz.err = ZAP_E_ADDRESS_OUTSIDE_24_BIT_RANGE;
+            state.err = ZAP_E_ADDRESS_OUTSIDE_24_BIT_RANGE;
 
             return false;
         }
@@ -6534,9 +6534,9 @@ static bool directive_line(const char* s, int n, const char* p,
          * every address is measured from -- a label, `$`, an EQU taking `$`,
          * and the target of every fixup -- so displacing it is the whole of
          * this directive and nothing else has to know. */
-        zz.reloc_org = zz.org;
-        zz.reloc = true;
-        zz.org = (int) value - (int) (zz.o - zz.out);
+        state.reloc_org = state.org;
+        state.reloc = true;
+        state.org = (int) value - (int) (state.o - state.out);
         *stop = p;
 
         return true;
@@ -6550,7 +6550,7 @@ static bool directive_line(const char* s, int n, const char* p,
              * unsigned, so a negative one is sixteen megabytes of fill and a
              * successful assembly. On a 512 KB machine that is a way to lose
              * the program rather than a feature. */
-            zz.err = ZAP_E_BLK_POSITIVE_NUMBER;
+            state.err = ZAP_E_BLK_POSITIVE_NUMBER;
 
             return false;
         }
@@ -6558,7 +6558,7 @@ static bool directive_line(const char* s, int n, const char* p,
 
         /* The fill, if one is given. FILLBYTE's value at the unit width if
          * not, which is 0xFF until something says otherwise. */
-        evalue fill = zz.fill;
+        evalue fill = state.fill;
         const sym* pending = NULL;
         while (p < e && is_space_ch(*p)) {
             p++;
@@ -6595,25 +6595,25 @@ static bool directive_line(const char* s, int n, const char* p,
             }
         }
         if (pending != NULL && value > 0) {
-            if (zz.fillp_used == zz.fillp_cap) {
+            if (state.fillp_used == state.fillp_cap) {
                 Z_SITE("deferred fills");
-                const int want = zz.fillp_cap == 0 ? 4 : zz.fillp_cap + zz.fillp_cap;
+                const int want = state.fillp_cap == 0 ? 4 : state.fillp_cap + state.fillp_cap;
                 fillpatch* grown =
-                    (fillpatch*) realloc(zz.fillp, (size_t) want * sizeof(fillpatch));
+                    (fillpatch*) realloc(state.fillp, (size_t) want * sizeof(fillpatch));
                 if (grown == NULL) {
-                    zz.err = ZAP_E_OUT_MEMORY_LABELS;
+                    state.err = ZAP_E_OUT_MEMORY_LABELS;
 
                     return false;
                 }
-                zz.fillp = grown;
-                zz.fillp_cap = want;
+                state.fillp = grown;
+                state.fillp_cap = want;
             }
-            fillpatch* fp = &zz.fillp[zz.fillp_used++];
+            fillpatch* fp = &state.fillp[state.fillp_used++];
             fp->sp = pending;
-            fp->off = (int) (zz.o - zz.out);
+            fp->off = (int) (state.o - state.out);
             fp->count = value;
             fp->width = (uint8_t) width;
-            fp->line = zz.line;
+            fp->line = state.line;
         }
         if (!emit_block(value, width, fill)) {
             return false;
@@ -6635,8 +6635,8 @@ static bool directive_line(const char* s, int n, const char* p,
          * does not check RELOCATE against 16 bits out of it, so neither does
          * this. Rare enough that a compare costs nothing measurable, and it is
          * on the directive path rather than the instruction path anyway. */
-        if (!zz.adl && value > 0xFFFF) {
-            zz.err = ZAP_E_ADDRESS_OUTSIDE_16_BIT_RANGE;
+        if (!state.adl && value > 0xFFFF) {
+            state.err = ZAP_E_ADDRESS_OUTSIDE_16_BIT_RANGE;
 
             return false;
         }
@@ -6645,15 +6645,15 @@ static bool directive_line(const char* s, int n, const char* p,
          * to its address. That is not a guess -- two ORGs with nothing between
          * them write the 64 KB gap in the reference, so the second is already
          * behaving as a pad even though nothing has been emitted. */
-        if (!zz.org_set && zz.o == zz.out) {
-            zz.org = value;
+        if (!state.org_set && state.o == state.out) {
+            state.org = value;
         } else {
-            const int here = zz.org + (int) (zz.o - zz.out);
+            const int here = state.org + (int) (state.o - state.out);
             if (value < here) {
                 /* "New address lower than current PC address" there, and the
                  * same here: an ORG that goes backwards would have to unwrite
                  * bytes that are already placed. */
-                zz.err = ZAP_E_ORG_GOES_BACKWARDS;
+                state.err = ZAP_E_ORG_GOES_BACKWARDS;
 
                 return false;
             }
@@ -6663,28 +6663,28 @@ static bool directive_line(const char* s, int n, const char* p,
             /* Padding to an address is not reserving space: the reference
              * writes it out even at the end of a file, where it drops a DS.
              * Forgetting the run is what says so. */
-            zz.fill_len = 0;
+            state.fill_len = 0;
         }
-        zz.org_set = true;
+        state.org_set = true;
         *stop = p;
 
         return true;
     }
 
     if (value <= 0) {
-        zz.err = ZAP_E_ALIGN_POSITIVE_NUMBER;
+        state.err = ZAP_E_ALIGN_POSITIVE_NUMBER;
 
         return false;
     }
     if ((value & (value - 1)) != 0) {
-        zz.err = ZAP_E_ALIGN_POWER_TWO;
+        state.err = ZAP_E_ALIGN_POWER_TWO;
 
         return false;
     }
     /* Pad to the next multiple. `-addr & (n - 1)` is the distance to it, and
      * the AND is a call to __iand on a 24-bit value -- once per ALIGN, which
      * is a price a directive can pay. */
-    const int addr = zz.org + (int) (zz.o - zz.out);
+    const int addr = state.org + (int) (state.o - state.out);
     if (!emit_fill((-addr) & (value - 1))) {
         return false;
     }
@@ -6837,20 +6837,6 @@ __attribute__((always_inline)) static inline uint8_t ddfd_prefix(const dop* op) 
     return 0;
 }
 
-/* The low byte of an immediate, read as a byte.
- *
- * `op->imm & 7` is a 24-bit AND and therefore a call to __iand: imm is an int,
- * so the value arrives in hl and the compiler masks it there. Casting to
- * uint8_t does not help, because the cast folds away -- masking three bits off
- * a byte and off the whole value give the same answer. The load is what has to
- * change: reading the low byte through a uint8_t* makes it
- * `ld a, (iy + n); and a, 7`.
- *
- * Little-endian, as the hex parser above also assumes. */
-static inline uint8_t imm_lo(const dop* op) {
-    return *(const uint8_t*) &op->imm;
-}
-
 /* Folds an operand into the opcode, and returns false if it does not fit the
  * field it folds into: a bit number above 7, an interrupt mode above 2, an
  * address that is not one of the eight restarts. Masking them instead would
@@ -6892,7 +6878,7 @@ __attribute__((always_inline)) static inline uint8_t transform(emitted* out, dop
                     return TRF_DEFER;
                 }
                 if (op->imm > 7) {
-                    zz.err = ZAP_E_INVALID_BIT_NUMBER;
+                    state.err = ZAP_E_INVALID_BIT_NUMBER;
 
                     return TRF_ERR;
                 }
@@ -6920,7 +6906,7 @@ __attribute__((always_inline)) static inline uint8_t transform(emitted* out, dop
                 return TRF_DEFER;
             }
             if (((unsigned) op->imm & ~0x38u) != 0) {
-                zz.err = ZAP_E_RESTART_ADDRESS;
+                state.err = ZAP_E_RESTART_ADDRESS;
 
                 return TRF_ERR;
             }
@@ -6932,7 +6918,7 @@ __attribute__((always_inline)) static inline uint8_t transform(emitted* out, dop
                 return TRF_DEFER;
             }
             if (op->imm > 7) {
-                zz.err = ZAP_E_INVALID_BIT_NUMBER;
+                state.err = ZAP_E_INVALID_BIT_NUMBER;
 
                 return TRF_ERR;
             }
@@ -6952,7 +6938,7 @@ __attribute__((always_inline)) static inline uint8_t transform(emitted* out, dop
             } else if (op->imm == 2) {
                 y = 3;
             } else if (op->imm > 2) {
-                zz.err = ZAP_E_INTERRUPT_MODE;
+                state.err = ZAP_E_INTERRUPT_MODE;
 
                 return TRF_ERR;
             }
@@ -7049,7 +7035,7 @@ static uint8_t* emit_imm(uint8_t* o, const dop* op, uint8_t cond, bool adl) {
  *   3  + the prefix, opcode and displacement bytes are written
  *   4  + the immediate or the relative, and the fixup it may need
  *
- * The output is wrong in the first two, which is the point, and `zz.o` does not
+ * The output is wrong in the first two, which is the point, and `state.o` does not
  * advance -- safe here only because these two sources contain no relative jump
  * whose reach depends on it. */
 #ifdef ETRUNC
@@ -7069,7 +7055,7 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
         return false;
     }
 
-    /* One cursor for the whole instruction rather than zz.out[zz.pos++] per
+    /* One cursor for the whole instruction rather than state.out[state.pos++] per
      * byte. put() reloaded both the output base and the position, added them,
      * stored the byte and stored the position back, for every byte written --
      * twenty-three loads of those two fields in this function alone. The
@@ -7078,7 +7064,7 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
      * write-back can move the buffer. */
     ETRUNC_AT(1);
 
-    uint8_t* o = zz.o;
+    uint8_t* o = state.o;
 
     /* The suffix byte goes in front of everything, including the DD or FD an
      * index register brings: `ld.lil ix, nn` is 5B DD 21 ...
@@ -7096,7 +7082,7 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
      * this folds away there. The suffixed copy lives in uncommon_line. */
     if (suffix != 0) {
         if ((row->flags & suffix) == 0) {
-            zz.err = ZAP_E_INSTRUCTION_NO_MODE_SUFFIX;
+            state.err = ZAP_E_INSTRUCTION_NO_MODE_SUFFIX;
 
             return false;
         }
@@ -7124,7 +7110,7 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
         if (r != TRF_OK
             && (r == TRF_ERR
                 || !fold_defer(row->transformA, a, out.prefix1, out.prefix2,
-                               row->flags, (int) (o - zz.out)))) {
+                               row->flags, (int) (o - state.out)))) {
             return false;
         }
     }
@@ -7133,7 +7119,7 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
         if (r != TRF_OK
             && (r == TRF_ERR
                 || !fold_defer(row->transformB, b, out.prefix1, out.prefix2,
-                               row->flags, (int) (o - zz.out)))) {
+                               row->flags, (int) (o - state.out)))) {
             return false;
         }
     }
@@ -7192,14 +7178,14 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
              * it is in reach is decided when it is patched. */
             if (!fix_add(rel->fwd, rel->fwd2, rel->imm,
                          rel->fwd2_neg ? FIX_SUB2 : 0,
-                         (int) (o - zz.out))) {
+                         (int) (o - state.out))) {
                 return false;
             }
             *o++ = 0;
         } else {
-            const int d = rel->imm - (zz.org + (int) (o - zz.out) + 1);
+            const int d = rel->imm - (state.org + (int) (o - state.out) + 1);
             if (d < -128 || d > 127) {
-                zz.err = ZAP_E_RELATIVE_JUMP_TOO_FAR;
+                state.err = ZAP_E_RELATIVE_JUMP_TOO_FAR;
 
                 return false;
             }
@@ -7214,14 +7200,14 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
          * Asked inside each branch rather than once above them. Hoisted, it is
          * a live value across both and an instruction with no immediate --
          * which is most of them -- computes it for nothing. */
-#define SFX_WIDE (suffix != 0 ? (suffix & (S_SIS | S_LIS)) == 0 : zz.adl)
+#define SFX_WIDE (suffix != 0 ? (suffix & (S_SIS | S_LIS)) == 0 : state.adl)
         if ((a->mode & IMM) != 0 && (row->condA & (IMM_N | IMM_MMN))) {
             if (a->fwd != NULL
                 && !fix_add(a->fwd, a->fwd2, a->imm,
                             (uint8_t) (((row->condA & IMM_N) ? 1
                                                              : (SFX_WIDE ? 3 : 2))
                                        | (a->fwd2_neg ? FIX_SUB2 : 0)),
-                            (int) (o - zz.out))) {
+                            (int) (o - state.out))) {
                 return false;
             }
             warn_imm(a->imm, (row->condA & IMM_N) ? 1 : (SFX_WIDE ? 3 : 2));
@@ -7233,7 +7219,7 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
                             (uint8_t) (((row->condB & IMM_N) ? 1
                                                              : (SFX_WIDE ? 3 : 2))
                                        | (b->fwd2_neg ? FIX_SUB2 : 0)),
-                            (int) (o - zz.out))) {
+                            (int) (o - state.out))) {
                 return false;
             }
             warn_imm(b->imm, (row->condB & IMM_N) ? 1 : (SFX_WIDE ? 3 : 2));
@@ -7242,7 +7228,7 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
 #undef SFX_WIDE
     }
 
-    zz.o = o;
+    state.o = o;
 
     return true;
 }
@@ -7261,14 +7247,14 @@ static bool macro_capture(const char* s, int n, const char* p,
                           const char* e, const char** stop) {
     const uint8_t kind = directive_of(s, n);
     if (kind == DIR_ENDMACRO) {
-        zz.defining = NULL;
-        zz.line_mode = zz.cond_emit ? LINE_ASSEMBLE : LINE_SKIP;
+        state.defining = NULL;
+        state.line_mode = state.cond_emit ? LINE_ASSEMBLE : LINE_SKIP;
         *stop = p;
 
         return true;
     }
     if (kind == DIR_MACRO) {
-        zz.err = ZAP_E_MACROS_DO_NOT_NEST;
+        state.err = ZAP_E_MACROS_DO_NOT_NEST;
 
         return false;
     }
@@ -7333,7 +7319,7 @@ static const insninfo* suffixed_mnemonic(const char* s, int n,
     if (i == n) {
         return NULL;
     }
-    if (!suffix_bit(&s[i + 1], n - i - 1, zz.adl, suffix)) {
+    if (!suffix_bit(&s[i + 1], n - i - 1, state.adl, suffix)) {
         return NULL;
     }
     return mnemonic_of(s, i);
@@ -7387,7 +7373,7 @@ static bool suffixed_insn(const insninfo* insn, uint8_t suffix,
     const isa_row* const row = match_row(insn, &a, &b);
     if (row == NULL) {
         err_tok(insn->name, insn->len);
-        zz.err = ZAP_E_NO_SUCH_INSTRUCTION_FORM;
+        state.err = ZAP_E_NO_SUCH_INSTRUCTION_FORM;
 
         return false;
     }
@@ -7423,7 +7409,7 @@ static bool third_operand(const insninfo* insn, dop* a, dop* b,
         || (a->mode & INDIRECT) != 0 || a->fwd != NULL
         || (unsigned) a->imm > 7) {
         err_tok(insn->name, insn->len);
-        zz.err = ZAP_E_NO_SUCH_INSTRUCTION_FORM;
+        state.err = ZAP_E_NO_SUCH_INSTRUCTION_FORM;
 
         return false;
     }
@@ -7435,7 +7421,7 @@ static bool third_operand(const insninfo* insn, dop* a, dop* b,
     const insninfo* const alt = mnemonic_of(nm, n + 1);
     if (alt == NULL) {
         err_tok(insn->name, insn->len);
-        zz.err = ZAP_E_NO_SUCH_INSTRUCTION_FORM;
+        state.err = ZAP_E_NO_SUCH_INSTRUCTION_FORM;
 
         return false;
     }
@@ -7449,7 +7435,7 @@ static bool third_operand(const insninfo* insn, dop* a, dop* b,
     const isa_row* const row = match_row(alt, b, &c);
     if (row == NULL) {
         err_tok(insn->name, insn->len);
-        zz.err = ZAP_E_NO_SUCH_INSTRUCTION_FORM;
+        state.err = ZAP_E_NO_SUCH_INSTRUCTION_FORM;
 
         return false;
     }
@@ -7544,7 +7530,7 @@ __attribute__((noinline)) static bool assemble_line(const char* p, const char* e
     }
     int n = (int) (p - s);
     if (n == 0) {
-        zz.err = ZAP_E_EXPECTED_INSTRUCTION;
+        state.err = ZAP_E_EXPECTED_INSTRUCTION;
 
         return false;
     }
@@ -7555,8 +7541,8 @@ __attribute__((noinline)) static bool assemble_line(const char* p, const char* e
      * branch to find out, tested after the token and before the label --
      * neither a switched-off branch nor a macro body may define one, and the
      * reference defines neither. */
-    if (zz.line_mode != LINE_ASSEMBLE) {
-        return zz.line_mode == LINE_CAPTURE
+    if (state.line_mode != LINE_ASSEMBLE) {
+        return state.line_mode == LINE_CAPTURE
                    ? macro_capture(s, n, p, e, stop)
                    : cond_skip(s, n, p, e, stop);
     }
@@ -7571,7 +7557,7 @@ __attribute__((noinline)) static bool assemble_line(const char* p, const char* e
      * and so is `foo:` alone. */
     if (*p == ':') {
         LTRUNC_AT(1);
-        const int addr = zz.org + (int) (zz.o - zz.out);
+        const int addr = state.org + (int) (state.o - state.out);
         /* "Label too long" at sixty-five characters, as in the reference. The
          * `@` of a local counts towards the limit, which is why this is asked
          * once for both rather than after the two are told apart.
@@ -7580,7 +7566,7 @@ __attribute__((noinline)) static bool assemble_line(const char* p, const char* e
          * is a `call pe, __setflag` -- which the codegen budget in test/run.sh
          * counts. */
         if ((unsigned) n > LABEL_MAX) {
-            zz.err = ZAP_E_LABEL_TOO_LONG;
+            state.err = ZAP_E_LABEL_TOO_LONG;
 
             return false;
         }
@@ -7588,11 +7574,11 @@ __attribute__((noinline)) static bool assemble_line(const char* p, const char* e
             /* `@@` is an anonymous label, not a local: it has no name to
              * collide with, so writing it twice is not a redefinition. */
             if (n == 2 && s[1] == '@') {
-                if (zz.expanding != 0) {
+                if (state.expanding != 0) {
                     /* "No anonymous labels allowed in macro definition"
                      * there, and refused at the invocation rather than at the
                      * definition, exactly as a global label in a body is. */
-                    zz.err = ZAP_E_NO_ANONYMOUS_LABELS_ALLOWED_IN_MAC;
+                    state.err = ZAP_E_NO_ANONYMOUS_LABELS_ALLOWED_IN_MAC;
 
                     return false;
                 }
@@ -7607,12 +7593,12 @@ __attribute__((noinline)) static bool assemble_line(const char* p, const char* e
             }
         } else {
             if (numeric_token(s, n)) {
-                zz.err = ZAP_E_INVALID_LABEL;
+                state.err = ZAP_E_INVALID_LABEL;
 
                 return false;
             }
-            if (zz.expanding != 0) {
-                zz.err = ZAP_E_NO_GLOBAL_LABELS_ALLOWED_IN_MACRO;
+            if (state.expanding != 0) {
+                state.err = ZAP_E_NO_GLOBAL_LABELS_ALLOWED_IN_MACRO;
 
                 return false;
             }
@@ -7622,7 +7608,7 @@ __attribute__((noinline)) static bool assemble_line(const char* p, const char* e
             /* A global ends the scope before it starts a new one -- but not
              * until this line is done with, because the rest of it still
              * belongs to the scope being closed. */
-            zz.scope_line = zz.line;
+            state.scope_line = state.line;
         }
         LTRUNC_AT(2);
         p++;
@@ -7656,7 +7642,7 @@ __attribute__((noinline)) static bool assemble_line(const char* p, const char* e
         }
         n = (int) (p - s);
         if (n == 0) {
-            zz.err = ZAP_E_EXPECTED_INSTRUCTION;
+            state.err = ZAP_E_EXPECTED_INSTRUCTION;
 
             return false;
         }
@@ -7718,7 +7704,7 @@ __attribute__((noinline)) static bool assemble_line(const char* p, const char* e
     const isa_row* row = match_row(insn, &a, &b);
     if (row == NULL) {
         err_tok(insn->name, insn->len);
-        zz.err = ZAP_E_NO_SUCH_INSTRUCTION_FORM;
+        state.err = ZAP_E_NO_SUCH_INSTRUCTION_FORM;
 
         return false;
     }
@@ -7757,18 +7743,18 @@ trunc_done:
  * copy. A forward reference that survives even this is one to a name nothing
  * ever defined, and is reported against the line that wrote it. */
 static bool resolve_deferred(void) {
-    for (int i = 0; i < zz.defer_used; i++) {
-        defexpr* d = &zz.defer[i];
+    for (int i = 0; i < state.defer_used; i++) {
+        defexpr* d = &state.defer[i];
         const char* p = d->text;
         evalue v = 0;
         uint8_t mask = 0;
         fwd_reset(NULL);
-        zz.line = d->line;
+        state.line = d->line;
         if (!expr_value(&v, &p, d->text + d->len, &mask)) {
             return false;
         }
         if (expr_fwd != NULL || expr_fwd_bad) {
-            zz.err = ZAP_E_UNKNOWN_LABEL;
+            state.err = ZAP_E_UNKNOWN_LABEL;
 
             return false;
         }
@@ -7781,16 +7767,16 @@ static bool resolve_deferred(void) {
 
 /* Fills in the blocks whose value was not known when they were written. */
 static bool resolve_fills(void) {
-    for (int i = 0; i < zz.fillp_used; i++) {
-        const fillpatch* fp = &zz.fillp[i];
+    for (int i = 0; i < state.fillp_used; i++) {
+        const fillpatch* fp = &state.fillp[i];
         if (!fp->sp->defined) {
-            zz.line = fp->line;
-            zz.err = ZAP_E_UNKNOWN_LABEL;
+            state.line = fp->line;
+            state.err = ZAP_E_UNKNOWN_LABEL;
 
             return false;
         }
         const evalue v = fp->sp->addr;
-        uint8_t* o = zz.out + fp->off;
+        uint8_t* o = state.out + fp->off;
         const int nv = (int) v;
         for (int n = fp->count; n != 0; n--) {
             if (fp->width > 3) {
@@ -7817,8 +7803,8 @@ static bool resolve_fixups(void) {
     if (!resolve_deferred() || !resolve_fills()) {
         return false;
     }
-    for (int i = 0; i < zz.fix_used; i++) {
-        if (!patch_fixup(&zz.fixups[i])) {
+    for (int i = 0; i < state.fix_used; i++) {
+        if (!patch_fixup(&state.fixups[i])) {
             return false;
         }
     }
@@ -7833,7 +7819,7 @@ static bool resolve_fixups(void) {
  * `end` are locals, so the only thing an include has to save is the reader,
  * which it does in its own frame.
  *
- * The alternative -- a stack of readers in `dz`, popped when a file ends --
+ * The alternative -- a stack of readers in `zap_state`, popped when a file ends --
  * would put a test for "is there a parent file" in the hottest loop in the
  * assembler, to answer a question only an INCLUDE can ask.
  */
@@ -7842,20 +7828,20 @@ __attribute__((noinline)) static bool run_lines(void) {
      * be turned into a pointer on the way into every line and back again on
      * the way out, for a value only this loop uses. br_fill_lines never reads
      * `bpos_`; it only resets it. */
-    const char* p = zz.rd.buf_;
+    const char* p = state.rd.buf_;
 
     /* Empty for a file, so the first pass through the loop fills it. A reader
      * over memory -- which is what a macro expansion is -- has the whole of its
      * content already and can never refill: `br_fill_lines` says so and returns
      * false, which the loop reads as end of file. Without this an expansion
      * assembles to nothing at all, quietly. */
-    const char* end = zz.rd.mem_ ? p + zz.rd.bsz_ : p;
+    const char* end = state.rd.mem_ ? p + state.rd.bsz_ : p;
 
     while (true) {
-        buf_reader* r = &zz.rd;
+        buf_reader* r = &state.rd;
         if (p >= end) {
             if (!line_fill(r)) {
-                if (zz.err != ZAP_OK) {
+                if (state.err != ZAP_OK) {
                     return false;
                 }
 
@@ -7869,26 +7855,26 @@ __attribute__((noinline)) static bool run_lines(void) {
         const char* stop = p;
 
         /* Where the output stood before this line, for the listing. Held in
-         * `dz` rather than in locals, which would be live across assemble_line
+         * `zap_state` rather than in locals, which would be live across assemble_line
          * and take two registers from the loop that has fewest to spare. At a
          * fixed address the stores are absolute. */
         if (listing) {
-            zz.lst_o = zz.o;
-            zz.lst_pc = zz.org + (int) (zz.o - zz.out);
-            zz.lst_p = p;
+            state.lst_o = state.o;
+            state.lst_pc = state.org + (int) (state.o - state.out);
+            state.lst_p = p;
         }
 
-        zz.line++;
+        state.line++;
         if (!assemble_line(p, end, &stop)) {
             /* The innermost failure has already taken `errline`, so this line
              * is the one that invoked it, and its text is the one thing the
              * expansion could not record for itself. Which file and which line
              * it was, it did record -- see macro_expand. */
-            if (!zz.errhave) {
-                err_line(zz.errline, p, end);
-                zz.errhave = true;
-            } else if (zz.errfrompath != NULL && zz.errfrom[0] == 0) {
-                err_line(zz.errfrom, p, end);
+            if (!state.errhave) {
+                err_line(state.errline, p, end);
+                state.errhave = true;
+            } else if (state.errfrompath != NULL && state.errfrom[0] == 0) {
+                err_line(state.errfrom, p, end);
             }
 
             return false;
@@ -7924,7 +7910,7 @@ __attribute__((noinline)) static bool run_lines(void) {
                     q++;
                 }
             } else if (*q != '\n') {
-                zz.err = ZAP_E_UNEXPECTED_TEXT_AFTER_INSTRUCTION;
+                state.err = ZAP_E_UNEXPECTED_TEXT_AFTER_INSTRUCTION;
 
                 return false;
             }
@@ -7942,20 +7928,20 @@ __attribute__((noinline)) static bool run_lines(void) {
          * malformed reports the other fault first. Both refuse the file,
          * which is what a source can observe. */
         if ((int) (stop - p) > LINE_MAX_CHARS) {
-            zz.err = ZAP_E_LINE_TOO_LONG;
+            state.err = ZAP_E_LINE_TOO_LONG;
 
             return false;
         }
 
         if (listing) {
-            if (!zz.lst_done) {
-                list_line(zz.lst_pc, zz.lst_o, zz.o, zz.line, 0, p, stop);
-                if (zz.fix_touched) {
-                    lstfix_add(zz.lst_o, zz.o);
+            if (!state.lst_done) {
+                list_line(state.lst_pc, state.lst_o, state.o, state.line, 0, p, stop);
+                if (state.fix_touched) {
+                    lstfix_add(state.lst_o, state.o);
                 }
             }
-            zz.lst_done = false;
-            zz.fix_touched = false;
+            state.lst_done = false;
+            state.fix_touched = false;
         }
 
         /* A line that was only a remark stops at the semicolon, so the rest
@@ -7977,80 +7963,80 @@ __attribute__((noinline)) static bool run_lines(void) {
 
 __attribute__((noinline)) static bool run(const char* path) {
     Z_SITE("source reader");
-    if (br_open(&zz.rd, path, BUF_KB) == NULL) {
-        zz.err = ZAP_E_CANNOT_OPEN_SOURCE;
+    if (br_open(&state.rd, path, BUF_KB) == NULL) {
+        state.err = ZAP_E_CANNOT_OPEN_SOURCE;
 
         return false;
     }
 
-    zz.cap = (int) (zz.rd.fsz_ >> OUT_SHIFT);
-    if (zz.cap < OUT_MIN) {
-        zz.cap = OUT_MIN;
+    state.cap = (int) (state.rd.fsz_ >> OUT_SHIFT);
+    if (state.cap < OUT_MIN) {
+        state.cap = OUT_MIN;
     }
     Z_SITE("output buffer");
-    zz.out = (uint8_t*) malloc((size_t) zz.cap);
-    if (zz.out == NULL) {
-        zz.err = ZAP_E_OUT_MEMORY;
+    state.out = (uint8_t*) malloc((size_t) state.cap);
+    if (state.out == NULL) {
+        state.err = ZAP_E_OUT_MEMORY;
 
         return false;
     }
-    zz.o = zz.out;
-    zz.org = opt_org;
-    zz.org_set = false;
-    zz.fill = opt_fill;
-    zz.filled = false;
-    zz.reloc = false;
-    zz.reloc_org = 0;
-    zz.adl = opt_adl;
+    state.o = state.out;
+    state.org = opt_org;
+    state.org_set = false;
+    state.fill = opt_fill;
+    state.filled = false;
+    state.reloc = false;
+    state.reloc_org = 0;
+    state.adl = opt_adl;
     /* Reset with the rest, and it has to be: `cpu_mask` is a file-scope
      * static so that match_row need not carry it, and the unit tests assemble
      * many sources in one process. Without this, one `.cpu Z80` would decide
      * what every later test in the same run could encode. */
     cpu_mask = CPU_EZ80;
-    zz.in_cond = false;
-    zz.cond_emit = true;
-    zz.line_mode = LINE_ASSEMBLE;
-    zz.macros = NULL;
-    zz.defining = NULL;
-    zz.expanding = 0;
-    zz.undo = NULL;
-    zz.undo_used = 0;
-    zz.undo_cap = 0;
-    zz.subfix = NULL;
-    zz.subfix_used = 0;
-    zz.subfix_cap = 0;
-    zz.defer = NULL;
-    zz.defer_used = 0;
-    zz.defer_cap = 0;
-    zz.fillp = NULL;
-    zz.fillp_used = 0;
-    zz.fillp_cap = 0;
+    state.in_cond = false;
+    state.cond_emit = true;
+    state.line_mode = LINE_ASSEMBLE;
+    state.macros = NULL;
+    state.defining = NULL;
+    state.expanding = 0;
+    state.undo = NULL;
+    state.undo_used = 0;
+    state.undo_cap = 0;
+    state.subfix = NULL;
+    state.subfix_used = 0;
+    state.subfix_cap = 0;
+    state.defer = NULL;
+    state.defer_used = 0;
+    state.defer_cap = 0;
+    state.fillp = NULL;
+    state.fillp_used = 0;
+    state.fillp_cap = 0;
     for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
-        zz.expbuf[i] = NULL;
-        zz.expcap[i] = 0;
+        state.expbuf[i] = NULL;
+        state.expcap[i] = 0;
     }
-    zz.lim = zz.out + zz.cap - OUT_MAX_INSN;
+    state.lim = state.out + state.cap - OUT_MAX_INSN;
     Z_SITE("symbol buckets");
-    zz.syms = (symslot*) calloc(NSYMB, sizeof(symslot));
-    if (zz.syms == NULL) {
-        zz.err = ZAP_E_OUT_MEMORY;
+    state.syms = (symslot*) calloc(NSYMB, sizeof(symslot));
+    if (state.syms == NULL) {
+        state.err = ZAP_E_OUT_MEMORY;
 
         return false;
     }
     /* One block up front, so sym_define never has to ask whether there is
      * one; it only ever asks whether the newest is full. */
     Z_SITE("symbol blocks");
-    zz.blocks = (symblock*) malloc(sizeof(symblock));
-    if (zz.blocks == NULL) {
-        zz.err = ZAP_E_OUT_MEMORY;
+    state.blocks = (symblock*) malloc(sizeof(symblock));
+    if (state.blocks == NULL) {
+        state.err = ZAP_E_OUT_MEMORY;
 
         return false;
     }
-    zz.blocks->next = NULL;
-    zz.syms_used = 0;
-    zz.line = 0;
-    zz.path = path;
-    zz.depth = 0;
+    state.blocks->next = NULL;
+    state.syms_used = 0;
+    state.line = 0;
+    state.path = path;
+    state.depth = 0;
 
     if (!run_lines()) {
         return false;
@@ -8060,18 +8046,18 @@ __attribute__((noinline)) static bool run(const char* path) {
      * one does. Before the globals, because a local that was never defined
      * should be reported against the line that used it rather than after a
      * global's failure somewhere else. */
-    if (zz.defining != NULL) {
+    if (state.defining != NULL) {
         /* "Unfinished macro definition" there, and the same here: a body that
          * never closes has swallowed the rest of the file. */
-        zz.err = ZAP_E_MACRO_WAS_NEVER_CLOSED;
+        state.err = ZAP_E_MACRO_WAS_NEVER_CLOSED;
 
         return false;
     }
 
-    if (zz.in_cond) {
+    if (state.in_cond) {
         /* "Missing ENDIF directive" there, and the same here: a conditional
          * that never closes has silently dropped whatever followed it. */
-        zz.err = ZAP_E_IF_WAS_NEVER_CLOSED;
+        state.err = ZAP_E_IF_WAS_NEVER_CLOSED;
 
         return false;
     }
@@ -8091,8 +8077,8 @@ __attribute__((noinline)) static bool run(const char* path) {
      *
      * After the fixups rather than before, so that nothing has to reason about
      * whether shortening the output could move a patch site. */
-    if (zz.fill_len != 0 && (int) (zz.o - zz.out) == zz.fill_end) {
-        zz.o -= zz.fill_len;
+    if (state.fill_len != 0 && (int) (state.o - state.out) == state.fill_end) {
+        state.o -= state.fill_len;
     }
 
     return true;
@@ -8101,50 +8087,50 @@ __attribute__((noinline)) static bool run(const char* path) {
 /* Everything run() may have allocated, freed in one place so that the two
  * error paths and the success path cannot drift apart. */
 static void dz_free(void) {
-    free(zz.out);
-    free(zz.syms);
-    free(zz.fixups);
-    free(zz.lfixups);
-    free(zz.undo);
-    free(zz.subfix);
-    free(zz.defer);
-    free(zz.fillp);
-    free(zz.lstfix);
+    free(state.out);
+    free(state.syms);
+    free(state.fixups);
+    free(state.lfixups);
+    free(state.undo);
+    free(state.subfix);
+    free(state.defer);
+    free(state.fillp);
+    free(state.lstfix);
     for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
-        free(zz.expbuf[i]);
+        free(state.expbuf[i]);
     }
-    while (zz.macros != NULL) {
-        macro* next = zz.macros->next;
-        free(zz.macros->body);
-        free(zz.macros->marks);
-        free(zz.macros);
-        zz.macros = next;
+    while (state.macros != NULL) {
+        macro* next = state.macros->next;
+        free(state.macros->body);
+        free(state.macros->marks);
+        free(state.macros);
+        state.macros = next;
     }
-    while (zz.names != NULL) {
-        namblock* next = zz.names->next;
-        free(zz.names);
-        zz.names = next;
+    while (state.names != NULL) {
+        namblock* next = state.names->next;
+        free(state.names);
+        state.names = next;
     }
     /* The local blocks are rewound rather than freed at the end of a scope, so
      * `locnames` may be pointing part way down a list that is still whole.
      * Freed from the first, which is the only pointer that always names the
      * head. */
-    while (zz.locnamfirst != NULL) {
-        namblock* next = zz.locnamfirst->next;
-        free(zz.locnamfirst);
-        zz.locnamfirst = next;
+    while (state.locnamfirst != NULL) {
+        namblock* next = state.locnamfirst->next;
+        free(state.locnamfirst);
+        state.locnamfirst = next;
     }
-    while (zz.blocks != NULL) {
-        symblock* next = zz.blocks->next;
-        free(zz.blocks);
-        zz.blocks = next;
+    while (state.blocks != NULL) {
+        symblock* next = state.blocks->next;
+        free(state.blocks);
+        state.blocks = next;
     }
-    while (zz.locfirst != NULL) {
-        locblock* next = zz.locfirst->next;
-        free(zz.locfirst);
-        zz.locfirst = next;
+    while (state.locfirst != NULL) {
+        locblock* next = state.locfirst->next;
+        free(state.locfirst);
+        state.locfirst = next;
     }
-    br_destroy(&zz.rd);
+    br_destroy(&state.rd);
 }
 
 /* `-ez80`, spelled out rather than compared with same_ci.
@@ -8374,8 +8360,8 @@ static void err_reopen(const char* path, int line) {
                 q++;
             }
             if (++n == line) {
-                err_line(zz.errline, p, q);
-                zz.errhave = true;
+                err_line(state.errline, p, q);
+                state.errhave = true;
                 br_destroy(&r);
 
                 return;
@@ -8424,7 +8410,7 @@ static void list_out(const char* buf, int n) {
     if (list_fh != 0) {
         mos_fwrite(list_fh, (char*) buf, (uint24_t) n);
         mos_fwrite(list_fh, (char*) "\n", 1);
-        zz.lst_pos += n + 1;
+        state.lst_pos += n + 1;
     }
 }
 
@@ -8444,8 +8430,8 @@ static void list_line(int pc, const uint8_t* from, const uint8_t* to, int line,
     /* Kept for lstfix_add, which the caller reaches for only when the line
      * left a fixup behind. Free here, where nothing is on the instruction
      * path: this function runs only when a listing is being written. */
-    zz.lst_lineat = zz.lst_pos;
-    zz.lst_row0 = 0;
+    state.lst_lineat = state.lst_pos;
+    state.lst_row0 = 0;
 
     do {
         int w = 0;
@@ -8492,7 +8478,7 @@ static void list_line(int pc, const uint8_t* from, const uint8_t* to, int line,
         }
         list_out(buf, w);
         if (row == 0) {
-            zz.lst_row0 = zz.lst_pos - zz.lst_lineat;
+            state.lst_row0 = state.lst_pos - state.lst_lineat;
         }
         row++;
     } while (row * 4 < n);
@@ -8508,24 +8494,24 @@ static void list_line(int pc, const uint8_t* from, const uint8_t* to, int line,
  * are correct either way, and what is lost is that some lines of the listing
  * show what was emitted rather than what was patched. */
 static void lstfix_add(const uint8_t* from, const uint8_t* to) {
-    if (list_fh == 0 || to == from || zz.lst_row0 == 0) {
+    if (list_fh == 0 || to == from || state.lst_row0 == 0) {
         return;
     }
-    if (zz.lstfix_used == zz.lstfix_cap) {
+    if (state.lstfix_used == state.lstfix_cap) {
         Z_SITE("listing fixups");
-        const int want = zz.lstfix_cap == 0 ? 64 : zz.lstfix_cap + zz.lstfix_cap;
+        const int want = state.lstfix_cap == 0 ? 64 : state.lstfix_cap + state.lstfix_cap;
         lstfix* grown =
-            (lstfix*) realloc(zz.lstfix, (size_t) want * sizeof(lstfix));
+            (lstfix*) realloc(state.lstfix, (size_t) want * sizeof(lstfix));
         if (grown == NULL) {
             return;
         }
-        zz.lstfix = grown;
-        zz.lstfix_cap = want;
+        state.lstfix = grown;
+        state.lstfix_cap = want;
     }
-    lstfix* r = &zz.lstfix[zz.lstfix_used++];
-    r->lstat = zz.lst_lineat;
-    r->row0 = zz.lst_row0;
-    r->outoff = (int) (from - zz.out);
+    lstfix* r = &state.lstfix[state.lstfix_used++];
+    r->lstat = state.lst_lineat;
+    r->row0 = state.lst_row0;
+    r->outoff = (int) (from - state.out);
     r->nbytes = (int) (to - from);
 }
 
@@ -8541,8 +8527,8 @@ static void lstfix_add(const uint8_t* from, const uint8_t* to) {
  * The console listing cannot be given this. It was printed as the assembly
  * went and is gone; `-d` shows what was emitted. */
 static void lstfix_apply(void) {
-    for (int i = 0; i < zz.lstfix_used; i++) {
-        const lstfix* r = &zz.lstfix[i];
+    for (int i = 0; i < state.lstfix_used; i++) {
+        const lstfix* r = &state.lstfix[i];
         for (int row = 0; row * 4 < r->nbytes; row++) {
             /* The first row is as long as its source line made it; the rows
              * under it carry no text at all. */
@@ -8553,7 +8539,7 @@ static void lstfix_apply(void) {
             int w = 0;
             int put = 0;
             while (put < 4 && row * 4 + put < r->nbytes) {
-                list_hex(field, &w, zz.out[r->outoff + row * 4 + put], 2);
+                list_hex(field, &w, state.out[r->outoff + row * 4 + put], 2);
                 field[w++] = ' ';
                 put++;
             }
@@ -8591,7 +8577,7 @@ static void lstfix_apply(void) {
 __attribute__((noinline))
 static void list_invocation(const macro* m, int base, int line, int depth,
                             const char* e) {
-    list_line(zz.lst_pc, zz.o, zz.o, line, depth, zz.lst_p, e);
+    list_line(state.lst_pc, state.o, state.o, line, depth, state.lst_p, e);
     list_args(m, base, depth + 1);
 }
 
@@ -8627,8 +8613,8 @@ static void list_args(const macro* m, int base, int depth) {
             if (w < lim) {
                 buf[w++] = '=';
             }
-            const char* const a = zz.margp[base + k];
-            const int an = zz.margn[base + k];
+            const char* const a = state.margp[base + k];
+            const int an = state.margn[base + k];
             for (int i = 0; i < an && w < lim; i++) {
                 buf[w++] = a[i];
             }
@@ -8709,8 +8695,8 @@ static int sym_cmp(const void* a, const void* b) {
 
 static void write_symbols(const char* src) {
     int n = 0;
-    for (const symblock* b = zz.blocks; b != NULL; b = b->next) {
-        n += (b == zz.blocks) ? zz.syms_used : SYMS_STEP;
+    for (const symblock* b = state.blocks; b != NULL; b = b->next) {
+        n += (b == state.blocks) ? state.syms_used : SYMS_STEP;
     }
     if (n == 0) {
         return;
@@ -8722,8 +8708,8 @@ static void write_symbols(const char* src) {
         return;
     }
     int k = 0;
-    for (const symblock* b = zz.blocks; b != NULL; b = b->next) {
-        const int used = (b == zz.blocks) ? zz.syms_used : SYMS_STEP;
+    for (const symblock* b = state.blocks; b != NULL; b = b->next) {
+        const int used = (b == state.blocks) ? state.syms_used : SYMS_STEP;
         for (int i = 0; i < used; i++) {
             if (b->nodes[i].defined) {
                 list[k++] = &b->nodes[i];
@@ -8775,16 +8761,16 @@ static void write_symbols(const char* src) {
  * anything measured by instrumenting the run. */
 static void write_stats(void) {
     int syms = 0;
-    for (const symblock* b = zz.blocks; b != NULL; b = b->next) {
-        syms += (b == zz.blocks) ? zz.syms_used : SYMS_STEP;
+    for (const symblock* b = state.blocks; b != NULL; b = b->next) {
+        syms += (b == state.blocks) ? state.syms_used : SYMS_STEP;
     }
     int names = 0;
-    for (const namblock* b = zz.names; b != NULL; b = b->next) {
+    for (const namblock* b = state.names; b != NULL; b = b->next) {
         names += NAMES_BLOCK;
     }
     int macros = 0;
     int macbytes = 0;
-    for (const macro* m = zz.macros; m != NULL; m = m->next) {
+    for (const macro* m = state.macros; m != NULL; m = m->next) {
         macros++;
         macbytes += m->bodycap;
     }
@@ -8794,8 +8780,8 @@ static void write_stats(void) {
     printf("Labels               : %6d\r\n", syms);
     printf("\r\nMacro memory         : %6d\r\n", macbytes);
     printf("Macros               : %6d\r\n", macros);
-    printf("\r\nOutput               : %6d\r\n", (int) (zz.o - zz.out));
-    printf("Output buffer        : %6d\r\n", zz.cap);
+    printf("\r\nOutput               : %6d\r\n", (int) (state.o - state.out));
+    printf("Output buffer        : %6d\r\n", state.cap);
 }
 
 /* A value that did not fit where it was written: said, and the assembly
@@ -8811,17 +8797,17 @@ static void write_stats(void) {
  * every operand of every line. There is no echoed source line for the same
  * reason. */
 /* Where a warning happened, printed the way the reference prints it, and the
- * colour left on for the message that follows. Inside an expansion `zz.path`
+ * colour left on for the message that follows. Inside an expansion `state.path`
  * is the macro, which is what the reader needs to be told: the line number
  * counts the body, not the file. */
 static void warn_where(void) {
     if (use_color) {
         printf("\033[33m");
     }
-    if (zz.expanding != 0) {
-        printf("Macro [%s] line %d - ", zz.path != NULL ? zz.path : "?", zz.line);
+    if (state.expanding != 0) {
+        printf("Macro [%s] line %d - ", state.path != NULL ? state.path : "?", state.line);
     } else {
-        printf("File \"%s\" line %d - ", zz.path != NULL ? zz.path : "?", zz.line);
+        printf("File \"%s\" line %d - ", state.path != NULL ? state.path : "?", state.line);
     }
 }
 
@@ -8875,36 +8861,36 @@ static void report(const char* in) {
     const char* const yellow = use_color ? "\033[33m" : "";
     const char* const off = use_color ? "\033[39m" : "";
     const char* const file =
-        zz.errfile != NULL ? zz.errfile : (zz.path != NULL ? zz.path : in);
+        state.errfile != NULL ? state.errfile : (state.path != NULL ? state.path : in);
 
     /* A failure found after the line was read -- an unresolved label -- has
      * no text yet, and the file still has it. */
-    if (!zz.errhave && zz.errmacro == NULL) {
-        err_reopen(file, zz.line);
+    if (!state.errhave && state.errmacro == NULL) {
+        err_reopen(file, state.line);
     }
 
-    if (zz.errmacro != NULL) {
-        printf("%sMacro [%s] in \"%s\" line %d - %s", red, zz.errmacro, file,
-               zz.line, zap_err_text[zz.err]);
+    if (state.errmacro != NULL) {
+        printf("%sMacro [%s] in \"%s\" line %d - %s", red, state.errmacro, file,
+               state.line, zap_err_text[state.err]);
     } else {
-        printf("%sFile \"%s\" line %d - %s", red, file, zz.line,
-               zap_err_text[zz.err]);
+        printf("%sFile \"%s\" line %d - %s", red, file, state.line,
+               zap_err_text[state.err]);
     }
-    if (zz.errat != NULL && zz.erratlen > 0) {
-        printf("%s '%.*s'", yellow, zz.erratlen, zz.errat);
+    if (state.errat != NULL && state.erratlen > 0) {
+        printf("%s '%.*s'", yellow, state.erratlen, state.errat);
     }
     printf("%s\r\n", off);
 
     /* The line as it was written, indent and all, which is how the reader
      * will find it again. */
-    if (zz.errhave) {
-        printf("%s%s%s\r\n", yellow, zz.errline, off);
+    if (state.errhave) {
+        printf("%s%s%s\r\n", yellow, state.errline, off);
     }
-    if (zz.errfrompath != NULL) {
+    if (state.errfrompath != NULL) {
         printf("%sInvoked from \"%s\" line %d as%s\r\n", red,
-               zz.errfrompath, zz.errfromline, off);
-        if (zz.errfrom[0] != 0) {
-            printf("%s%s%s\r\n", yellow, zz.errfrom, off);
+               state.errfrompath, state.errfromline, off);
+        if (state.errfrom[0] != 0) {
+            printf("%s%s%s\r\n", yellow, state.errfrom, off);
         }
     }
 }
@@ -8952,7 +8938,7 @@ int main(int argc, char* argv[]) {
              * byte and it is the header's, and leaving it out put every line
              * offset one character to the left -- which lstfix_apply then
              * wrote the bytes into, over the space after the address. */
-            zz.lst_pos++;
+            state.lst_pos++;
         }
     }
     const clock_t begin = clock();
@@ -8973,9 +8959,9 @@ int main(int argc, char* argv[]) {
 
         return 1;
     }
-    const int written = (int) (zz.o - zz.out);
+    const int written = (int) (state.o - state.out);
     if (written > 0) {
-        mos_fwrite(fh, (char*) zz.out, (uint24_t) written);
+        mos_fwrite(fh, (char*) state.out, (uint24_t) written);
     }
     mos_fclose(fh);
 

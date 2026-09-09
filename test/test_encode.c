@@ -73,7 +73,7 @@ static const char* emit(const char* src) {
 
     /* One assembly per process is what the CLI does; this runs hundreds, so
      * the state is cleared here rather than declared here. */
-    memset(&zz, 0, sizeof(zz));
+    memset(&state, 0, sizeof(state));
 
     const bool ok = run(path);
     unlink(path);
@@ -83,10 +83,10 @@ static const char* emit(const char* src) {
     if (!ok) {
         n = snprintf(out, sizeof(out), "ERR");
     } else {
-        const int len = (int) (zz.o - zz.out);
+        const int len = (int) (state.o - state.out);
         for (int i = 0; i < len && n < (int) sizeof(out) - 4; i++) {
             n += snprintf(&out[n], sizeof(out) - (size_t) n, "%s%02X",
-                          i ? " " : "", zz.out[i]);
+                          i ? " " : "", state.out[i]);
         }
     }
     out[n] = 0;
@@ -124,12 +124,12 @@ static int local_blocks(const char* src) {
     build_tables();
     build_cclass();
 
-    memset(&zz, 0, sizeof(zz));
+    memset(&state, 0, sizeof(state));
     const bool ok = run(path);
     unlink(path);
 
     int n = 0;
-    for (const locblock* b = zz.locfirst; b != NULL; b = b->next) {
+    for (const locblock* b = state.locfirst; b != NULL; b = b->next) {
         n++;
     }
     dz_free();
@@ -590,20 +590,20 @@ int main(void) {
      * Driven directly rather than through a source large enough to force it,
      * which would be a 50 KB case file to exercise four lines. */
     {
-        memset(&zz, 0, sizeof(zz));
-        zz.cap = OUT_MIN;
-        zz.out = (uint8_t*) malloc((size_t) zz.cap);
-        zz.o = zz.out;
-        zz.lim = zz.out + zz.cap - OUT_MAX_INSN;
+        memset(&state, 0, sizeof(state));
+        state.cap = OUT_MIN;
+        state.out = (uint8_t*) malloc((size_t) state.cap);
+        state.o = state.out;
+        state.lim = state.out + state.cap - OUT_MAX_INSN;
         for (int i = 0; i < 100; i++) {
-            *zz.o++ = (uint8_t) i;
+            *state.o++ = (uint8_t) i;
         }
 
         const bool grew = out_grow(0);
         char got[64];
         snprintf(got, sizeof(got), "%d %d %d %d", grew ? 1 : 0,
-                 (int) (zz.o - zz.out), (int) (zz.lim - zz.out),
-                 zz.out[99] == 99 && zz.out[0] == 0);
+                 (int) (state.o - state.out), (int) (state.lim - state.out),
+                 state.out[99] == 99 && state.out[0] == 0);
         char want[64];
         snprintf(want, sizeof(want), "1 100 %d 1", OUT_MIN + OUT_STEP - OUT_MAX_INSN);
         check("out_grow carries the cursor and the limit", got, want);
@@ -611,8 +611,8 @@ int main(void) {
         /* And that the rebased limit still leaves room for a whole
          * instruction, which is the property the reserve relies on. */
         check("a grown buffer has room for the longest form",
-              (zz.lim + OUT_MAX_INSN == zz.out + zz.cap) ? "yes" : "no", "yes");
-        free(zz.out);
+              (state.lim + OUT_MAX_INSN == state.out + state.cap) ? "yes" : "no", "yes");
+        free(state.out);
     }
 
     /* Labels.
@@ -1556,7 +1556,7 @@ int main(void) {
      * scope and never reuses one -- which is invisible in the output and
      * fatal on the machine this is for. */
     {
-        memset(&zz, 0, sizeof(zz));
+        memset(&state, 0, sizeof(state));
         char path[] = "/tmp/zap_scope_XXXXXX";
         int fd = mkstemp(path);
         /* Enough local names per scope to need more than one block, or the
@@ -1580,8 +1580,8 @@ int main(void) {
             const bool ok = run(path);
             char got[64];
             snprintf(got, sizeof(got), "%d %d %d", ok ? 1 : 0,
-                     zz.locnames == zz.locnamfirst ? 1 : 0,
-                     zz.locnamfirst != NULL ? 1 : 0);
+                     state.locnames == state.locnamfirst ? 1 : 0,
+                     state.locnamfirst != NULL ? 1 : 0);
             check("a scope rewinds its local names to the first block",
                   got, "1 1 1");
             dz_free();

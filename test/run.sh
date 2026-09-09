@@ -163,7 +163,7 @@ opt_same "no options"
 # `hexval`, which build_cclass fills *after* the arguments are parsed, so
 # every digit read as zero and `-o 50000` silently assembled at address 0.
 printf '  nop\n' > "$OUT/opt2.s"
-for badopt in "-o zz" "-b gg" "-a 7"; do
+for badopt in "-o state" "-b gg" "-a 7"; do
     # shellcheck disable=SC2086
     ob=$("$OUT/zap" -c $badopt "$OUT/opt2.s" "$OUT/opt2.bin" 2>&1 | tr -d '\r' || true)
     cli_check "$badopt is refused" \
@@ -976,7 +976,7 @@ if [ ! -x "$REF" ]; then
     status=1
 else
     for src in test/cases/*.s; do
-        rm -f "$OUT/ref.bin" "$OUT/dz.bin"
+        rm -f "$OUT/ref.bin" "$OUT/zap_state.bin"
         # Both are allowed to fail; a failure shows up as a missing or
         # differing output below. Without the guards `set -e` would end the
         # run at the first one and the cases after it would never be
@@ -987,8 +987,8 @@ else
         # reference gives them none, so `1+2*3` is 7 by default and 9 here.
         # Running the default against the reference would be asking two
         # assemblers that disagree on purpose to agree.
-        "$OUT/zap" -c -ez80 "$src" "$OUT/dz.bin" > /dev/null 2>&1 || true
-        if [ -f "$OUT/ref.bin" ] && cmp -s "$OUT/ref.bin" "$OUT/dz.bin"; then
+        "$OUT/zap" -c -ez80 "$src" "$OUT/zap_state.bin" > /dev/null 2>&1 || true
+        if [ -f "$OUT/ref.bin" ] && cmp -s "$OUT/ref.bin" "$OUT/zap_state.bin"; then
             echo "PASS  $(basename "$src") matches ez80asm"
         else
             echo "FAIL  $(basename "$src") differs from ez80asm"

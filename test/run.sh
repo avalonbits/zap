@@ -189,6 +189,26 @@ cli_check "an option that is not the reference's is still refused" \
     "$("$OUT/zap" -c -Q "$OUT/opt2.s" "$OUT/opt2.bin" 2>&1 | tr -d '\r' \
        | grep -c 'Unknown option -Q')" 1
 
+# A macro name gets the sixty-four characters a label gets, and the reference
+# refuses the sixty-fifth. zap had no limit here.
+macname_same() {
+    local n="$1"
+    { printf '  MACRO '; head -c "$n" /dev/zero | tr '\0' 'm'; printf '\n  nop\n  ENDMACRO\n'; } \
+        > "$OUT/macname.s"
+    local zo ro
+    zo=$("$OUT/zap" -c "$OUT/macname.s" "$OUT/macname.bin" 2>&1 | tr -d '\r' \
+         | grep -c 'macro name too long' || true)
+    if [ -x "$OPTREF" ]; then
+        ro=$("$OPTREF" "$OUT/macname.s" "$OUT/macnamer.bin" 2>&1 \
+             | sed 's/\x1b\[[0-9;]*m//g' | grep -c 'Macro name too long' || true)
+        cli_check "a $n-character macro name agrees with the reference" "$zo" "$ro"
+    fi
+}
+macname_same 32
+macname_same 64
+macname_same 65
+macname_same 80
+
 # The reference takes 256 characters on a line and refuses the 257th, counting
 # a carriage return, so a CRLF file gets 255. zap's own limit used to be the
 # 16 KB reader buffer, which took lines the reference would not.

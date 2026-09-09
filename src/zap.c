@@ -382,6 +382,7 @@ typedef enum {
     ZAP_E_LABEL_DEFINED_TWICE,
     ZAP_E_LABEL_TOO_LONG,
     ZAP_E_LINE_TOO_LONG,
+    ZAP_E_MACRO_NAME_TOO_LONG,
     ZAP_E_MACRO_PARAMETER_NAME_TOO_LONG,
     ZAP_E_MACROS_DO_NOT_NEST,
     ZAP_E_MACROS_NESTED_TOO_DEEPLY,
@@ -465,6 +466,7 @@ static const char* const zap_err_text[] = {
     [ZAP_E_LABEL_DEFINED_TWICE] = "label defined twice",
     [ZAP_E_LABEL_TOO_LONG] = "label too long",
     [ZAP_E_LINE_TOO_LONG] = "line too long",
+    [ZAP_E_MACRO_NAME_TOO_LONG] = "macro name too long",
     [ZAP_E_MACRO_PARAMETER_NAME_TOO_LONG] = "macro parameter name too long",
     [ZAP_E_MACROS_DO_NOT_NEST] = "macros do not nest",
     [ZAP_E_MACROS_NESTED_TOO_DEEPLY] = "macros nested too deeply",
@@ -4994,8 +4996,17 @@ static bool macro_begin(const char** pp, const char* e) {
         p++;
     }
     const int nn = (int) (p - ns);
-    if (nn == 0 || nn > 255) {
+    if (nn == 0) {
         zz.err = ZAP_E_EXPECTED_MACRO_NAME;
+
+        return false;
+    }
+    /* The same sixty-four a label gets, and the same place the reference draws
+     * it -- "Macro name too long" at sixty-five. There was no limit here at
+     * all, which took a name the reference refuses. */
+    if (nn > LABEL_MAX) {
+        err_tok(ns, nn);
+        zz.err = ZAP_E_MACRO_NAME_TOO_LONG;
 
         return false;
     }

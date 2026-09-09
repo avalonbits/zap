@@ -216,7 +216,7 @@ What it cost: 0.3% on isa_real, 1.5% on isa_degenerate. See
 
 ## What is left
 
-**Nothing.** Every source in the reference's corpus -- all 507 of them, with
+**Nothing in the corpus.** Every source in the reference's corpus -- all 507 of them, with
 `Errors_cputype` no longer skipped -- either assembles to identical bytes or
 is refused by both assemblers.
 Every whole program in the corpus now assembles byte-identically. The last two
@@ -224,6 +224,116 @@ were Rokky, whose bug was a global minus a local resolving against the wrong
 local -- three bytes in 31,520 with both assemblers accepting the file -- and
 BBC BASIC, which needed an index displacement to be an expression and an
 expression to be kept as text when a fixup could not hold it.
+
+## Where these are pinned
+
+Every divergence in this section has a source in `test/regress` that fails if
+it comes back -- zap's own tree, run by test/corpus.sh beside the vendored
+corpus, 49 sources. Each was checked by reverting the fix and watching the
+case turn red. What that tree cannot see is written in its README: a
+difference that is only in a message, and anything that depends on a
+command-line flag. test/run.sh covers both.
+
+## What the corpus could not see, and what it cost to look
+
+The corpus is 507 sources of valid code and negative tests, so it can only
+find a divergence somebody already wrote down. The reference's own diagnostic
+table -- 80 error codes and 5 warnings, readable with `strings` -- says what
+it checks, and each one probed against both assemblers found eight things the
+corpus never could.
+
+**Wrong bytes, silently, and this is the class that matters.** An operand that
+folds into the opcode was masked rather than checked:
+
+    bit 8, a     assembled as bit 0, a
+    im 3         assembled as im 0
+    rst 0x09     assembled as rst 08h -- a working call to the wrong vector
+
+and a fold whose value was still ahead of it was dropped altogether, so
+`bit n, a` with `n` an EQU further down the file was `bit 0, a` on legal code
+that the reference gets right. Three fixup widths above the byte counts now
+say come back to the opcode byte. The reference's rules here are odd and are
+reproduced as they are: a bit number above 7 is refused, one below 0 is
+shifted straight in, so `bit -1, a` is CB FF in both.
+
+**Taken where the reference refuses.** An ORG outside 16 bits with ADL 0. A
+line longer than 256 characters -- the reference counts a CR, so a CRLF file
+gets 255, and zap's limit was the 16 KB reader buffer. A macro name longer
+than 64 characters, where zap had no limit at all.
+
+**Said where the reference says something.** `ds 4, 0xAA` reserves four bytes
+and drops the 0xAA; the reference says so and zap did not. That was the one
+warning of its five zap had no answer for. It is not behind `-w`, and the
+reference draws the same line: `-i` does not silence it there either.
+
+**Said where the reference says nothing, on one machine only.** zap warned
+that `ld hl, 0x12345678` was truncated to 24 bits. The reference does not --
+it checks a *directive* against 24 bits and an instruction's immediate never
+-- and worse, the check was written so that it folded away on the Agon and
+survived on the host. The host warned and the target did not, and the target
+was the one that was right. A check that only fires on the machine the tests
+run on is worse than not having it.
+
+## The one place a difference is deliberate: a negative reservation
+
+`ds -1` on its own assembles cleanly in the reference and writes nothing, so
+it looks like something zap refuses needlessly. Put one byte after it and the
+same source writes **4,294,967,299 bytes** -- the count is read as unsigned
+and the gap is filled on the way out. `blkb -2`, which emits rather than
+reserves, is 3.5 GB with nothing after it at all.
+
+There is no byte sequence there worth agreeing with on a 512 KB machine, so
+both are refused. It is the same position as division by zero.
+
+## The listing, and the two things one pass cannot do
+
+An expansion is now listed the way the reference lists it -- the invocation
+with no bytes on it, the arguments under it, and a line per body line
+carrying the bytes that line wrote and the depth it wrote them at -- and the
+file is the reference's bytes, LF-terminated with one stray CR after the
+header. A listing of a source with no macros is byte-identical to the
+reference's and run.sh compares them.
+
+Four differences are left and all four are the same wall: the reference lists
+on its second pass and knows everything before it writes line 1, while zap
+writes each line as it assembles it.
+
+**A forward reference is listed with the bytes as they were emitted, not as
+they were patched.** `ld hl, ahead` is `21 00 00 00` here and `21 17 00 04`
+there. This one is not about macros at all and reaches every listing of every
+real program; it was found by comparing .lst files in the corpus runner, which
+is what that comparison is for. Closing it means either buffering the listing
+or recording a file offset per fixup and seeking back to rewrite twelve
+characters -- and `-d`, which goes to the console, could not be fixed either
+way.
+
+**A reservation's fill is listed differently again.** `ds 4` there leaves the
+first row's byte field empty and puts the fill on a continuation row, unpadded;
+`align 4` does the same; an ORG's pad is listed inline and padded, which zap
+matches. zap lists all three inline. And a reservation at the end of a file,
+which both assemblers drop, is listed with its bytes here and with none there.
+
+**The reference widens the line-number column by two characters for the whole
+file when any expansion is listed.** It can do that because it lists on the
+second of two passes and knows before it writes line 1. zap writes each line
+as it assembles it, and a file that expands its first macro on line 500 has
+499 lines already written. The alternatives are to buffer the listing --
+400 KB for BBC BASIC, on a machine with 512 -- or to rewrite the file at the
+end, and neither is worth a two-space column for a debugging aid.
+
+**A body line loses the indentation it was written with**, because a macro
+body is stored from its first token and the marks that find its parameters
+are offsets into that. The listing shows `db x` where the reference shows
+`  db x`.
+
+The console listing keeps CRLF rather than the reference's bare LF, which is
+a fifth difference and the only deliberate one: `-d` there staircases down an
+Agon screen.
+
+The `listing/` group in test/regress is the sources that avoid all four
+structural ones, so their `.lst` can be compared byte for byte. That
+comparison is what caught zap writing CRLF where the reference writes LF, and
+what found the forward-reference difference above.
 
 ## The one warning the reference has, and the one place zap does not copy it
 

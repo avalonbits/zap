@@ -4642,3 +4642,41 @@ the width live across a branch that the call did not.
 So: a call per immediate, or three bytes of frame. The call is cheaper, and
 the residual is 0.02s on a real program -- the emulator's own resolution.
 **This is the fourth time a change that removed work has lost to the frame.**
+
+## What the validation round cost, item by item
+
+Eight things the reference checks and zap did not. Measured one at a time on
+the target, because a round of small changes is exactly where a 2% arrives
+unattributed:
+
+    isa_real   bbcbasic
+      5.42       3.80     before
+      5.44       3.82     the four opcode-fold range checks      +0.4%
+      5.48       3.84     the 256-character line                 +0.7%
+      5.48       3.84     ORG, macro names, the ds initializer,
+                          the 24-bit immediate                    0
+      5.50       3.86     listing an expansion                   +0.4%
+
+    isa_even 5.52 -> 5.60   isa_degenerate 5.22 -> 5.32
+    isa_memory 5.60 -> 5.70 rokky 0.52 -> 0.54  synth 7.04 -> 7.16
+
+**The line-length check is the expensive one and buys the least**: a subtract
+and a compare on every line of every file, for a limit no real source reaches.
+It is 0.7% of isa_real and 0.5% of bbcbasic. Written as a pointer compare
+against `p + 256` instead of a subtract it reads 5.50, so the subtract stays.
+If any of this comes back out, it is this.
+
+Two shapes cost more than the work in them, both the frame again:
+
+* The opcode fold, inline in emit_row with the fold width and the symbol live
+  across the body: **5.52**, and assemble_line's frame 108 bytes to 111. Out
+  of line, taking the prefixes by value so the `emitted` struct is not
+  address-taken: 5.44 and the frame back to 108.
+* `list_args` inlined into macro_expand: its 176-byte buffer took the
+  expansion's frame from **73 bytes to 267**, and isa_real read 5.54. There is
+  nothing subtle here -- a cold function with a big buffer must not be inlined
+  into a hot one, and `static` is an invitation for the compiler to do it.
+
+That is the fifth and sixth time on this program that a change which removed
+work lost to the frame, and both were found the same way: build, disassemble,
+read the `ld hl,0xffff..` in the prologue.

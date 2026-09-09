@@ -235,6 +235,10 @@ _Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
  * the report is a courtesy and must never itself be a failure. */
 #define ERRLINE_MAX 128
 
+/* What the reference takes on one line, and what it counts: everything up to
+ * the newline, a carriage return included. */
+#define LINE_MAX_CHARS 256
+
 /* The longest file name INCLUDE and INCBIN will take. Fixed, because the name
  * is copied into a frame that has to outlive the line it came from, and into
  * `dz.errpath` when an include fails. */
@@ -342,6 +346,7 @@ typedef enum {
     ZAP_E_MACRO_PARAMETER_NOT_NUMBER_OR_MNEM,
     ZAP_E_STRING_DB,
     ZAP_E_UNARY_OPERATOR_VALUE,
+    ZAP_E_ADDRESS_OUTSIDE_16_BIT_RANGE,
     ZAP_E_ADDRESS_OUTSIDE_24_BIT_RANGE,
     ZAP_E_ALIGN_POSITIVE_NUMBER,
     ZAP_E_ALIGN_POWER_TWO,
@@ -371,10 +376,13 @@ typedef enum {
     ZAP_E_FILE_NAME_TOO_LONG,
     ZAP_E_INCLUDES_NESTED_TOO_DEEPLY,
     ZAP_E_INDEX_OFFSET_OUT_RANGE,
+    ZAP_E_INTERRUPT_MODE,
+    ZAP_E_INVALID_BIT_NUMBER,
     ZAP_E_INVALID_LABEL,
     ZAP_E_LABEL_DEFINED_TWICE,
     ZAP_E_LABEL_TOO_LONG,
     ZAP_E_LINE_TOO_LONG,
+    ZAP_E_MACRO_NAME_TOO_LONG,
     ZAP_E_MACRO_PARAMETER_NAME_TOO_LONG,
     ZAP_E_MACROS_DO_NOT_NEST,
     ZAP_E_MACROS_NESTED_TOO_DEEPLY,
@@ -393,6 +401,7 @@ typedef enum {
     ZAP_E_OUT_MEMORY_MACROS,
     ZAP_E_OUT_MEMORY_OUTPUT,
     ZAP_E_RELATIVE_JUMP_TOO_FAR,
+    ZAP_E_RESTART_ADDRESS,
     ZAP_E_STRING_NOT_TERMINATED,
     ZAP_E_CONSTANT_TOO_LARGE_ADD_LABEL,
     ZAP_E_MACRO_ALREADY_DEFINED,
@@ -421,6 +430,7 @@ static const char* const zap_err_text[] = {
     [ZAP_E_MACRO_PARAMETER_NOT_NUMBER_OR_MNEM] = "a macro parameter may not be a number or a mnemonic",
     [ZAP_E_STRING_DB] = "a string needs DB",
     [ZAP_E_UNARY_OPERATOR_VALUE] = "a unary operator needs a value",
+    [ZAP_E_ADDRESS_OUTSIDE_16_BIT_RANGE] = "address outside the 16-bit range",
     [ZAP_E_ADDRESS_OUTSIDE_24_BIT_RANGE] = "address outside the 24-bit range",
     [ZAP_E_ALIGN_POSITIVE_NUMBER] = "align needs a positive number",
     [ZAP_E_ALIGN_POWER_TWO] = "align needs a power of two",
@@ -450,10 +460,13 @@ static const char* const zap_err_text[] = {
     [ZAP_E_FILE_NAME_TOO_LONG] = "file name too long",
     [ZAP_E_INCLUDES_NESTED_TOO_DEEPLY] = "includes nested too deeply",
     [ZAP_E_INDEX_OFFSET_OUT_RANGE] = "index offset out of range",
+    [ZAP_E_INTERRUPT_MODE] = "interrupt mode must be 0, 1 or 2",
+    [ZAP_E_INVALID_BIT_NUMBER] = "bit number must be 0 to 7",
     [ZAP_E_INVALID_LABEL] = "invalid label",
     [ZAP_E_LABEL_DEFINED_TWICE] = "label defined twice",
     [ZAP_E_LABEL_TOO_LONG] = "label too long",
     [ZAP_E_LINE_TOO_LONG] = "line too long",
+    [ZAP_E_MACRO_NAME_TOO_LONG] = "macro name too long",
     [ZAP_E_MACRO_PARAMETER_NAME_TOO_LONG] = "macro parameter name too long",
     [ZAP_E_MACROS_DO_NOT_NEST] = "macros do not nest",
     [ZAP_E_MACROS_NESTED_TOO_DEEPLY] = "macros nested too deeply",
@@ -472,6 +485,7 @@ static const char* const zap_err_text[] = {
     [ZAP_E_OUT_MEMORY_MACROS] = "out of memory for macros",
     [ZAP_E_OUT_MEMORY_OUTPUT] = "out of memory for the output",
     [ZAP_E_RELATIVE_JUMP_TOO_FAR] = "relative jump too far",
+    [ZAP_E_RESTART_ADDRESS] = "not a restart address",
     [ZAP_E_STRING_NOT_TERMINATED] = "string not terminated",
     [ZAP_E_CONSTANT_TOO_LARGE_ADD_LABEL] = "that constant is too large to add to a label",
     [ZAP_E_MACRO_ALREADY_DEFINED] = "that macro is already defined",
@@ -834,6 +848,20 @@ typedef struct {
 #define FIX_SUB2  0x80
 #define FIX_WIDTH 0x7F
 
+/* Widths 1, 2, 3 and 4 are byte counts and 0 is a relative displacement.
+ * Above those are the folds: an operand that goes into the *opcode* rather
+ * than after it, and could not be folded when the instruction was emitted
+ * because the label was still ahead.
+ *
+ * `bit n, a` with `n` an EQU further down the file used to assemble as
+ * `bit 0, a` -- the fold saw nothing, the operand never became an immediate
+ * either, and the reference the source made simply vanished. Three bits of
+ * wrong instruction with nothing said. These three say to come back to the
+ * opcode byte, not to the bytes after it. */
+#define FIX_FOLD_BIT 5   /* (v & 7) << 3 into the opcode */
+#define FIX_FOLD_RST 6   /* v into the opcode */
+#define FIX_FOLD_IM  7   /* 0, 1, 2 as y = 0, 2, 3, shifted into the opcode */
+
 /* The range an addend has to fit, written out rather than derived from `int`,
  * which is three bytes on the Agon and four on the host. Deriving it would
  * make this refuse on one machine and accept on the other -- the failure this
@@ -1013,6 +1041,14 @@ typedef struct _dz {
     /* Where the line being listed started; see the line loop. */
     const uint8_t* lst_o;
     int lst_pc;
+    /* The start of the line being assembled, and whether the listing for it
+     * has already been written. A macro invocation writes its own -- the
+     * invocation with no bytes on it, then the arguments, then a line per
+     * body line, which is the order the reference prints them in and not the
+     * order the line loop would produce. Both are set only when a listing is
+     * being written at all. */
+    const char* lst_p;
+    bool lst_done;
 
     bool errhave;          /* the failing line has been captured */
     char errline[ERRLINE_MAX];
@@ -1259,15 +1295,21 @@ static inline bool fits_imm(int v, int width) {
     if (width == 2) {
         return ((unsigned) v + 32768u) <= 98303u;
     }
-    /* An `int` cannot be wider than an `int`: on the Agon this is a constant
-     * and folds away entirely. The host keeps the test, where it is four
-     * bytes and a three-byte write really can lose something, so the two
-     * machines warn about the same values. */
-    if ((int) sizeof(int) <= 3) {
-        return true;
-    }
-
-    return ((unsigned) v + 0x800000u) <= 0x17FFFFFu;
+    /* Three bytes always fits, and this is not the machine word talking.
+     *
+     * The reference does not check an instruction's immediate against 24
+     * bits: `ld hl, 0x12345678` is 21 78 56 34 there with nothing said, while
+     * `dw24 0x1234567` -- the directive -- is a truncation warning. Only the
+     * directive path checks, which is fits_width and not this.
+     *
+     * It was written the other way first, guarded by `sizeof(int) <= 3` so
+     * that the Agon folded it away and the host kept it. That made zap
+     * disagree with itself: the host warned about `ld hl, 0x12345678` and the
+     * Agon, where an `int` is three bytes and the value arrived already
+     * truncated, did not -- and the Agon was the one that matched the
+     * reference. A test that only fires on the machine the tests run on is
+     * worse than no test. */
+    return true;
 }
 
 /* The check and the complaint, kept apart.
@@ -1287,6 +1329,7 @@ static inline bool fits_imm(int v, int width) {
  * Defined below, beside the report it borrows its shape from; declared here
  * because the fixup patcher is the first thing that needs it. */
 static void warn_trunc(evalue v, int width);
+static void warn_initializer(const char* t, int n);
 
 /* Whether `-w` was given, and the one place zap deliberately does not behave
  * like the reference.
@@ -1602,6 +1645,54 @@ static bool loc_room(void) {
     return true;
 }
 
+/* The three folds, settled the way the emitter would have settled them if the
+ * label had been behind rather than ahead.
+ *
+ * Out of line and out of patch_fixup's own body: it runs once per forward
+ * reference in the file -- 843 of them in isa_real, every one of them an
+ * ordinary three-byte address -- and none of those is a fold. One compare
+ * sends the rare case here.
+ *
+ * The range checks are the emitter's, and so are their limits: the reference
+ * refuses a bit number above 7 and an interrupt mode above 2 while masking
+ * negatives into range, which is not what a careful assembler would do and is
+ * what this one has to do. */
+static bool patch_fold(const fixup* f, evalue val, uint8_t w, uint8_t* at) {
+    const int v = (int) val;
+    if (w == FIX_FOLD_BIT) {
+        if (v > 7) {
+            zz.line = f->line;
+            zz.err = ZAP_E_INVALID_BIT_NUMBER;
+
+            return false;
+        }
+        *at |= (uint8_t) ((unsigned) v << 3);
+
+        return true;
+    }
+    if (w == FIX_FOLD_RST) {
+        if (((unsigned) v & ~0x38u) != 0) {
+            zz.line = f->line;
+            zz.err = ZAP_E_RESTART_ADDRESS;
+
+            return false;
+        }
+        *at |= (uint8_t) v;
+
+        return true;
+    }
+
+    if (v > 2) {
+        zz.line = f->line;
+        zz.err = ZAP_E_INTERRUPT_MODE;
+
+        return false;
+    }
+    *at |= (uint8_t) ((v == 1 ? 2 : v == 2 ? 3 : 0) << 3);
+
+    return true;
+}
+
 /* Patches one reference, now that the address behind it is known. Shared by
  * the end of a scope, which settles that scope's local references, and the end
  * of the source, which settles every global one. */
@@ -1645,6 +1736,10 @@ static bool patch_fixup(const fixup* f) {
         *at = (uint8_t) d;
 
         return true;
+    }
+
+    if (w > 4) {
+        return patch_fold(f, val, w, at);
     }
 
     if (want_warn && !fits_width(val, (int) w)) {
@@ -4916,8 +5011,17 @@ static bool macro_begin(const char** pp, const char* e) {
         p++;
     }
     const int nn = (int) (p - ns);
-    if (nn == 0 || nn > 255) {
+    if (nn == 0) {
         zz.err = ZAP_E_EXPECTED_MACRO_NAME;
+
+        return false;
+    }
+    /* The same sixty-four a label gets, and the same place the reference draws
+     * it -- "Macro name too long" at sixty-five. There was no limit here at
+     * all, which took a name the reference refuses. */
+    if (nn > LABEL_MAX) {
+        err_tok(ns, nn);
+        zz.err = ZAP_E_MACRO_NAME_TOO_LONG;
 
         return false;
     }
@@ -5156,6 +5260,9 @@ __attribute__((noinline))
 /* Defined with the reporting, and called from both loops. */
 static void list_line(int pc, const uint8_t* from, const uint8_t* to, int line,
                       int depth, const char* text, const char* tend);
+static void list_invocation(const macro* m, int base, int line, int depth,
+                            const char* e);
+static void list_args(const macro* m, int base, int depth);
 
 /* Defined with the line loop, and called from the macro expansion below --
  * which assembles the body itself rather than handing it to a reader. */
@@ -5365,6 +5472,17 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
         scope_push(&sv);
     }
 
+    /* The invocation itself, then what it was given. Written here rather than
+     * left to the line loop for two reasons: the loop writes a line *after*
+     * assembling it, which would put the invocation below the body it
+     * expanded to, and by then the bytes of the whole expansion are on it.
+     * The reference shows the invocation with no bytes and hangs the bytes on
+     * the body lines, which is the only way a reader can tell which line of
+     * the macro wrote what. */
+    if (listing) {
+        list_invocation(m, base, saved_line, slot, e);
+    }
+
     bool ok = true;
     /* Offsets into the body, not pointers, because the body may have been
      * realloc'd since the marks were taken and an offset does not care. The
@@ -5403,6 +5521,23 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
             lend = buf + len;
         }
         zz.line++;
+
+        /* Where this body line starts writing, kept in `dz` and not in two
+         * locals: live across assemble_line they are two more slots in the
+         * body loop, and the loop pays for them on every expansion in the
+         * file whether or not anyone asked for a listing. That cost isa_real
+         * 5.48 -> 5.52 and bbcbasic 3.84 -> 3.86. The same fields the line
+         * loop uses serve here, because a line that is listed by an inner
+         * expansion is not listed again by this one. */
+        const uint8_t* bo = zz.o;
+        int bpc = 0;
+        if (listing) {
+            bpc = zz.org + (int) (zz.o - zz.out);
+            zz.lst_p = ls;
+        }
+        /* Two locals rather than two fields of `dz`, which was tried and
+         * reads the same on the target -- the frame here is 79 bytes either
+         * way. */
 
         const char* st = ls;
         if (!assemble_line(ls, lend, &st)) {
@@ -5452,7 +5587,27 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
                 break;
             }
         }
+
+        /* The body line, with the bytes it wrote and the depth it wrote them
+         * at -- unless it was itself an invocation, which has already written
+         * its own listing and its body's. */
+        if (listing) {
+            if (!zz.lst_done) {
+                /* The body **as written**, parameters and all, which is what
+                 * the reference shows: `db x`, not `db 7`. What x was is on
+                 * the Args line above it. */
+                list_line(bpc, bo, zz.o, zz.line, zz.depth,
+                          m->body + b, m->body + le + 1);
+            }
+            zz.lst_done = false;
+        }
         b = le + 1;
+    }
+
+    if (listing) {
+        /* Everything this invocation had to say is said; the line loop above
+         * must not say it again with the whole expansion's bytes on it. */
+        zz.lst_done = true;
     }
 
     if (m->haslocal && !scope_pop(&sv)) {
@@ -6630,11 +6785,19 @@ static bool directive_line(const char* s, int n, const char* p,
     }
 
     if (kind == DIR_DS) {
-        /* Refused rather than reproduced. The reference reads the count as
-         * unsigned, so `DS -1` there is sixteen megabytes of 0xFF and a
-         * successful assembly; on a 512 KB machine that is a way to lose the
-         * program rather than a feature, and there is no byte sequence worth
-         * agreeing with. Same position as division by zero. */
+        /* Refused rather than reproduced, and the measurement is worth
+         * keeping because the first look at it says the opposite.
+         *
+         * `ds -1` on its own assembles cleanly in the reference and writes
+         * nothing -- a reservation at the end of a file is dropped, so the
+         * negative count never has to mean anything. Put a single byte after
+         * it and the same source writes a **4,294,967,299-byte** file: the
+         * count is read as unsigned and the gap is filled when the file is
+         * written out. `blkb -2`, which emits rather than reserves, is
+         * 3.5 GB with nothing after it at all.
+         *
+         * On a 512 KB machine there is no byte sequence there worth agreeing
+         * with, so this says so instead. Same position as division by zero. */
         if (value < 0) {
             zz.err = ZAP_E_DS_POSITIVE_NUMBER;
 
@@ -6645,7 +6808,34 @@ static bool directive_line(const char* s, int n, const char* p,
         }
         /* `DS 3,1,2` is three bytes in the reference: the arguments after the
          * count are taken and ignored. Skipped rather than parsed, since
-         * nothing reads them. */
+         * nothing reads them -- but the first of them is said, which is what
+         * the reference does and what tells a reader that `ds 4, 0xAA` is not
+         * four bytes of 0xAA.
+         *
+         * The text is printed rather than the value, which is the reference's
+         * own message exactly, and means nothing has to be evaluated to say
+         * it -- an initializer that names an unknown label is still reported
+         * rather than turning into a second failure. */
+        while (p < e && is_space_ch(*p)) {
+            p++;
+        }
+        if (p < e && *p == ',') {
+            p++;
+            while (p < e && is_space_ch(*p)) {
+                p++;
+            }
+            const char* is = p;
+            while (p < e && *p != '\n' && *p != ';' && *p != ',') {
+                p++;
+            }
+            const char* ie = p;
+            while (ie > is && is_space_ch(ie[-1])) {
+                ie--;
+            }
+            if (ie > is) {
+                warn_initializer(is, (int) (ie - is));
+            }
+        }
         while (p < e && *p != '\n' && *p != ';') {
             p++;
         }
@@ -6799,6 +6989,18 @@ static bool directive_line(const char* s, int n, const char* p,
     }
 
     if (kind == DIR_ORG) {
+        /* Out of ADL mode an address is two bytes, and the reference refuses
+         * one that is not -- "Address outside 16-bit range". Only here: it
+         * does not check ORG against the 24-bit ceiling in ADL mode, and it
+         * does not check RELOCATE against 16 bits out of it, so neither does
+         * this. Rare enough that a compare costs nothing measurable, and it is
+         * on the directive path rather than the instruction path anyway. */
+        if (!zz.adl && value > 0xFFFF) {
+            zz.err = ZAP_E_ADDRESS_OUTSIDE_16_BIT_RANGE;
+
+            return false;
+        }
+
         /* The first ORG in a file moves the origin; every later one pads out
          * to its address. That is not a guess -- two ORGs with nothing between
          * them write the 64 KB gap in the reference, so the second is already
@@ -7016,7 +7218,23 @@ static inline uint8_t imm_lo(const dop* op) {
     return *(const uint8_t*) &op->imm;
 }
 
-__attribute__((always_inline)) static inline void transform(emitted* out, dop* op, uint8_t type) {
+/* Returns false for an operand that folds into the opcode and does not fit
+ * the field it folds into. There are three of those and the reference refuses
+ * all three; zap used to mask them and emit an instruction the source did not
+ * write -- `bit 8, a` as `bit 0, a`, `im 3` as `im 0`, `rst 0x09` as
+ * `rst 0x08`. Wrong bytes with nothing said, which is the worst thing an
+ * assembler can do.
+ *
+ * The checks sit here rather than in the matcher because this is where the
+ * field is known: `IMM_BIT` is a marker on the row, and the row is not chosen
+ * until the operands are parsed. Failing the match instead would say "no such
+ * instruction form", which is true and useless. */
+/* What transform did with the operand. */
+#define TRF_OK    0
+#define TRF_ERR   1
+#define TRF_DEFER 2
+
+__attribute__((always_inline)) static inline uint8_t transform(emitted* out, dop* op, uint8_t type) {
     switch (type) {
         case TR_IR0:
             if (((op->r1 & RP1_XYL) | (op->r2 & RP2_XYL)) != 0) {
@@ -7033,7 +7251,25 @@ __attribute__((always_inline)) static inline void transform(emitted* out, dop* o
             break;
         case TR_Y:
             if ((op->mode & IMM) != 0) {
-                out->opcode |= shl3[imm_lo(op) & 7];
+                /* The bit number of `bit n, (hl)` and `bit n, (ix+d)`. The
+                 * register forms use TR_BIT and are checked there; every other
+                 * TR_Y is a register in this slot and never takes this arm. */
+                if (op->fwd != NULL) {
+                    op->mode &= (uint8_t) ~IMM;
+
+                    return TRF_DEFER;
+                }
+                if (op->imm > 7) {
+                    zz.err = ZAP_E_INVALID_BIT_NUMBER;
+
+                    return TRF_ERR;
+                }
+                /* Shifted rather than looked up, and not masked, because the
+                 * reference is not: `bit -1, a` is CB FF there -- the whole
+                 * of the shifted value ORed into the opcode, three bits of
+                 * bit number and five of whatever else it lands on. A table
+                 * indexed by `v & 7` is faster and gives CB 7F. */
+                out->opcode |= (uint8_t) ((unsigned) op->imm << 3);
             } else {
                 out->opcode |= shl3[op->reg_index & 7];
             }
@@ -7045,27 +7281,94 @@ __attribute__((always_inline)) static inline void transform(emitted* out, dop* o
             out->opcode |= shl3[op->cc_index & 7];
             break;
         case TR_N:
-            out->opcode |= (uint8_t) op->imm;
+            /* RST, and the only row with this transform. The eight addresses
+             * are the multiples of eight below 0x40, which is every value that
+             * ORs into 0xC7 without touching a bit that is already there. */
             op->mode &= (uint8_t) ~IMM;
+            if (op->fwd != NULL) {
+                return TRF_DEFER;
+            }
+            if (((unsigned) op->imm & ~0x38u) != 0) {
+                zz.err = ZAP_E_RESTART_ADDRESS;
+
+                return TRF_ERR;
+            }
+            out->opcode |= (uint8_t) op->imm;
             break;
         case TR_BIT:
-            out->opcode |= shl3[imm_lo(op) & 7];
             op->mode &= (uint8_t) ~IMM;
+            if (op->fwd != NULL) {
+                return TRF_DEFER;
+            }
+            if (op->imm > 7) {
+                zz.err = ZAP_E_INVALID_BIT_NUMBER;
+
+                return TRF_ERR;
+            }
+            out->opcode |= (uint8_t) ((unsigned) op->imm << 3);
             break;
         case TR_SELECT: {
+            /* IM, and the only row with this transform. Modes 0, 1 and 2 are
+             * y = 0, 2 and 3. Above 2 the reference refuses; below 0 it does
+             * not, and assembles `im 0`, so neither does this. */
+            op->mode &= (uint8_t) ~IMM;
+            if (op->fwd != NULL) {
+                return TRF_DEFER;
+            }
             uint8_t y = 0;
             if (op->imm == 1) {
                 y = 2;
             } else if (op->imm == 2) {
                 y = 3;
+            } else if (op->imm > 2) {
+                zz.err = ZAP_E_INTERRUPT_MODE;
+
+                return TRF_ERR;
             }
             out->opcode |= shl3[y & 7];
-            op->mode &= (uint8_t) ~IMM;
             break;
         }
         default:
             break;
     }
+
+    return TRF_OK;
+}
+
+/* A fold whose label is still ahead: work out where the opcode byte will land
+ * and leave a fixup on it, before the chain in emit_row moves past it.
+ *
+ * Out of line, and taking the prefixes by value rather than the `emitted` it
+ * came from, for one reason each. Out of line because everything here is dead
+ * weight in the ordinary instruction -- inlined, it cost isa_real 1.8%, which
+ * is what two more live values across emit_row's body are worth. By value
+ * because taking the address of `out` puts it in the frame, and the frame is
+ * the thing this program cannot spare. */
+__attribute__((noinline)) static bool fold_defer(uint8_t type, const dop* op,
+                                                 uint8_t prefix1, uint8_t prefix2,
+                                                 uint8_t flags, int off) {
+    if (prefix1 != 0) {
+        off++;
+    }
+    if (prefix2 != 0) {
+        off++;
+    }
+    /* `bit n, (ix+d)` puts the displacement between the CB and the opcode,
+     * which is the one shape where the opcode is not the byte after the
+     * prefixes. */
+    if ((prefix1 == 0xDD || prefix1 == 0xFD) && prefix2 == 0xCB
+        && (flags & (F_DISPA | F_DISPB)) != 0) {
+        off += ((flags & F_DISPA) != 0) + ((flags & F_DISPB) != 0);
+    }
+
+    uint8_t w = FIX_FOLD_BIT;
+    if (type == TR_N) {
+        w = FIX_FOLD_RST;
+    } else if (type == TR_SELECT) {
+        w = FIX_FOLD_IM;
+    }
+
+    return fix_add(op->fwd, NULL, 0, w, off);
 }
 
 static uint8_t* emit_imm(uint8_t* o, const dop* op, uint8_t cond, bool adl) {
@@ -7187,10 +7490,22 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
      * instruction whose operands do not fold into the opcode. A load and a
      * compare replaces a call, a dispatch and a return. */
     if (row->transformA != TR_NONE) {
-        transform(&out, a, row->transformA);
+        const uint8_t r = transform(&out, a, row->transformA);
+        if (r != TRF_OK
+            && (r == TRF_ERR
+                || !fold_defer(row->transformA, a, out.prefix1, out.prefix2,
+                               row->flags, (int) (o - zz.out)))) {
+            return false;
+        }
     }
     if (row->transformB != TR_NONE) {
-        transform(&out, b, row->transformB);
+        const uint8_t r = transform(&out, b, row->transformB);
+        if (r != TRF_OK
+            && (r == TRF_ERR
+                || !fold_defer(row->transformB, b, out.prefix1, out.prefix2,
+                               row->flags, (int) (o - zz.out)))) {
+            return false;
+        }
     }
 
     ETRUNC_AT(2);
@@ -7972,6 +8287,7 @@ __attribute__((noinline)) static bool run_lines(void) {
         if (listing) {
             zz.lst_o = zz.o;
             zz.lst_pc = zz.org + (int) (zz.o - zz.out);
+            zz.lst_p = p;
         }
 
         zz.line++;
@@ -8028,8 +8344,28 @@ __attribute__((noinline)) static bool run_lines(void) {
             }
             stop = q;
         }
+        /* The reference takes 256 characters of line and refuses the 257th --
+         * counting a CR, so a CRLF file gets 255 of them. zap's own limit is
+         * the 16 KB reader buffer, which meant a line that assembled here
+         * would not assemble there, on a file neither of us should take.
+         *
+         * Asked here, where the line is already walked to its end, rather
+         * than by scanning ahead for the newline: `stop` is the newline and
+         * the length is a subtract. The reference refuses the line before
+         * reading it and this refuses it after, so a long line that is also
+         * malformed reports the other fault first. Both refuse the file,
+         * which is what a source can observe. */
+        if ((int) (stop - p) > LINE_MAX_CHARS) {
+            zz.err = ZAP_E_LINE_TOO_LONG;
+
+            return false;
+        }
+
         if (listing) {
-            list_line(zz.lst_pc, zz.lst_o, zz.o, zz.line, 0, p, stop);
+            if (!zz.lst_done) {
+                list_line(zz.lst_pc, zz.lst_o, zz.o, zz.line, 0, p, stop);
+            }
+            zz.lst_done = false;
         }
 
         /* A line that was only a remark stops at the semicolon, so the rest
@@ -8496,12 +8832,25 @@ static void err_reopen(const char* path, int line) {
  *
  * Whatever it cannot write, it drops. A listing is a convenience and must
  * never be able to fail an assembly. */
+/* One line of listing, without its terminator, which is not the same on both
+ * destinations.
+ *
+ * The reference's .lst is LF-terminated -- with one stray CR after the header
+ * and nowhere else -- and zap's was CRLF throughout, so two listings of the
+ * same source could not be diffed without a filter. The file now matches it
+ * byte for byte.
+ *
+ * The console does not. The reference prints the same LF-only lines to it,
+ * which on an Agon means every line of a `-d` listing starts where the last
+ * one ended; that is a quirk to leave behind rather than reproduce, and it is
+ * on a channel nothing compares. */
 static void list_out(const char* buf, int n) {
     if (want_console_list) {
-        printf("%.*s", n, buf);
+        printf("%.*s\r\n", n, buf);
     }
     if (list_fh != 0) {
         mos_fwrite(list_fh, (char*) buf, (uint24_t) n);
+        mos_fwrite(list_fh, (char*) "\n", 1);
     }
 }
 
@@ -8561,11 +8910,79 @@ static void list_line(int pc, const uint8_t* from, const uint8_t* to, int line,
                 buf[w++] = *q;
             }
         }
-        buf[w++] = '\r';
-        buf[w++] = '\n';
         list_out(buf, w);
         row++;
     } while (row * 4 < n);
+}
+
+/* The line the reference prints between an invocation and the body it
+ * expands to:
+ *
+ *                            M1 Args: x=7 
+ *
+ * Twenty-three spaces put the tag under the one the body lines carry, each
+ * argument is `name=value` with a space after it, and a macro that takes none
+ * says `none`. Values are the argument text as written, which is what was
+ * substituted -- not what it evaluates to, which at this point nothing has
+ * asked. */
+/* The invocation line and the arguments under it, which is everything the
+ * reference prints before a body.
+ *
+ * One function rather than two calls from macro_expand, and out of line for
+ * the same reason list_args is: seven arguments and a 176-byte buffer set up
+ * inside the expansion is a frame the expansion pays for on every macro in
+ * the file, listing or no listing. */
+__attribute__((noinline))
+static void list_invocation(const macro* m, int base, int line, int depth,
+                            const char* e) {
+    list_line(zz.lst_pc, zz.o, zz.o, line, depth, zz.lst_p, e);
+    list_args(m, base, depth + 1);
+}
+
+__attribute__((noinline))
+static void list_args(const macro* m, int base, int depth) {
+    /* Its own frame, and that is the whole reason for the attribute: inlined
+     * into macro_expand this buffer took the expansion's frame from 73 bytes
+     * to 267, and everything past 128 there is reached through a computed
+     * address rather than an `ix` displacement. isa_real read 5.54 against
+     * 5.48 for a function that runs only when a listing is being written. */
+    char buf[ERRLINE_MAX + 48];
+    const int lim = (int) sizeof(buf) - 3;
+    int w = 0;
+    while (w < 23) {
+        buf[w++] = ' ';
+    }
+    buf[w++] = 'M';
+    buf[w++] = (char) ('0' + (depth % 10));
+    for (const char* q = " Args: "; *q != 0; q++) {
+        buf[w++] = *q;
+    }
+    if (m->nparam == 0) {
+        for (const char* q = "none"; *q != 0 && w < lim; q++) {
+            buf[w++] = *q;
+        }
+    } else {
+        const char* pp = m->params;
+        for (int k = 0; k < m->nparam; k++) {
+            const int pn = (uint8_t) pp[0];
+            for (int i = 0; i < pn && w < lim; i++) {
+                buf[w++] = pp[1 + i];
+            }
+            if (w < lim) {
+                buf[w++] = '=';
+            }
+            const char* const a = zz.margp[base + k];
+            const int an = zz.margn[base + k];
+            for (int i = 0; i < an && w < lim; i++) {
+                buf[w++] = a[i];
+            }
+            if (w < lim) {
+                buf[w++] = ' ';
+            }
+            pp += pn + 1;
+        }
+    }
+    list_out(buf, w);
 }
 
 /* An output file beside the source: `prog.s` gives `prog.symbols`.
@@ -8739,20 +9156,51 @@ static void write_stats(void) {
  * nothing wrong with it. The number is what the reader needs anyway.
  *
  * No echoed line, for the same reason. */
-static void warn_trunc(evalue v, int width) {
-    const char* const yellow = use_color ? "\033[33m" : "";
-    const char* const off = use_color ? "\033[39m" : "";
-    /* Inside an expansion `zz.path` is the macro, which is what the reader
-     * needs to be told: the line number counts the body, not the file. */
-    if (zz.expanding != 0) {
-        printf("%sMacro [%s] line %d - Value truncated to %d bit '0x%lX'%s\r\n",
-               yellow, zz.path != NULL ? zz.path : "?", zz.line, width * 8,
-               (unsigned long) (v & 0xFFFFFFFFL), off);
-    } else {
-        printf("%sFile \"%s\" line %d - Value truncated to %d bit '0x%lX'%s\r\n",
-               yellow, zz.path != NULL ? zz.path : "?", zz.line, width * 8,
-               (unsigned long) (v & 0xFFFFFFFFL), off);
+/* Where a warning happened, printed the way the reference prints it, and the
+ * colour left on for the message that follows. Inside an expansion `zz.path`
+ * is the macro, which is what the reader needs to be told: the line number
+ * counts the body, not the file. */
+static void warn_where(void) {
+    if (use_color) {
+        printf("\033[33m");
     }
+    if (zz.expanding != 0) {
+        printf("Macro [%s] line %d - ", zz.path != NULL ? zz.path : "?", zz.line);
+    } else {
+        printf("File \"%s\" line %d - ", zz.path != NULL ? zz.path : "?", zz.line);
+    }
+}
+
+static void warn_done(void) {
+    if (use_color) {
+        printf("\033[39m");
+    }
+    printf("\r\n");
+}
+
+static void warn_trunc(evalue v, int width) {
+    warn_where();
+    printf("Value truncated to %d bit '0x%lX'", width * 8,
+           (unsigned long) (v & 0xFFFFFFFFL));
+    warn_done();
+}
+
+/* `DS 4, 0xAA` reserves four bytes and does not fill them with 0xAA: a
+ * reservation takes the FILLBYTE, and the initializer is dropped. The
+ * reference says so and zap said nothing.
+ *
+ * Not behind `-w`, and it is worth saying why the two differ. `-w` is there
+ * because a truncation check is a question asked of every value in every
+ * source. This is not a question: it is a fact about a line that has already
+ * been parsed and already has an argument nobody will read. It costs a
+ * comparison on the DS path, which nothing measures.
+ *
+ * `-i` does not silence it in the reference either, which is the same
+ * distinction drawn there. */
+static void warn_initializer(const char* t, int n) {
+    warn_where();
+    printf("Ignoring unsupported initializer value '%.*s'", n, t);
+    warn_done();
 }
 
 /* What went wrong, said the way somebody trying to fix it needs to hear it.
@@ -8840,8 +9288,14 @@ int main(int argc, char* argv[]) {
 
     printf("Assembling %s\r\n", in);
     if (listing) {
-        static const char head[] = "PC     Output      Line\r\n";
+        /* The reference writes "\n\r" here and "\n" everywhere after it. The
+         * CR is the last byte of the header rather than the first of the
+         * next line, which is the same bytes either way. */
+        static const char head[] = "PC     Output      Line";
         list_out(head, (int) sizeof(head) - 1);
+        if (list_fh != 0) {
+            mos_fwrite(list_fh, (char*) "\r", 1);
+        }
     }
     const clock_t begin = clock();
     const bool ok = run(in);

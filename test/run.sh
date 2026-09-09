@@ -189,6 +189,178 @@ cli_check "an option that is not the reference's is still refused" \
     "$("$OUT/zap" -c -Q "$OUT/opt2.s" "$OUT/opt2.bin" 2>&1 | tr -d '\r' \
        | grep -c 'Unknown option -Q')" 1
 
+# A reservation takes the FILLBYTE and drops any initializer written after the
+# count, and the reference says so. zap said nothing. Not behind -w: the check
+# is a comma on a line already parsed, not a question asked of every value --
+# and -i does not silence it in the reference either.
+init_same() {
+    local text="$1" want="$2"
+    printf '%b' "$text" > "$OUT/init.s"
+    cli_check "[${text%\\n}] says what is ignored" \
+        "$("$OUT/zap" -c "$OUT/init.s" "$OUT/init.bin" 2>&1 | tr -d '\r' \
+           | grep -c 'Ignoring unsupported initializer' || true)" "$want"
+    if [ -x "$OPTREF" ]; then
+        # The reference says it once per pass and there are two of them.
+        cli_check "[${text%\\n}] says it about the same thing" \
+            "$("$OUT/zap" -c "$OUT/init.s" "$OUT/init.bin" 2>&1 | tr -d '\r' \
+               | grep -o "initializer value '[^']*'" | head -1)" \
+            "$("$OPTREF" "$OUT/init.s" "$OUT/initr.bin" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' \
+               | grep -o "initializer value '[^']*'" | head -1)"
+    fi
+}
+init_same '  ds 4, 0xAA\n' 1
+init_same '  ds 3,1,2\n' 1
+init_same '  ds 4, nope\n' 1
+init_same '  ds 4\n' 0
+init_same '  blkb 2, 0xAA\n' 0
+printf '  ds 4, 0xAA\n' > "$OUT/init.s"
+cli_check "-i does not silence it, as it does not there" \
+    "$("$OUT/zap" -c -i "$OUT/init.s" "$OUT/init.bin" 2>&1 | tr -d '\r' \
+       | grep -c 'Ignoring unsupported' || true)" 1
+cli_check "-w does not have to be given for it" \
+    "$("$OUT/zap" -c "$OUT/init.s" "$OUT/init.bin" 2>&1 | tr -d '\r' \
+       | grep -c 'Ignoring unsupported' || true)" 1
+
+# A negative reservation is refused, and this is the one place that is a
+# deliberate difference rather than a gap. The same source in the reference
+# writes a 4 GB file -- the count is read as unsigned and the gap is filled on
+# the way out -- so there is nothing to compare against and nothing worth
+# agreeing with. `ds -1` alone looks accepted there only because a reservation
+# at the end of a file is dropped before it can mean anything.
+printf '  nop\n  ds -1\nlab:\n  dl lab\n' > "$OUT/neg.s"
+cli_check "a negative DS is refused" \
+    "$("$OUT/zap" -c "$OUT/neg.s" "$OUT/neg.bin" 2>&1 | tr -d '\r' \
+       | grep -c 'ds needs a positive number')" 1
+printf '  blkb -2\n' > "$OUT/neg.s"
+cli_check "a negative BLK is refused" \
+    "$("$OUT/zap" -c "$OUT/neg.s" "$OUT/neg.bin" 2>&1 | tr -d '\r' \
+       | grep -c 'blk needs a positive number')" 1
+
+# A macro name gets the sixty-four characters a label gets, and the reference
+# refuses the sixty-fifth. zap had no limit here.
+macname_same() {
+    local n="$1"
+    { printf '  MACRO '; head -c "$n" /dev/zero | tr '\0' 'm'; printf '\n  nop\n  ENDMACRO\n'; } \
+        > "$OUT/macname.s"
+    local zo ro
+    zo=$("$OUT/zap" -c "$OUT/macname.s" "$OUT/macname.bin" 2>&1 | tr -d '\r' \
+         | grep -c 'macro name too long' || true)
+    if [ -x "$OPTREF" ]; then
+        ro=$("$OPTREF" "$OUT/macname.s" "$OUT/macnamer.bin" 2>&1 \
+             | sed 's/\x1b\[[0-9;]*m//g' | grep -c 'Macro name too long' || true)
+        cli_check "a $n-character macro name agrees with the reference" "$zo" "$ro"
+    fi
+}
+macname_same 32
+macname_same 64
+macname_same 65
+macname_same 80
+
+# The reference takes 256 characters on a line and refuses the 257th, counting
+# a carriage return, so a CRLF file gets 255. zap's own limit used to be the
+# 16 KB reader buffer, which took lines the reference would not.
+line_same() {
+    local n="$1" eol="$2" nl=""
+    [ "$eol" = crlf ] && nl=$'\r'
+    { printf '; '; head -c $((n - 2)) /dev/zero | tr '\0' 'x'; printf '%s\n  nop%s\n' "$nl" "$nl"; } \
+        > "$OUT/long.s"
+    local zo ro
+    zo=$("$OUT/zap" -c "$OUT/long.s" "$OUT/long.bin" 2>&1 | tr -d '\r' \
+         | grep -c 'line too long' || true)
+    if [ -x "$OPTREF" ]; then
+        ro=$("$OPTREF" "$OUT/long.s" "$OUT/longr.bin" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' \
+             | grep -c 'Input line too long' || true)
+        cli_check "a $n-character $eol line agrees with the reference" "$zo" "$ro"
+    fi
+}
+line_same 255 lf
+line_same 256 lf
+line_same 257 lf
+line_same 400 lf
+line_same 254 crlf
+line_same 255 crlf
+line_same 256 crlf
+
+# Out of ADL mode an address is two bytes and ORG has to fit one. The
+# reference checks this and nothing else nearby: not ORG against 24 bits in
+# ADL mode, not RELOCATE against 16 out of it. Each of those is checked here
+# against the reference rather than against what a careful assembler would do.
+org_same() {
+    local text="$1"
+    printf '%b' "$text" > "$OUT/org.s"
+    local zo ro
+    zo=$("$OUT/zap" -c "$OUT/org.s" "$OUT/orgz.bin" 2>&1 | tr -d '\r' \
+         | grep -c 'outside the 16-bit range' || true)
+    if [ -x "$OPTREF" ]; then
+        ro=$("$OPTREF" "$OUT/org.s" "$OUT/orgr.bin" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' \
+             | grep -c 'Address outside 16-bit range' || true)
+        cli_check "[${text%\\n}] 16-bit range agrees with the reference" "$zo" "$ro"
+    fi
+}
+org_same '  .assume adl=0\n  org 0x10000\n  nop\n'
+org_same '  .assume adl=0\n  org 0x123456\n  nop\n'
+org_same '  .assume adl=0\n  org 0xFFFF\n  nop\n'
+org_same '  org 0x123456\n  nop\n'
+org_same '  org $1000000\n  nop\n'
+org_same '  .assume adl=0\n  org 0x100\n  .relocate 0x12345\n  nop\n'
+cli_check "-a 0 puts ORG under the same rule" \
+    "$("$OUT/zap" -c -a 0 "$OUT/org.s" "$OUT/orgz.bin" 2>&1 | tr -d '\r' \
+       | grep -c 'outside the 16-bit range' || true)" 0
+
+# An operand that folds into the opcode has to fit the field it folds into.
+# zap used to mask it: `bit 8, a` assembled as `bit 0, a` and `rst 0x09` as
+# `rst 0x08` -- wrong bytes with nothing said, which is the one failure an
+# assembler must not have. Every case here is checked against the reference,
+# refusals and bytes both, because the reference's own rules are odd: it
+# refuses a bit number above 7 and masks one below 0.
+fold_same() {
+    local text="$1"
+    printf '%b' "$text" > "$OUT/fold.s"
+    local zo ro zb rb
+    rm -f "$OUT/foldz.bin"
+    zo=$("$OUT/zap" -c "$OUT/fold.s" "$OUT/foldz.bin" 2>&1 | tr -d '\r' \
+         | grep -cE 'bit number|restart address|interrupt mode' || true)
+    zb=$(xxd -p "$OUT/foldz.bin" 2>/dev/null | tr -d '\n' || true)
+    if [ -x "$OPTREF" ]; then
+        rm -f "$OUT/foldr.bin"
+        ro=$("$OPTREF" "$OUT/fold.s" "$OUT/foldr.bin" 2>&1 \
+             | sed 's/\x1b\[[0-9;]*m//g' \
+             | grep -cE 'Invalid bit number|Illegal restart|Illegal interrupt' || true)
+        rb=$(xxd -p "$OUT/foldr.bin" 2>/dev/null | tr -d '\n' || true)
+        cli_check "[${text%\\n}] refused like the reference" "$zo" "$ro"
+        cli_check "[${text%\\n}] assembles like the reference" "$zb" "$rb"
+    fi
+}
+# Refused by both, and no bytes.
+fold_same '  bit 8, a\n'
+fold_same '  bit 8, (hl)\n'
+fold_same '  res 8, (ix+0)\n'
+fold_same '  set 300, a\n'
+fold_same '  im 3\n'
+fold_same '  im 300\n'
+fold_same '  rst 0x09\n'
+fold_same '  rst 0x37\n'
+fold_same '  rst -8\n'
+# Taken by both, and the same bytes -- including the negative bit numbers the
+# reference shifts straight into the opcode without masking.
+fold_same '  bit 0, a\n  bit 7, a\n  set 3, (hl)\n  res 5, (ix+1)\n  bit 2, (iy-2)\n'
+fold_same '  im 0\n  im 1\n  im 2\n  im -1\n'
+fold_same '  rst 0\n  rst 08h\n  rst 38h\n'
+fold_same '  bit -1, a\n'
+fold_same '  bit -1, (hl)\n'
+fold_same '  set -3, (ix+4)\n'
+# And the same again with the value still ahead of the instruction that uses
+# it, which is where the fold has to become a fixup on the opcode byte.
+fold_same '  bit n, a\nn: EQU 3\n'
+fold_same '  bit n, (hl)\nn: EQU 3\n'
+fold_same '  res n, (ix+2)\nn: EQU 6\n'
+fold_same '  rst n\nn: EQU 8\n'
+fold_same '  im n\nn: EQU 2\n'
+fold_same '  bit n, a\nn: EQU -1\n'
+fold_same '  bit n, a\nn: EQU 8\n'
+fold_same '  rst n\nn: EQU 9\n'
+fold_same '  im n\nn: EQU 3\n'
+
 # A value that does not fit where it is written is a *warning*: it is said,
 # and the assembly carries on and produces the same bytes the reference
 # produces. That is why it is a warning in both and an error in neither.
@@ -228,6 +400,69 @@ warn_same "  ld a, -129" 1
 warn_same "  dw 65535" 0
 warn_same "  dw 65536" 1
 warn_same "  dl 16777216" 1
+# A listing of a source with no macros in it is byte-identical to the
+# reference's -- including its line endings, which are LF with one stray CR
+# after the header and were CRLF throughout here until now.
+printf 'val: EQU 9\nlab:\n  ld hl, lab\n  db 1,2,3,4,5,6\n  ld a, (ix+5)\n' > "$OUT/lst1.s"
+rm -f "$OUT/lst1.lst"
+"$OUT/zap" -c -l "$OUT/lst1.s" "$OUT/lst1.bin" > /dev/null 2>&1
+if [ -x "$OPTREF" ]; then
+    cp "$OUT/lst1.lst" "$OUT/lst1.zap"
+    rm -f "$OUT/lst1.lst"
+    "$OPTREF" -l "$OUT/lst1.s" "$OUT/lst1r.bin" > /dev/null 2>&1
+    if cmp -s "$OUT/lst1.zap" "$OUT/lst1.lst"; then
+        echo "PASS  a listing with no macros is the reference's file byte for byte"
+    else
+        echo "FAIL  a listing with no macros differs from the reference's"
+        status=1
+    fi
+fi
+
+# An expansion is listed: the invocation with no bytes on it, then the
+# arguments, then a line per body line carrying the bytes it wrote and the
+# depth it wrote them at. zap used to list the invocation with the whole
+# expansion's bytes and never show the body at all.
+printf '  MACRO m x\n  db x\n  ENDMACRO\n  nop\n  m 7\n' > "$OUT/lst2.s"
+rm -f "$OUT/lst2.lst"
+"$OUT/zap" -c -l "$OUT/lst2.s" "$OUT/lst2.bin" > /dev/null 2>&1
+lst2=$(tr -d '\r' < "$OUT/lst2.lst")
+cli_check "the invocation carries no bytes" \
+    "$(printf '%s' "$lst2" | grep -c '^040001             0005   m 7$')" 1
+cli_check "the arguments are listed under the tag" \
+    "$(printf '%s' "$lst2" | grep -c '^                       M1 Args: x=7 $')" 1
+cli_check "the body line carries the bytes and the depth" \
+    "$(printf '%s' "$lst2" | grep -c '^040001 07          0001M1 db x$')" 1
+cli_check "the body is listed as written, not as substituted" \
+    "$(printf '%s' "$lst2" | grep -c 'db 7')" 0
+# A macro that takes nothing says so, and a nested one counts its depth.
+printf '  MACRO i\n  nop\n  ENDMACRO\n  MACRO o\n  i\n  ENDMACRO\n  o\n' > "$OUT/lst3.s"
+rm -f "$OUT/lst3.lst"
+"$OUT/zap" -c -l "$OUT/lst3.s" "$OUT/lst3.bin" > /dev/null 2>&1
+lst3=$(tr -d '\r' < "$OUT/lst3.lst")
+cli_check "a macro with no parameters says none" \
+    "$(printf '%s' "$lst3" | grep -c 'M1 Args: none$')" 1
+cli_check "the inner expansion is one deeper" \
+    "$(printf '%s' "$lst3" | grep -c 'M2 Args: none$')" 1
+cli_check "and its body line is tagged M2" \
+    "$(printf '%s' "$lst3" | grep -c '0001M2 nop$')" 1
+# -d prints the same listing and still writes no file.
+rm -f "$OUT/lst2.lst"
+cli_check "-d lists an expansion too" \
+    "$("$OUT/zap" -c -d "$OUT/lst2.s" "$OUT/lst2.bin" 2>&1 | tr -d '\r' \
+       | grep -c 'M1 Args: x=7')" 1
+cli_check "-d still writes no file" "$([ -f "$OUT/lst2.lst" ] && echo 1 || echo 0)" 0
+
+# An instruction's immediate is not checked against 24 bits and a directive is,
+# which is the reference's rule and not an obvious one. It was got wrong in the
+# direction that only shows on the host, where an int is four bytes: zap warned
+# about `ld hl, 0x12345678` there and stayed silent on the Agon, and the Agon
+# was the one that agreed with the reference.
+warn_same "  ld hl, 0x12345678" 0
+warn_same "  ld hl, 0x1234567" 0
+warn_same "  dw24 0x1234567" 1
+warn_same "  dl 0x123456789" 1
+
+
 
 # And the bytes are the reference's either way, which is the claim that makes
 # it a warning rather than a refusal -- and, now that the check is optional,
@@ -814,14 +1049,19 @@ else
         # optimised for. What it does do is notice if the unsigned loop bound
         # in same_ci -- which measured 1.4% faster, for reasons that are not
         # this call -- is ever put back.
+        #
+        # 12 until the opcode folds were range-checked. `bit n, a` with n
+        # above 7 is a signed compare and there are four of them now, one per
+        # fold plus the deferred bit number; the figure below moved to 16 with
+        # a measurement beside it, which is the only reason to move it.
         nset=$(awk '/^_assemble_line:$/ { go = 1; next }
                     go && /^_[a-z_0-9]+:$/ { exit }
                     go && /call[ \t]+pe, __setflag/ { n++ }
                     END { print n + 0 }' "$OUT/zap.s")
-        if [ "$nset" -le 12 ]; then
+        if [ "$nset" -le 16 ]; then
             echo "PASS  assemble_line has no more signed-compare repairs than it did ($nset)"
         else
-            echo "FAIL  assemble_line has $nset signed-compare repairs, was 12"
+            echo "FAIL  assemble_line has $nset signed-compare repairs, was 16"
             status=1
         fi
 

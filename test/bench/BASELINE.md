@@ -51,6 +51,48 @@ Lower is better. **The goal was 0.50x and it is met with room to spare** --
 between four and six times faster than the reference rather than the two the
 target asked for.
 
+## The whole corpus, source by source
+
+`test/bench/corpus-target.sh` assembles every source both assemblers accept
+with both of them, on the Agon, and reports the speedup for each. Small
+sources are assembled twelve times and the reported times summed, because the
+clock reads hundredths and one run of zap lands on 0.02.
+
+    161 sources both accept, of 558 in test/corpus and test/regress
+    135 of them rise above the clock on both sides
+
+    GEOMETRIC MEAN SPEEDUP   3.20x
+    median 3.03x, quartiles 2.03x and 4.03x, range 0.5x to 36.7x
+    summed: zap 7.67 s against ez80asm 44.41 s -- 5.79x
+
+    under 1x   4      all four are 3 to 10 ms, which is one tick of the clock
+    1x to 2x  10
+    2x to 4x  76
+    4x to 8x  38
+    8x and up  7      large_include 36.7x, allowed16bitlabel_adl0 13.7x,
+                      opcodes_l 13.5x
+
+| source | zap | ez80asm | speedup |
+|---|---|---|---|
+| bbcbasicvez | 3.86s | 22.42s | **5.8x** |
+| rokky | 0.54s | 2.50s | **4.6x** |
+| allowed16bitlabel_adl0 | 0.51s | 6.97s | 13.7x |
+| compound_binarytest | 0.38s | 1.62s | 4.3x |
+| z80_undocumented | 0.16s | 1.10s | 6.9x |
+| large_include | 0.03s | 1.10s | 36.7x |
+
+**The geometric mean is 3.20x and the summed ratio is 5.79x, and the gap
+between them is the story.** The mean weights a twenty-line negative test the
+same as BBC BASIC; the sum weights each source by the work in it. Small
+sources spend a larger share of their time on what neither assembler can
+avoid -- opening files, reading the first buffer, writing the output -- so
+they are where the two are closest. The bigger the program, the more of it is
+the loop that was optimised, and the ratio climbs.
+
+The same measurement on the host reads **1.36x**: see corpus-time.sh, and
+.internal/host-profile-does-not-predict-target for why that number is not
+this one.
+
 ## What this replaces
 
 The first table in this file, taken when the runner was fixed:

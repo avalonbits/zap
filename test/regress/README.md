@@ -51,20 +51,20 @@ and are compared against the reference in test/run.sh.
 
 ## The listing group, and why it is only some of the sources
 
-Four things a one-pass assembler cannot put in a listing the way a two-pass
-one does, all four written up in .internal/completeness.md:
+Three things a one-pass assembler cannot put in a listing the way a two-pass
+one does, all written up in .internal/completeness.md:
 
 * the reference widens the line-number column for the whole file when it
   lists a macro expansion, which it decides before it writes line 1;
 * a macro body loses the indentation it was written with, because the body is
   stored from its first token;
-* a forward reference is listed with the bytes as they were emitted, not as
-  they were patched -- `ld hl, ahead` is `21 00 00 00` here and `21 17 00 04`
-  there;
 * a reservation's fill is listed on a continuation row with the first row
   left empty, and an ALIGN's too, while an ORG's pad is listed inline. zap
   lists all three inline.
 
-Sources in `listing/` avoid all four, so their `.lst` can be compared byte for
-byte -- which is how it was found that zap wrote CRLF where the reference
-writes LF. Sources anywhere else in this tree are compared on bytes alone.
+Sources in `listing/` avoid all three, so their `.lst` can be compared byte
+for byte -- which is how it was found that zap wrote CRLF where the reference
+writes LF, and how the fourth difference was found and then closed: a forward
+reference was listed with the bytes as emitted rather than as patched, and
+`list_forward.s` and `list_forward_local.s` are here to keep it closed.
+Sources anywhere else in this tree are compared on bytes alone.

@@ -164,7 +164,9 @@ runs on the host.
   instruction table, macros, diagnostics, and what the eZ80 imposes on all of
   it.
 * [`ez80_advanced_optimization_guide.md`](ez80_advanced_optimization_guide.md)
-  -- writing fast C for the eZ80, which is most of why zap is quick.
+  -- writing fast C for the eZ80: the ordinary C that becomes library calls,
+  what inlining actually does, two compiler bugs to know about, and how to
+  measure any of it. Most of why zap is quick.
 
 ## License
 

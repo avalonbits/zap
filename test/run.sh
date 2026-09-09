@@ -189,6 +189,38 @@ cli_check "an option that is not the reference's is still refused" \
     "$("$OUT/zap" -c -Q "$OUT/opt2.s" "$OUT/opt2.bin" 2>&1 | tr -d '\r' \
        | grep -c 'Unknown option -Q')" 1
 
+# A reservation takes the FILLBYTE and drops any initializer written after the
+# count, and the reference says so. zap said nothing. Not behind -w: the check
+# is a comma on a line already parsed, not a question asked of every value --
+# and -i does not silence it in the reference either.
+init_same() {
+    local text="$1" want="$2"
+    printf '%b' "$text" > "$OUT/init.s"
+    cli_check "[${text%\\n}] says what is ignored" \
+        "$("$OUT/zap" -c "$OUT/init.s" "$OUT/init.bin" 2>&1 | tr -d '\r' \
+           | grep -c 'Ignoring unsupported initializer' || true)" "$want"
+    if [ -x "$OPTREF" ]; then
+        # The reference says it once per pass and there are two of them.
+        cli_check "[${text%\\n}] says it about the same thing" \
+            "$("$OUT/zap" -c "$OUT/init.s" "$OUT/init.bin" 2>&1 | tr -d '\r' \
+               | grep -o "initializer value '[^']*'" | head -1)" \
+            "$("$OPTREF" "$OUT/init.s" "$OUT/initr.bin" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' \
+               | grep -o "initializer value '[^']*'" | head -1)"
+    fi
+}
+init_same '  ds 4, 0xAA\n' 1
+init_same '  ds 3,1,2\n' 1
+init_same '  ds 4, nope\n' 1
+init_same '  ds 4\n' 0
+init_same '  blkb 2, 0xAA\n' 0
+printf '  ds 4, 0xAA\n' > "$OUT/init.s"
+cli_check "-i does not silence it, as it does not there" \
+    "$("$OUT/zap" -c -i "$OUT/init.s" "$OUT/init.bin" 2>&1 | tr -d '\r' \
+       | grep -c 'Ignoring unsupported' || true)" 1
+cli_check "-w does not have to be given for it" \
+    "$("$OUT/zap" -c "$OUT/init.s" "$OUT/init.bin" 2>&1 | tr -d '\r' \
+       | grep -c 'Ignoring unsupported' || true)" 1
+
 # A negative reservation is refused, and this is the one place that is a
 # deliberate difference rather than a gap. The same source in the reference
 # writes a 4 GB file -- the count is read as unsigned and the gap is filled on

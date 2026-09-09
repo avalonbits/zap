@@ -1315,6 +1315,7 @@ static inline bool fits_imm(int v, int width) {
  * Defined below, beside the report it borrows its shape from; declared here
  * because the fixup patcher is the first thing that needs it. */
 static void warn_trunc(evalue v, int width);
+static void warn_initializer(const char* t, int n);
 
 /* Whether `-w` was given, and the one place zap deliberately does not behave
  * like the reference.
@@ -6742,7 +6743,34 @@ static bool directive_line(const char* s, int n, const char* p,
         }
         /* `DS 3,1,2` is three bytes in the reference: the arguments after the
          * count are taken and ignored. Skipped rather than parsed, since
-         * nothing reads them. */
+         * nothing reads them -- but the first of them is said, which is what
+         * the reference does and what tells a reader that `ds 4, 0xAA` is not
+         * four bytes of 0xAA.
+         *
+         * The text is printed rather than the value, which is the reference's
+         * own message exactly, and means nothing has to be evaluated to say
+         * it -- an initializer that names an unknown label is still reported
+         * rather than turning into a second failure. */
+        while (p < e && is_space_ch(*p)) {
+            p++;
+        }
+        if (p < e && *p == ',') {
+            p++;
+            while (p < e && is_space_ch(*p)) {
+                p++;
+            }
+            const char* is = p;
+            while (p < e && *p != '\n' && *p != ';' && *p != ',') {
+                p++;
+            }
+            const char* ie = p;
+            while (ie > is && is_space_ch(ie[-1])) {
+                ie--;
+            }
+            if (ie > is) {
+                warn_initializer(is, (int) (ie - is));
+            }
+        }
         while (p < e && *p != '\n' && *p != ';') {
             p++;
         }
@@ -8978,20 +9006,51 @@ static void write_stats(void) {
  * nothing wrong with it. The number is what the reader needs anyway.
  *
  * No echoed line, for the same reason. */
-static void warn_trunc(evalue v, int width) {
-    const char* const yellow = use_color ? "\033[33m" : "";
-    const char* const off = use_color ? "\033[39m" : "";
-    /* Inside an expansion `zz.path` is the macro, which is what the reader
-     * needs to be told: the line number counts the body, not the file. */
-    if (zz.expanding != 0) {
-        printf("%sMacro [%s] line %d - Value truncated to %d bit '0x%lX'%s\r\n",
-               yellow, zz.path != NULL ? zz.path : "?", zz.line, width * 8,
-               (unsigned long) (v & 0xFFFFFFFFL), off);
-    } else {
-        printf("%sFile \"%s\" line %d - Value truncated to %d bit '0x%lX'%s\r\n",
-               yellow, zz.path != NULL ? zz.path : "?", zz.line, width * 8,
-               (unsigned long) (v & 0xFFFFFFFFL), off);
+/* Where a warning happened, printed the way the reference prints it, and the
+ * colour left on for the message that follows. Inside an expansion `zz.path`
+ * is the macro, which is what the reader needs to be told: the line number
+ * counts the body, not the file. */
+static void warn_where(void) {
+    if (use_color) {
+        printf("\033[33m");
     }
+    if (zz.expanding != 0) {
+        printf("Macro [%s] line %d - ", zz.path != NULL ? zz.path : "?", zz.line);
+    } else {
+        printf("File \"%s\" line %d - ", zz.path != NULL ? zz.path : "?", zz.line);
+    }
+}
+
+static void warn_done(void) {
+    if (use_color) {
+        printf("\033[39m");
+    }
+    printf("\r\n");
+}
+
+static void warn_trunc(evalue v, int width) {
+    warn_where();
+    printf("Value truncated to %d bit '0x%lX'", width * 8,
+           (unsigned long) (v & 0xFFFFFFFFL));
+    warn_done();
+}
+
+/* `DS 4, 0xAA` reserves four bytes and does not fill them with 0xAA: a
+ * reservation takes the FILLBYTE, and the initializer is dropped. The
+ * reference says so and zap said nothing.
+ *
+ * Not behind `-w`, and it is worth saying why the two differ. `-w` is there
+ * because a truncation check is a question asked of every value in every
+ * source. This is not a question: it is a fact about a line that has already
+ * been parsed and already has an argument nobody will read. It costs a
+ * comparison on the DS path, which nothing measures.
+ *
+ * `-i` does not silence it in the reference either, which is the same
+ * distinction drawn there. */
+static void warn_initializer(const char* t, int n) {
+    warn_where();
+    printf("Ignoring unsupported initializer value '%.*s'", n, t);
+    warn_done();
 }
 
 /* What went wrong, said the way somebody trying to fix it needs to hear it.

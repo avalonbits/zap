@@ -1041,6 +1041,14 @@ typedef struct _dz {
     /* Where the line being listed started; see the line loop. */
     const uint8_t* lst_o;
     int lst_pc;
+    /* The start of the line being assembled, and whether the listing for it
+     * has already been written. A macro invocation writes its own -- the
+     * invocation with no bytes on it, then the arguments, then a line per
+     * body line, which is the order the reference prints them in and not the
+     * order the line loop would produce. Both are set only when a listing is
+     * being written at all. */
+    const char* lst_p;
+    bool lst_done;
 
     bool errhave;          /* the failing line has been captured */
     char errline[ERRLINE_MAX];
@@ -5252,6 +5260,9 @@ __attribute__((noinline))
 /* Defined with the reporting, and called from both loops. */
 static void list_line(int pc, const uint8_t* from, const uint8_t* to, int line,
                       int depth, const char* text, const char* tend);
+static void list_invocation(const macro* m, int base, int line, int depth,
+                            const char* e);
+static void list_args(const macro* m, int base, int depth);
 
 /* Defined with the line loop, and called from the macro expansion below --
  * which assembles the body itself rather than handing it to a reader. */
@@ -5461,6 +5472,17 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
         scope_push(&sv);
     }
 
+    /* The invocation itself, then what it was given. Written here rather than
+     * left to the line loop for two reasons: the loop writes a line *after*
+     * assembling it, which would put the invocation below the body it
+     * expanded to, and by then the bytes of the whole expansion are on it.
+     * The reference shows the invocation with no bytes and hangs the bytes on
+     * the body lines, which is the only way a reader can tell which line of
+     * the macro wrote what. */
+    if (listing) {
+        list_invocation(m, base, saved_line, slot, e);
+    }
+
     bool ok = true;
     /* Offsets into the body, not pointers, because the body may have been
      * realloc'd since the marks were taken and an offset does not care. The
@@ -5499,6 +5521,23 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
             lend = buf + len;
         }
         zz.line++;
+
+        /* Where this body line starts writing, kept in `dz` and not in two
+         * locals: live across assemble_line they are two more slots in the
+         * body loop, and the loop pays for them on every expansion in the
+         * file whether or not anyone asked for a listing. That cost isa_real
+         * 5.48 -> 5.52 and bbcbasic 3.84 -> 3.86. The same fields the line
+         * loop uses serve here, because a line that is listed by an inner
+         * expansion is not listed again by this one. */
+        const uint8_t* bo = zz.o;
+        int bpc = 0;
+        if (listing) {
+            bpc = zz.org + (int) (zz.o - zz.out);
+            zz.lst_p = ls;
+        }
+        /* Two locals rather than two fields of `dz`, which was tried and
+         * reads the same on the target -- the frame here is 79 bytes either
+         * way. */
 
         const char* st = ls;
         if (!assemble_line(ls, lend, &st)) {
@@ -5548,7 +5587,27 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
                 break;
             }
         }
+
+        /* The body line, with the bytes it wrote and the depth it wrote them
+         * at -- unless it was itself an invocation, which has already written
+         * its own listing and its body's. */
+        if (listing) {
+            if (!zz.lst_done) {
+                /* The body **as written**, parameters and all, which is what
+                 * the reference shows: `db x`, not `db 7`. What x was is on
+                 * the Args line above it. */
+                list_line(bpc, bo, zz.o, zz.line, zz.depth,
+                          m->body + b, m->body + le + 1);
+            }
+            zz.lst_done = false;
+        }
         b = le + 1;
+    }
+
+    if (listing) {
+        /* Everything this invocation had to say is said; the line loop above
+         * must not say it again with the whole expansion's bytes on it. */
+        zz.lst_done = true;
     }
 
     if (m->haslocal && !scope_pop(&sv)) {
@@ -8228,6 +8287,7 @@ __attribute__((noinline)) static bool run_lines(void) {
         if (listing) {
             zz.lst_o = zz.o;
             zz.lst_pc = zz.org + (int) (zz.o - zz.out);
+            zz.lst_p = p;
         }
 
         zz.line++;
@@ -8302,7 +8362,10 @@ __attribute__((noinline)) static bool run_lines(void) {
         }
 
         if (listing) {
-            list_line(zz.lst_pc, zz.lst_o, zz.o, zz.line, 0, p, stop);
+            if (!zz.lst_done) {
+                list_line(zz.lst_pc, zz.lst_o, zz.o, zz.line, 0, p, stop);
+            }
+            zz.lst_done = false;
         }
 
         /* A line that was only a remark stops at the semicolon, so the rest
@@ -8769,12 +8832,25 @@ static void err_reopen(const char* path, int line) {
  *
  * Whatever it cannot write, it drops. A listing is a convenience and must
  * never be able to fail an assembly. */
+/* One line of listing, without its terminator, which is not the same on both
+ * destinations.
+ *
+ * The reference's .lst is LF-terminated -- with one stray CR after the header
+ * and nowhere else -- and zap's was CRLF throughout, so two listings of the
+ * same source could not be diffed without a filter. The file now matches it
+ * byte for byte.
+ *
+ * The console does not. The reference prints the same LF-only lines to it,
+ * which on an Agon means every line of a `-d` listing starts where the last
+ * one ended; that is a quirk to leave behind rather than reproduce, and it is
+ * on a channel nothing compares. */
 static void list_out(const char* buf, int n) {
     if (want_console_list) {
-        printf("%.*s", n, buf);
+        printf("%.*s\r\n", n, buf);
     }
     if (list_fh != 0) {
         mos_fwrite(list_fh, (char*) buf, (uint24_t) n);
+        mos_fwrite(list_fh, (char*) "\n", 1);
     }
 }
 
@@ -8834,11 +8910,79 @@ static void list_line(int pc, const uint8_t* from, const uint8_t* to, int line,
                 buf[w++] = *q;
             }
         }
-        buf[w++] = '\r';
-        buf[w++] = '\n';
         list_out(buf, w);
         row++;
     } while (row * 4 < n);
+}
+
+/* The line the reference prints between an invocation and the body it
+ * expands to:
+ *
+ *                            M1 Args: x=7 
+ *
+ * Twenty-three spaces put the tag under the one the body lines carry, each
+ * argument is `name=value` with a space after it, and a macro that takes none
+ * says `none`. Values are the argument text as written, which is what was
+ * substituted -- not what it evaluates to, which at this point nothing has
+ * asked. */
+/* The invocation line and the arguments under it, which is everything the
+ * reference prints before a body.
+ *
+ * One function rather than two calls from macro_expand, and out of line for
+ * the same reason list_args is: seven arguments and a 176-byte buffer set up
+ * inside the expansion is a frame the expansion pays for on every macro in
+ * the file, listing or no listing. */
+__attribute__((noinline))
+static void list_invocation(const macro* m, int base, int line, int depth,
+                            const char* e) {
+    list_line(zz.lst_pc, zz.o, zz.o, line, depth, zz.lst_p, e);
+    list_args(m, base, depth + 1);
+}
+
+__attribute__((noinline))
+static void list_args(const macro* m, int base, int depth) {
+    /* Its own frame, and that is the whole reason for the attribute: inlined
+     * into macro_expand this buffer took the expansion's frame from 73 bytes
+     * to 267, and everything past 128 there is reached through a computed
+     * address rather than an `ix` displacement. isa_real read 5.54 against
+     * 5.48 for a function that runs only when a listing is being written. */
+    char buf[ERRLINE_MAX + 48];
+    const int lim = (int) sizeof(buf) - 3;
+    int w = 0;
+    while (w < 23) {
+        buf[w++] = ' ';
+    }
+    buf[w++] = 'M';
+    buf[w++] = (char) ('0' + (depth % 10));
+    for (const char* q = " Args: "; *q != 0; q++) {
+        buf[w++] = *q;
+    }
+    if (m->nparam == 0) {
+        for (const char* q = "none"; *q != 0 && w < lim; q++) {
+            buf[w++] = *q;
+        }
+    } else {
+        const char* pp = m->params;
+        for (int k = 0; k < m->nparam; k++) {
+            const int pn = (uint8_t) pp[0];
+            for (int i = 0; i < pn && w < lim; i++) {
+                buf[w++] = pp[1 + i];
+            }
+            if (w < lim) {
+                buf[w++] = '=';
+            }
+            const char* const a = zz.margp[base + k];
+            const int an = zz.margn[base + k];
+            for (int i = 0; i < an && w < lim; i++) {
+                buf[w++] = a[i];
+            }
+            if (w < lim) {
+                buf[w++] = ' ';
+            }
+            pp += pn + 1;
+        }
+    }
+    list_out(buf, w);
 }
 
 /* An output file beside the source: `prog.s` gives `prog.symbols`.
@@ -9144,8 +9288,14 @@ int main(int argc, char* argv[]) {
 
     printf("Assembling %s\r\n", in);
     if (listing) {
-        static const char head[] = "PC     Output      Line\r\n";
+        /* The reference writes "\n\r" here and "\n" everywhere after it. The
+         * CR is the last byte of the header rather than the first of the
+         * next line, which is the same bytes either way. */
+        static const char head[] = "PC     Output      Line";
         list_out(head, (int) sizeof(head) - 1);
+        if (list_fh != 0) {
+            mos_fwrite(list_fh, (char*) "\r", 1);
+        }
     }
     const clock_t begin = clock();
     const bool ok = run(in);

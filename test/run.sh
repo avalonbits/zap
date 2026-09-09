@@ -400,6 +400,58 @@ warn_same "  ld a, -129" 1
 warn_same "  dw 65535" 0
 warn_same "  dw 65536" 1
 warn_same "  dl 16777216" 1
+# A listing of a source with no macros in it is byte-identical to the
+# reference's -- including its line endings, which are LF with one stray CR
+# after the header and were CRLF throughout here until now.
+printf 'val: EQU 9\nlab:\n  ld hl, lab\n  db 1,2,3,4,5,6\n  ld a, (ix+5)\n' > "$OUT/lst1.s"
+rm -f "$OUT/lst1.lst"
+"$OUT/zap" -c -l "$OUT/lst1.s" "$OUT/lst1.bin" > /dev/null 2>&1
+if [ -x "$OPTREF" ]; then
+    cp "$OUT/lst1.lst" "$OUT/lst1.zap"
+    rm -f "$OUT/lst1.lst"
+    "$OPTREF" -l "$OUT/lst1.s" "$OUT/lst1r.bin" > /dev/null 2>&1
+    if cmp -s "$OUT/lst1.zap" "$OUT/lst1.lst"; then
+        echo "PASS  a listing with no macros is the reference's file byte for byte"
+    else
+        echo "FAIL  a listing with no macros differs from the reference's"
+        status=1
+    fi
+fi
+
+# An expansion is listed: the invocation with no bytes on it, then the
+# arguments, then a line per body line carrying the bytes it wrote and the
+# depth it wrote them at. zap used to list the invocation with the whole
+# expansion's bytes and never show the body at all.
+printf '  MACRO m x\n  db x\n  ENDMACRO\n  nop\n  m 7\n' > "$OUT/lst2.s"
+rm -f "$OUT/lst2.lst"
+"$OUT/zap" -c -l "$OUT/lst2.s" "$OUT/lst2.bin" > /dev/null 2>&1
+lst2=$(tr -d '\r' < "$OUT/lst2.lst")
+cli_check "the invocation carries no bytes" \
+    "$(printf '%s' "$lst2" | grep -c '^040001             0005   m 7$')" 1
+cli_check "the arguments are listed under the tag" \
+    "$(printf '%s' "$lst2" | grep -c '^                       M1 Args: x=7 $')" 1
+cli_check "the body line carries the bytes and the depth" \
+    "$(printf '%s' "$lst2" | grep -c '^040001 07          0001M1 db x$')" 1
+cli_check "the body is listed as written, not as substituted" \
+    "$(printf '%s' "$lst2" | grep -c 'db 7')" 0
+# A macro that takes nothing says so, and a nested one counts its depth.
+printf '  MACRO i\n  nop\n  ENDMACRO\n  MACRO o\n  i\n  ENDMACRO\n  o\n' > "$OUT/lst3.s"
+rm -f "$OUT/lst3.lst"
+"$OUT/zap" -c -l "$OUT/lst3.s" "$OUT/lst3.bin" > /dev/null 2>&1
+lst3=$(tr -d '\r' < "$OUT/lst3.lst")
+cli_check "a macro with no parameters says none" \
+    "$(printf '%s' "$lst3" | grep -c 'M1 Args: none$')" 1
+cli_check "the inner expansion is one deeper" \
+    "$(printf '%s' "$lst3" | grep -c 'M2 Args: none$')" 1
+cli_check "and its body line is tagged M2" \
+    "$(printf '%s' "$lst3" | grep -c '0001M2 nop$')" 1
+# -d prints the same listing and still writes no file.
+rm -f "$OUT/lst2.lst"
+cli_check "-d lists an expansion too" \
+    "$("$OUT/zap" -c -d "$OUT/lst2.s" "$OUT/lst2.bin" 2>&1 | tr -d '\r' \
+       | grep -c 'M1 Args: x=7')" 1
+cli_check "-d still writes no file" "$([ -f "$OUT/lst2.lst" ] && echo 1 || echo 0)" 0
+
 # An instruction's immediate is not checked against 24 bits and a directive is,
 # which is the reference's rule and not an obvious one. It was got wrong in the
 # direction that only shows on the host, where an int is four bytes: zap warned

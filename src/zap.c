@@ -230,6 +230,11 @@ _Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
 
 #define OUT_MAX_INSN 13
 
+/* How much of a failing line is echoed back. Longer than any line anybody
+ * writes, and a line longer than this is truncated rather than refused --
+ * the report is a courtesy and must never itself be a failure. */
+#define ERRLINE_MAX 128
+
 /* The longest file name INCLUDE and INCBIN will take. Fixed, because the name
  * is copied into a frame that has to outlive the line it came from, and into
  * `dz.errpath` when an include fails. */
@@ -284,6 +289,18 @@ struct _macro {
     macmark* marks;       /* where its parameters are, in body order */
     int nmarks;
     int markcap;
+
+    /* Where the MACRO directive was, so a failure in the body can be reported
+     * against the line of the *file* it was written on rather than against its
+     * index in the body. The reference does the same: a body line is "line 2"
+     * of the source, not "line 1" of the macro.
+     *
+     * The name is copied into the arena rather than pointed at. A reader's
+     * file name lives exactly as long as the reader, and a header of macros
+     * is defined in one file and used from another -- which is the normal
+     * shape and the one a borrowed pointer would get wrong. */
+    const char* defpath;
+    int defline;
 
     /* Whether the body mentions a local label at all -- defines one, or names
      * one. Decided as the body is read, for the same reason the marks are.
@@ -982,6 +999,27 @@ typedef struct _dz {
     int line;
     zap_err err;
 
+    /* Everything the report needs, written **only when a failure happens**.
+     *
+     * That is the whole discipline of it: not one of these is maintained in
+     * advance, so a source that assembles pays nothing for the machinery that
+     * would have described it failing. The line is copied rather than pointed
+     * at, because a library caller may print after the reader that held it is
+     * gone.
+     *
+     * The innermost capture wins: a macro body writes `errline` and the loop
+     * that invoked it then finds it taken and writes `errfrom` instead, which
+     * is how the two halves of "Invoked from" find their own line. */
+    bool errhave;          /* the failing line has been captured */
+    char errline[ERRLINE_MAX];
+    char errfrom[ERRLINE_MAX];   /* empty until the line loop fills it */
+    const char* errfrompath;     /* NULL unless the failure was in a macro */
+    int errfromline;
+    const char* errfile;  /* the file, when the failure was inside a macro */
+    const char* errmacro; /* the macro, or NULL */
+    const char* errat;    /* the token to point at, or NULL */
+    int erratlen;
+
     /* Anonymous labels: `@@`, which may be written any number of times and is
      * reached by position rather than by name -- `@b`/`@p` for the one above,
      * `@f`/`@n` for the one below.
@@ -1138,6 +1176,36 @@ typedef struct _dz {
  * being used. Zero-initialised by being static, which is what the memset in
  * main did. */
 static dz zz;
+
+/* The failing line, copied out of whatever held it.
+ *
+ * Called only after something has returned false. Trailing space and the
+ * newline come off, so the echo reads as the author wrote it, and a line
+ * longer than the buffer is truncated -- the report is a courtesy and must
+ * never itself be a failure.
+ *
+ * Returns nothing and cannot fail, for the same reason. */
+static void err_line(char* dst, const char* p, const char* e) {
+    int n = 0;
+    while (p < e && *p != '\n' && n + 1 < ERRLINE_MAX) {
+        dst[n++] = *p++;
+    }
+    while (n > 0 && (dst[n - 1] == ' ' || dst[n - 1] == '\t'
+                     || dst[n - 1] == '\r')) {
+        n--;
+    }
+    dst[n] = 0;
+}
+
+/* The token a message is about, when the site that failed has it in hand.
+ *
+ * Not every one does -- an unresolved label is reported long after its line is
+ * gone -- so this is set where it is cheap and true, and the report simply
+ * leaves the quotation off where it is not. */
+static void err_tok(const char* s, int n) {
+    zz.errat = s;
+    zz.erratlen = n;
+}
 
 /* The fields touched on every line have to be reachable in one instruction.
  *
@@ -1404,8 +1472,10 @@ static bool patch_fixup(const fixup* f) {
     const sym* sp = f->target;
     if (!sp->defined) {
         /* Reported against the line that used it, which is long gone; the
-         * fixup carries the number for exactly this. */
+         * fixup carries the number for exactly this. The name is still on the
+         * symbol, which is the whole reason a reference points at one. */
         zz.line = f->line;
+        err_tok(sp->name, sp->len);
         zz.err = ZAP_E_UNKNOWN_LABEL;
 
         return false;
@@ -1415,6 +1485,7 @@ static bool patch_fixup(const fixup* f) {
     if (f->sub != NULL) {
         if (!f->sub->defined) {
             zz.line = f->line;
+            err_tok(f->sub->name, f->sub->len);
             zz.err = ZAP_E_UNKNOWN_LABEL;
 
             return false;
@@ -1496,6 +1567,7 @@ static bool fold_subs(int from) {
         }
         if (!f->sub->defined) {
             zz.line = f->line;
+            err_tok(f->sub->name, f->sub->len);
             zz.err = ZAP_E_UNKNOWN_LABEL;
 
             return false;
@@ -2163,6 +2235,9 @@ static uint8_t exprec[256];
  * flag rather than a field on dz, because dz is reached through a pointer on
  * every line and this is read only where an expression has an operator in it. */
 static bool compat_ez80 = false;
+
+/* Whether the error report is coloured. See is_color_opt. */
+static bool use_color = false;
 
 /* Which instruction set is in force, as the bitmask an isa_row carries.
  *
@@ -4662,6 +4737,7 @@ static bool macro_begin(const char** pp, const char* e) {
 
     if (macro_at(ns, nn) != NULL) {
         /* "Macro already defined" there, and case-blind, as the lookup is. */
+        err_tok(ns, nn);
         zz.err = ZAP_E_MACRO_ALREADY_DEFINED;
 
         return false;
@@ -4750,6 +4826,26 @@ static bool macro_begin(const char** pp, const char* e) {
             at[1 + i] = ps[i];
         }
         m->nparam++;
+    }
+
+    m->defline = zz.line;
+    if (zz.path != NULL) {
+        int pn = 0;
+        while (zz.path[pn] != 0) {
+            pn++;
+        }
+        char* dp = nam_take(&zz.names, &zz.names_used, pn + 1);
+        if (dp == NULL) {
+            free(m);
+            zz.err = ZAP_E_OUT_MEMORY_MACROS;
+
+            return false;
+        }
+        for (int i = 0; i < pn; i++) {
+            dp[i] = zz.path[i];
+        }
+        dp[pn] = 0;
+        m->defpath = dp;
     }
 
     m->next = zz.macros;
@@ -5119,6 +5215,20 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
 
         const char* st = ls;
         if (!assemble_line(ls, lend, &st)) {
+            if (!zz.errhave) {
+                err_line(zz.errline, ls, lend);
+                zz.errhave = true;
+                /* The body line, named as a line of the file it was written
+                 * in rather than as an index into the body. */
+                zz.line = m->defline + zz.line;
+                zz.errfile = m->defpath;
+                zz.errmacro = m->name;
+                /* And the other end of it. This is the only place that holds
+                 * both -- by the time the line loop sees the failure, the
+                 * path and the line have been given to the macro. */
+                zz.errfrompath = saved_path;
+                zz.errfromline = saved_line;
+            }
             ok = false;
             break;
         }
@@ -5138,6 +5248,15 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
                 }
             } else if (*q != '\n') {
                 zz.err = ZAP_E_UNEXPECTED_TEXT_AFTER_INSTRUCTION;
+                if (!zz.errhave) {
+                    err_line(zz.errline, ls, lend);
+                    zz.errhave = true;
+                    zz.line = m->defline + zz.line;
+                    zz.errfile = m->defpath;
+                    zz.errmacro = m->name;
+                    zz.errfrompath = saved_path;
+                    zz.errfromline = saved_line;
+                }
                 ok = false;
                 break;
             }
@@ -6058,6 +6177,7 @@ static bool directive_line(const char* s, int n, const char* p,
          * which the reference requires too. */
         const macro* m = macro_at(s, n);
         if (m == NULL) {
+            err_tok(s, n);
             zz.err = ZAP_E_UNKNOWN_INSTRUCTION;
 
             return false;
@@ -7129,6 +7249,7 @@ static bool suffixed_insn(const insninfo* insn, uint8_t suffix,
 
     const isa_row* const row = match_row(insn, &a, &b);
     if (row == NULL) {
+        err_tok(insn->name, insn->len);
         zz.err = ZAP_E_NO_SUCH_INSTRUCTION_FORM;
 
         return false;
@@ -7164,6 +7285,7 @@ static bool third_operand(const insninfo* insn, dop* a, dop* b,
     if (n + 1 > (int) sizeof(nm) || !a->noreg || (a->mode & IMM) == 0
         || (a->mode & INDIRECT) != 0 || a->fwd != NULL
         || (unsigned) a->imm > 7) {
+        err_tok(insn->name, insn->len);
         zz.err = ZAP_E_NO_SUCH_INSTRUCTION_FORM;
 
         return false;
@@ -7175,6 +7297,7 @@ static bool third_operand(const insninfo* insn, dop* a, dop* b,
 
     const insninfo* const alt = mnemonic_of(nm, n + 1);
     if (alt == NULL) {
+        err_tok(insn->name, insn->len);
         zz.err = ZAP_E_NO_SUCH_INSTRUCTION_FORM;
 
         return false;
@@ -7188,6 +7311,7 @@ static bool third_operand(const insninfo* insn, dop* a, dop* b,
 
     const isa_row* const row = match_row(alt, b, &c);
     if (row == NULL) {
+        err_tok(insn->name, insn->len);
         zz.err = ZAP_E_NO_SUCH_INSTRUCTION_FORM;
 
         return false;
@@ -7482,6 +7606,7 @@ __attribute__((noinline)) static bool assemble_line(const char* p, const char* e
 
     const isa_row* row = match_row(insn, &a, &b);
     if (row == NULL) {
+        err_tok(insn->name, insn->len);
         zz.err = ZAP_E_NO_SUCH_INSTRUCTION_FORM;
 
         return false;
@@ -7638,6 +7763,17 @@ __attribute__((noinline)) static bool run_lines(void) {
 
         zz.line++;
         if (!assemble_line(p, end, &stop)) {
+            /* The innermost failure has already taken `errline`; this line
+             * is then the one that invoked it, and its text is the one thing
+             * the expansion could not record for itself. Which file and which
+             * line it was, it did record -- see macro_expand. */
+            if (!zz.errhave) {
+                err_line(zz.errline, p, end);
+                zz.errhave = true;
+            } else if (zz.errfrompath != NULL && zz.errfrom[0] == 0) {
+                err_line(zz.errfrom, p, end);
+            }
+
             return false;
         }
 
@@ -7889,6 +8025,26 @@ static bool is_ez80_opt(const char* a) {
            && a[3] == '8' && a[4] == '0' && a[5] == 0;
 }
 
+/* Colour is asked for, not assumed.
+ *
+ * The reference emits it unconditionally, which is fine on a terminal and
+ * noise everywhere else -- and zap's own corpus runner reads what it prints.
+ * Off unless `-color` says otherwise, so a pipe gets text and a person gets
+ * the escape codes they wanted. Spelled the same way as the compilers, with
+ * `-colour` taken as well, because half the world writes it that way and
+ * neither half should have to look it up. */
+static bool is_color_opt(const char* a) {
+    if (a[0] != '-' || (a[1] | 0x20) != 'c' || (a[2] | 0x20) != 'o'
+        || (a[3] | 0x20) != 'l' || (a[4] | 0x20) != 'o') {
+        return false;
+    }
+    if ((a[5] | 0x20) == 'r' && a[6] == 0) {
+        return true;
+    }
+
+    return (a[5] | 0x20) == 'u' && (a[6] | 0x20) == 'r' && a[7] == 0;
+}
+
 /* One flag, taken from anywhere on the line so that `zap -ez80 a.s a.bin` and
  * `zap a.s a.bin -ez80` both work; the reference accepts its own options
  * either side of the filenames and this is meant to drop in.
@@ -7909,6 +8065,8 @@ __attribute__((noinline)) static bool parse_args(int argc, char* argv[],
         if (argv[i][0] == '-') {
             if (is_ez80_opt(argv[i])) {
                 compat_ez80 = true;
+            } else if (is_color_opt(argv[i])) {
+                use_color = true;
             } else {
                 printf("Unknown option %s\r\n", argv[i]);
 
@@ -7921,12 +8079,111 @@ __attribute__((noinline)) static bool parse_args(int argc, char* argv[],
         }
     }
     if (*in == NULL || *out == NULL) {
-        printf("Usage: zap [-ez80] <source> <output>\r\n");
+        printf("Usage: zap [-ez80] [-color] <source> <output>\r\n");
 
         return false;
     }
 
     return true;
+}
+
+/* The failing line, fetched back out of the file.
+ *
+ * Most failures happen while the line is still in the reader's buffer and are
+ * copied from there. An unresolved label is not one of them: it is found when
+ * the fixups are patched, long after the loop has moved on, and the fixup
+ * carries a line number precisely because the line itself is gone.
+ *
+ * Keeping the text on every fixup would answer it -- and there are 843 of
+ * them in isa_real, in a record that is sixteen bytes so that indexing it is a
+ * shift. Reopening the file costs one open, and it costs it **only when the
+ * assembly has already failed**, which is the rule the whole of this
+ * machinery is built on.
+ *
+ * Silent if anything goes wrong. A report that cannot be made is not an
+ * error; it is one less line of help. */
+static void err_reopen(const char* path, int line) {
+    if (path == NULL || line <= 0) {
+        return;
+    }
+    buf_reader r;
+    if (br_open(&r, path, 1) == NULL) {
+        return;
+    }
+    int n = 0;
+    bool too_long = false;
+    while (br_fill_lines(&r, &too_long)) {
+        const char* p = r.buf_;
+        const char* const e = p + r.bsz_;
+        while (p < e) {
+            const char* q = p;
+            while (q < e && *q != '\n') {
+                q++;
+            }
+            if (++n == line) {
+                err_line(zz.errline, p, q);
+                zz.errhave = true;
+                br_destroy(&r);
+
+                return;
+            }
+            p = q + 1;
+        }
+    }
+    br_destroy(&r);
+}
+
+/* What went wrong, said the way somebody trying to fix it needs to hear it.
+ *
+ * Three things the one-line form did not have. The **source line**, because a
+ * line number sends the reader to the file and the line sends them to the
+ * mistake. The **token**, where the site that failed had it in hand. And for
+ * a macro, **where it was invoked from** -- without which a failure inside a
+ * body reported a line number of a file the reader had to guess at, and a
+ * macro invoked in twenty places named none of them.
+ *
+ * All of it is captured when the failure happens and none of it is maintained
+ * in advance, so a source that assembles pays for none of this.
+ *
+ * Colour on request; see is_color_opt. The codes are the reference's: red for
+ * what went wrong, yellow for the text it went wrong in. */
+static void report(const char* in) {
+    const char* const red = use_color ? "\033[31m" : "";
+    const char* const yellow = use_color ? "\033[33m" : "";
+    const char* const off = use_color ? "\033[39m" : "";
+    const char* const file =
+        zz.errfile != NULL ? zz.errfile : (zz.path != NULL ? zz.path : in);
+
+    /* A failure found after the line was read -- an unresolved label -- has
+     * no text yet, and the file still has it. */
+    if (!zz.errhave && zz.errmacro == NULL) {
+        err_reopen(file, zz.line);
+    }
+
+    if (zz.errmacro != NULL) {
+        printf("%sMacro [%s] in \"%s\" line %d - %s", red, zz.errmacro, file,
+               zz.line, zap_err_text[zz.err]);
+    } else {
+        printf("%sFile \"%s\" line %d - %s", red, file, zz.line,
+               zap_err_text[zz.err]);
+    }
+    if (zz.errat != NULL && zz.erratlen > 0) {
+        printf("%s '%.*s'", yellow, zz.erratlen, zz.errat);
+    }
+    printf("%s\r\n", off);
+
+    /* The line as it was written, indent and all, which is how the reader
+     * will find it again. */
+    if (zz.errhave) {
+        printf("%s%s%s\r\n", yellow, zz.errline, off);
+    }
+    if (zz.errfrompath != NULL) {
+        printf("%sInvoked from \"%s\" line %d as%s\r\n", red,
+               zz.errfrompath, zz.errfromline, off);
+        if (zz.errfrom[0] != 0) {
+            printf("%s%s%s\r\n", yellow, zz.errfrom, off);
+        }
+    }
 }
 
 int main(int argc, char* argv[]) {
@@ -7946,10 +8203,7 @@ int main(int argc, char* argv[]) {
     const clock_t end = clock();
 
     if (!ok) {
-        /* zz.path, not `in`: an error inside an included file has to name
-         * that file, and the line number is already that file's. */
-        printf("%s line %d: %s\r\n", zz.path != NULL ? zz.path : in, zz.line,
-               zap_err_text[zz.err]);
+        report(in);
         dz_free();
 
         return 1;

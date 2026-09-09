@@ -72,7 +72,61 @@ printf '  ld a,\n' > "$OUT/broken.inc"
 printf '  INCLUDE "%s"\n' "$OUT/broken.inc" > "$OUT/inctop.s"
 incbad=$("$OUT/zap" "$OUT/inctop.s" "$OUT/inc.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an error names the included file" \
-    "$(printf '%s' "$incbad" | grep -c "^$OUT/broken.inc line 1: ")" 1
+    "$(printf '%s' "$incbad" | grep -c "^File \"$OUT/broken.inc\" line 1 - ")" 1
+
+# The report itself, which is the thing a user actually meets.
+#
+# Every part of it is captured when the failure happens and none of it is kept
+# in advance, so a source that assembles pays for none of this. That is the
+# property worth protecting; these check that the parts arrive.
+printf '  frobnicate a\n' > "$OUT/r1.s"
+r1=$("$OUT/zap" "$OUT/r1.s" "$OUT/r1.bin" 2>&1 | tr -d '\r' || true)
+cli_check "the message names the token it is about" \
+    "$(printf '%s' "$r1" | grep -c "unknown instruction 'frobnicate'")" 1
+cli_check "the failing line is echoed" \
+    "$(printf '%s' "$r1" | grep -c '^  frobnicate a$')" 1
+
+# A label nothing defines is found when the fixups are patched, long after the
+# line has gone -- so the line is fetched back out of the file, which costs one
+# open and costs it only when the assembly has already failed.
+printf '  nop\n  nop\n  jp nowhere\n' > "$OUT/r2.s"
+r2=$("$OUT/zap" "$OUT/r2.s" "$OUT/r2.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a deferred failure still names its line" \
+    "$(printf '%s' "$r2" | grep -c "line 3 - unknown label 'nowhere'")" 1
+cli_check "a deferred failure still shows its line" \
+    "$(printf '%s' "$r2" | grep -c '^  jp nowhere$')" 1
+
+# A failure inside a macro body, which is the report that was unusable before:
+# it named the macro as though it were a file, counted lines from the top of
+# the body, and said nothing at all about where the macro had been invoked.
+printf '  MACRO m v\n  ld a, v v\n  ENDMACRO\n  nop\n  m 5\n' > "$OUT/r3.s"
+r3=$("$OUT/zap" "$OUT/r3.s" "$OUT/r3.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a macro failure names the macro and the line of the file" \
+    "$(printf '%s' "$r3" | grep -c '^Macro \[m\] in .* line 2 - ')" 1
+cli_check "a macro failure shows the body line" \
+    "$(printf '%s' "$r3" | grep -c '^ld a, 5 5$')" 1
+cli_check "a macro failure names where it was invoked" \
+    "$(printf '%s' "$r3" | grep -c '^Invoked from .* line 5 as$')" 1
+cli_check "a macro failure shows the invocation" \
+    "$(printf '%s' "$r3" | grep -c '^  m 5$')" 1
+
+# Colour is asked for, never assumed: the corpus runner and every grep above
+# read what this prints.
+cli_check "no colour unless it is asked for" \
+    "$(printf '%s' "$r1" | grep -c "$(printf '\033')")" 0
+r4=$("$OUT/zap" -color "$OUT/r1.s" "$OUT/r1.bin" 2>&1 | tr -d '\r' || true)
+cli_check "-color colours the report" \
+    "$(printf '%s' "$r4" | grep -c "$(printf '\033')\[31m")" 1
+cli_check "-colour is the same option" \
+    "$("$OUT/zap" -colour "$OUT/r1.s" "$OUT/r1.bin" 2>&1 | tr -d '\r' \
+       | grep -c "$(printf '\033')\[31m")" 1
+# The message and the token it quotes are coloured differently, as they are in
+# the reference, so the escape falls between them -- which is why this looks
+# for the message alone rather than for the whole line.
+cli_check "the colour flag does not change what is said" \
+    "$(printf '%s' "$r4" | grep -c 'unknown instruction')" 1
+cli_check "the colour flag does not change the token" \
+    "$(printf '%s' "$r4" | grep -c "'frobnicate'")" 1
 
 # mnemonic_of compares without checking the length, which is only safe while
 # every name in a bucket has the same length. build_tables says so if that ever
@@ -99,7 +153,7 @@ cli_check "the mode groups fit their table" \
 # would make that one instruction unmatchable and nothing else would say why.
 cli_check "every mnemonic in the table is lower case" \
     "$(printf '%s' "$out" | grep -c 'not lower case')" 0
-cli_check "failure is reported"  "$(printf '%s' "$bad" | grep -c 'line 1:')" 1
+cli_check "failure is reported"  "$(printf '%s' "$bad" | grep -c 'line 1 - ')" 1
 
 # Which failure, not just that there was one. Any trailing text errors
 # eventually -- the operand parser rejects a bare token, and a token that got
@@ -109,7 +163,7 @@ cli_check "failure is reported"  "$(printf '%s' "$bad" | grep -c 'line 1:')" 1
 printf '  ld a, b c\n' > "$OUT/trail.s"
 trail=$("$OUT/zap" "$OUT/trail.s" "$OUT/trail.bin" 2>&1 | tr -d '\r' || true)
 cli_check "trailing text is reported by the line loop" \
-    "$(printf '%s' "$trail" | grep -c 'line 1: unexpected text after the instruction')" 1
+    "$(printf '%s' "$trail" | grep -c 'line 1 - unexpected text after the instruction')" 1
 
 # The token a name run hands to the literal path.
 #
@@ -122,7 +176,7 @@ cli_check "trailing text is reported by the line loop" \
 printf '  ld a, ab$cd\n' > "$OUT/dollar.s"
 dollar=$("$OUT/zap" "$OUT/dollar.s" "$OUT/dollar.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a name run stopping at \$ is scanned as one token" \
-    "$(printf '%s' "$dollar" | grep -c 'line 1: unknown label')" 1
+    "$(printf '%s' "$dollar" | grep -c 'line 1 - unknown label')" 1
 
 # An undefined local is reported against the line that used it.
 #
@@ -133,7 +187,7 @@ cli_check "a name run stopping at \$ is scanned as one token" \
 printf 'one:\n  nop\n  jp @gone\n  nop\n  nop\ntwo:\n  nop\n' > "$OUT/loc.s"
 loc=$("$OUT/zap" "$OUT/loc.s" "$OUT/loc.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an undefined local names the line that used it" \
-    "$(printf '%s' "$loc" | grep -c 'line 3: unknown label')" 1
+    "$(printf '%s' "$loc" | grep -c 'line 3 - unknown label')" 1
 
 # The thirteen refusals the reference makes and this one did not. None of them
 # changes the bytes of a valid program; each is a diagnostic that was missing.
@@ -148,13 +202,13 @@ cli_check "a label of 64 characters is allowed" \
 printf '%s: nop\n' "$lab65" > "$OUT/lab2.s"
 lab2=$("$OUT/zap" "$OUT/lab2.s" "$OUT/lab2.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a label of 65 characters is refused" \
-    "$(printf '%s' "$lab2" | grep -c 'line 1: label too long')" 1
+    "$(printf '%s' "$lab2" | grep -c 'line 1 - label too long')" 1
 
 # The `@` counts towards the limit, so a local has one character less of name.
 printf 'g:\n@%s: nop\n' "$lab64" > "$OUT/lab3.s"
 lab3=$("$OUT/zap" "$OUT/lab3.s" "$OUT/lab3.bin" 2>&1 | tr -d '\r' || true)
 cli_check "the at sign counts towards the limit" \
-    "$(printf '%s' "$lab3" | grep -c 'line 2: label too long')" 1
+    "$(printf '%s' "$lab3" | grep -c 'line 2 - label too long')" 1
 
 # One signed byte is what the instruction has room for, so anything else would
 # be emitted truncated and silently wrong.
@@ -166,7 +220,7 @@ for d in '+128' '-129'; do
     printf '  ld a,(ix%s)\n' "$d" > "$OUT/dsp2.s"
     dsp2=$("$OUT/zap" "$OUT/dsp2.s" "$OUT/dsp2.bin" 2>&1 | tr -d '\r' || true)
     cli_check "a displacement of $d is refused" \
-        "$(printf '%s' "$dsp2" | grep -c 'line 1: index offset out of range')" 1
+        "$(printf '%s' "$dsp2" | grep -c 'line 1 - index offset out of range')" 1
 done
 
 # A macro parameter may not be anything the body could not tell from what it
@@ -176,7 +230,7 @@ for bad in 1 1h 0x1 0b1 1b and ld db equ macro align; do
     printf '  macro m %s\n  db 5\n  endmacro\n' "$bad" > "$OUT/arg.s"
     arg=$("$OUT/zap" "$OUT/arg.s" "$OUT/arg.bin" 2>&1 | tr -d '\r' || true)
     cli_check "a macro parameter called $bad is refused" \
-        "$(printf '%s' "$arg" | grep -c 'line 1: a macro parameter may not be')" 1
+        "$(printf '%s' "$arg" | grep -c 'line 1 - a macro parameter may not be')" 1
 done
 for ok in hl nz af x1 _x; do
     printf '  macro m %s\n  db %s\n  endmacro\n  m 5\n' "$ok" "$ok" > "$OUT/argok.s"
@@ -189,7 +243,7 @@ done
 printf '  macro m\n  ld a,b\n  endmacro\n  macro M\n  ld b,c\n  endmacro\n' > "$OUT/dup.s"
 dup=$("$OUT/zap" "$OUT/dup.s" "$OUT/dup.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a macro defined twice is refused" \
-    "$(printf '%s' "$dup" | grep -c 'line 4: that macro is already defined')" 1
+    "$(printf '%s' "$dup" | grep -c 'line 4 - that macro is already defined')" 1
 
 # An anonymous label in a body, refused at the invocation as a global one is.
 printf '  macro m\n  ld a,b\n@@: db 5\n  endmacro\n  m\n' > "$OUT/anon.s"
@@ -207,7 +261,7 @@ cli_check "an anonymous label in a macro is refused" \
 printf '  ds 2\n  fillbyte 0xAA\n  nop\n' > "$OUT/fb1.s"
 fb1=$("$OUT/zap" "$OUT/fb1.s" "$OUT/fb1.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a FILLBYTE that reaches backwards is refused" \
-    "$(printf '%s' "$fb1" | grep -c 'line 2: FILLBYTE must come before the space it fills')" 1
+    "$(printf '%s' "$fb1" | grep -c 'line 2 - FILLBYTE must come before the space it fills')" 1
 
 # The same value twice is not a change, so it is allowed.
 printf '  fillbyte 0xAA\n  ds 2\n  fillbyte 0xAA\n  nop\n' > "$OUT/fb2.s"
@@ -226,22 +280,22 @@ cli_check "the same FILLBYTE twice is not a change" \
 printf '  .relocate $1000000\n  .endrelocate\n' > "$OUT/rl1.s"
 rl1=$("$OUT/zap" "$OUT/rl1.s" "$OUT/rl1.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a relocate address past 24 bits is refused" \
-    "$(printf '%s' "$rl1" | grep -c 'line 1: address outside the 24-bit range')" 1
+    "$(printf '%s' "$rl1" | grep -c 'line 1 - address outside the 24-bit range')" 1
 
 printf '  .relocate -1\n  .endrelocate\n' > "$OUT/rl2.s"
 rl2=$("$OUT/zap" "$OUT/rl2.s" "$OUT/rl2.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a negative relocate address is refused" \
-    "$(printf '%s' "$rl2" | grep -c 'line 1: address outside the 24-bit range')" 1
+    "$(printf '%s' "$rl2" | grep -c 'line 1 - address outside the 24-bit range')" 1
 
 printf '  .endrelocate\n' > "$OUT/rl3.s"
 rl3=$("$OUT/zap" "$OUT/rl3.s" "$OUT/rl3.bin" 2>&1 | tr -d '\r' || true)
 cli_check "ENDRELOCATE with none open is refused" \
-    "$(printf '%s' "$rl3" | grep -c 'line 1: no RELOCATE is open')" 1
+    "$(printf '%s' "$rl3" | grep -c 'line 1 - no RELOCATE is open')" 1
 
 printf '  .relocate 0x50000\n  .relocate 0x60000\n' > "$OUT/rl4.s"
 rl4=$("$OUT/zap" "$OUT/rl4.s" "$OUT/rl4.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a nested RELOCATE is refused" \
-    "$(printf '%s' "$rl4" | grep -c 'line 2: RELOCATE does not nest')" 1
+    "$(printf '%s' "$rl4" | grep -c 'line 2 - RELOCATE does not nest')" 1
 
 # .CPU selects an instruction set, and the bytes it produces are in
 # test/cases/cpu.s against the reference. These are the refusals, which have
@@ -252,7 +306,7 @@ cli_check "a nested RELOCATE is refused" \
 printf '  .cpu Z180\n  ld ixh, b\n' > "$OUT/cpu1.s"
 cpu1=$("$OUT/zap" "$OUT/cpu1.s" "$OUT/cpu1.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an eZ80 form is gone under .cpu Z180" \
-    "$(printf '%s' "$cpu1" | grep -c 'line 2: no such instruction form')" 1
+    "$(printf '%s' "$cpu1" | grep -c 'line 2 - no such instruction form')" 1
 
 # Neither the Z80 nor the Z180 has ADL, so there is no mode to select and no
 # suffix to select it with. The reference refuses ADL=0 as well as ADL=1,
@@ -261,19 +315,19 @@ for mode in 0 1; do
     printf '  .cpu Z80\n  .assume ADL=%s\n' "$mode" > "$OUT/cpu2.s"
     cpu2=$("$OUT/zap" "$OUT/cpu2.s" "$OUT/cpu2.bin" 2>&1 | tr -d '\r' || true)
     cli_check "ADL=$mode is refused on the Z80" \
-        "$(printf '%s' "$cpu2" | grep -c 'line 2: no ADL mode on this CPU')" 1
+        "$(printf '%s' "$cpu2" | grep -c 'line 2 - no ADL mode on this CPU')" 1
 done
 printf '  .cpu Z80\n  ld.lil a,(0)\n' > "$OUT/cpu3.s"
 cpu3=$("$OUT/zap" "$OUT/cpu3.s" "$OUT/cpu3.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a mode suffix is refused on the Z80" \
-    "$(printf '%s' "$cpu3" | grep -c 'line 2: no mode suffix on this CPU')" 1
+    "$(printf '%s' "$cpu3" | grep -c 'line 2 - no mode suffix on this CPU')" 1
 
 # The Z280 has a bit in the table and no rows tagged with it, so it is not
 # offered rather than accepted and then quietly empty.
 printf '  .cpu Z280\n  nop\n' > "$OUT/cpu4.s"
 cpu4=$("$OUT/zap" "$OUT/cpu4.s" "$OUT/cpu4.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an unsupported CPU is refused" \
-    "$(printf '%s' "$cpu4" | grep -c 'line 1: unsupported CPU type')" 1
+    "$(printf '%s' "$cpu4" | grep -c 'line 1 - unsupported CPU type')" 1
 
 # The three-operand form is RES and SET and nothing else, and the bit is spent
 # on the pseudo mnemonic -- so nothing downstream would notice an eighth bit,
@@ -281,15 +335,15 @@ cli_check "an unsupported CPU is refused" \
 printf '  .cpu Z80\n  res 8,(ix+0),b\n' > "$OUT/cpu5.s"
 cpu5=$("$OUT/zap" "$OUT/cpu5.s" "$OUT/cpu5.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a bit outside 0..7 has no third-operand form" \
-    "$(printf '%s' "$cpu5" | grep -c 'line 2: no such instruction form')" 1
+    "$(printf '%s' "$cpu5" | grep -c 'line 2 - no such instruction form')" 1
 printf '  ld a, b, c\n' > "$OUT/cpu6.s"
 cpu6=$("$OUT/zap" "$OUT/cpu6.s" "$OUT/cpu6.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a third operand on an instruction that has none is refused" \
-    "$(printf '%s' "$cpu6" | grep -c 'line 1: no such instruction form')" 1
+    "$(printf '%s' "$cpu6" | grep -c 'line 1 - no such instruction form')" 1
 printf '  .cpu Z80\n  bit 0,(ix+0),b\n' > "$OUT/cpu7.s"
 cpu7=$("$OUT/zap" "$OUT/cpu7.s" "$OUT/cpu7.bin" 2>&1 | tr -d '\r' || true)
 cli_check "BIT has no third-operand form, because it writes no result" \
-    "$(printf '%s' "$cpu7" | grep -c 'line 2: no such instruction form')" 1
+    "$(printf '%s' "$cpu7" | grep -c 'line 2 - no such instruction form')" 1
 
 # The mask is a file-scope static and the unit tests assemble many sources in
 # one process, so it has to be reset with the rest of the state. Two files,
@@ -307,7 +361,7 @@ cli_check "an eZ80 file after a Z80 one still assembles" \
 printf '  blkb -1\n' > "$OUT/blk1.s"
 blk1=$("$OUT/zap" "$OUT/blk1.s" "$OUT/blk1.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a negative block count is refused" \
-    "$(printf '%s' "$blk1" | grep -c 'line 1: blk needs a positive number')" 1
+    "$(printf '%s' "$blk1" | grep -c 'line 1 - blk needs a positive number')" 1
 
 # A fill that names a label still ahead. It is one value repeated n times, so
 # there is nothing a per-byte fixup could usefully do: the run is written now
@@ -323,7 +377,7 @@ cli_check "a fill still ahead is filled in afterwards" \
 printf '  blkb ahead, 1\nahead: equ 2\n' > "$OUT/blk2b.s"
 blk2b=$("$OUT/zap" "$OUT/blk2b.s" "$OUT/blk2b.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a count still ahead is refused" \
-    "$(printf '%s' "$blk2b" | grep -c 'line 1: a label here must be defined already')" 1
+    "$(printf '%s' "$blk2b" | grep -c 'line 1 - a label here must be defined already')" 1
 
 # And a fill nothing ever defines is found when the run is filled in.
 printf '  blkb 2, nosuch\n' > "$OUT/blk2c.s"
@@ -345,7 +399,7 @@ cli_check "a fill nothing defines is reported" \
 printf '  dw32 later + 0x55555555\nlater: EQU 1\n' > "$OUT/wide1.s"
 wide1=$("$OUT/zap" "$OUT/wide1.s" "$OUT/wide1.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a constant too large to add to a label is refused" \
-    "$(printf '%s' "$wide1" | grep -c 'line 1: that constant is too large')" 1
+    "$(printf '%s' "$wide1" | grep -c 'line 1 - that constant is too large')" 1
 
 # The same bound on the other path that folds a constant into an addend: a
 # global minus a local, settled when the scope ends rather than where it was
@@ -393,13 +447,13 @@ cli_check "dw32 and blkl are four bytes each" \
 printf '  ld.lil a, b\n' > "$OUT/sfx1.s"
 sfx1=$("$OUT/zap" "$OUT/sfx1.s" "$OUT/sfx1.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a suffix on a register-only form is refused" \
-    "$(printf '%s' "$sfx1" | grep -c 'line 1: this instruction takes no mode suffix')" 1
+    "$(printf '%s' "$sfx1" | grep -c 'line 1 - this instruction takes no mode suffix')" 1
 
 # Per row and not per mnemonic: `retn.lil` assembles, `retn.sis` does not.
 printf '  retn.sis\n' > "$OUT/sfx2.s"
 sfx2=$("$OUT/zap" "$OUT/sfx2.s" "$OUT/sfx2.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a row may take some suffixes and not others" \
-    "$(printf '%s' "$sfx2" | grep -c 'line 1: this instruction takes no mode suffix')" 1
+    "$(printf '%s' "$sfx2" | grep -c 'line 1 - this instruction takes no mode suffix')" 1
 
 # A dot the suffix reader does not understand is left alone rather than
 # refused, which is what sends `.db` to the directives and lets a macro be
@@ -407,7 +461,7 @@ cli_check "a row may take some suffixes and not others" \
 printf '  ld.xyz hl, 0\n' > "$OUT/sfx3.s"
 sfx3=$("$OUT/zap" "$OUT/sfx3.s" "$OUT/sfx3.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an unreadable suffix is not read as one" \
-    "$(printf '%s' "$sfx3" | grep -c 'line 1: unknown instruction')" 1
+    "$(printf '%s' "$sfx3" | grep -c 'line 1 - unknown instruction')" 1
 
 # And the dot that starts a directive is not a suffix: it is at the front.
 printf '  .db 1, 2\n' > "$OUT/sfx4.s"
@@ -425,7 +479,7 @@ cli_check "a leading dot still reaches the directives" \
 printf '  DB "abc\\' > "$OUT/esc.s"
 esc=$("$OUT/zap" "$OUT/esc.s" "$OUT/esc.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a string ending in a backslash is not terminated" \
-    "$(printf '%s' "$esc" | grep -c 'line 1: string not terminated')" 1
+    "$(printf '%s' "$esc" | grep -c 'line 1 - string not terminated')" 1
 
 # A global label in a macro body, which the reference refuses -- "No global
 # labels allowed in macro definition" -- and refuses at the invocation rather

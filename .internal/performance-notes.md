@@ -4566,8 +4566,13 @@ is what a flag means.
 
 ## What a truncation warning costs, which is more than it looks
 
-    isa_real   5.36 -> 5.72   +6.7%
-    bbcbasic   3.78 -> 3.86   +2.1%
+    isa_real         5.36 -> 5.72   +6.7%
+    isa_even         5.46 -> 5.80   +6.2%
+    isa_degenerate   5.18 -> 5.28   +1.9%
+    isa_memory       5.56 -> 5.60   +0.7%
+    bbcbasic         3.78 -> 3.86   +2.1%
+    rokky            0.52 -> 0.54   +3.8%, on a clock that reads to 0.02
+    synth            6.94 -> 7.06   +1.7%
 
 One range check on every immediate written, and it is the most expensive
 diagnostic in the program by a wide margin -- because unlike everything else
@@ -4594,6 +4599,9 @@ frame already and a dozen calls -- `emit_imm` is a leaf again and
 That recovered 0.02s of 0.36. **The frame was never the cost either.** What it
 costs is the question itself, asked ten thousand times.
 
-isa_real is the high figure because it contains every immediate form the
-instruction set has. bbcbasic's 2.1% is what a real program pays, and it is
-the number to argue about.
+And the spread across the seven says what the cost is proportional to, which
+is not the size of the file or the number of lines but **how many operands in
+it are immediates**. isa_real and isa_even are one instruction per line with
+an operand each and pay 6%; isa_memory is loads and stores through addresses
+and pays 0.7%. bbcbasic's 2.1% is what a real program pays, and it is the
+number to argue about, not the 6.7.

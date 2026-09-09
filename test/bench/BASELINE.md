@@ -6,15 +6,35 @@ the two.
 
 | source | zap | ez80asm | ratio | |
 |---|---|---|---|---|
-| bbcbasic | 3.74s | 22.42s | **0.17x** | ez80asm `-m` |
-| rokky | 0.52s | 2.50s | **0.21x** | |
-| synth | 6.86s | 45.64s | **0.15x** | ez80asm `-m` |
+| bbcbasic | 3.86s | 22.42s | **0.17x** | ez80asm `-m` |
+| rokky | 0.54s | 2.50s | **0.22x** | |
+| synth | 7.06s | 45.64s | **0.15x** | ez80asm `-m` |
 
 Two changes moved these from 4.12 / 0.56 / 7.30: a comment stopped being
 walked through an out-parameter, and the assembler's state moved to a fixed
 address. Both are in .internal/performance-notes.md. The first is worth 3.4%
 on bbcbasic and nothing on rokky, which is 6% comment by byte against BBC
 BASIC's 28%; the second is worth about 4.5% everywhere.
+
+The figures above are with truncation warnings, which the reference has and
+zap now has too. Measured against the same binary without them:
+
+| source | without | with | |
+|---|---|---|---|
+| bbcbasic | 3.78s | 3.86s | +2.1% |
+| rokky | 0.52s | 0.54s | +3.8%, and 0.02s is the clock's resolution |
+| synth | 6.94s | 7.06s | +1.7% |
+| isa_real | 5.36s | 5.72s | +6.7% |
+| isa_even | 5.46s | 5.80s | +6.2% |
+| isa_degenerate | 5.18s | 5.28s | +1.9% |
+| isa_memory | 5.56s | 5.60s | +0.7% |
+
+The spread is the point. What a range check costs is proportional to how much
+of the file is an immediate, and the isa files are the extreme -- isa_real and
+isa_even are nothing but instructions, one per line, each with an operand.
+isa_memory is loads and stores through addresses and pays almost nothing.
+**Two percent is what a real program pays**, and it is the figure to argue
+about, not the 6.7.
 
 Lower is better. **The goal was 0.50x and it is met with room to spare** --
 between four and six times faster than the reference rather than the two the

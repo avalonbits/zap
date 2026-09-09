@@ -8278,17 +8278,17 @@ static void usage(void) {
  *
  * A drop-in replacement that needs the command line rewritten is not one, so
  * every flag it has is accepted here -- three of them change the bytes and
- * have to be implemented, two are recognised and do nothing because zap has
- * nothing for them to turn off, and the rest do what they say.
+ * have to be implemented, one is recognised and does nothing because zap has
+ * nothing for it to turn off, and the rest do what they say.
  *
  * `-m` is minimum memory. It is taken and ignored: zap has one memory
  * configuration and it is the small one, so there is nothing to shrink from
  * and nothing for a script that passes it to be surprised by.
  *
- * `-i` ignores value truncation warnings, and zap has no warnings at all --
- * every diagnostic it has is fatal. Taken and ignored, and the gap it stands
- * for is written up in .internal/completeness.md rather than hidden behind a
- * flag that appears to do something. */
+ * `-i` was the other one until zap grew the warning it turns off. It silences
+ * the printing and leaves the check standing, which is what the reference
+ * does -- and it means `-i` is not a way to buy the 2% back. The check is the
+ * cost; the printf only happens when something is actually wrong. */
 __attribute__((noinline)) static bool parse_args(int argc, char* argv[],
                                                  const char** in,
                                                  const char** out,

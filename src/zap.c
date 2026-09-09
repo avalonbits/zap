@@ -38,8 +38,9 @@
  * compare that pointer against the end of the buffer as well as testing what
  * it points at:
  *
- *     while (p < e && is_space_ch(*p)) { p++; }     yes
- *     while (is_space_ch(*p)) { p++; }              no
+ *     while (p < e && is_space_ch(*p)) { p++; }
+ *
+ * The same loop with the `p < e` half left out is the mistake.
  *
  * This is not defensive programming. Without the bound the compiler is free to
  * rotate the loop -- pre-decrementing the pointer and testing one character

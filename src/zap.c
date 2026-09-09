@@ -166,11 +166,11 @@ typedef struct _dop {
 
     /* A second one, subtracted or added. `end - start` with neither written
      * yet is how a program measures a table it has not finished emitting, and
-     * it is 61% of the operands that name more than one label ahead.
+     * it is the common shape among operands that name two labels ahead.
      *
      * Two is the limit, and not an arbitrary one: the fixup that carries them
-     * is sixteen bytes because that made its indexing a shift instead of a
-     * multiply, and two symbols is what fits. */
+     * is sixteen bytes so that indexing it is a shift instead of a multiply,
+     * and two symbols is what fits. */
     const sym* fwd2;
     bool fwd2_neg;
 
@@ -513,13 +513,10 @@ _Static_assert(NAMES_BLOCK > 255, "any single name has to fit in one block");
 struct sym {
     const sym* next;
 
-    /* The name, pointed at.
-     *
-     * It was an offset, because the arena behind it was one array grown with
-     * realloc and a pointer into that would have to be rebased on every
-     * growth. The arena is a list of blocks that never move now -- see
-     * namblock -- so a pointer is both correct and one add cheaper on the
-     * compare, which is the hottest loop the symbol table has. */
+    /* The name, as a pointer rather than an offset into the arena. The arena
+     * is a list of blocks that never move -- see namblock -- so a pointer
+     * stays valid, and it saves an add in the compare loop, which is the
+     * hottest loop the symbol table has. */
     const char* name;
     uint8_t len;
 
@@ -752,10 +749,10 @@ typedef struct {
     const sym* sub;
 
     /* What to add to the address once it is known. `later + 4` is one symbol
-     * and one constant, and that is what an expression over a forward label
-     * comes to when the label appears once and only `+` and `-` connect it --
-     * which is what 38% of the corpus's expressions look like. Anything else
-     * is refused, because a fixup with one addend cannot represent it.
+     * and one constant, which is what an expression over a forward label comes
+     * to when the label appears once and only `+` and `-` connect it -- the
+     * common shape by a wide margin. Anything else is refused, because a fixup
+     * with one addend cannot represent it.
      *
      * Three bytes on the Agon, and the only quantity on the expression path
      * that is not four. The record is sixteen bytes and every one of them is
@@ -1180,16 +1177,13 @@ static inline bool fits_width(evalue v, int width) {
 
 /* The same question about an operand's immediate, asked in the machine's word.
  *
- * An instruction's immediate is an `int` -- three bytes on the Agon -- and
- * `fits_width` takes the evaluator's four. Widening every immediate of every
- * instruction to ask cost **9.3% of isa_real**: the compares became calls to
- * __lcmpu on the one path that runs on every line that has an operand.
+ * An instruction's immediate is an `int` -- three bytes on the Agon -- while
+ * `fits_width` takes the evaluator's four. Widening every immediate to ask the
+ * wider question would turn these compares into calls to __lcmpu, on the path
+ * that runs for every line with an operand.
  *
- * In the machine's word the width-three case is provably true and folds away
- * -- an `int` cannot be wider than an `int` -- and the other two are byte and
- * word compares. The host keeps the test honestly, where `int` is four bytes
- * and a three-byte write really can lose something, so the two machines warn
- * about the same values. */
+ * In the machine's word the width-three case is provably true and folds away,
+ * and the other two are byte and word compares. */
 static inline bool fits_imm(int v, int width) {
     /* One add and one unsigned compare.
      *
@@ -2277,10 +2271,10 @@ static const uint8_t shl4[16] = {
  * compares and a multiply, and the multiply is a call to __imulu because the
  * eZ80's MLT is 8-bit. All of it depends on the character alone, and
  * 26 * 8 = 208 fits in a byte. */
-/* Which characters begin a binary operator, as a table because cclass has no
- * bit left -- all eight are taken -- and because the question is asked once
- * per operand, right where the term ended. A compare chain of nine would be
- * paid by every operand that is not an expression, and 96.5% of them are not.
+/* Which characters begin a binary operator, as a table of its own because
+ * cclass has no bit left -- all eight are taken. The question is asked once
+ * per operand, where the term ended, and almost every operand is not an
+ * expression, so a compare chain of nine would be paid by all of them.
  *
  * `<` and `>` are here but must be doubled: the reference refuses a single
  * one, so `1<4` is an error rather than a comparison. */
@@ -3144,15 +3138,14 @@ static bool numeric_token(const char* s, int n) {
 static int str_escape(char c);
 
 
-/* The reference evaluates strictly left to right with no precedence at all:
- * it keeps a running total and folds each term into it as the term arrives.
- * `1+2*3` is 9 there and 7 nowhere, and matching that is the whole job -- an
- * evaluator that got precedence "right" would disagree with the assembler this
- * one exists to agree with.
+/* The expression evaluator.
  *
- * Measured over the Agon corpus, 3.46% of operands hold an expression and 73%
- * of those have exactly one operator, so the shape to be fast on is `label+1`
- * and `end-start` rather than anything that needs a stack.
+ * Under `-ez80` it must fold strictly left to right with no precedence, which
+ * is what the reference does: `1+2*3` is 9 there. See binding_power.
+ *
+ * Very few operands hold an expression at all, and most of those have exactly
+ * one operator, so the shapes to be fast on are `label+1` and `end-start`
+ * rather than anything that needs a stack.
  *
  * Grouping is `[...]`, not parentheses, because parentheses already mean
  * indirection. Terms may be a number, a label, `$` for the address of the
@@ -3414,11 +3407,10 @@ static bool expr_climb(evalue* total, const char** pp, const char* e,
 /* A bare token inside an expression: a number in any radix the reference takes,
  * or a label that is already defined.
  *
- * Already defined is the limit of this stage. A forward reference on its own is
- * still a fixup and still works -- `jp later` is untouched -- but one inside an
- * expression would need the fixup to carry the rest of the sum, which is the
- * next stage and is refused here rather than guessed at. 35.7% of the corpus's
- * expressions need nothing more than this. */
+ * Already defined is the limit of this stage. A forward reference on its own
+ * is still a fixup and still works -- `jp later` is untouched -- but one
+ * inside an expression needs the fixup to carry the rest of the sum, which is
+ * handled a stage further out rather than guessed at here. */
 static bool expr_atom(evalue* out, const char* ns, int nn) {
     /* The machine's word: a run this declines falls through to num_parse
      * below, which is where a literal wider than the machine is read. */
@@ -5723,13 +5715,8 @@ static bool emit_data(uint8_t width, const char** pp, const char* e) {
                 value = 0;
             }
             /* Written in the machine's word unless the directive is wider
-             * than the machine.
-             *
-             * `value >> 8` on the evaluator's word is a call to __lshru, and
-             * DB, DW and DL are 3,181 lines of isa_real between them. Narrowed
-             * first, they keep the shifts the eZ80 has. Splitting the write
-             * this way is 0.20s of the 0.42 the widening cost -- see
-             * .internal/performance-notes.md. */
+             * than the machine. `value >> 8` on the evaluator's word is a call
+             * to __lshru; narrowed first, the shifts are ones the eZ80 has. */
             if (want_warn && !fits_width(value, width)) {
                 warn_trunc(value, width);
             }
@@ -8218,12 +8205,10 @@ static bool opt_hex(const char* attached, const char* next, int* used,
  * either side of the filenames and this is meant to drop in.
  *
  * OUT OF LINE, AND NOT FOR TIDINESS. `run` is inlined into main, so main holds
- * the loop over the source lines -- and two hundred instructions of argument
- * handling in front of it moved that loop's register allocation enough to cost
- * **5.3%** on isa_real, on a build where the option is not even given. It is
- * the same wall the mnemonic chain and the symbol chain compare sit behind,
- * reached from the other side: not code that runs, code that is merely
- * *there*. */
+ * the loop over the source lines, and two hundred instructions of argument
+ * handling in front of that loop move its register allocation -- which costs
+ * real time on a build where the option is never even given. Code that is
+ * merely *there* is not free. */
 static void usage(void) {
     printf("Usage: zap <filename> [output filename] [OPTION]\r\n\r\n");
     printf("  -v\tList version information only\r\n");

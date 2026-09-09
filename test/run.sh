@@ -189,6 +189,21 @@ cli_check "an option that is not the reference's is still refused" \
     "$("$OUT/zap" -c -Q "$OUT/opt2.s" "$OUT/opt2.bin" 2>&1 | tr -d '\r' \
        | grep -c 'Unknown option -Q')" 1
 
+# A negative reservation is refused, and this is the one place that is a
+# deliberate difference rather than a gap. The same source in the reference
+# writes a 4 GB file -- the count is read as unsigned and the gap is filled on
+# the way out -- so there is nothing to compare against and nothing worth
+# agreeing with. `ds -1` alone looks accepted there only because a reservation
+# at the end of a file is dropped before it can mean anything.
+printf '  nop\n  ds -1\nlab:\n  dl lab\n' > "$OUT/neg.s"
+cli_check "a negative DS is refused" \
+    "$("$OUT/zap" -c "$OUT/neg.s" "$OUT/neg.bin" 2>&1 | tr -d '\r' \
+       | grep -c 'ds needs a positive number')" 1
+printf '  blkb -2\n' > "$OUT/neg.s"
+cli_check "a negative BLK is refused" \
+    "$("$OUT/zap" -c "$OUT/neg.s" "$OUT/neg.bin" 2>&1 | tr -d '\r' \
+       | grep -c 'blk needs a positive number')" 1
+
 # A macro name gets the sixty-four characters a label gets, and the reference
 # refuses the sixty-fifth. zap had no limit here.
 macname_same() {

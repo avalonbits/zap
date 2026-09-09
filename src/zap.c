@@ -6719,11 +6719,19 @@ static bool directive_line(const char* s, int n, const char* p,
     }
 
     if (kind == DIR_DS) {
-        /* Refused rather than reproduced. The reference reads the count as
-         * unsigned, so `DS -1` there is sixteen megabytes of 0xFF and a
-         * successful assembly; on a 512 KB machine that is a way to lose the
-         * program rather than a feature, and there is no byte sequence worth
-         * agreeing with. Same position as division by zero. */
+        /* Refused rather than reproduced, and the measurement is worth
+         * keeping because the first look at it says the opposite.
+         *
+         * `ds -1` on its own assembles cleanly in the reference and writes
+         * nothing -- a reservation at the end of a file is dropped, so the
+         * negative count never has to mean anything. Put a single byte after
+         * it and the same source writes a **4,294,967,299-byte** file: the
+         * count is read as unsigned and the gap is filled when the file is
+         * written out. `blkb -2`, which emits rather than reserves, is
+         * 3.5 GB with nothing after it at all.
+         *
+         * On a 512 KB machine there is no byte sequence there worth agreeing
+         * with, so this says so instead. Same position as division by zero. */
         if (value < 0) {
             zz.err = ZAP_E_DS_POSITIVE_NUMBER;
 

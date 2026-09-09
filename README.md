@@ -1,5 +1,7 @@
 # zap - eZ80 Assembler Project
 
+[![latest release](https://img.shields.io/github/v/release/avalonbits/zap?label=download&color=blue)](https://github.com/avalonbits/zap/releases/latest)
+
 A fast, single-pass assembler for the [Agon Light](https://www.thebyteattic.com/p/agon.html)
 and other eZ80 machines. It runs **on** the Agon as well as on a desktop, and
 it is a drop-in replacement for
@@ -21,10 +23,18 @@ reference assembler's own test corpus it is **3.2x faster** per source and
 
 ## Getting it
 
-**Download the release.** This is the way to get zap: the
-[latest release](https://github.com/avalonbits/zap/releases/latest) has
-`zap.bin`, built for the Agon. Copy it to `/bin` on the SD card and run it as
-`zap` -- there is nothing to install and nothing to configure.
+**From the [releases page](https://github.com/avalonbits/zap/releases) --
+this is the way to get zap.** Every release has `zap.bin`, already built for
+the Agon; there is nothing to compile, install or configure.
+
+1. Download
+   [`zap.bin`](https://github.com/avalonbits/zap/releases/latest/download/zap.bin)
+   from the [latest release](https://github.com/avalonbits/zap/releases/latest).
+2. Copy it into `/bin` on the Agon's SD card.
+3. Run it: `zap hello.s hello.bin`.
+
+`zap -v` prints the version, so you can check which one you have. The current
+release is [v1.0.0](https://github.com/avalonbits/zap/releases/tag/v1.0.0).
 
 ## Building it yourself
 

@@ -2286,34 +2286,17 @@ static const uint8_t shl4[16] = {
  * one, so `1<4` is an error rather than a comparison. */
 static uint8_t exop[256];
 
-/* Binding power per operator, and the switch that makes zap a drop-in for the
- * reference instead of an assembler that is right.
+/* Binding power per operator: two tables, one algorithm.
  *
- * The reference evaluates strictly left to right with no precedence at all:
- * `1+2*3` is 9 there, `2+3*4` is 20, `2*3+4*5` is 50. That is not a reading of
- * the source -- it is what the binary does, checked one expression at a time.
- * Every other assembler, and every reader, gives those 7, 14 and 26.
+ * The reference evaluates strictly left to right with no precedence at all --
+ * `1+2*3` is 9 there, `2+3*4` is 20, `2*3+4*5` is 50 -- where every other
+ * assembler gives 7, 14 and 26. `-ez80` reproduces that by giving every
+ * operator the same binding power, because a precedence climb in which
+ * everything binds equally *is* a left-to-right fold. The compatible answer
+ * falls out of the same code rather than needing its own.
  *
- * So there are two tables and one algorithm. `-ez80` gives every operator the
- * same binding power, and a precedence climb where everything binds equally
- * *is* a left-to-right fold -- the compatible answer falls out of the same code
- * rather than needing its own.
- *
- * The default is the ordinary ordering -- C's, which is also every other
- * language's and what a reader of `mask & flag << 2` expects. It is not ZDS's
- * either: ZDS II 5.3.5, measured from its own listing, has only two levels,
- *
- *     1|6&4     4      (1|6)&4     where normal precedence gives 5
- *     6^3&2     0      (6^3)&2     and 4
- *     1<<2+1    5      (1<<2)+1    and 8
- *     4&3*2     4      4&(3*2)     agreeing here
- *
- * so `* /` bind tighter and `+ - << >> & | ^` are one level folding left to
- * right. Following that would be copying a second assembler's quirk to escape
- * the first one's. A ZDS program that relies on it needs brackets adding, and
- * that is a converter's job -- zds2ez80 has the corpus and the ZDS oracle to
- * do it with, and zap should be the assembler both of them can agree with
- * rather than a third dialect.
+ * The default table is C's ordering, which is what a reader of
+ * `mask & flag << 2` expects.
  *
  * Higher binds tighter. */
 static uint8_t exprec[256];
@@ -2339,11 +2322,10 @@ static bool compat_ez80 = false;
 
 /* Whether the error report is coloured.
  *
- * On, as the reference has it, and `-c` turns it off. It was the other way
- * round for one commit, on the reasoning that a pipe should get plain text --
- * which is true and is not zap's decision to make: a drop-in replacement that
- * needs a flag the original did not is not a drop-in replacement. The test
- * suite passes `-c`, which is the same thing said by the side that wants it. */
+ * On, as it is in the reference, and `-c` turns it off. A drop-in replacement
+ * that needs a flag the original did not is not a drop-in replacement, so the
+ * default matches even where plain text would be the better guess. The test
+ * suite passes `-c`. */
 static bool use_color = true;
 
 /* What the options ask for beyond the bytes: a listing, a symbol file, the
@@ -2354,28 +2336,25 @@ static bool want_console_list = false;
 static bool want_symbols = false;
 static bool want_stats = false;
 
-/* Either of the two listings, as one test.
- *
- * The line loop asks this twice a line -- once to remember where the output
- * cursor was, once to print what went between -- and those two branches are
- * the whole of what the feature costs a run that does not want it. Measured:
- * see .internal/performance-notes.md. */
+/* Either of the two listings, as one test, so the line loop asks a single
+ * question twice a line -- once to remember where the output cursor was, once
+ * to print what went between. Those two branches are the whole of what the
+ * feature costs a run that did not ask for it. */
 static bool listing = false;
 static uint8_t list_fh = 0;
 
 /* Which instruction set is in force, as the bitmask an isa_row carries.
  *
- * `.CPU Z80` and `.CPU Z180` are a *filter* in the reference, not a second
- * assembler: the same table, with the rows another machine does not have
- * taken out of it. The table here has carried the same bits since it was
- * written -- BIT_Z80, BIT_U80 for the undocumented Z80 forms, BIT_Z180,
- * BIT_EZ80 -- so honouring the directive is this mask and the two tests in
- * match_row that read it, and not a row of new work.
+ * `.CPU Z80` and `.CPU Z180` are a filter rather than a second assembler: the
+ * same table with the rows another machine does not have taken out of it.
+ * Every row carries its CPU bits -- BIT_Z80, BIT_U80 for the undocumented Z80
+ * forms, BIT_Z180, BIT_EZ80 -- so the directive is this mask and the two tests
+ * in match_row that read it.
  *
- * A file-scope static rather than a field on `dz`, for the reason
- * `compat_ez80` is one: match_row is inlined into assemble_line and every
- * argument it takes is paid for on every instruction in the file. It is set
- * once per assembly at most.
+ * A file-scope static rather than a field of `dz`, for the same reason as
+ * `compat_ez80`: match_row is inlined into assemble_line, and anything passed
+ * to it is paid for on every instruction in the file. This is set at most once
+ * per assembly.
  *
  * eZ80 until a directive says otherwise, which is what an Agon source is. */
 static uint8_t cpu_mask = CPU_EZ80;
@@ -2538,11 +2517,12 @@ __attribute__((noinline)) static void build_tables(void) {
         }
 
         if (any_cc) {
-            /* A row that takes a condition code can match with a mode that
-             * does not, so it must be reached whatever the operands were.
-             * call, jp, jr and ret are the four, ten rows between them, and
-             * they keep the mode test on each row and scan linearly. Leaving
-             * them ungrouped is what lets every other mnemonic drop the test. */
+            /* A row that takes a condition code can match operands whose mode
+             * does not match the group, so it has to be reached whatever the
+             * operands were. call, jp, jr and ret are the four mnemonics this
+             * applies to -- ten rows between them -- and they keep a mode test
+             * on each row and scan linearly. Leaving those four ungrouped is
+             * what lets every other mnemonic drop the test entirely. */
             insntab[i].ngroups = 0;
 
             continue;
@@ -2595,21 +2575,19 @@ __attribute__((noinline)) static void build_tables(void) {
     }
 }
 
-/* Two things this does not do, because the bucket already did them.
+/* Two things this does not do, because the bucket has already done them.
  *
- * It starts at 1. The bucket is chosen by letter_base[first], which maps 'a'
- * and 'A' to the same base, so every candidate in the chain already agrees
- * with the source on its first character -- comparing it again was a fifth of
- * the characters compared, at 4.15 per lookup over isa_real.
+ * It starts at index 1: the bucket is chosen by letter_base[first], which maps
+ * 'a' and 'A' to the same base, so every candidate in the chain already agrees
+ * with the source on its first character.
  *
- * And it folds one side, not two. Every name in the table is lower case,
- * checked when the table is built, so only the source needs the OR. */
+ * And it case-folds one side, not two. Every name in the table is lower case,
+ * which is checked when the table is built, so only the source needs the OR. */
 static inline bool same_ci(const char* name, const char* s, int n) {
-    /* Unsigned, and that is the whole of the change. Two signed ints compared
-     * with `<` cannot be done in one subtract, so the compiler emitted a
-     * `call pe, __setflag` to repair the flags on overflow -- inside the loop
-     * that compares a mnemonic, on every line of the source. The same fault
-     * the output cursor had when it was an offset and a capacity. */
+    /* Unsigned, and that is not incidental: two signed ints compared with `<`
+     * cannot be done in one subtract, so the compiler emits a
+     * `call pe, __setflag` to repair the flags on overflow -- here, inside the
+     * loop that compares a mnemonic on every line of the source. */
     for (unsigned i = 1; i < (unsigned) n; i++) {
         if (name[i] != (s[i] | 0x20)) {
             return false;
@@ -2695,15 +2673,13 @@ static uint8_t suffix_code(uint8_t bit) {
     return CODE_LIL;
 }
 
-/* Packing short names into a word and comparing them in one operation was
- * tried here and was 1.3% slower: bucketing by letter and length already
- * leaves one or two candidates, so the compare loop it replaced was two or
- * three characters long, and building the packed key cost more than that. */
-/* always_inline, and the reason is the same one match_row carries. The suffix
- * reader looks a mnemonic up too, and that second caller was enough for the
- * compiler to stop inlining it into assemble_line -- where it is the lookup
- * every instruction line performs. Measured: isa_degenerate 4.86s to 5.16s,
- * for a feature that never runs on that file. */
+/* A plain character compare. Bucketing by letter and length leaves one or two
+ * candidates, so this loop is two or three characters long -- shorter than any
+ * scheme that would build a packed key to replace it. */
+/* always_inline, for the reason match_row carries the same attribute: the
+ * suffix reader looks a mnemonic up as well, and a second caller is enough for
+ * the compiler to stop inlining this into assemble_line -- where it is the
+ * lookup every instruction line performs. */
 __attribute__((always_inline))
 static inline const insninfo* mnemonic_of(const char* s, int n) {
 #ifdef MTRUNC
@@ -2736,11 +2712,10 @@ static inline const insninfo* mnemonic_of(const char* s, int n) {
  * token here to carry one. */
 /* Writes the register's bytes straight into the operand.
  *
- * It used to hand back a 24-bit mask that the caller split into bytes. The
- * split happens after the switch, where the value is no longer a constant, so
- * `bit >> 16` compiled to a call to __ishru -- on every register operand in
- * the source. Written inside each arm the shifts are constant expressions and
- * fold away, and the operand is a pointer the caller already had. */
+ * Handing back a 24-bit mask for the caller to split would put the shifts
+ * after the switch, where the value is no longer a constant and `bit >> 16` is
+ * a call to __ishru -- on every register operand in the source. Written inside
+ * each arm, the shifts are constant expressions and fold away. */
 #define SETREG(bits, idx)                        \
     do {                                         \
         op->r0 = (uint8_t) (bits);               \
@@ -2844,9 +2819,9 @@ static bool reg_of_text(const char* s, int n, dop* op, bool* is_cc,
 #define C_MNEM  0x10
 
 /* A name character that is not a digit -- what a register or flag has to start
- * with. Its own bit because the test used to be `name_ch(c) && !digit_ch(c)`,
- * which loads the same class byte twice and masks it twice, on every operand
- * in the source. */
+ * with. Its own bit in the class table rather than
+ * `name_ch(c) && !digit_ch(c)`, which would load the same class byte twice and
+ * mask it twice on every operand in the source. */
 #define C_ALPHA 0x20
 
 /* The two characters that decide what kind of operand this is, so that one
@@ -3022,56 +2997,44 @@ static const dop dop_none = {
 
 /* A run of hexadecimal digits, assembled into a value.
  *
- * Assembled from the end, a byte at a time, rather than accumulated as
- * `acc = (acc << 4) | digit`.
- *
- * There is no barrel shifter, and the compiler will not turn a left shift into
- * a byte move even at a byte boundary: `<< 4` and `<< 8` are both
- * `ld c, n; call __ishl`, a loop over the bits. That cost about 445 cycles per
- * hex digit, which is why `ld hl, 0x123456` timed 2.9s slower than
- * `ld a, 0x42` over thirty thousand lines.
+ * Read from the end, a byte at a time, rather than accumulated as
+ * `acc = (acc << 4) | digit`. There is no barrel shifter here, and the
+ * compiler will not turn a left shift into a byte move even at a byte
+ * boundary: `<< 4` and `<< 8` are both `ld c, n; call __ishl`, a loop over the
+ * bits, several hundred cycles per digit.
  *
  * Working backwards, two digits make a byte with one table lookup for the high
  * nibble, and the bytes go straight into the value's own storage. Nothing here
  * shifts anything wider than a nibble.
  *
- * Three fixed steps rather than a loop with a running byte index. A value is
- * at most three bytes, so the loop could only ever run three times, and it was
- * paying for that: a counter to increment, a bound to test against it, and an
- * indexed store into the union, which is address arithmetic on every byte.
+ * Three fixed steps rather than a loop: a value is at most three bytes, so a
+ * loop could only run three times and would pay for a counter, a bound and an
+ * indexed store into the union.
  *
- * The digits are checked here too, rather than in a pass of their own. Each
- * used to be looked up twice -- once by a loop asking whether the run was hex,
- * and again here -- and that pass cost 811 cycles of this parse's 2,163, and
- * 393 even for `ld a, 0x42`, where there are two digits. Most of it was the
- * loop, not the work.
+ * The digits are validated here rather than in a pass of their own. `hexval`
+ * gives 0xFF for anything that is not a hex digit and a real nibble is 0x0F or
+ * less, so OR-ing the nibbles together and testing the high half at the end
+ * says whether any was rejected, with no branch per digit.
  *
- * hexval gives 0xFF for anything that is not a hex digit and a real nibble is
- * 0x0F or less, so OR-ing the nibbles together and testing the high half at
- * the end says whether any was rejected, with no branch per digit.
+ * Little-endian, which both the eZ80 and the host are; the emitter writes the
+ * low byte first for the same reason. A run longer than the machine's word is
+ * declined rather than truncated -- see the test.
  *
- * Little-endian, which the eZ80 is and the host is. The emitter already writes
- * the low byte first for the same reason. A run longer than the machine's word
- * is declined rather than truncated, and the reason is at the test.
- *
- * Taking the run rather than the whole token is what lets `0x1234` and
- * `1234h` share this. They used to be different code: the prefixed form came
- * here and the suffixed form fell through to num_parse, which on the honest
- * corpus is 46% of every immediate in isa_real. */
+ * It takes the run of digits rather than a whole token, which is what lets
+ * `0x1234` and `1234h` share it. */
 static inline bool hex_digits(const char* d, int n, int* out) {
-    /* Six digits, which is the machine's word, and anything longer is handed
-     * to num_parse instead of read here.
+    /* Six digits, which is the machine's word. Anything longer is declined
+     * here and read by num_parse, which works in the evaluator's wider word
+     * and handles every radix.
      *
-     * This used to keep four bytes so that `dw32 0x55555555` could come
-     * through the fast path. It cost **0.10s of isa_real** -- every literal
-     * in the file assembled into a wider union and moved out through a wider
-     * variable, to buy the one form in the corpus that needs it. Declining is
-     * free: lit_value returns NULL and the caller falls to the evaluator,
-     * whose atom reaches num_parse, which has been 32-bit all along and reads
-     * every radix. The fast path exists for what is common, and an eight-digit
-     * hex literal is not.
+     * Keeping four bytes here so that `dw32 0x55555555` could come through
+     * would widen the union and the variable it moves through for every
+     * literal in the file, to serve a form that is rare. Declining costs
+     * nothing: lit_value returns NULL and the caller falls through to the
+     * evaluator.
      *
-     * Six and not seven: seven digits is 28 bits and does not fit either. */
+     * Six and not seven, because seven digits is 28 bits and does not fit
+     * either. */
     if (n > 6) {
         return false;
     }
@@ -3130,17 +3093,15 @@ static inline bool hex_digits(const char* d, int n, int* out) {
  *
  * Every radix this assembler takes is marked at one end or the other: a
  * leading digit for decimal, 0x and 0b; a leading $, # or %; a trailing h or
- * b. A token with none of those is a name and there is nothing to work out.
+ * b. A token with none of those is a name.
  *
- * It is only a filter. What it lets through still has to be parsed, because a
- * leading digit does not make a number -- 2 is not a binary digit, so `2b` is
- * a name, and so are `1z`, `5g` and `123abc`. The reference takes all four as
- * labels, and assuming otherwise was wrong for four of twenty probes.
+ * It is only a filter, and what it lets through still has to be parsed: a
+ * leading digit does not make a number, since 2 is not a binary digit, so `2b`
+ * is a name and so are `1z`, `5g` and `123abc`. The reference takes all four
+ * as labels.
  *
- * What the filter buys is the common path: an ordinary label neither starts
- * with a digit nor ends in h or b, so it never reaches the general parser.
- * Label definitions are 15.5% of the time on isa_real and every one of them
- * was calling it. */
+ * What the filter buys is the common path -- an ordinary label neither starts
+ * with a digit nor ends in h or b, so it never reaches the general parser. */
 static inline bool maybe_numeric(const char* s, int n) {
     const char f = s[0];
     const char last = (char) (s[n - 1] | 0x20);
@@ -3154,15 +3115,13 @@ static bool numeric_token(const char* s, int n) {
         return false;
     }
 
-    /* The fast reader first, and num_parse for whatever it declines --
-     * *falling through* rather than returning its answer.
+    /* The fast reader first, and num_parse for whatever it declines -- falling
+     * *through* rather than returning the fast reader's answer.
      *
-     * Returning it was right while hex_digits read everything the reference
-     * calls a hex literal. It stopped being right when hex_digits began to
-     * decline a run wider than the machine's word: `0x55555555` was then
-     * "not a number", so the operand parser took it for a label, interned it
-     * and made it a forward reference to a name nothing ever defines. The
-     * fast path declining has to mean "ask the slow one", never "no". */
+     * hex_digits declines a run wider than the machine's word, and returning
+     * that as "not a number" would make the operand parser take `0x55555555`
+     * for a label and turn it into a forward reference nothing ever defines.
+     * A fast path declining must mean "ask the slow one", never "no". */
     int v = 0;
     if (n >= 3 && s[0] == '0' && (s[1] | 0x20) == 'x') {
         if (hex_digits(s + 2, n - 2, &v)) {
@@ -3210,39 +3169,33 @@ static int str_escape(char c);
  * than any real source and cheaper than finding out. */
 #define EXPR_MAXDEPTH 32
 
-/* Nesting is counted here rather than passed down, because a bracket recurses
- * through expr_term and expr_value and both of those run on every term. A
- * parameter neither of them otherwise wants would be paid for by every operand
- * in the file; a byte in memory is paid for by the brackets alone.
+/* How deep the brackets go, counted in a file-scope byte rather than passed
+ * down. A bracket recurses through expr_term and expr_value, both of which run
+ * on every term, so a parameter would be paid for by every operand in the file
+ * where a byte in memory is paid for by the brackets alone.
  *
- * It also has to be counted somewhere. `depth` below bounds the precedence
- * climb and only that: a bracket goes expr_term -> expr_value -> expr_climb,
- * and expr_value starts a fresh climb at depth zero, so nesting was unbounded
- * despite the paragraph above claiming otherwise. 5,000 deep is fine on a host
- * with an eight-megabyte stack, which is why no test caught it. */
+ * It has to be counted here and not by `depth` below: `depth` bounds one
+ * precedence climb, and a bracket starts a fresh climb at zero, so nesting
+ * would otherwise be unbounded. */
 static uint8_t expr_depth;
 
 /* The forward references an expression is carrying, and whether they are still
  * in a shape a fixup can hold.
  *
- * A fixup holds two symbols and a constant, and adds the first: it can
- * represent `k + a`, `k + a - b` and `k + a + b`, and nothing else. So an
- * expression may name at most two labels that are not defined yet, each may
- * only be joined to the rest by `+` and `-`, and at least one of the two has
- * to end up added.
+ * A fixup holds two symbols and a constant, and adds the first, so it can
+ * represent `k + a`, `k + a - b` and `k + a + b` and nothing else. An
+ * expression may therefore name at most two labels that are not yet defined,
+ * each joined to the rest by `+` or `-`, with at least one of the two added.
  *
- * A sign is kept per symbol rather than a single "is this still usable" flag,
- * which is what the one-symbol version had. That is what makes `end - start`
- * work, and it also picked up `k - later` for free -- previously refused,
- * because with nowhere to write a sign the only safe answer was no.
+ * A sign is kept per symbol rather than one "still usable" flag for the whole
+ * expression, which is what makes `end - start` and `k - later` work.
  *
- * Tracked here rather than returned, because returning them would widen every
- * signature in the evaluator including the recursive one. Reset per operand,
- * in parse_operand, which is the only place an expression starts.
+ * Tracked in file scope rather than returned: returning it would widen every
+ * signature in the evaluator, including the recursive ones. Reset per operand
+ * in parse_operand, the only place an expression starts.
  *
- * Two named slots rather than an array: a `const sym*` is three bytes, so a
- * variable subscript into an array of them is a call to __imulu on every
- * lookup. Two is few enough to spell out. */
+ * Two named slots rather than an array, because a `const sym*` is three bytes
+ * and a variable subscript into an array of them is a call to __imulu. */
 static const sym* expr_fwd;     /* slot 0, bit 0 of a mask */
 static const sym* expr_fwd2;    /* slot 1, bit 1 */
 static bool expr_fwd_neg;
@@ -3291,13 +3244,13 @@ static void fwd_negate(uint8_t mask) {
 /* What survived, arranged the way a fixup wants it: the added symbol first.
  *
  * `start - end` and `end - start` differ only in which slot the minus landed
- * on, so the ordering is decided here rather than by the order they were
- * written in. Two negatives is the one two-symbol shape that cannot be
- * represented, because the fixup always adds its first symbol. */
-/* always_inline, and it has to be. `fwd_finish` runs on every expression
- * operand in the file, and giving this a second caller in the directives was
- * enough for the compiler to outline it -- a call with three out-parameters on
- * every forward reference. Fourth time this file has met that. */
+ * on, so the order is decided here rather than by the order they were written
+ * in. Two negatives is the one two-symbol shape that cannot be represented,
+ * because a fixup always adds its first symbol. */
+/* always_inline, and it has to be: `fwd_finish` runs on every expression
+ * operand in the file, and a second caller anywhere is enough for the compiler
+ * to outline it -- a call with three out-parameters on every forward
+ * reference. */
 __attribute__((always_inline))
 static inline bool fwd_result(const sym** target, const sym** sub,
                               bool* subneg) {
@@ -3487,14 +3440,12 @@ static bool expr_atom(evalue* out, const char* ns, int nn) {
     /* Decimal, read here rather than through num_parse.
      *
      * A token that is nothing but digits is a number and can be nothing else,
-     * so neither the check nor the general parser has anything to decide. Both
-     * are real calls, and between them they were most of what `DS 4` cost:
-     * 7,520 cycles against `DB 4`'s 3,281, for the same one-digit number
-     * through the evaluator instead of the data path's fast read.
+     * so neither the "could this be a number" check nor the general parser has
+     * anything to decide, and both of those are real calls.
      *
-     * The same accumulation as lit_value, deliberately: the first digit
-     * outside the loop, because `acc * 10` is a call to __imulu here, and the
-     * same 24-bit wrap on a value too big to fit, so that `DB 20000000` and
+     * The accumulation is lit_value's, deliberately: the first digit outside
+     * the loop, because `acc * 10` is a call to __imulu here, and the same
+     * 24-bit wrap on a value too big to fit, so that `DB 20000000` and
      * `DS 20000000` cannot disagree with each other. */
     if (digit_ch(ns[0]) && nn <= 6) {
         /* Six digits, for the reason at hex_digits: inside the machine's word,
@@ -3634,19 +3585,16 @@ static bool expr_term(evalue* out, const char** pp, const char* e,
         /* A character literal is its byte: one character and the closing
          * quote, or a backslash escape and the closing quote.
          *
-         * The escapes are the string ones, which is one table for both and is
-         * what the reference has -- `'\n'` is 0x0A there and so is `"\n"`.
-         * They were missing here, so `ld a, '\a'` was "expected a character"
-         * against the reference's 3E 07, and `'\''` -- the apostrophe, which
-         * has no other spelling -- could not be written at all. */
+         * The escapes are the string ones -- one table serves both, which is
+         * what the reference does: `'\n'` is 0x0A and so is `"\n"`. */
         if (p[1] == '\\' && !(p[2] == '\'' && p[3] != '\'')) {
             /* An escape, unless the backslash *is* the character. `'\'` is the
-             * backslash itself in the reference -- its own corpus writes
+             * backslash itself -- the reference's own corpus writes
              * `'[' '\' ']'` for 5B 5C 5D -- and `'\''` is the apostrophe. The
-             * two start alike and only the fourth character tells them apart:
-             * a closing quote after the escaped quote means the apostrophe was
-             * meant, and anything else means the literal ended at the quote
-             * and the backslash was its content. */
+             * two spellings start alike and only the fourth character tells
+             * them apart: a closing quote there means the apostrophe was
+             * meant, anything else means the literal ended at the quote and
+             * the backslash was its content. */
             const int esc = str_escape(p[2]);
             if (esc < 0 || p[3] != '\'') {
                 zz.err = ZAP_E_EXPECTED_CHARACTER;
@@ -3822,19 +3770,16 @@ static bool expr_value(evalue* out, const char** pp, const char* e,
 /* Every scan below is bounded, and the reader also keeps a newline one byte
  * past the last valid one.
  *
- * The sentinel is what makes the scans *terminate*: none of the character
- * classes contains a newline, so every loop stops on it whether or not it
- * tests the end. The bound is for something else entirely -- see EVERY SCAN IS
- * BOUNDED at the top of this file -- and it is the only defence against a loop
- * the compiler has rotated, which the sentinel cannot help with because a
- * rotated loop does not run off the end; it skips the first character.
+ * The two do different jobs. The sentinel is what makes a scan *terminate*:
+ * no character class contains a newline, so every loop stops on it whether or
+ * not it tests the end. The bound is what stops the compiler rotating the loop
+ * -- see the header of this file -- which the sentinel cannot help with,
+ * because a rotated loop does not run off the end, it skips the first
+ * character.
  *
- * The single tests -- `*p == ','` and the like -- have no bound and need none.
- * They are not loops, so there is nothing to rotate, and the sentinel is what
- * makes reading one character past the content safe.
- *
- * The bounds here cost 0.06s of isa_real's 5.64, all of the price this rule
- * carries anywhere in the file. Nothing else measured at all. */
+ * Single tests like `*p == ','` have no bound and need none: they are not
+ * loops, so there is nothing to rotate, and the sentinel is what makes reading
+ * one character past the content safe. */
 /* Where a truncated stage sinks what it computed, so the compiler cannot
  * delete the work whose result nothing reads. Declared here because both the
  * line-level and the operand-level cuts write to it, and parse_operand comes
@@ -3872,16 +3817,13 @@ __attribute__((always_inline)) static inline bool parse_operand(dop* op, const c
         p++;
     }
 
-    /* One class load decides what this operand is.
+    /* One class load decides what this operand is: whether the operand list
+     * has ended, whether a parenthesis opens it, and whether a register starts
+     * here are all one byte's worth of information about one character.
      *
-     * It used to be four compares and then a load: three to ask whether the
-     * operand list had ended, one for the open paren, and only then a class
-     * lookup to ask whether a register starts here. All of that is one byte's
-     * worth of information about one character, so it is now read once.
-     *
-     * The end of the operand list is still checked here rather than by
-     * bounding the scan at the end of the line, because finding that end meant
-     * a whole extra pass over the source. */
+     * The end of the operand list is checked here rather than by bounding the
+     * scan at the end of the line, because finding that end would mean another
+     * pass over the source. */
     uint8_t cl = cclass[(uint8_t) *p];
 
     if ((cl & C_OPEND) != 0) {
@@ -3945,18 +3887,12 @@ __attribute__((always_inline)) static inline bool parse_operand(dop* op, const c
                     p++;
                 }
                 const char* ds = p;
-                /* This is the loop the whole rule came from, and the only
-                 * one whose failure was ever *seen* rather than reasoned
-                 * about: unbounded, `ld a, 0x42` parsed as 0x4 and left `2`
-                 * behind, because the rotated loop never examined the first
-                 * character and stopped one short.
-                 *
-                 * It does not reduce -- the same loop in isolation compiles
-                 * correctly -- and rewriting it to index from a base rather
-                 * than advance a pointer does not help; that was tried and
-                 * fails the same way. Full diagnosis on the `sentinel`
-                 * branch. Every scan in the file now carries the same bound
-                 * for the same reason; see the top of this file. */
+                /* Bounded, like every character scan here. Without the bound
+                 * this loop is compiled rotated: it never examines the first
+                 * character and stops one short, so `ld a, 0x42` parses as
+                 * 0x4 and leaves `2` behind. Indexing from a base instead of
+                 * advancing a pointer does not avoid it. See the header of
+                 * this file. */
                 while (p < e && num_ch(*p)) {
                     p++;
                 }
@@ -3981,16 +3917,12 @@ __attribute__((always_inline)) static inline bool parse_operand(dop* op, const c
                     got = q == p;
                 }
                 if (!got) {
-                    /* Not a plain decimal, so the general parser has it.
+                    /* Not a plain decimal, so the general parser takes it.
                      *
-                     * The fast path used to *refuse* what it could not finish
-                     * rather than hand it over, which made `(ix + 05h)` and
-                     * `(ix + 0x05)` "bad displacement" -- both begin with a
-                     * digit, so the decimal scan claimed them and then stopped
-                     * on the `h` or the `x`. `$05` worked, because a dollar is
-                     * not a digit and it never reached here. That is a real
-                     * program's spelling: it is how the Agon corpus writes
-                     * `ld a, (ix + 05h)`. */
+                     * The fast path must hand over rather than refuse: `05h`
+                     * and `0x05` both begin with a digit, so the decimal scan
+                     * claims them and then stops on the `h` or the `x`, and
+                     * `ld a, (ix + 05h)` is how real sources write it. */
                     value dv = 0;
                     if (num_parse(ds, (int) (p - ds), &dv)) {
                         d = (int) dv;
@@ -4054,27 +3986,14 @@ __attribute__((always_inline)) static inline bool parse_operand(dop* op, const c
                     return false;
                 }
                 p++;
-                /* Past what follows the parenthesis, which the general path
-                 * below already does after its own `)`.
+                /* Skips the spaces after the closing parenthesis, which the
+                 * general path below already does after its own `)`.
                  *
-                 * It is here rather than in assemble_line because it is
-                 * needed in one case and one only: finding the comma before a
-                 * third operand, in `res 5, (ix+1) , h`, which the reference
-                 * takes and gives the same bytes as the unspaced form.
-                 *
-                 * Three placements, measured:
-                 *
-                 *   in assemble_line, after the second operand   +0.04 real
-                 *   here, on the indirect register operands      +0.02 real
-                 *   nowhere, and the spaced form refused          0.00
-                 *
-                 * On isa_degenerate, which is nothing but instructions and
-                 * has the most indirect operands of the set, this placement
-                 * is 0.04 rather than 0.02. It is kept: `res 5, (ix+1) , h`
-                 * assembling to the same bytes as `res 5,(ix+1),h` is the
-                 * whole claim this project makes, and a spelling nobody
-                 * writes is exactly the kind of thing that turns out to be in
-                 * somebody's file. */
+                 * Needed in one case: finding the comma before a third
+                 * operand, as in `res 5, (ix+1) , h`, which the reference
+                 * accepts and assembles the same as the unspaced form. Doing
+                 * it here rather than in assemble_line confines the cost to
+                 * indirect register operands. */
                 while (p < e && is_space_ch(*p)) {
                     p++;
                 }
@@ -4088,29 +4007,20 @@ __attribute__((always_inline)) static inline bool parse_operand(dop* op, const c
          *
          * A hexadecimal constant written with a trailing h begins with one of
          * a..f, so `ld hl, aabbcch` arrives here looking exactly like a name.
-         * num_parse has always known the suffix forms; the operand simply
-         * never reached it, and this said "unknown operand" instead. Forty
-         * forms of the reference's own corpus were wrong for as long as that
-         * was true, and the corpus could not say so because it was filtered
-         * through zap.
+         * Rewinding to the start of the token is all it takes: num_ch admits
+         * letters, so the literal scan below reads the whole thing, and the
+         * closing parenthesis of an indirect operand is handled there too.
          *
-         * Rewinding is all it takes: num_ch admits letters, so the literal
-         * scan below reads the whole token, and the closing paren of an
-         * indirect operand is handled there too.
-         *
-         * What it does not take is scanning the token again. C_NUM contains
+         * The token is not scanned again to find that out. C_NUM contains
          * every character C_NAME does and three more -- $, # and % -- so the
-         * literal scan below re-reads exactly the characters just read, and
-         * then stops in the same place, unless the character that ended the
-         * name run is one of those three. That is one class test to find out,
-         * against a second pass over the whole token, and the token here is a
-         * label: labels are most of what reaches this line and they are the
-         * longest thing an operand can be.
+         * literal scan re-reads exactly the characters just read and stops in
+         * the same place, unless the character that ended the name run is one
+         * of those three. One class test answers that, where a second pass
+         * would walk the whole token, and the token here is usually a label:
+         * the longest thing an operand can be.
          *
-         * The apostrophe needs no special case. It is not a C_NUM character
-         * either, so the literal scan stopped in front of it too; handing over
-         * the end of the name run rather than the position after the
-         * apostrophe is what the rewind was already doing. */
+         * The apostrophe needs no special case, being outside C_NUM as
+         * well. */
         if (!num_ch(*nend)) {
             known_end = nend;
         }
@@ -4129,8 +4039,8 @@ __attribute__((always_inline)) static inline bool parse_operand(dop* op, const c
             if (*p == '-' || *p == '+') {
                 p++;
             }
-            /* Bounded, like every scan here, and this one was written that
-             * way from the start for the reason at the displacement scan. */
+            /* Bounded, like every character scan here; see the header of this
+             * file. */
             while (p < e && num_ch(*p)) {
                 p++;
             }
@@ -4275,17 +4185,16 @@ full_expression:
         if (!got && nn > 0 && !numeric_token(ns, nn)) {
             /* Not a literal in any radix, so it is a label.
              *
-             * Tried after the literal forms and not before them, because a
-             * hexadecimal constant written with a trailing h begins with a
-             * letter too -- `aabbcch` is a number and `aabbcc` is a name, and
-             * only the suffix tells them apart.
+             * Tried after the literal forms rather than before them, because a
+             * hexadecimal constant with a trailing h begins with a letter too:
+             * `aabbcch` is a number and `aabbcc` is a name, and only the
+             * suffix tells them apart.
              *
-             * And decided by whether any radix accepts it, not by what it
+             * The decision is whether any radix accepts the token, not what it
              * starts with. `$42`, `#42` and `%1010` are literals that begin
-             * with neither a letter nor a digit; `2b`, `1z` and `123abc` are
-             * labels that begin with a digit, and the reference lets them be
-             * referenced as well as defined. Asking "does it start with a
-             * letter" got the first three right and the last three wrong.
+             * with neither a letter nor a digit, while `2b`, `1z` and `123abc`
+             * are labels that begin with a digit -- and the reference lets
+             * those be referenced as well as defined.
              *
              * A label already defined is its address. One that is not is
              * carried on the operand for the emitter to record, because where
@@ -4379,25 +4288,24 @@ have_value:
             }
             p++;
 
-            /* The positional rule, and the whole of what makes `(` mean two
-             * things.
+            /* The positional rule, which is what makes `(` mean two things.
              *
              * A parenthesis that opens the operand and whose match closes it
-             * is indirection -- `ld a, (var)`. One whose match does *not*
-             * close it was grouping all along, and this is where that becomes
-             * knowable: `add a, (RTABLE-DTABLE)/2` is real corpus code, and up
-             * to the `/` it is indistinguishable from `ld a, (var)`.
+             * is indirection: `ld a, (var)`. One whose match does *not* close
+             * it was grouping all along -- `add a, (RTABLE-DTABLE)/2` -- and
+             * up to the `/` the two are indistinguishable.
              *
-             * So the operand is parsed as indirection first and reinterpreted
+             * So an operand is parsed as indirection first and reinterpreted
              * here, rather than scanned ahead to its matching parenthesis
-             * before its shape is known. The scan would cost every `(hl)` and
-             * `(ix+d)` in the file; this costs one table lookup on the operands
-             * that reached the general parse with a parenthesis on the front,
-             * which the register path has already taken the common ones out of.
+             * before its shape is known. Scanning ahead would cost every
+             * `(hl)` and `(ix+d)` in the file; this costs one table lookup on
+             * the operands that reach the general parse with a parenthesis in
+             * front, and the register path has already taken the common ones
+             * out.
              *
-             * Re-reading the operand from the start is what the rewind is:
-             * `*pp` still holds where it began, because nothing writes it
-             * until the end. */
+             * The rewind re-reads the operand from the start: `*pp` still
+             * holds where it began, because nothing writes it until the
+             * end. */
             while (p < e && is_space_ch(*p)) {
                 p++;
             }
@@ -4422,23 +4330,21 @@ static inline const char* lit_value(const char* p, const char* e, evalue* out);
 
 /* ----------------------------------------------------------------- equ */
 
-/* `EQU`, or `.EQU`, in any case -- tested in place, and advancing past it if it
+/* `EQU`, or `.EQU`, in any case: tested in place, and advancing past it if it
  * is one.
  *
- * Four compares and no token scan, because a scan needs somewhere to keep the
- * end of it and this function runs inside assemble_line, where a local costs
- * three bytes of frame and the frame costs `iy`. The same test written with a
- * `const char* q` measured a whole 1.8% worse across every benchmark.
+ * Four compares and no token scan. A scan would need somewhere to keep the end
+ * of the token, and this runs inside assemble_line where a local costs three
+ * bytes of frame.
  *
  * Reading ahead is safe without a bound, and this is not an exception to the
- * rule at the top of the file: there is no loop here to rotate. The chain
+ * rule in the header: there is no loop here to rotate. The chain
  * short-circuits on the first mismatch, and the buffer ends in a newline that
- * matches nothing here, so it can reach the sentinel and never pass it.
- * The class test on the fourth character is what keeps `equx` from being one.
+ * matches nothing here, so it can reach the sentinel and never pass it. The
+ * class test on the fourth character is what keeps `equx` out.
  *
- * The reference takes `EQU`, `equ` and `.EQU`; it does not take `X EQU 5`
- * without the colon -- that is "Invalid mnemonic 'X'" there -- and it has no
- * `=`. Each of those was measured against it rather than assumed. */
+ * The reference takes `EQU`, `equ` and `.EQU`. It does not take `X EQU 5`
+ * without the colon, and it has no `=`. */
 static bool is_equ_at(const char* p) {
     if (*p == '.') {
         p++;
@@ -4535,9 +4441,8 @@ static bool equ_line(const char* name, int nlen, const char* p,
     }
     *stop = p;
 
-    /* No test for what follows. The line loop already reports anything left
-     * over -- `X: EQU 5 6` is "unexpected text after the instruction" there --
-     * and a second check here was dead code that only looked like safety. */
+    /* No test for what follows: the line loop reports anything left over, so
+     * `X: EQU 5 6` is "unexpected text after the instruction" from there. */
 
     return true;
 }
@@ -4576,31 +4481,26 @@ static bool run_lines(void);
 
 /* The local-label scope a macro expansion runs in, set aside and put back.
  *
- * An expansion needs a scope of its own -- the reference gives it one, so a
- * body defining `@loc` may be invoked twice, and a body naming `@a` does not
- * see the caller's -- and the caller's has to survive, because the reference
- * lets a local defined before an invocation be named after it.
+ * An expansion needs a scope of its own, as it has in the reference: a body
+ * defining `@loc` may be invoked twice, and a body naming `@a` does not see
+ * the caller's. The caller's scope has to survive, because a local defined
+ * before an invocation may be named after it.
  *
- * The scope is entered by advancing the generation stamp, which is what ends
- * an ordinary scope: every bucket then belongs to an older generation and
+ * Entering the scope is advancing the generation stamp, which is what ends an
+ * ordinary scope too: every bucket then belongs to an older generation and
  * reads as empty. Leaving it is the stamp going back.
  *
- * What the stamp cannot undo is a bucket the body *wrote*, because claiming a
- * bucket overwrites the head the caller had. Those are written down as they
- * happen -- see undo_note -- and there are only ever as many as the body has
- * distinct local names.
- *
- * The first version copied all 64 buckets out and back instead. It was correct
- * and it cost 12,300 cycles an invocation against 770, because an indexed
- * struct assignment in a loop is not a block move on this machine and memcpy
- * of 256 bytes is not free either. isa_real spent 1.48 seconds in it.
+ * What the stamp cannot undo is a bucket the body *wrote*, since claiming a
+ * bucket overwrites the head the caller had. Those are recorded as they happen
+ * -- see undo_note -- and there are only ever as many as the body has distinct
+ * local names. Copying all 64 buckets out and back instead would cost more per
+ * invocation than the whole expansion.
  *
  * The slot and name arenas are shared with the caller rather than replaced.
- * The hazard there was `scope_end` rewinding them to their first block on top
- * of the caller's live slots, and it cannot arise: a scope only ends on a
- * global label or an EQU, and the reference refuses both inside a macro body,
- * which zap now does too. So the body appends, and the counters rewind at the
- * end to hand the space back. */
+ * `scope_end` rewinding them onto the caller's live slots cannot arise: a
+ * scope ends only at a global label or an EQU, and both are refused inside a
+ * macro body, here as in the reference. The body appends, and the counters
+ * rewind at the end to hand the space back. */
 typedef struct {
     locblock* loccur;
     namblock* locnames;
@@ -4689,13 +4589,12 @@ static bool scope_pop(locsave* sv) {
  *
  * Reached only when mnemonic_of has already failed, so an ordinary instruction
  * line never runs a character of it. That is why it is spelled out as compares
- * rather than bucketed the way mnemonics are: on the path it is on, twelve
- * names and a switch on length cost nothing worth measuring, and the table it
- * would otherwise need would be paid for in memory by every program.
+ * rather than bucketed the way mnemonics are: on this path a switch on length
+ * costs nothing, and a table would be memory every program pays for.
  *
- * The reference takes a leading dot on all of them -- `.DB`, `.ALIGN` -- and
- * every spelling below was checked against it. `WORD`, `DWORD`, `DEFL`, `DC`,
- * `TEXT` and `DB8` are *not* directives there, however plausible they look. */
+ * A leading dot is optional on all of them -- `.DB`, `.ALIGN` -- as in the
+ * reference. `WORD`, `DWORD`, `DEFL`, `DC`, `TEXT` and `DB8` are *not*
+ * directives there, however plausible they look. */
 #define DIR_NONE  0
 #define DIR_DB    1   /* one byte per value, and strings */
 #define DIR_DW    2   /* two */
@@ -4712,16 +4611,13 @@ static bool scope_pop(locsave* sv) {
 /* BLKB, BLKW, BLKP and BLKL: n units of a fill value, written out. Consecutive
  * and in width order, so the width is `kind - DIR_BLKB + 1`.
  *
- * Not the same directive as DS, which is why they are not the same number.
- * `blkb` was an alias for DS here and it is wrong twice: DS reserves 0xFF and
- * ignores a fill argument, and a run of it at the end of a file is dropped;
- * BLKB writes the fill it is given and is never dropped. `blkb 1, 1` came out
- * as 0xFF and `blkb 1, 255` at the end of a file came out as nothing.
+ * Not the same directive as DS, and the difference matters twice: DS reserves
+ * space filled with the FILLBYTE and ignores any fill argument, and a run of
+ * it at the end of a file is dropped, while BLK writes the fill it is given
+ * and is never dropped.
  *
- * BLKL was absent for as long as the evaluator was the machine's word. It is
- * four bytes and the corpus fills it with `0x55555555` and `-2147483648`, and
- * a BLKL that quietly wrote the low three bytes and a sign would have been
- * wrong for half of the reference's own cases. See evalue for what changed. */
+ * BLKL is four bytes wide, which is why the evaluator has to be: sources fill
+ * it with values like `0x55555555` that a 24-bit evaluator cannot hold. */
 #define DIR_BLKB  11
 #define DIR_BLKW  12
 #define DIR_BLKP  13
@@ -4733,13 +4629,12 @@ static bool scope_pop(locsave* sv) {
 #define DIR_ASSUME      17
 #define DIR_INCLUDE 18
 #define DIR_INCBIN  19
-/* MACRO and ENDMACRO below the conditionals, and that ordering is load-bearing:
- * a line inside a switched-off branch asks `kind >= DIR_IF` and nothing else,
- * so anything at or above IF is handled while skipping and anything below is
- * skipped. With MACRO above them, `IF 0 / MACRO m / ... / ENDMACRO / ENDIF`
- * captured the body and defined the macro -- the reference skips it, and
- * `IF 1 / macro m / db 0 / endmacro / ELSE / macro m / db 1 / endmacro / ENDIF`
- * assembled the branch that was not taken. */
+/* MACRO and ENDMACRO sit below the conditionals, and the ordering is
+ * load-bearing: a line inside a switched-off branch asks `kind >= DIR_IF` and
+ * nothing else, so everything at or above IF is still handled while skipping
+ * and everything below it is skipped. With MACRO above them,
+ * `IF 0 / MACRO m / ... / ENDMACRO / ENDIF` would capture the body and define
+ * the macro, which the reference does not. */
 #define DIR_MACRO    20
 #define DIR_ENDMACRO 21
 #define DIR_IF       22
@@ -4808,17 +4703,15 @@ static const macro* macro_at(const char* s, int n) {
 
         /* Found, and moved to the front.
          *
-         * A definition is *prepended*, so the list is in reverse order of
-         * definition -- and a program defines its macros in a header and then
-         * uses them for the rest of the file, so the ones it uses most were
-         * the deepest in the list. Measured on the Agon with forty
-         * definitions: invoking the one at the head costs nothing over having
-         * a single macro, and invoking the one at the tail costs **5,530
-         * cycles**, or 138 a link.
+         * Definitions are prepended, so the list is in reverse order of
+         * definition -- and a program usually defines its macros in a header
+         * and uses them through the rest of the file, which puts the ones it
+         * uses most at the far end of the list. Moving a match to the front
+         * makes a repeated invocation cost one link.
          *
-         * Order carries no meaning here -- a second definition of a name is
-         * refused where it is written, so there is never more than one match
-         * -- which is what makes this safe as well as cheap. */
+         * Order carries no meaning here: a second definition of a name is
+         * refused where it is written, so there is never more than one
+         * match. */
         if (prev != NULL) {
             prev->next = m->next;
             m->next = zz.macros;
@@ -4858,9 +4751,8 @@ static bool macro_begin(const char** pp, const char* e) {
 
         return false;
     }
-    /* The same sixty-four a label gets, and the same place the reference draws
-     * it -- "Macro name too long" at sixty-five. There was no limit here at
-     * all, which took a name the reference refuses. */
+    /* The same sixty-four characters a label gets, and the same place the
+     * reference draws the line: "Macro name too long" at sixty-five. */
     if (nn > LABEL_MAX) {
         err_tok(ns, nn);
         zz.err = ZAP_E_MACRO_NAME_TOO_LONG;
@@ -4920,10 +4812,9 @@ static bool macro_begin(const char** pp, const char* e) {
         }
         const int pn = (int) (p - ps);
         if (pn > 255) {
-            /* Freed on the way out. The macro is not linked into the list
-             * until the body has been captured, so nothing else will ever see
-             * it -- which also means nothing else will ever free it. This path
-             * leaked before ASan was pointed at it. */
+            /* Freed here, because the macro is not linked into the list until
+             * its body has been captured: nothing else can see it yet, so
+             * nothing else would ever free it. */
             free(m);
             zz.err = ZAP_E_MACRO_PARAMETER_NAME_TOO_LONG;
 
@@ -4995,16 +4886,14 @@ static bool macro_begin(const char** pp, const char* e) {
  * exist yet and arguments that are not values. */
 /* Every parameter in the span just copied, recorded where it is.
  *
- * Once per line of the definition, which a file does a dozen times, against
- * once per identifier per invocation, which isa_real does four hundred times
- * over. The scan is the one that used to run at expansion: any name character
- * starts a token, digits included -- a parameter cannot be a number, which is
- * checked where they are read, but it can begin with a digit, and the
- * reference's own corpus has `macro test 0123456789abcdef...`.
+ * This runs once per line of a definition rather than once per identifier per
+ * invocation, which is the point of doing it here. Any name character starts a
+ * token, digits included: a parameter cannot *be* a number, which is checked
+ * where parameters are read, but it can begin with a digit.
  *
- * Case-sensitively, which is what the reference does: `MACRO m v` with `V` in
- * the body is "Unknown identifier" there. Everything else about a macro is
- * case-blind, so this had been assumed rather than measured, once. */
+ * Matched case-sensitively, which is what the reference does -- `MACRO m v`
+ * with `V` in the body is "Unknown identifier" there -- although everything
+ * else about a macro is case-blind. */
 static bool macro_marks(macro* m, int from, int to) {
     int b = from;
     while (b < to) {
@@ -5020,8 +4909,8 @@ static bool macro_marks(macro* m, int from, int to) {
         const char* pp = m->params;
         for (int k = 0; k < m->nparam; k++) {
             const int pn = (uint8_t) pp[0];
-            /* The length and then the first character before the call, as the
-             * expansion loop used to ask them. */
+            /* Length and first character first, so the call is reached only by
+             * a candidate that can still match. */
             if (pn == take && pp[1] == m->body[b]
                 && same_full(pp + 1, &m->body[b], take)) {
                 if (!mark_room(m)) {
@@ -5083,20 +4972,14 @@ static bool macro_line(const char* p, const char* e) {
 
 /* One expansion of a macro: the body with the arguments put in, assembled.
  *
- * Substitution is textual and by whole identifier, which is measured and not
- * assumed. With `x` bound to `1+1`, the reference assembles `db 10-x` as ten --
- * `10-1+1` read left to right -- and not as eight, and `db 2*x` as three and
- * not four. It also leaves `xy` alone when the parameter is `x`, so it is
- * whole names and not raw text.
+ * Substitution is textual and by whole identifier, which is what the reference
+ * does. With `x` bound to `1+1` it assembles `db 10-x` as ten -- `10-1+1` read
+ * left to right -- and `db 2*x` as three, and it leaves `xy` alone when the
+ * parameter is `x`.
  *
- * The expanded text is read the way an included file is read: a reader over
- * memory, the parent one set aside, and the same `run_lines` re-entered. The
- * comment on `br_open_mem` has said macro expansion needs it since before there
- * were macros.
- *
- * Each expansion is its own scope for local labels, because the reference makes
- * it one: a macro whose body defines `@a` may be invoked twice without a
- * redefinition, and `@a` cannot be named after the expansion ends.
+ * Each expansion is its own scope for local labels: a macro whose body defines
+ * `@a` may be invoked twice without a redefinition, and `@a` cannot be named
+ * after the expansion ends.
  */
 __attribute__((noinline))
 /* Defined with the reporting, and called from both loops. */
@@ -5113,15 +4996,14 @@ static bool assemble_line(const char* p, const char* e, const char** stop);
 
 /* The invocation's arguments, as spans of the line that carried them.
  *
- * Kept in `dz` rather than in a frame. Eight pointers and eight lengths is 48
- * bytes on the Agon, and while they sat in the same frame as the scope save
- * and the body loop everything in there was past the 128 bytes an `ix`
- * displacement reaches -- thirty accesses through a five-instruction address
- * computation apiece. Indexed by depth times MACRO_MAXPARAM, which is eight
- * and therefore a shift rather than a call to __imulu.
+ * Held in `dz` rather than in a frame: eight pointers and eight lengths is 48
+ * bytes, which in the expansion's own frame would push everything else past
+ * the 128 bytes an `ix` displacement reaches. Indexed by depth times
+ * MACRO_MAXPARAM, which is eight and therefore a shift rather than a call to
+ * __imulu.
  *
- * A macro takes as many arguments as it declares and the reference counts
- * them -- "0 provided, 1 expected". */
+ * A macro takes as many arguments as it declares, and a mismatch is counted:
+ * "0 provided, 1 expected". */
 __attribute__((noinline))
 static bool macro_args(const macro* m, const char* p, const char* e,
                        const char** stop, int base) {
@@ -5142,21 +5024,15 @@ static bool macro_args(const macro* m, const char* p, const char* e,
 
             return false;
         }
-        /* The end is carried forward rather than walked back from.
+        /* The end of the argument is carried forward while scanning, rather
+         * than walked back from afterwards.
          *
-         * `while (ae > as && is_space_ch(ae[-1])) ae--;` is the obvious way to
-         * write this and the compiler gets it wrong at -Oz: it commits the
-         * decrement before the test and then reads the byte off the pointer it
-         * has already moved, so the character examined is `ae[-2]`. A single
-         * character argument therefore saw the space in front of it, trimmed
-         * itself away, and expanded to nothing -- `mload 5` became `ld a,` and
-         * "no such instruction form", while `mload 65` was fine because the
-         * byte one further back was still part of the argument.
-         *
-         * Nothing on the host reproduces it; it took a benchmark that invokes
-         * macros to find, and reading the generated code to explain. Tracking
-         * the last non-space while scanning needs no backward index at all,
-         * and is one pass rather than two. */
+         * Trimming backwards -- `while (ae > as && is_space_ch(ae[-1])) ae--;`
+         * -- is compiled wrongly at -Oz: the decrement is committed before the
+         * test, so the byte examined is `ae[-2]`. A single-character argument
+         * then sees the space in front of it, trims itself away and expands to
+         * nothing. Tracking the last non-space while scanning needs no
+         * backward index and is one pass rather than two. */
         const char* as = p;
         const char* ae = p;
         while (p < e && *p != '\n' && *p != ';' && *p != ',') {
@@ -5182,13 +5058,11 @@ static bool macro_args(const macro* m, const char* p, const char* e,
 /* One line of the body, with its parameters replaced, ready to assemble.
  *
  * The places a parameter occurs were found when the body was read, so there is
- * nothing to classify here: copy up to the next mark, copy the argument,
- * carry on. What this replaces asked every parameter about every identifier of
- * every line on every invocation, to rediscover something the body settles
- * once -- 1,940 cycles a parameter.
+ * nothing to classify here: copy up to the next mark, copy the argument, carry
+ * on.
  *
- * `mi` is where the caller has got to in the mark list, which is in body order,
- * so the whole body is walked once across all its lines.
+ * `mi` is where the caller has got to in the mark list, which is in body
+ * order, so the whole body is walked once across all its lines.
  *
  * Returns the length written, including the newline that ends it, or -1.
  * `bufp` and `capp` are the caller's, so the buffer is grown once and reused
@@ -5272,18 +5146,13 @@ static int macro_subst(const macro* m, int lo, int hi, int base,
  *
  * There is no reader and no nested line loop. The body is already a run of
  * lines -- macro_line stored it that way -- so each one is substituted into a
- * buffer and handed straight to assemble_line, which is what the line loop
- * would have done with it after opening a reader over memory to find the
- * newlines that were never lost.
+ * buffer and handed straight to assemble_line. Opening a reader over memory
+ * would only find newlines that were never lost, and would cost a reader saved
+ * and restored, a nested line loop, and a refill call per invocation.
  *
- * What that removes, per invocation, is the 27-byte reader saved and put back,
- * br_use_mem, br_destroy, a nested run_lines and the br_fill_lines it calls
- * once to be told the buffer is spent. The measurements are in
- * .internal/performance-notes.md.
- *
- * The file the invocation came from is left open, as it was before: an
- * INCLUDE gives its parent's handle up because MOS has few of them, and an
- * expansion opens no file at all. */
+ * The file the invocation came from stays open: an INCLUDE gives its parent's
+ * handle up because MOS has few of them, but an expansion opens no file at
+ * all. */
 __attribute__((noinline))
 static bool macro_expand(const macro* m, const char* p, const char* e,
                          const char** stop) {
@@ -5308,20 +5177,19 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
     const int slot = zz.depth;
     zz.depth++;
 
-    /* A scope of its own for the body, with the caller's kept and put back --
-     * and only for a body that has a local in it. See `haslocal`. */
+    /* A scope of its own for the body, with the caller's kept and put back,
+     * and only for a body that has a local label in it. See `haslocal`. */
     locsave sv;
     if (m->haslocal) {
         scope_push(&sv);
     }
 
-    /* The invocation itself, then what it was given. Written here rather than
-     * left to the line loop for two reasons: the loop writes a line *after*
-     * assembling it, which would put the invocation below the body it
-     * expanded to, and by then the bytes of the whole expansion are on it.
-     * The reference shows the invocation with no bytes and hangs the bytes on
-     * the body lines, which is the only way a reader can tell which line of
-     * the macro wrote what. */
+    /* The invocation line, then the arguments it was given. Written here
+     * rather than left to the line loop, which writes a line *after*
+     * assembling it: that would put the invocation below the body it expanded
+     * to, with the bytes of the whole expansion on it. The reference shows the
+     * invocation with no bytes and hangs the bytes on the body lines, which is
+     * what tells a reader which line of the macro wrote what. */
     if (listing) {
         list_invocation(m, base, saved_line, slot, e);
     }
@@ -5378,9 +5246,7 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
             bpc = zz.org + (int) (zz.o - zz.out);
             zz.lst_p = ls;
         }
-        /* Two locals rather than two fields of `dz`, which was tried and
-         * reads the same on the target -- the frame here is 79 bytes either
-         * way. */
+        /* Two locals: this frame has room for them. */
 
         const char* st = ls;
         if (!assemble_line(ls, lend, &st)) {
@@ -5568,15 +5434,12 @@ static uint8_t directive_of(const char* s, int n) {
     return DIR_NONE;
 }
 
-/* One escape, after the backslash. Returns -1 for the ones the reference calls
- * "Illegal escape code in string" -- which is everything not listed, including
- * `\0` and `\x41`, both of which C programmers expect and neither of which the
- * reference takes.
+/* One escape, after the backslash. Returns -1 for anything not listed, which
+ * the reference calls "Illegal escape code in string" -- including `\0` and
+ * `\x41`, which C programmers expect and the reference does not take.
  *
- * The same set inside a character literal: `'\n'` is 0x0A and `'\?'` is 0x3F.
- * That is one table for both, which is what the reference has, and it was
- * checked spelling by spelling rather than assumed -- `\?` had been left out
- * of the string set on the strength of C not having needed it. */
+ * The same set applies inside a character literal: `'\n'` is 0x0A and `'\?'`
+ * is 0x3F, one table for both, as there. */
 static int str_escape(char c) {
     switch (c) {
         case 'n':  return 0x0A;
@@ -5599,12 +5462,9 @@ static int str_escape(char c) {
  *
  * Reserved in one go before anything is written: the length is known once the
  * closing quote is found, and escapes only ever shrink it. */
-/* Out of line, and measured that way.
- *
- * Inlined into directive_line it shares a frame deep enough that the scan
- * spills its pointer and its cursor on every character -- 35 instructions a
- * character, most of them `ld (ix - 111), hl` and back. A string is one call
- * per item against that. */
+/* Out of line, deliberately. Inlined into directive_line it would share a
+ * frame deep enough that the scan spills its pointer and its cursor on every
+ * character. One call per string item is far cheaper than that. */
 __attribute__((noinline))
 static bool emit_string(const char** pp, const char* e) {
     const char* p = *pp + 1;                      /* past the opening quote */

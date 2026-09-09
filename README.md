@@ -159,6 +159,10 @@ runs on the host.
 
 ## Documentation
 
+* [`docs/DESIGN.md`](docs/DESIGN.md) -- how the assembler works: the shape of a
+  run, the one-pass design and what it costs, the symbol tables, the
+  instruction table, macros, diagnostics, and what the eZ80 imposes on all of
+  it.
 * [`ez80_advanced_optimization_guide.md`](ez80_advanced_optimization_guide.md)
   -- writing fast C for the eZ80, which is most of why zap is quick.
 

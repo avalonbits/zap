@@ -1308,4 +1308,17 @@ for flag in DUP_ROW DUP_GROUP DUP_BUCKET DUP_HASH DUP_SYMCHAIN DUP_INTERN DUP_LO
     fi
 done
 
+# The design document links to the definition of everything it describes, and
+# a line number goes stale the moment the source moves. Every one is checked
+# here: the symbol named in the link has to appear on the line it points at.
+if command -v python3 > /dev/null 2>&1 && [ -f docs/DESIGN.md ]; then
+    if linkbad=$(python3 tools/check_doc_links.py docs/DESIGN.md 2>&1); then
+        echo "PASS  every code link in docs/DESIGN.md points at its symbol"
+    else
+        echo "FAIL  a code link in docs/DESIGN.md has drifted"
+        printf '      %s\n' "$linkbad"
+        status=1
+    fi
+fi
+
 exit $status

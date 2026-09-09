@@ -1,4 +1,4 @@
-# zap
+# zap - eZ80 Assembler Project
 
 A fast, single-pass assembler for the [Agon Light](https://www.thebyteattic.com/p/agon.html)
 and other eZ80 machines. It runs **on** the Agon as well as on a desktop, and

@@ -41,15 +41,26 @@ it works unaltered.
     -o   org start, hex, default 040000       -s   export <source>.symbols
     -b   fillbyte, hex, default FF            -x   assembly statistics
     -a   ADL mode 1/0, default 1              -c   no colour
-    -i   accepted, does nothing               -m   accepted, does nothing
+    -i   ignore truncation warnings               -m   accepted, does nothing
     -ez80  the reference's expression rules
 
 `-o`, `-b` and `-a` change the bytes, and each is checked against the
-reference by assembling the same source through both. `-i` ignores value
-truncation warnings and zap has none -- every diagnostic it has is fatal;
-`-m` is a memory configuration and zap has one, the small one. Both are taken
-and do nothing, silently, so a script that passes them need not care. An
-option that is not the reference's is still refused.
+reference by assembling the same source through both. `-m` is a memory
+configuration and zap has one, the small one, so it is taken and does nothing.
+An option that is not the reference's is still refused.
+
+## When something is nearly wrong
+
+    File "prog.s" line 1 - Value truncated to 8 bit '0x1234'
+
+A value that does not fit where it is written is said and the assembly carries
+on, producing the bytes the reference produces. `-i` silences them. The line is
+drawn where the reference draws it: a value fits if the bytes that come out
+mean the same number read as signed or as unsigned, so `ld a, -1` and
+`ld a, 255` are both fine and `ld a, 256` and `ld a, -129` are not.
+
+Checking costs **2% of a real program** and 6.7% of a benchmark full of
+immediates. It is on by default because it is on in the reference.
 
 ## When something is wrong
 

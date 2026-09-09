@@ -4563,3 +4563,37 @@ a time.
 There is no version of a runtime-switchable listing that is free. A
 compile-time switch would be, and a duplicated line loop would be, and neither
 is what a flag means.
+
+## What a truncation warning costs, which is more than it looks
+
+    isa_real   5.36 -> 5.72   +6.7%
+    bbcbasic   3.78 -> 3.86   +2.1%
+
+One range check on every immediate written, and it is the most expensive
+diagnostic in the program by a wide margin -- because unlike everything else
+in the reporting, **it is a question asked of every source, not a thing done
+after one has already gone wrong.**
+
+Three formulations, all within a hundredth of each other:
+
+* `v == (int8_t) v || v == (uint8_t) v` and the same for sixteen bits. In
+  `evalue` this widened every immediate to the evaluator's four bytes and the
+  compares became `__lcmpu`: **9.3%**.
+* The same in the machine's word, where the three-byte case is provably true
+  and folds away: 7.5%.
+* One add and one unsigned compare -- the range slid down by its lower bound,
+  so `-2^(8w-1)..2^8w-1` becomes `0..2^8w+2^(8w-1)-1`: 7.1%.
+
+And one structural change worth keeping for its own sake. Putting the warning
+inside `emit_imm` made a leaf function into a caller: **47 instructions and no
+frame became 113 and a four-byte one**, for every immediate in the file. Moved
+out into `emit_row` -- which is inlined into `assemble_line`, where there is a
+frame already and a dozen calls -- `emit_imm` is a leaf again and
+`assemble_line`'s frame went *down*, 111 bytes to 108.
+
+That recovered 0.02s of 0.36. **The frame was never the cost either.** What it
+costs is the question itself, asked ten thousand times.
+
+isa_real is the high figure because it contains every immediate form the
+instruction set has. bbcbasic's 2.1% is what a real program pays, and it is
+the number to argue about.

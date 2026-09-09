@@ -7557,7 +7557,7 @@ static bool third_operand(const insninfo* insn, dop* a, dop* b,
  *
  * -DTRUNC=n keeps stages 1..n of assemble_line and skips the rest; the
  * difference between two builds is the stage between them. See
- * .internal/measuring.md, which this exists to serve.
+ * the optimization guide (section 5), which this exists to serve.
  *
  *   1  the line is read and found not to be blank or a remark
  *   2  + the mnemonic run is scanned

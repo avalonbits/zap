@@ -12,7 +12,7 @@ the two.
 
 Two changes moved these from 4.12 / 0.56 / 7.30: a comment stopped being
 walked through an out-parameter, and the assembler's state moved to a fixed
-address. Both are in .internal/performance-notes.md. The first is worth 3.4%
+address. Both are in the optimization guide. The first is worth 3.4%
 on bbcbasic and nothing on rokky, which is 6% comment by byte against BBC
 BASIC's 28%; the second is worth about 4.5% everywhere.
 
@@ -22,7 +22,7 @@ where it is written. `-w` asks for the check. Three builds, one source set:
 The set moved 1.5% to 1.9% for the validation round -- eight checks the
 reference has and zap did not, the dearest of them its 256-character line
 limit. Item by item, and what two of them cost by being inlined into a
-function with a frame, in .internal/performance-notes.md.
+function with a frame, in the optimization guide.
 
 | source | no warning code | default | `-w` |
 |---|---|---|---|
@@ -45,7 +45,7 @@ call: the compiler makes `warn_imm` a real function, so every immediate calls
 it to be told there is nothing to do. Hoisting the test to the call site
 removes the call and is *slower* -- 5.44 on isa_real -- because it takes
 `assemble_line`'s frame from 108 bytes to 111. That is written up in
-.internal/performance-notes.md.
+the optimization guide.
 
 Lower is better. **The goal was 0.50x and it is met with room to spare** --
 between four and six times faster than the reference rather than the two the
@@ -54,7 +54,8 @@ target asked for.
 ## The whole corpus, source by source
 
 `test/bench/corpus-target.sh` assembles every source both assemblers accept
-with both of them, on the Agon, and reports the speedup for each. Small
+with both of them, on the Agon, and reports the speedup for each. The
+per-source times it produced are in `test/bench/corpus-target-times.txt`. Small
 sources are assembled twelve times and the reported times summed, because the
 clock reads hundredths and one run of zap lands on 0.02.
 
@@ -90,7 +91,7 @@ they are where the two are closest. The bigger the program, the more of it is
 the loop that was optimised, and the ratio climbs.
 
 The same measurement on the host reads **1.36x**: see corpus-time.sh, and
-.internal/host-profile-does-not-predict-target for why that number is not
+the optimization guide (section 5) for why that number is not
 this one.
 
 ## What this replaces

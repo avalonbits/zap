@@ -2,7 +2,7 @@
 ; thing three times. DS reserves and takes the FILLBYTE; ALIGN pads to the
 ; next boundary; BLK emits its own fill. The listing shows the three
 ; differently in the reference and identically here -- bytes are what this
-; file is for, and the difference is in .internal/completeness.md.
+; file is for, and the difference is in docs/DESIGN.md.
 ;
 ; The FILLBYTE is first because a later one is the one refusal zap keeps in
 ; this area: the reference fills every reservation at write-out, so a FILLBYTE

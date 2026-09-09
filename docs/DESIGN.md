@@ -473,7 +473,7 @@ being right and incompatible: no operator precedence, `IF a == b` discarding
 the comparison, `0bh` read as hex.
 
 Four differences are deliberate and permanent, each argued in
-`.internal/completeness.md`: a negative reservation (which the reference turns
+`docs/DESIGN.md`: a negative reservation (which the reference turns
 into gigabytes of output), a `FILLBYTE` that would retroactively change a
 reservation already written, `@local - global` with both still ahead, and
 substituting a macro parameter inside a longer identifier.
@@ -493,7 +493,9 @@ through the whole file:
    quantities, powers of two and unsigned compares avoid them.
 2. **A stack frame must stay under 128 bytes.** A frame displacement is a
    signed byte; past that, every access needs a computed address. Adding three
-   bytes to `assemble_line`'s frame is measurable in the whole program.
+   bytes to `assemble_line`'s frame is measurable in the whole program. (The
+   optimization guide's [section 0](../ez80_advanced_optimization_guide.md)
+   defines the terms in this list, frames and spills among them.)
 3. **A `static inline` helper is inlined at the compiler's discretion**, and
    one cold caller can take that away from every hot one. The helpers on the
    hot path carry `always_inline` for that reason.

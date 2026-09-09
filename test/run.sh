@@ -189,6 +189,60 @@ cli_check "an option that is not the reference's is still refused" \
     "$("$OUT/zap" -c -Q "$OUT/opt2.s" "$OUT/opt2.bin" 2>&1 | tr -d '\r' \
        | grep -c 'Unknown option -Q')" 1
 
+# An operand that folds into the opcode has to fit the field it folds into.
+# zap used to mask it: `bit 8, a` assembled as `bit 0, a` and `rst 0x09` as
+# `rst 0x08` -- wrong bytes with nothing said, which is the one failure an
+# assembler must not have. Every case here is checked against the reference,
+# refusals and bytes both, because the reference's own rules are odd: it
+# refuses a bit number above 7 and masks one below 0.
+fold_same() {
+    local text="$1"
+    printf '%b' "$text" > "$OUT/fold.s"
+    local zo ro zb rb
+    rm -f "$OUT/foldz.bin"
+    zo=$("$OUT/zap" -c "$OUT/fold.s" "$OUT/foldz.bin" 2>&1 | tr -d '\r' \
+         | grep -cE 'bit number|restart address|interrupt mode' || true)
+    zb=$(xxd -p "$OUT/foldz.bin" 2>/dev/null | tr -d '\n' || true)
+    if [ -x "$OPTREF" ]; then
+        rm -f "$OUT/foldr.bin"
+        ro=$("$OPTREF" "$OUT/fold.s" "$OUT/foldr.bin" 2>&1 \
+             | sed 's/\x1b\[[0-9;]*m//g' \
+             | grep -cE 'Invalid bit number|Illegal restart|Illegal interrupt' || true)
+        rb=$(xxd -p "$OUT/foldr.bin" 2>/dev/null | tr -d '\n' || true)
+        cli_check "[${text%\\n}] refused like the reference" "$zo" "$ro"
+        cli_check "[${text%\\n}] assembles like the reference" "$zb" "$rb"
+    fi
+}
+# Refused by both, and no bytes.
+fold_same '  bit 8, a\n'
+fold_same '  bit 8, (hl)\n'
+fold_same '  res 8, (ix+0)\n'
+fold_same '  set 300, a\n'
+fold_same '  im 3\n'
+fold_same '  im 300\n'
+fold_same '  rst 0x09\n'
+fold_same '  rst 0x37\n'
+fold_same '  rst -8\n'
+# Taken by both, and the same bytes -- including the negative bit numbers the
+# reference shifts straight into the opcode without masking.
+fold_same '  bit 0, a\n  bit 7, a\n  set 3, (hl)\n  res 5, (ix+1)\n  bit 2, (iy-2)\n'
+fold_same '  im 0\n  im 1\n  im 2\n  im -1\n'
+fold_same '  rst 0\n  rst 08h\n  rst 38h\n'
+fold_same '  bit -1, a\n'
+fold_same '  bit -1, (hl)\n'
+fold_same '  set -3, (ix+4)\n'
+# And the same again with the value still ahead of the instruction that uses
+# it, which is where the fold has to become a fixup on the opcode byte.
+fold_same '  bit n, a\nn: EQU 3\n'
+fold_same '  bit n, (hl)\nn: EQU 3\n'
+fold_same '  res n, (ix+2)\nn: EQU 6\n'
+fold_same '  rst n\nn: EQU 8\n'
+fold_same '  im n\nn: EQU 2\n'
+fold_same '  bit n, a\nn: EQU -1\n'
+fold_same '  bit n, a\nn: EQU 8\n'
+fold_same '  rst n\nn: EQU 9\n'
+fold_same '  im n\nn: EQU 3\n'
+
 # A value that does not fit where it is written is a *warning*: it is said,
 # and the assembly carries on and produces the same bytes the reference
 # produces. That is why it is a warning in both and an error in neither.
@@ -814,14 +868,19 @@ else
         # optimised for. What it does do is notice if the unsigned loop bound
         # in same_ci -- which measured 1.4% faster, for reasons that are not
         # this call -- is ever put back.
+        #
+        # 12 until the opcode folds were range-checked. `bit n, a` with n
+        # above 7 is a signed compare and there are four of them now, one per
+        # fold plus the deferred bit number; the figure below moved to 16 with
+        # a measurement beside it, which is the only reason to move it.
         nset=$(awk '/^_assemble_line:$/ { go = 1; next }
                     go && /^_[a-z_0-9]+:$/ { exit }
                     go && /call[ \t]+pe, __setflag/ { n++ }
                     END { print n + 0 }' "$OUT/zap.s")
-        if [ "$nset" -le 12 ]; then
+        if [ "$nset" -le 16 ]; then
             echo "PASS  assemble_line has no more signed-compare repairs than it did ($nset)"
         else
-            echo "FAIL  assemble_line has $nset signed-compare repairs, was 12"
+            echo "FAIL  assemble_line has $nset signed-compare repairs, was 16"
             status=1
         fi
 

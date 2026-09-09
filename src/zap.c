@@ -371,6 +371,8 @@ typedef enum {
     ZAP_E_FILE_NAME_TOO_LONG,
     ZAP_E_INCLUDES_NESTED_TOO_DEEPLY,
     ZAP_E_INDEX_OFFSET_OUT_RANGE,
+    ZAP_E_INTERRUPT_MODE,
+    ZAP_E_INVALID_BIT_NUMBER,
     ZAP_E_INVALID_LABEL,
     ZAP_E_LABEL_DEFINED_TWICE,
     ZAP_E_LABEL_TOO_LONG,
@@ -393,6 +395,7 @@ typedef enum {
     ZAP_E_OUT_MEMORY_MACROS,
     ZAP_E_OUT_MEMORY_OUTPUT,
     ZAP_E_RELATIVE_JUMP_TOO_FAR,
+    ZAP_E_RESTART_ADDRESS,
     ZAP_E_STRING_NOT_TERMINATED,
     ZAP_E_CONSTANT_TOO_LARGE_ADD_LABEL,
     ZAP_E_MACRO_ALREADY_DEFINED,
@@ -450,6 +453,8 @@ static const char* const zap_err_text[] = {
     [ZAP_E_FILE_NAME_TOO_LONG] = "file name too long",
     [ZAP_E_INCLUDES_NESTED_TOO_DEEPLY] = "includes nested too deeply",
     [ZAP_E_INDEX_OFFSET_OUT_RANGE] = "index offset out of range",
+    [ZAP_E_INTERRUPT_MODE] = "interrupt mode must be 0, 1 or 2",
+    [ZAP_E_INVALID_BIT_NUMBER] = "bit number must be 0 to 7",
     [ZAP_E_INVALID_LABEL] = "invalid label",
     [ZAP_E_LABEL_DEFINED_TWICE] = "label defined twice",
     [ZAP_E_LABEL_TOO_LONG] = "label too long",
@@ -472,6 +477,7 @@ static const char* const zap_err_text[] = {
     [ZAP_E_OUT_MEMORY_MACROS] = "out of memory for macros",
     [ZAP_E_OUT_MEMORY_OUTPUT] = "out of memory for the output",
     [ZAP_E_RELATIVE_JUMP_TOO_FAR] = "relative jump too far",
+    [ZAP_E_RESTART_ADDRESS] = "not a restart address",
     [ZAP_E_STRING_NOT_TERMINATED] = "string not terminated",
     [ZAP_E_CONSTANT_TOO_LARGE_ADD_LABEL] = "that constant is too large to add to a label",
     [ZAP_E_MACRO_ALREADY_DEFINED] = "that macro is already defined",
@@ -833,6 +839,20 @@ typedef struct {
 
 #define FIX_SUB2  0x80
 #define FIX_WIDTH 0x7F
+
+/* Widths 1, 2, 3 and 4 are byte counts and 0 is a relative displacement.
+ * Above those are the folds: an operand that goes into the *opcode* rather
+ * than after it, and could not be folded when the instruction was emitted
+ * because the label was still ahead.
+ *
+ * `bit n, a` with `n` an EQU further down the file used to assemble as
+ * `bit 0, a` -- the fold saw nothing, the operand never became an immediate
+ * either, and the reference the source made simply vanished. Three bits of
+ * wrong instruction with nothing said. These three say to come back to the
+ * opcode byte, not to the bytes after it. */
+#define FIX_FOLD_BIT 5   /* (v & 7) << 3 into the opcode */
+#define FIX_FOLD_RST 6   /* v into the opcode */
+#define FIX_FOLD_IM  7   /* 0, 1, 2 as y = 0, 2, 3, shifted into the opcode */
 
 /* The range an addend has to fit, written out rather than derived from `int`,
  * which is three bytes on the Agon and four on the host. Deriving it would
@@ -1602,6 +1622,54 @@ static bool loc_room(void) {
     return true;
 }
 
+/* The three folds, settled the way the emitter would have settled them if the
+ * label had been behind rather than ahead.
+ *
+ * Out of line and out of patch_fixup's own body: it runs once per forward
+ * reference in the file -- 843 of them in isa_real, every one of them an
+ * ordinary three-byte address -- and none of those is a fold. One compare
+ * sends the rare case here.
+ *
+ * The range checks are the emitter's, and so are their limits: the reference
+ * refuses a bit number above 7 and an interrupt mode above 2 while masking
+ * negatives into range, which is not what a careful assembler would do and is
+ * what this one has to do. */
+static bool patch_fold(const fixup* f, evalue val, uint8_t w, uint8_t* at) {
+    const int v = (int) val;
+    if (w == FIX_FOLD_BIT) {
+        if (v > 7) {
+            zz.line = f->line;
+            zz.err = ZAP_E_INVALID_BIT_NUMBER;
+
+            return false;
+        }
+        *at |= (uint8_t) ((unsigned) v << 3);
+
+        return true;
+    }
+    if (w == FIX_FOLD_RST) {
+        if (((unsigned) v & ~0x38u) != 0) {
+            zz.line = f->line;
+            zz.err = ZAP_E_RESTART_ADDRESS;
+
+            return false;
+        }
+        *at |= (uint8_t) v;
+
+        return true;
+    }
+
+    if (v > 2) {
+        zz.line = f->line;
+        zz.err = ZAP_E_INTERRUPT_MODE;
+
+        return false;
+    }
+    *at |= (uint8_t) ((v == 1 ? 2 : v == 2 ? 3 : 0) << 3);
+
+    return true;
+}
+
 /* Patches one reference, now that the address behind it is known. Shared by
  * the end of a scope, which settles that scope's local references, and the end
  * of the source, which settles every global one. */
@@ -1645,6 +1713,10 @@ static bool patch_fixup(const fixup* f) {
         *at = (uint8_t) d;
 
         return true;
+    }
+
+    if (w > 4) {
+        return patch_fold(f, val, w, at);
     }
 
     if (want_warn && !fits_width(val, (int) w)) {
@@ -7016,7 +7088,23 @@ static inline uint8_t imm_lo(const dop* op) {
     return *(const uint8_t*) &op->imm;
 }
 
-__attribute__((always_inline)) static inline void transform(emitted* out, dop* op, uint8_t type) {
+/* Returns false for an operand that folds into the opcode and does not fit
+ * the field it folds into. There are three of those and the reference refuses
+ * all three; zap used to mask them and emit an instruction the source did not
+ * write -- `bit 8, a` as `bit 0, a`, `im 3` as `im 0`, `rst 0x09` as
+ * `rst 0x08`. Wrong bytes with nothing said, which is the worst thing an
+ * assembler can do.
+ *
+ * The checks sit here rather than in the matcher because this is where the
+ * field is known: `IMM_BIT` is a marker on the row, and the row is not chosen
+ * until the operands are parsed. Failing the match instead would say "no such
+ * instruction form", which is true and useless. */
+/* What transform did with the operand. */
+#define TRF_OK    0
+#define TRF_ERR   1
+#define TRF_DEFER 2
+
+__attribute__((always_inline)) static inline uint8_t transform(emitted* out, dop* op, uint8_t type) {
     switch (type) {
         case TR_IR0:
             if (((op->r1 & RP1_XYL) | (op->r2 & RP2_XYL)) != 0) {
@@ -7033,7 +7121,25 @@ __attribute__((always_inline)) static inline void transform(emitted* out, dop* o
             break;
         case TR_Y:
             if ((op->mode & IMM) != 0) {
-                out->opcode |= shl3[imm_lo(op) & 7];
+                /* The bit number of `bit n, (hl)` and `bit n, (ix+d)`. The
+                 * register forms use TR_BIT and are checked there; every other
+                 * TR_Y is a register in this slot and never takes this arm. */
+                if (op->fwd != NULL) {
+                    op->mode &= (uint8_t) ~IMM;
+
+                    return TRF_DEFER;
+                }
+                if (op->imm > 7) {
+                    zz.err = ZAP_E_INVALID_BIT_NUMBER;
+
+                    return TRF_ERR;
+                }
+                /* Shifted rather than looked up, and not masked, because the
+                 * reference is not: `bit -1, a` is CB FF there -- the whole
+                 * of the shifted value ORed into the opcode, three bits of
+                 * bit number and five of whatever else it lands on. A table
+                 * indexed by `v & 7` is faster and gives CB 7F. */
+                out->opcode |= (uint8_t) ((unsigned) op->imm << 3);
             } else {
                 out->opcode |= shl3[op->reg_index & 7];
             }
@@ -7045,27 +7151,94 @@ __attribute__((always_inline)) static inline void transform(emitted* out, dop* o
             out->opcode |= shl3[op->cc_index & 7];
             break;
         case TR_N:
-            out->opcode |= (uint8_t) op->imm;
+            /* RST, and the only row with this transform. The eight addresses
+             * are the multiples of eight below 0x40, which is every value that
+             * ORs into 0xC7 without touching a bit that is already there. */
             op->mode &= (uint8_t) ~IMM;
+            if (op->fwd != NULL) {
+                return TRF_DEFER;
+            }
+            if (((unsigned) op->imm & ~0x38u) != 0) {
+                zz.err = ZAP_E_RESTART_ADDRESS;
+
+                return TRF_ERR;
+            }
+            out->opcode |= (uint8_t) op->imm;
             break;
         case TR_BIT:
-            out->opcode |= shl3[imm_lo(op) & 7];
             op->mode &= (uint8_t) ~IMM;
+            if (op->fwd != NULL) {
+                return TRF_DEFER;
+            }
+            if (op->imm > 7) {
+                zz.err = ZAP_E_INVALID_BIT_NUMBER;
+
+                return TRF_ERR;
+            }
+            out->opcode |= (uint8_t) ((unsigned) op->imm << 3);
             break;
         case TR_SELECT: {
+            /* IM, and the only row with this transform. Modes 0, 1 and 2 are
+             * y = 0, 2 and 3. Above 2 the reference refuses; below 0 it does
+             * not, and assembles `im 0`, so neither does this. */
+            op->mode &= (uint8_t) ~IMM;
+            if (op->fwd != NULL) {
+                return TRF_DEFER;
+            }
             uint8_t y = 0;
             if (op->imm == 1) {
                 y = 2;
             } else if (op->imm == 2) {
                 y = 3;
+            } else if (op->imm > 2) {
+                zz.err = ZAP_E_INTERRUPT_MODE;
+
+                return TRF_ERR;
             }
             out->opcode |= shl3[y & 7];
-            op->mode &= (uint8_t) ~IMM;
             break;
         }
         default:
             break;
     }
+
+    return TRF_OK;
+}
+
+/* A fold whose label is still ahead: work out where the opcode byte will land
+ * and leave a fixup on it, before the chain in emit_row moves past it.
+ *
+ * Out of line, and taking the prefixes by value rather than the `emitted` it
+ * came from, for one reason each. Out of line because everything here is dead
+ * weight in the ordinary instruction -- inlined, it cost isa_real 1.8%, which
+ * is what two more live values across emit_row's body are worth. By value
+ * because taking the address of `out` puts it in the frame, and the frame is
+ * the thing this program cannot spare. */
+__attribute__((noinline)) static bool fold_defer(uint8_t type, const dop* op,
+                                                 uint8_t prefix1, uint8_t prefix2,
+                                                 uint8_t flags, int off) {
+    if (prefix1 != 0) {
+        off++;
+    }
+    if (prefix2 != 0) {
+        off++;
+    }
+    /* `bit n, (ix+d)` puts the displacement between the CB and the opcode,
+     * which is the one shape where the opcode is not the byte after the
+     * prefixes. */
+    if ((prefix1 == 0xDD || prefix1 == 0xFD) && prefix2 == 0xCB
+        && (flags & (F_DISPA | F_DISPB)) != 0) {
+        off += ((flags & F_DISPA) != 0) + ((flags & F_DISPB) != 0);
+    }
+
+    uint8_t w = FIX_FOLD_BIT;
+    if (type == TR_N) {
+        w = FIX_FOLD_RST;
+    } else if (type == TR_SELECT) {
+        w = FIX_FOLD_IM;
+    }
+
+    return fix_add(op->fwd, NULL, 0, w, off);
 }
 
 static uint8_t* emit_imm(uint8_t* o, const dop* op, uint8_t cond, bool adl) {
@@ -7187,10 +7360,22 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
      * instruction whose operands do not fold into the opcode. A load and a
      * compare replaces a call, a dispatch and a return. */
     if (row->transformA != TR_NONE) {
-        transform(&out, a, row->transformA);
+        const uint8_t r = transform(&out, a, row->transformA);
+        if (r != TRF_OK
+            && (r == TRF_ERR
+                || !fold_defer(row->transformA, a, out.prefix1, out.prefix2,
+                               row->flags, (int) (o - zz.out)))) {
+            return false;
+        }
     }
     if (row->transformB != TR_NONE) {
-        transform(&out, b, row->transformB);
+        const uint8_t r = transform(&out, b, row->transformB);
+        if (r != TRF_OK
+            && (r == TRF_ERR
+                || !fold_defer(row->transformB, b, out.prefix1, out.prefix2,
+                               row->flags, (int) (o - zz.out)))) {
+            return false;
+        }
     }
 
     ETRUNC_AT(2);

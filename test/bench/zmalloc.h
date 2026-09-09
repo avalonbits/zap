@@ -1,12 +1,11 @@
 /*
  * An allocation shim that reports what a run actually used.
  *
- * Speed is measured every round and memory was not, which is the wrong way
- * round for a machine with 512 KB and no swap: an assembler that is 5% faster
- * and does not fit is not faster. Labels made this urgent -- the symbol table,
- * the name arena and the fixup list are all proportional to the source rather
- * than fixed -- and the degenerate benchmark is the shape that makes the fixup
- * list as large as it can be.
+ * On a machine with 512 KB and no swap, an assembler that is faster and does
+ * not fit is not faster, so what a run costs in memory has to be measurable
+ * as well as what it costs in time. The symbol table, the name arena and the
+ * fixup list all grow with the source rather than being fixed, so the peak
+ * depends on what is being assembled.
  *
  * Used by renaming the allocators on the compile line, so nothing in the
  * program has to know:

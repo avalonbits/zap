@@ -71,7 +71,7 @@ static bool scan_base(const char* txt, int sz, int base, value* out) {
  * last character alone.
  *
  * Every identifier is offered to num_parse before it is looked up as a name,
- * and on real sources around 90% of those are names that fail only after
+ * and on real sources nearly all of those are names, which fail only after
  * scan_base has walked the whole string. The forms below mirror num_parse's
  * own branches exactly: a prefix, a lone character, an 'h' or 'b' suffix, or
  * a bare decimal -- and a bare decimal has to start with a digit or scan_base

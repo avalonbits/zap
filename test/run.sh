@@ -185,6 +185,68 @@ cli_check "an option that is not the reference's is still refused" \
     "$("$OUT/zap" -c -Q "$OUT/opt2.s" "$OUT/opt2.bin" 2>&1 | tr -d '\r' \
        | grep -c 'Unknown option -Q')" 1
 
+# A value that does not fit where it is written is a *warning*: it is said,
+# and the assembly carries on and produces the same bytes the reference
+# produces. That is why it is a warning in both and an error in neither.
+#
+# The line is drawn where the reference draws it, at all six boundaries: a
+# value fits if the bytes that come out mean the same number read as signed or
+# as unsigned. `ld a, -1` and `ld a, 255` are both a byte that loses nothing;
+# `ld a, 256` and `ld a, -129` are both a byte that says something else.
+warn_same() {
+    local text="$1" want="$2"
+    printf '%s\n' "$text" > "$OUT/warn.s"
+    local got
+    got=$("$OUT/zap" -c "$OUT/warn.s" "$OUT/warn.bin" 2>&1 | tr -d '\r' \
+          | grep -c 'truncated' || true)
+    cli_check "[$text] warns $want" "$got" "$want"
+    if [ -x "$OPTREF" ]; then
+        local ref
+        ref=$("$OPTREF" "$OUT/warn.s" "$OUT/warnb.bin" 2>&1 \
+              | sed 's/\x1b\[[0-9;]*m//g' | grep -c 'truncated' || true)
+        cli_check "[$text] agrees with the reference" "$got" "$ref"
+    fi
+}
+warn_same "  ld a, 255" 0
+warn_same "  ld a, -1" 0
+warn_same "  ld a, 256" 1
+warn_same "  ld a, -129" 1
+warn_same "  dw 65535" 0
+warn_same "  dw 65536" 1
+warn_same "  dl 16777216" 1
+
+# And the bytes are the reference's either way, which is the claim that makes
+# it a warning rather than a refusal.
+printf '  ld a, 0x1234\n  dw 65536\n' > "$OUT/warn.s"
+"$OUT/zap" -c "$OUT/warn.s" "$OUT/warna.bin" > /dev/null 2>&1 || true
+if [ -x "$OPTREF" ]; then
+    "$OPTREF" "$OUT/warn.s" "$OUT/warnb.bin" > /dev/null 2>&1 || true
+    if cmp -s "$OUT/warna.bin" "$OUT/warnb.bin"; then
+        echo "PASS  a truncated value still assembles to the reference's bytes"
+    else
+        echo "FAIL  a truncated value assembles differently"
+        status=1
+    fi
+fi
+wexit=$("$OUT/zap" -c "$OUT/warn.s" "$OUT/warna.bin" > /dev/null 2>&1; echo $?)
+cli_check "a warning is not a failure" "$wexit" 0
+
+# -i names exactly this and now does it.
+cli_check "-i silences them" \
+    "$("$OUT/zap" -c -i "$OUT/warn.s" "$OUT/warna.bin" 2>&1 | tr -d '\r' \
+       | grep -c 'truncated')" 0
+cli_check "-i changes no bytes" \
+    "$("$OUT/zap" -c -i "$OUT/warn.s" "$OUT/warnc.bin" > /dev/null 2>&1; \
+       cmp -s "$OUT/warna.bin" "$OUT/warnc.bin" && echo same || echo differs)" \
+    "same"
+
+# A forward reference is patched long after its line, and the fixup carries
+# the line number so the warning still names it.
+printf '  nop\n  ld a, big\nbig: EQU 0x1234\n' > "$OUT/warnf.s"
+cli_check "a truncated forward reference names its own line" \
+    "$("$OUT/zap" -c "$OUT/warnf.s" "$OUT/warnf.bin" 2>&1 | tr -d '\r' \
+       | grep -c 'line 2 - Value truncated to 8 bit')" 1
+
 # The three that write something extra. None of them may fail an assembly:
 # the bytes are written first and a sidecar that cannot be saved is a line of
 # complaint, not an exit code.

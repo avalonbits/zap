@@ -1201,6 +1201,99 @@ static void err_line(char* dst, const char* p, const char* e) {
     dst[n] = 0;
 }
 
+/* Whether a value survives being written in `width` bytes.
+ *
+ * It fits if the bytes that come out mean the same number read either way --
+ * as signed, or as unsigned. `ld a, -1` and `ld a, 255` are both one byte and
+ * neither loses anything; `ld a, 256` and `ld a, -129` are both a byte that
+ * says something else. The reference draws the line in the same two places,
+ * measured at all six boundaries.
+ *
+ * Written as two casts rather than as a pair of range compares, which on the
+ * eZ80 are signed compares and cost a `call pe, __setflag` apiece to repair
+ * the flags. */
+static inline bool fits_width(evalue v, int width) {
+    const uint32_t u = (uint32_t) v;
+    if (width == 1) {
+        return (u + 128u) <= 383u;
+    }
+    if (width == 2) {
+        return (u + 32768u) <= 98303u;
+    }
+    if (width == 3) {
+        return (u + 0x800000u) <= 0x17FFFFFu;
+    }
+
+    return true;
+}
+
+/* The same question about an operand's immediate, asked in the machine's word.
+ *
+ * An instruction's immediate is an `int` -- three bytes on the Agon -- and
+ * `fits_width` takes the evaluator's four. Widening every immediate of every
+ * instruction to ask cost **9.3% of isa_real**: the compares became calls to
+ * __lcmpu on the one path that runs on every line that has an operand.
+ *
+ * In the machine's word the width-three case is provably true and folds away
+ * -- an `int` cannot be wider than an `int` -- and the other two are byte and
+ * word compares. The host keeps the test honestly, where `int` is four bytes
+ * and a three-byte write really can lose something, so the two machines warn
+ * about the same values. */
+static inline bool fits_imm(int v, int width) {
+    /* One add and one unsigned compare.
+     *
+     * The range that survives `width` bytes is -2^(8w-1) to 2^8w-1, and
+     * sliding it down by its lower bound makes that one test: `ld a, -1`
+     * lands on 127, `ld a, 255` on 383, and anything outside walks off the
+     * end. Written as four casts and four compares it was sixty-six more
+     * instructions in emit_imm, which doubled it and gave it a frame it had
+     * not needed -- 7.5% of isa_real, on a function that runs for every
+     * immediate in the file.
+     *
+     * Unsigned throughout, so the addition wraps rather than overflowing, and
+     * so the compare is one subtract without a `call pe, __setflag` to repair
+     * the flags after it. */
+    if (width == 1) {
+        return ((unsigned) v + 128u) <= 383u;
+    }
+    if (width == 2) {
+        return ((unsigned) v + 32768u) <= 98303u;
+    }
+    /* An `int` cannot be wider than an `int`: on the Agon this is a constant
+     * and folds away entirely. The host keeps the test, where it is four
+     * bytes and a three-byte write really can lose something, so the two
+     * machines warn about the same values. */
+    if ((int) sizeof(int) <= 3) {
+        return true;
+    }
+
+    return ((unsigned) v + 0x800000u) <= 0x17FFFFFu;
+}
+
+/* The check and the complaint, kept apart.
+ *
+ * emit_imm writes the bytes and is a leaf: no frame, no calls. Putting the
+ * warning inside it made it a *non*-leaf -- 47 instructions became 113 and it
+ * gained a four-byte frame, for every immediate in the file, and that was
+ * 7.5% of isa_real. The arithmetic was never the cost; the possibility of a
+ * call was.
+ *
+ * So the test lives where there is a frame already. emit_row is inlined into
+ * assemble_line, which has one and makes a dozen calls, and one more cold
+ * branch there costs it nothing.
+ *
+ * Said and carried on, which is the whole of what makes it a warning.
+ *
+ * Defined below, beside the report it borrows its shape from; declared here
+ * because the fixup patcher is the first thing that needs it. */
+static void warn_trunc(evalue v, int width);
+
+static inline void warn_imm(int v, int width) {
+    if (!fits_imm(v, width)) {
+        warn_trunc(v, width);
+    }
+}
+
 /* The token a message is about, when the site that failed has it in hand.
  *
  * Not every one does -- an unresolved label is reported long after its line is
@@ -1512,6 +1605,19 @@ static bool patch_fixup(const fixup* f) {
         *at = (uint8_t) d;
 
         return true;
+    }
+
+    if (!fits_width(val, (int) w)) {
+        /* Against the line that *used* the label, not the one that defined
+         * it. The fixup carries the number for exactly this, and until now
+         * only the failure paths read it -- so a truncated forward reference
+         * was reported against whatever line the patching happened to be on.
+         *
+         * Set here rather than at the top of the function: this loop runs
+         * once per forward reference and the store belongs on the path that
+         * needs it. */
+        zz.line = f->line;
+        warn_trunc(val, (int) w);
     }
 
     /* Same split as emit_data, and this loop runs once per forward reference
@@ -2250,6 +2356,13 @@ static uint8_t opt_fill = 0xFF;
 static bool opt_adl = ZAP_ADL;
 
 static bool compat_ez80 = false;
+
+/* Whether `-i` was given. The reference calls it "ignore value truncation
+ * warnings" and that is exactly what it does: the check still runs, and the
+ * line is not printed. Suppressing the check instead would make `-i` faster
+ * than not passing it, which is a reason to pass it that has nothing to do
+ * with what it means. */
+static bool ignore_warn = false;
 
 /* Whether the error report is coloured.
  *
@@ -5738,6 +5851,10 @@ static bool emit_data(uint8_t width, const char** pp, const char* e) {
              * first, they keep the shifts the eZ80 has. Splitting the write
              * this way is 0.20s of the 0.42 the widening cost -- see
              * .internal/performance-notes.md. */
+            if (!fits_width(value, width)) {
+                warn_trunc(value, width);
+            }
+
             uint8_t* o = zz.o;
             if (width > 3) {
                 *o++ = (uint8_t) value;
@@ -5815,6 +5932,10 @@ static bool emit_block(int n, int width, evalue fill) {
     }
     if (!out_reserve_n(n * width)) {
         return false;
+    }
+
+    if (!fits_width(fill, width)) {
+        warn_trunc(fill, width);
     }
 
     /* Narrowed once, outside the loop, for the reason emit_data splits its
@@ -7130,6 +7251,7 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
                             (int) (o - zz.out))) {
                 return false;
             }
+            warn_imm(a->imm, (row->condA & IMM_N) ? 1 : (SFX_WIDE ? 3 : 2));
             o = emit_imm(o, a, row->condA, SFX_WIDE);
         }
         if ((b->mode & IMM) != 0 && (row->condB & (IMM_N | IMM_MMN))) {
@@ -7141,6 +7263,7 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
                             (int) (o - zz.out))) {
                 return false;
             }
+            warn_imm(b->imm, (row->condB & IMM_N) ? 1 : (SFX_WIDE ? 3 : 2));
             o = emit_imm(o, b, row->condB, SFX_WIDE);
         }
 #undef SFX_WIDE
@@ -8230,7 +8353,7 @@ __attribute__((noinline)) static bool parse_args(int argc, char* argv[],
             case 'd': want_console_list = true; break;
             case 's': want_symbols = true; break;
             case 'x': want_stats = true; break;
-            case 'i': break;   /* zap has no warnings to ignore */
+            case 'i': ignore_warn = true; break;
             case 'm': break;   /* one memory configuration, and it is small */
             default:
                 printf("Unknown option %s\r\n", a);
@@ -8553,6 +8676,39 @@ static void write_stats(void) {
     printf("Macros               : %6d\r\n", macros);
     printf("\r\nOutput               : %6d\r\n", (int) (zz.o - zz.out));
     printf("Output buffer        : %6d\r\n", zz.cap);
+}
+
+/* A value that did not fit where it was written, said and carried on.
+ *
+ * Yellow rather than red, as the reference has it, because the assembly is
+ * still going to produce a file -- and the bytes it produces are the ones the
+ * reference produces, which is why this is a warning in both and not an error
+ * in either.
+ *
+ * The value is printed rather than the text it was written as. The reference
+ * quotes the source token; the emitter is several layers below where that
+ * text was, and carrying it down would mean holding a pointer and a length on
+ * every operand of every line, which is a real cost on every source that has
+ * nothing wrong with it. The number is what the reader needs anyway.
+ *
+ * No echoed line, for the same reason. */
+static void warn_trunc(evalue v, int width) {
+    if (ignore_warn) {
+        return;
+    }
+    const char* const yellow = use_color ? "\033[33m" : "";
+    const char* const off = use_color ? "\033[39m" : "";
+    /* Inside an expansion `zz.path` is the macro, which is what the reader
+     * needs to be told: the line number counts the body, not the file. */
+    if (zz.expanding != 0) {
+        printf("%sMacro [%s] line %d - Value truncated to %d bit '0x%lX'%s\r\n",
+               yellow, zz.path != NULL ? zz.path : "?", zz.line, width * 8,
+               (unsigned long) (v & 0xFFFFFFFFL), off);
+    } else {
+        printf("%sFile \"%s\" line %d - Value truncated to %d bit '0x%lX'%s\r\n",
+               yellow, zz.path != NULL ? zz.path : "?", zz.line, width * 8,
+               (unsigned long) (v & 0xFFFFFFFFL), off);
+    }
 }
 
 /* What went wrong, said the way somebody trying to fix it needs to hear it.

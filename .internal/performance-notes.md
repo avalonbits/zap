@@ -4499,3 +4499,41 @@ macro is looked up last, after the mnemonic table and the directives, so that
 nothing which is either pays for the walk. Moving the macro lookup earlier
 would put a list walk on every directive line in the file to save it on one
 line in fifty.
+
+## What the error reporting costs: nothing
+
+The report was one line -- `file line N: message` -- and is now the
+reference's shape: the failing line echoed, the token quoted, and for a macro
+the place it was invoked from. The question asked of it was whether that
+machinery lands on the assembly time.
+
+    isa_real   5.32 -> 5.32
+    bbcbasic   3.74 -> 3.74
+    inv1       1.88 -> 1.88
+
+**Not a hundredth**, and the reason is one rule: *capture at the moment of
+failure, never maintain in advance.*
+
+Checked against each part of it:
+
+* The **line** is copied by the loop that already has its bounds in registers,
+  in the branch that handles the failure.
+* The **token** is recorded at the sites that already had it -- an unknown
+  instruction has `s` and `n`, an unresolved label has the symbol.
+* The **macro chain** comes out of the path and line the expansion was saving
+  anyway to restore them.
+* **Colour** is escape codes in the failing `printf`.
+
+The one that could not be captured is the unresolved label: it is found when
+the fixups are patched, long after the loop has moved on. Keeping the text on
+every fixup would be 843 copies on isa_real, in a record that is sixteen bytes
+so that indexing it is a shift. The file is reopened and the line counted
+instead -- one `open`, on a run that has already failed.
+
+### And the codes
+
+`zz.err` was a `const char*` and is a `zap_err`. On the Agon that is one byte
+where a pointer is three, and two instructions where a string address is two --
+**both on the failure path only**, so neither costs anything either way. The
+reason to do it was never speed: a library that reports by handing back
+English is a library nobody can branch on.

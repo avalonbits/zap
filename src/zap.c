@@ -230,6 +230,11 @@ _Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
 
 #define OUT_MAX_INSN 13
 
+/* How much of a failing line is echoed back. Longer than any line anybody
+ * writes, and a line longer than this is truncated rather than refused --
+ * the report is a courtesy and must never itself be a failure. */
+#define ERRLINE_MAX 128
+
 /* The longest file name INCLUDE and INCBIN will take. Fixed, because the name
  * is copied into a frame that has to outlive the line it came from, and into
  * `dz.errpath` when an include fails. */
@@ -285,6 +290,18 @@ struct _macro {
     int nmarks;
     int markcap;
 
+    /* Where the MACRO directive was, so a failure in the body can be reported
+     * against the line of the *file* it was written on rather than against its
+     * index in the body. The reference does the same: a body line is "line 2"
+     * of the source, not "line 1" of the macro.
+     *
+     * The name is copied into the arena rather than pointed at. A reader's
+     * file name lives exactly as long as the reader, and a header of macros
+     * is defined in one file and used from another -- which is the normal
+     * shape and the one a borrowed pointer would get wrong. */
+    const char* defpath;
+    int defline;
+
     /* Whether the body mentions a local label at all -- defines one, or names
      * one. Decided as the body is read, for the same reason the marks are.
      *
@@ -297,6 +314,182 @@ struct _macro {
      * invocation costs. */
     bool haslocal;
 };
+
+/* What went wrong, as a code rather than a string.
+ *
+ * It was a `const char*` for a reason that has gone: zap had to fit in a
+ * moslet, and a pointer to a literal is the smallest thing that can carry a
+ * message. It costs the same either way on the path that matters -- the store
+ * happens only when something has already failed -- and a code is two
+ * instructions where a string address is two, one byte where a pointer is
+ * three, and the one thing a caller that is not `main` can act on.
+ *
+ * zap is meant to be usable as a library, and a library that reports by
+ * handing back English is a library nobody can branch on.
+ *
+ * The text lives in one table rather than at 120 sites. Eleven of them said
+ * "out of memory for labels" and whether the compiler merged those was its
+ * business, not ours. */
+typedef enum {
+    ZAP_OK = 0,
+    ZAP_E_ADL_0_OR_1,
+    ZAP_E_FILLBYTE_COME_BEFORE_SPACE_FILLS,
+    ZAP_E_IF_LEFT_OPEN_AT_END_FILE,
+    ZAP_E_RELOCATE_DOES_NOT_NEST,
+    ZAP_E_MACRO_WAS_NEVER_CLOSED,
+    ZAP_E_LABEL_CANNOT_NEGATED,
+    ZAP_E_LABEL_DEFINED_ALREADY,
+    ZAP_E_MACRO_PARAMETER_NOT_NUMBER_OR_MNEM,
+    ZAP_E_STRING_DB,
+    ZAP_E_UNARY_OPERATOR_VALUE,
+    ZAP_E_ADDRESS_OUTSIDE_24_BIT_RANGE,
+    ZAP_E_ALIGN_POSITIVE_NUMBER,
+    ZAP_E_ALIGN_POWER_TWO,
+    ZAP_E_IF_WAS_NEVER_CLOSED,
+    ZAP_E_BAD_ESCAPE_IN_STRING,
+    ZAP_E_BLK_POSITIVE_NUMBER,
+    ZAP_E_CANNOT_OPEN_SOURCE,
+    ZAP_E_CANNOT_OPEN_FILE,
+    ZAP_E_CANNOT_READ_FILE,
+    ZAP_E_CANNOT_REOPEN_FILE,
+    ZAP_E_CANNOT_SET_FILE_ASIDE,
+    ZAP_E_CONDITIONALS_DO_NOT_NEST,
+    ZAP_E_DIVISION_BY_ZERO,
+    ZAP_E_DS_POSITIVE_NUMBER,
+    ZAP_E_EXPECTED,
+    ZAP_E_EXPECTED_OR,
+    ZAP_E_EXPECTED_AFTER_ADL,
+    ZAP_E_EXPECTED_ADL,
+    ZAP_E_EXPECTEDX,
+    ZAP_E_EXPECTED_CHARACTER,
+    ZAP_E_EXPECTED_FILE_NAME,
+    ZAP_E_EXPECTED_MACRO_NAME,
+    ZAP_E_EXPECTED_QUOTED_FILE_NAME,
+    ZAP_E_EXPECTED_VALUE,
+    ZAP_E_EXPECTED_INSTRUCTION,
+    ZAP_E_EXPRESSION_NESTED_TOO_DEEPLY,
+    ZAP_E_FILE_NAME_TOO_LONG,
+    ZAP_E_INCLUDES_NESTED_TOO_DEEPLY,
+    ZAP_E_INDEX_OFFSET_OUT_RANGE,
+    ZAP_E_INVALID_LABEL,
+    ZAP_E_LABEL_DEFINED_TWICE,
+    ZAP_E_LABEL_TOO_LONG,
+    ZAP_E_LINE_TOO_LONG,
+    ZAP_E_MACRO_PARAMETER_NAME_TOO_LONG,
+    ZAP_E_MACROS_DO_NOT_NEST,
+    ZAP_E_MACROS_NESTED_TOO_DEEPLY,
+    ZAP_E_NO_ADL_MODE_CPU,
+    ZAP_E_NO_IF_OPEN,
+    ZAP_E_NO_MACRO_OPEN,
+    ZAP_E_NO_RELOCATE_OPEN,
+    ZAP_E_NO_ANONYMOUS_LABEL_ABOVE_ONE,
+    ZAP_E_NO_ANONYMOUS_LABELS_ALLOWED_IN_MAC,
+    ZAP_E_NO_GLOBAL_LABELS_ALLOWED_IN_MACRO,
+    ZAP_E_NO_MODE_SUFFIX_CPU,
+    ZAP_E_NO_SUCH_INSTRUCTION_FORM,
+    ZAP_E_ORG_GOES_BACKWARDS,
+    ZAP_E_OUT_MEMORY,
+    ZAP_E_OUT_MEMORY_LABELS,
+    ZAP_E_OUT_MEMORY_MACROS,
+    ZAP_E_OUT_MEMORY_OUTPUT,
+    ZAP_E_RELATIVE_JUMP_TOO_FAR,
+    ZAP_E_STRING_NOT_TERMINATED,
+    ZAP_E_CONSTANT_TOO_LARGE_ADD_LABEL,
+    ZAP_E_MACRO_ALREADY_DEFINED,
+    ZAP_E_INSTRUCTION_NO_MODE_SUFFIX,
+    ZAP_E_TOO_MANY_MACRO_ARGUMENTS,
+    ZAP_E_UNEXPECTED_TEXT_AFTER_INSTRUCTION,
+    ZAP_E_UNKNOWN_INSTRUCTION,
+    ZAP_E_UNKNOWN_LABEL,
+    ZAP_E_UNSUPPORTED_CPU_TYPE,
+    ZAP_E_WRONG_NUMBER_MACRO_ARGUMENTS,
+
+    /* Not a code: the number of them, so the table below cannot be short. */
+    ZAP_E_COUNT
+} zap_err;
+
+/* Indexed by the code, so a message and its name cannot drift apart. */
+static const char* const zap_err_text[] = {
+    [ZAP_OK] = "no error",
+    [ZAP_E_ADL_0_OR_1] = "ADL is 0 or 1",
+    [ZAP_E_FILLBYTE_COME_BEFORE_SPACE_FILLS] = "FILLBYTE must come before the space it fills",
+    [ZAP_E_IF_LEFT_OPEN_AT_END_FILE] = "IF left open at the end of the file",
+    [ZAP_E_RELOCATE_DOES_NOT_NEST] = "RELOCATE does not nest",
+    [ZAP_E_MACRO_WAS_NEVER_CLOSED] = "a MACRO was never closed",
+    [ZAP_E_LABEL_CANNOT_NEGATED] = "a label cannot be negated",
+    [ZAP_E_LABEL_DEFINED_ALREADY] = "a label here must be defined already",
+    [ZAP_E_MACRO_PARAMETER_NOT_NUMBER_OR_MNEM] = "a macro parameter may not be a number or a mnemonic",
+    [ZAP_E_STRING_DB] = "a string needs DB",
+    [ZAP_E_UNARY_OPERATOR_VALUE] = "a unary operator needs a value",
+    [ZAP_E_ADDRESS_OUTSIDE_24_BIT_RANGE] = "address outside the 24-bit range",
+    [ZAP_E_ALIGN_POSITIVE_NUMBER] = "align needs a positive number",
+    [ZAP_E_ALIGN_POWER_TWO] = "align needs a power of two",
+    [ZAP_E_IF_WAS_NEVER_CLOSED] = "an IF was never closed",
+    [ZAP_E_BAD_ESCAPE_IN_STRING] = "bad escape in string",
+    [ZAP_E_BLK_POSITIVE_NUMBER] = "blk needs a positive number",
+    [ZAP_E_CANNOT_OPEN_SOURCE] = "cannot open source",
+    [ZAP_E_CANNOT_OPEN_FILE] = "cannot open the file",
+    [ZAP_E_CANNOT_READ_FILE] = "cannot read the file",
+    [ZAP_E_CANNOT_REOPEN_FILE] = "cannot reopen the file",
+    [ZAP_E_CANNOT_SET_FILE_ASIDE] = "cannot set the file aside",
+    [ZAP_E_CONDITIONALS_DO_NOT_NEST] = "conditionals do not nest",
+    [ZAP_E_DIVISION_BY_ZERO] = "division by zero",
+    [ZAP_E_DS_POSITIVE_NUMBER] = "ds needs a positive number",
+    [ZAP_E_EXPECTED] = "expected )",
+    [ZAP_E_EXPECTED_OR] = "expected << or >>",
+    [ZAP_E_EXPECTED_AFTER_ADL] = "expected = after ADL",
+    [ZAP_E_EXPECTED_ADL] = "expected ADL",
+    [ZAP_E_EXPECTEDX] = "expected ]",
+    [ZAP_E_EXPECTED_CHARACTER] = "expected a character",
+    [ZAP_E_EXPECTED_FILE_NAME] = "expected a file name",
+    [ZAP_E_EXPECTED_MACRO_NAME] = "expected a macro name",
+    [ZAP_E_EXPECTED_QUOTED_FILE_NAME] = "expected a quoted file name",
+    [ZAP_E_EXPECTED_VALUE] = "expected a value",
+    [ZAP_E_EXPECTED_INSTRUCTION] = "expected an instruction",
+    [ZAP_E_EXPRESSION_NESTED_TOO_DEEPLY] = "expression nested too deeply",
+    [ZAP_E_FILE_NAME_TOO_LONG] = "file name too long",
+    [ZAP_E_INCLUDES_NESTED_TOO_DEEPLY] = "includes nested too deeply",
+    [ZAP_E_INDEX_OFFSET_OUT_RANGE] = "index offset out of range",
+    [ZAP_E_INVALID_LABEL] = "invalid label",
+    [ZAP_E_LABEL_DEFINED_TWICE] = "label defined twice",
+    [ZAP_E_LABEL_TOO_LONG] = "label too long",
+    [ZAP_E_LINE_TOO_LONG] = "line too long",
+    [ZAP_E_MACRO_PARAMETER_NAME_TOO_LONG] = "macro parameter name too long",
+    [ZAP_E_MACROS_DO_NOT_NEST] = "macros do not nest",
+    [ZAP_E_MACROS_NESTED_TOO_DEEPLY] = "macros nested too deeply",
+    [ZAP_E_NO_ADL_MODE_CPU] = "no ADL mode on this CPU",
+    [ZAP_E_NO_IF_OPEN] = "no IF is open",
+    [ZAP_E_NO_MACRO_OPEN] = "no MACRO is open",
+    [ZAP_E_NO_RELOCATE_OPEN] = "no RELOCATE is open",
+    [ZAP_E_NO_ANONYMOUS_LABEL_ABOVE_ONE] = "no anonymous label above this one",
+    [ZAP_E_NO_ANONYMOUS_LABELS_ALLOWED_IN_MAC] = "no anonymous labels allowed in a macro",
+    [ZAP_E_NO_GLOBAL_LABELS_ALLOWED_IN_MACRO] = "no global labels allowed in a macro",
+    [ZAP_E_NO_MODE_SUFFIX_CPU] = "no mode suffix on this CPU",
+    [ZAP_E_NO_SUCH_INSTRUCTION_FORM] = "no such instruction form",
+    [ZAP_E_ORG_GOES_BACKWARDS] = "org goes backwards",
+    [ZAP_E_OUT_MEMORY] = "out of memory",
+    [ZAP_E_OUT_MEMORY_LABELS] = "out of memory for labels",
+    [ZAP_E_OUT_MEMORY_MACROS] = "out of memory for macros",
+    [ZAP_E_OUT_MEMORY_OUTPUT] = "out of memory for the output",
+    [ZAP_E_RELATIVE_JUMP_TOO_FAR] = "relative jump too far",
+    [ZAP_E_STRING_NOT_TERMINATED] = "string not terminated",
+    [ZAP_E_CONSTANT_TOO_LARGE_ADD_LABEL] = "that constant is too large to add to a label",
+    [ZAP_E_MACRO_ALREADY_DEFINED] = "that macro is already defined",
+    [ZAP_E_INSTRUCTION_NO_MODE_SUFFIX] = "this instruction takes no mode suffix",
+    [ZAP_E_TOO_MANY_MACRO_ARGUMENTS] = "too many macro arguments",
+    [ZAP_E_UNEXPECTED_TEXT_AFTER_INSTRUCTION] = "unexpected text after the instruction",
+    [ZAP_E_UNKNOWN_INSTRUCTION] = "unknown instruction",
+    [ZAP_E_UNKNOWN_LABEL] = "unknown label",
+    [ZAP_E_UNSUPPORTED_CPU_TYPE] = "unsupported CPU type",
+    [ZAP_E_WRONG_NUMBER_MACRO_ARGUMENTS] = "wrong number of macro arguments",
+};
+
+/* A code with no text prints nothing and looks like a message somebody forgot
+ * to write, which is exactly what it is. The size catches one added at the
+ * end; test_encode walks the table for the holes in the middle, which a
+ * designated initialiser leaves as null. */
+_Static_assert(sizeof(zap_err_text) / sizeof(zap_err_text[0]) == ZAP_E_COUNT,
+               "every zap_err has an entry in zap_err_text");
 
 /* What assemble_line does with a line before looking at it. */
 #define LINE_ASSEMBLE 0
@@ -804,7 +997,28 @@ typedef struct _dz {
     int fix_cap;
 
     int line;
-    const char* err;
+    zap_err err;
+
+    /* Everything the report needs, written **only when a failure happens**.
+     *
+     * That is the whole discipline of it: not one of these is maintained in
+     * advance, so a source that assembles pays nothing for the machinery that
+     * would have described it failing. The line is copied rather than pointed
+     * at, because a library caller may print after the reader that held it is
+     * gone.
+     *
+     * The innermost capture wins: a macro body writes `errline` and the loop
+     * that invoked it then finds it taken and writes `errfrom` instead, which
+     * is how the two halves of "Invoked from" find their own line. */
+    bool errhave;          /* the failing line has been captured */
+    char errline[ERRLINE_MAX];
+    char errfrom[ERRLINE_MAX];   /* empty until the line loop fills it */
+    const char* errfrompath;     /* NULL unless the failure was in a macro */
+    int errfromline;
+    const char* errfile;  /* the file, when the failure was inside a macro */
+    const char* errmacro; /* the macro, or NULL */
+    const char* errat;    /* the token to point at, or NULL */
+    int erratlen;
 
     /* Anonymous labels: `@@`, which may be written any number of times and is
      * reached by position rather than by name -- `@b`/`@p` for the one above,
@@ -962,6 +1176,36 @@ typedef struct _dz {
  * being used. Zero-initialised by being static, which is what the memset in
  * main did. */
 static dz zz;
+
+/* The failing line, copied out of whatever held it.
+ *
+ * Called only after something has returned false. Trailing space and the
+ * newline come off, so the echo reads as the author wrote it, and a line
+ * longer than the buffer is truncated -- the report is a courtesy and must
+ * never itself be a failure.
+ *
+ * Returns nothing and cannot fail, for the same reason. */
+static void err_line(char* dst, const char* p, const char* e) {
+    int n = 0;
+    while (p < e && *p != '\n' && n + 1 < ERRLINE_MAX) {
+        dst[n++] = *p++;
+    }
+    while (n > 0 && (dst[n - 1] == ' ' || dst[n - 1] == '\t'
+                     || dst[n - 1] == '\r')) {
+        n--;
+    }
+    dst[n] = 0;
+}
+
+/* The token a message is about, when the site that failed has it in hand.
+ *
+ * Not every one does -- an unresolved label is reported long after its line is
+ * gone -- so this is set where it is cheap and true, and the report simply
+ * leaves the quotation off where it is not. */
+static void err_tok(const char* s, int n) {
+    zz.errat = s;
+    zz.erratlen = n;
+}
 
 /* The fields touched on every line have to be reachable in one instruction.
  *
@@ -1150,14 +1394,14 @@ static sym* sym_intern(const char* name, int len) {
         return found;
     }
     if (!sym_room()) {
-        zz.err = "out of memory for labels";
+        zz.err = ZAP_E_OUT_MEMORY_LABELS;
 
         return NULL;
     }
 
     char* text = nam_take(&zz.names, &zz.names_used, len);
     if (text == NULL) {
-        zz.err = "out of memory for labels";
+        zz.err = ZAP_E_OUT_MEMORY_LABELS;
 
         return NULL;
     }
@@ -1228,9 +1472,11 @@ static bool patch_fixup(const fixup* f) {
     const sym* sp = f->target;
     if (!sp->defined) {
         /* Reported against the line that used it, which is long gone; the
-         * fixup carries the number for exactly this. */
+         * fixup carries the number for exactly this. The name is still on the
+         * symbol, which is the whole reason a reference points at one. */
         zz.line = f->line;
-        zz.err = "unknown label";
+        err_tok(sp->name, sp->len);
+        zz.err = ZAP_E_UNKNOWN_LABEL;
 
         return false;
     }
@@ -1239,7 +1485,8 @@ static bool patch_fixup(const fixup* f) {
     if (f->sub != NULL) {
         if (!f->sub->defined) {
             zz.line = f->line;
-            zz.err = "unknown label";
+            err_tok(f->sub->name, f->sub->len);
+            zz.err = ZAP_E_UNKNOWN_LABEL;
 
             return false;
         }
@@ -1254,7 +1501,7 @@ static bool patch_fixup(const fixup* f) {
         const evalue d = val - (zz.org + f->off + 1);
         if (d < -128 || d > 127) {
             zz.line = f->line;
-            zz.err = "relative jump too far";
+            zz.err = ZAP_E_RELATIVE_JUMP_TOO_FAR;
 
             return false;
         }
@@ -1320,7 +1567,8 @@ static bool fold_subs(int from) {
         }
         if (!f->sub->defined) {
             zz.line = f->line;
-            zz.err = "unknown label";
+            err_tok(f->sub->name, f->sub->len);
+            zz.err = ZAP_E_UNKNOWN_LABEL;
 
             return false;
         }
@@ -1332,7 +1580,7 @@ static bool fold_subs(int from) {
              * address difference in every real case and fits; an EQU wide
              * enough to leave the machine word does not, and says so. */
             zz.line = f->line;
-            zz.err = "that constant is too large to add to a label";
+            zz.err = ZAP_E_CONSTANT_TOO_LARGE_ADD_LABEL;
 
             return false;
         }
@@ -1388,7 +1636,7 @@ static bool undo_note(int b) {
         Z_SITE("macro scope");
         locundo* grown = (locundo*) realloc(zz.undo, sizeof(locundo) * (size_t) want);
         if (grown == NULL) {
-            zz.err = "out of memory for macros";
+            zz.err = ZAP_E_OUT_MEMORY_MACROS;
 
             return false;
         }
@@ -1455,14 +1703,14 @@ static sym* loc_intern(const char* name, int len) {
     }
 
     if (!loc_room()) {
-        zz.err = "out of memory for labels";
+        zz.err = ZAP_E_OUT_MEMORY_LABELS;
 
         return NULL;
     }
 
     char* text = nam_take(&zz.locnames, &zz.locnames_used, len);
     if (text == NULL) {
-        zz.err = "out of memory for labels";
+        zz.err = ZAP_E_OUT_MEMORY_LABELS;
 
         return NULL;
     }
@@ -1496,7 +1744,7 @@ static inline sym* sym_define(const char* name, int len, int addr) {
         return NULL;
     }
     if (sp->defined) {
-        zz.err = "label defined twice";
+        zz.err = ZAP_E_LABEL_DEFINED_TWICE;
 
         return NULL;
     }
@@ -1530,7 +1778,7 @@ static bool anon_define(int addr) {
 static sym* anon_next(void) {
     if (zz.anon_fwd == NULL) {
         if (!sym_room()) {
-            zz.err = "out of memory for labels";
+            zz.err = ZAP_E_OUT_MEMORY_LABELS;
 
             return NULL;
         }
@@ -1557,7 +1805,7 @@ static inline sym* loc_define(const char* name, int len, int addr) {
         return NULL;
     }
     if (sp->defined) {
-        zz.err = "label defined twice";
+        zz.err = ZAP_E_LABEL_DEFINED_TWICE;
 
         return NULL;
     }
@@ -1604,7 +1852,7 @@ static bool fix_add(const sym* target, const sym* sub, int addend,
         const int want = *cap + FIX_STEP;
         fixup* grown = (fixup*) realloc(*list, (size_t) want * sizeof(fixup));
         if (grown == NULL) {
-            zz.err = "out of memory for labels";
+            zz.err = ZAP_E_OUT_MEMORY_LABELS;
 
             return false;
         }
@@ -1621,7 +1869,7 @@ static bool fix_add(const sym* target, const sym* sub, int addend,
             const int want = zz.subfix_cap == 0 ? 8 : zz.subfix_cap + zz.subfix_cap;
             int* grown = (int*) realloc(zz.subfix, (size_t) want * sizeof(int));
             if (grown == NULL) {
-                zz.err = "out of memory for labels";
+                zz.err = ZAP_E_OUT_MEMORY_LABELS;
 
                 return false;
             }
@@ -1670,6 +1918,11 @@ static bool out_grow(int need) {
     }
     uint8_t* grown = (uint8_t*) realloc(zz.out, (size_t) want);
     if (grown == NULL) {
+        /* The one failure that used to travel without a code: main printed
+         * "out of memory for the output" when it found none set, which is a
+         * fallback standing in for a message nobody had written. */
+        zz.err = ZAP_E_OUT_MEMORY_OUTPUT;
+
         return false;
     }
 
@@ -1982,6 +2235,9 @@ static uint8_t exprec[256];
  * flag rather than a field on dz, because dz is reached through a pointer on
  * every line and this is read only where an expression has an operator in it. */
 static bool compat_ez80 = false;
+
+/* Whether the error report is coloured. See is_color_opt. */
+static bool use_color = false;
 
 /* Which instruction set is in force, as the bitmask an isa_row carries.
  *
@@ -2924,13 +3180,13 @@ static inline bool fwd_result(const sym** target, const sym** sub,
     *sub = NULL;
     *subneg = false;
     if (expr_fwd_bad) {
-        zz.err = "a label here must be defined already";
+        zz.err = ZAP_E_LABEL_DEFINED_ALREADY;
 
         return false;
     }
     if (expr_fwd2 == NULL) {
         if (expr_fwd_neg) {
-            zz.err = "a label cannot be negated";
+            zz.err = ZAP_E_LABEL_CANNOT_NEGATED;
 
             return false;
         }
@@ -2949,7 +3205,7 @@ static inline bool fwd_result(const sym** target, const sym** sub,
     } else {
         /* Both subtracted. A fixup adds its first symbol, so there is nowhere
          * for `-a - b` to go. */
-        zz.err = "a label cannot be negated";
+        zz.err = ZAP_E_LABEL_CANNOT_NEGATED;
 
         return false;
     }
@@ -2984,7 +3240,7 @@ static void fwd_reset(const sym* seed);
 __attribute__((noinline))
 static sym* defer_text(const char* text, int n) {
     if (!sym_room()) {
-        zz.err = "out of memory for labels";
+        zz.err = ZAP_E_OUT_MEMORY_LABELS;
 
         return NULL;
     }
@@ -2994,7 +3250,7 @@ static sym* defer_text(const char* text, int n) {
         defexpr* grown =
             (defexpr*) realloc(zz.defer, (size_t) want * sizeof(defexpr));
         if (grown == NULL) {
-            zz.err = "out of memory for labels";
+            zz.err = ZAP_E_OUT_MEMORY_LABELS;
 
             return NULL;
         }
@@ -3003,7 +3259,7 @@ static sym* defer_text(const char* text, int n) {
     }
     char* copy = nam_take(&zz.names, &zz.names_used, n + 1);
     if (copy == NULL) {
-        zz.err = "out of memory for labels";
+        zz.err = ZAP_E_OUT_MEMORY_LABELS;
 
         return NULL;
     }
@@ -3025,7 +3281,7 @@ static sym* defer_text(const char* text, int n) {
     d->text = copy;
     d->len = n;
     d->line = zz.line;
-    zz.err = NULL;
+    zz.err = ZAP_OK;
     fwd_reset(NULL);
 
     return sp;
@@ -3141,7 +3397,7 @@ static bool expr_atom(evalue* out, const char* ns, int nn) {
             const char k = nn == 2 ? (char) (ns[1] | 0x20) : 0;
             if (k == 'b' || k == 'p') {
                 if (!zz.anon_has_prev) {
-                    zz.err = "no anonymous label above this one";
+                    zz.err = ZAP_E_NO_ANONYMOUS_LABEL_ABOVE_ONE;
 
                     return false;
                 }
@@ -3181,7 +3437,7 @@ static bool expr_atom(evalue* out, const char* ns, int nn) {
 
     value gv = 0;
     if (!num_parse(ns, nn, &gv)) {
-        zz.err = "expected a value";
+        zz.err = ZAP_E_EXPECTED_VALUE;
 
         return false;
     }
@@ -3215,7 +3471,7 @@ static bool expr_term(evalue* out, const char** pp, const char* e,
             p++;
         }
         if (*p == '-' || *p == '+' || *p == '~' || exop[(uint8_t) *p] != 0) {
-            zz.err = "a unary operator needs a value";
+            zz.err = ZAP_E_UNARY_OPERATOR_VALUE;
 
             return false;
         }
@@ -3230,7 +3486,7 @@ static bool expr_term(evalue* out, const char** pp, const char* e,
          * inside an expression there is nothing left for it to be. */
         const bool square = *p == '[';
         if (expr_depth >= EXPR_MAXDEPTH) {
-            zz.err = "expression nested too deeply";
+            zz.err = ZAP_E_EXPRESSION_NESTED_TOO_DEEPLY;
 
             return false;
         }
@@ -3245,7 +3501,7 @@ static bool expr_term(evalue* out, const char** pp, const char* e,
             p++;
         }
         if (*p != (square ? ']' : ')')) {
-            zz.err = square ? "expected ]" : "expected )";
+            zz.err = square ? ZAP_E_EXPECTEDX : ZAP_E_EXPECTED;
 
             return false;
         }
@@ -3269,7 +3525,7 @@ static bool expr_term(evalue* out, const char** pp, const char* e,
              * and the backslash was its content. */
             const int esc = str_escape(p[2]);
             if (esc < 0 || p[3] != '\'') {
-                zz.err = "expected a character";
+                zz.err = ZAP_E_EXPECTED_CHARACTER;
 
                 return false;
             }
@@ -3280,7 +3536,7 @@ static bool expr_term(evalue* out, const char** pp, const char* e,
             p += 3;
         } else {
             if (p[1] == '\n' || p[1] == 0 || p[2] != '\'') {
-                zz.err = "expected a character";
+                zz.err = ZAP_E_EXPECTED_CHARACTER;
 
                 return false;
             }
@@ -3294,7 +3550,7 @@ static bool expr_term(evalue* out, const char** pp, const char* e,
         }
         const int n = (int) (p - ts);
         if (n == 0) {
-            zz.err = "expected a value";
+            zz.err = ZAP_E_EXPECTED_VALUE;
 
             return false;
         }
@@ -3339,7 +3595,7 @@ static bool expr_climb(evalue* total, const char** pp, const char* e,
                        uint8_t minprec, int depth, uint8_t* fwdmask) {
     const char* p = *pp;
     if (depth > EXPR_MAXDEPTH) {
-        zz.err = "expression nested too deeply";
+        zz.err = ZAP_E_EXPRESSION_NESTED_TOO_DEEPLY;
 
         return false;
     }
@@ -3360,7 +3616,7 @@ static bool expr_climb(evalue* total, const char** pp, const char* e,
             /* Doubled or nothing: the reference refuses a single one rather
              * than reading it as a comparison, so `1<4` is an error. */
             if (*p != c) {
-                zz.err = "expected << or >>";
+                zz.err = ZAP_E_EXPECTED_OR;
 
                 return false;
             }
@@ -3406,7 +3662,7 @@ static bool expr_climb(evalue* total, const char** pp, const char* e,
                  * this deliberately does not match: there is no byte sequence
                  * to agree with. */
                 if (t == 0) {
-                    zz.err = "division by zero";
+                    zz.err = ZAP_E_DIVISION_BY_ZERO;
 
                     return false;
                 }
@@ -3648,7 +3904,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dop* op, const c
                     }
                     d = (int) dv32;
                     if (expr_fwd != NULL) {
-                        zz.err = "a label here must be defined already";
+                        zz.err = ZAP_E_LABEL_DEFINED_ALREADY;
 
                         return false;
                     }
@@ -3658,7 +3914,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dop* op, const c
                     /* "Index register offset exceeded" there. One signed byte
                      * is what the instruction has room for, so anything else
                      * would be emitted truncated and silently wrong. */
-                    zz.err = "index offset out of range";
+                    zz.err = ZAP_E_INDEX_OFFSET_OUT_RANGE;
 
                     return false;
                 }
@@ -3669,7 +3925,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dop* op, const c
 
             if ((op->mode & INDIRECT) != 0) {
                 if (*p != ')') {
-                    zz.err = "expected )";
+                    zz.err = ZAP_E_EXPECTED;
 
                     return false;
                 }
@@ -3823,7 +4079,7 @@ full_expression:
                 /* Backward is not a reference at all: the address is already
                  * known, so this is the same as a label defined above. */
                 if (!zz.anon_has_prev) {
-                    zz.err = "no anonymous label above this one";
+                    zz.err = ZAP_E_NO_ANONYMOUS_LABEL_ABOVE_ONE;
 
                     return false;
                 }
@@ -3937,7 +4193,7 @@ full_expression:
         if (!got) {
             value gv = 0;
             if (nn <= 0 || !num_parse(ns, nn, &gv)) {
-                zz.err = "expected a value";
+                zz.err = ZAP_E_EXPECTED_VALUE;
 
                 return false;
             }
@@ -3993,7 +4249,7 @@ have_value:
         }
         if ((op->mode & INDIRECT) != 0) {
             if (*p != ')') {
-                zz.err = "expected )";
+                zz.err = ZAP_E_EXPECTED;
 
                 return false;
             }
@@ -4113,7 +4369,7 @@ static bool equ_line(const char* name, int nlen, const char* p,
         if (nlen == 2 && name[1] == '@') {
             /* An anonymous label has no name to attach a value to, and the
              * reference refuses this too. */
-            zz.err = "invalid label";
+            zz.err = ZAP_E_INVALID_LABEL;
 
             return false;
         }
@@ -4142,7 +4398,7 @@ static bool equ_line(const char* name, int nlen, const char* p,
             return false;
         }
         if (expr_fwd != NULL) {
-            zz.err = "a label here must be defined already";
+            zz.err = ZAP_E_LABEL_DEFINED_ALREADY;
 
             return false;
         }
@@ -4185,7 +4441,7 @@ static bool line_fill(buf_reader* r) {
         /* zz.line counts the lines already assembled, so this names the one
          * before the offending line. That is still where to start looking. */
         zz.line++;
-        zz.err = "line too long";
+        zz.err = ZAP_E_LINE_TOO_LONG;
     }
 
     return false;
@@ -4460,7 +4716,7 @@ __attribute__((noinline))
 static bool macro_begin(const char** pp, const char* e) {
     if (zz.defining != NULL) {
         /* "No macro definitions allowed inside a macro" there. */
-        zz.err = "macros do not nest";
+        zz.err = ZAP_E_MACROS_DO_NOT_NEST;
 
         return false;
     }
@@ -4474,14 +4730,15 @@ static bool macro_begin(const char** pp, const char* e) {
     }
     const int nn = (int) (p - ns);
     if (nn == 0 || nn > 255) {
-        zz.err = "expected a macro name";
+        zz.err = ZAP_E_EXPECTED_MACRO_NAME;
 
         return false;
     }
 
     if (macro_at(ns, nn) != NULL) {
         /* "Macro already defined" there, and case-blind, as the lookup is. */
-        zz.err = "that macro is already defined";
+        err_tok(ns, nn);
+        zz.err = ZAP_E_MACRO_ALREADY_DEFINED;
 
         return false;
     }
@@ -4489,7 +4746,7 @@ static bool macro_begin(const char** pp, const char* e) {
     Z_SITE("macro table");
     macro* m = (macro*) calloc(1, sizeof(macro));
     if (m == NULL) {
-        zz.err = "out of memory for macros";
+        zz.err = ZAP_E_OUT_MEMORY_MACROS;
 
         return false;
     }
@@ -4501,7 +4758,7 @@ static bool macro_begin(const char** pp, const char* e) {
     char* nm = nam_take(&zz.names, &zz.names_used, nn + 1);
     if (nm == NULL) {
         free(m);
-        zz.err = "out of memory for macros";
+        zz.err = ZAP_E_OUT_MEMORY_MACROS;
 
         return false;
     }
@@ -4535,7 +4792,7 @@ static bool macro_begin(const char** pp, const char* e) {
              * it -- which also means nothing else will ever free it. This path
              * leaked before ASan was pointed at it. */
             free(m);
-            zz.err = "macro parameter name too long";
+            zz.err = ZAP_E_MACRO_PARAMETER_NAME_TOO_LONG;
 
             return false;
         }
@@ -4550,14 +4807,14 @@ static bool macro_begin(const char** pp, const char* e) {
         if (numeric_token(ps, pn) || mnemonic_of(ps, pn) != NULL
             || directive_of(ps, pn) != DIR_NONE || is_equ_at(ps)) {
             free(m);
-            zz.err = "a macro parameter may not be a number or a mnemonic";
+            zz.err = ZAP_E_MACRO_PARAMETER_NOT_NUMBER_OR_MNEM;
 
             return false;
         }
         char* at = nam_take(&zz.names, &zz.names_used, pn + 1);
         if (at == NULL) {
             free(m);
-            zz.err = "out of memory for macros";
+            zz.err = ZAP_E_OUT_MEMORY_MACROS;
 
             return false;
         }
@@ -4569,6 +4826,26 @@ static bool macro_begin(const char** pp, const char* e) {
             at[1 + i] = ps[i];
         }
         m->nparam++;
+    }
+
+    m->defline = zz.line;
+    if (zz.path != NULL) {
+        int pn = 0;
+        while (zz.path[pn] != 0) {
+            pn++;
+        }
+        char* dp = nam_take(&zz.names, &zz.names_used, pn + 1);
+        if (dp == NULL) {
+            free(m);
+            zz.err = ZAP_E_OUT_MEMORY_MACROS;
+
+            return false;
+        }
+        for (int i = 0; i < pn; i++) {
+            dp[i] = zz.path[i];
+        }
+        dp[pn] = 0;
+        m->defpath = dp;
     }
 
     m->next = zz.macros;
@@ -4638,7 +4915,7 @@ static bool macro_line(const char* p, const char* e) {
     }
     const int n = (int) (q - p) + 1;
     if (!macro_room(zz.defining, n)) {
-        zz.err = "out of memory for macros";
+        zz.err = ZAP_E_OUT_MEMORY_MACROS;
 
         return false;
     }
@@ -4652,7 +4929,7 @@ static bool macro_line(const char* p, const char* e) {
     /* Only where a parameter could be found: a macro with none has nothing to
      * mark and pays nothing for the feature. */
     if (zz.defining->nparam != 0 && !macro_marks(zz.defining, at, at + n - 1)) {
-        zz.err = "out of memory for macros";
+        zz.err = ZAP_E_OUT_MEMORY_MACROS;
 
         return false;
     }
@@ -4720,7 +4997,7 @@ static bool macro_args(const macro* m, const char* p, const char* e,
             continue;
         }
         if (nargs == MACRO_MAXPARAM) {
-            zz.err = "too many macro arguments";
+            zz.err = ZAP_E_TOO_MANY_MACRO_ARGUMENTS;
 
             return false;
         }
@@ -4753,7 +5030,7 @@ static bool macro_args(const macro* m, const char* p, const char* e,
     }
     *stop = p;
     if (nargs != m->nparam) {
-        zz.err = "wrong number of macro arguments";
+        zz.err = ZAP_E_WRONG_NUMBER_MACRO_ARGUMENTS;
 
         return false;
     }
@@ -4798,7 +5075,7 @@ static int macro_subst(const macro* m, int lo, int hi, int base,
             Z_SITE("macro expansion");
             char* grown = (char*) realloc(out, (size_t) cap);
             if (grown == NULL) {
-                zz.err = "out of memory for macros";
+                zz.err = ZAP_E_OUT_MEMORY_MACROS;
 
                 return -1;
             }
@@ -4827,7 +5104,7 @@ static int macro_subst(const macro* m, int lo, int hi, int base,
         Z_SITE("macro expansion");
         char* grown = (char*) realloc(out, (size_t) cap);
         if (grown == NULL) {
-            zz.err = "out of memory for macros";
+            zz.err = ZAP_E_OUT_MEMORY_MACROS;
 
             return -1;
         }
@@ -4870,7 +5147,7 @@ __attribute__((noinline))
 static bool macro_expand(const macro* m, const char* p, const char* e,
                          const char** stop) {
     if (zz.depth >= INCLUDE_MAXDEPTH) {
-        zz.err = "macros nested too deeply";
+        zz.err = ZAP_E_MACROS_NESTED_TOO_DEEPLY;
 
         return false;
     }
@@ -4938,6 +5215,20 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
 
         const char* st = ls;
         if (!assemble_line(ls, lend, &st)) {
+            if (!zz.errhave) {
+                err_line(zz.errline, ls, lend);
+                zz.errhave = true;
+                /* The body line, named as a line of the file it was written
+                 * in rather than as an index into the body. */
+                zz.line = m->defline + zz.line;
+                zz.errfile = m->defpath;
+                zz.errmacro = m->name;
+                /* And the other end of it. This is the only place that holds
+                 * both -- by the time the line loop sees the failure, the
+                 * path and the line have been given to the macro. */
+                zz.errfrompath = saved_path;
+                zz.errfromline = saved_line;
+            }
             ok = false;
             break;
         }
@@ -4956,7 +5247,16 @@ static bool macro_expand(const macro* m, const char* p, const char* e,
                     q++;
                 }
             } else if (*q != '\n') {
-                zz.err = "unexpected text after the instruction";
+                zz.err = ZAP_E_UNEXPECTED_TEXT_AFTER_INSTRUCTION;
+                if (!zz.errhave) {
+                    err_line(zz.errline, ls, lend);
+                    zz.errhave = true;
+                    zz.line = m->defline + zz.line;
+                    zz.errfile = m->defpath;
+                    zz.errmacro = m->name;
+                    zz.errfrompath = saved_path;
+                    zz.errfromline = saved_line;
+                }
                 ok = false;
                 break;
             }
@@ -5124,7 +5424,7 @@ static bool emit_string(const char** pp, const char* e) {
         q += (*q == '\\') ? 2 : 1;
     }
     if (q >= e || *q != '"') {
-        zz.err = "string not terminated";
+        zz.err = ZAP_E_STRING_NOT_TERMINATED;
 
         return false;
     }
@@ -5137,7 +5437,7 @@ static bool emit_string(const char** pp, const char* e) {
         if (*p == '\\') {
             const int v = str_escape(p[1]);
             if (v < 0) {
-                zz.err = "bad escape in string";
+                zz.err = ZAP_E_BAD_ESCAPE_IN_STRING;
 
                 return false;
             }
@@ -5311,7 +5611,7 @@ static bool emit_data(uint8_t width, const char** pp, const char* e) {
                 /* The reference says "String type not allowed", and means it:
                  * a string is bytes and DW would have to invent a padding
                  * rule. */
-                zz.err = "a string needs DB";
+                zz.err = ZAP_E_STRING_DB;
 
                 return false;
             }
@@ -5377,7 +5677,7 @@ static bool emit_data(uint8_t width, const char** pp, const char* e) {
                      * than saying so. This is the only place a value wider
                      * than the machine can reach a fixup: an instruction's
                      * immediate is three bytes by the time it gets here. */
-                    zz.err = "that constant is too large to add to a label";
+                    zz.err = ZAP_E_CONSTANT_TOO_LARGE_ADD_LABEL;
 
                     return false;
                 }
@@ -5527,7 +5827,7 @@ static bool file_name(const char** pp, const char* e,
         p++;
     }
     if (*p != '"') {
-        zz.err = "expected a quoted file name";
+        zz.err = ZAP_E_EXPECTED_QUOTED_FILE_NAME;
 
         return false;
     }
@@ -5536,19 +5836,19 @@ static bool file_name(const char** pp, const char* e,
     int n = 0;
     while (p < e && *p != '"' && *p != '\n') {
         if (n + 1 >= cap) {
-            zz.err = "file name too long";
+            zz.err = ZAP_E_FILE_NAME_TOO_LONG;
 
             return false;
         }
         out[n++] = *p++;
     }
     if (*p != '"') {
-        zz.err = "string not terminated";
+        zz.err = ZAP_E_STRING_NOT_TERMINATED;
 
         return false;
     }
     if (n == 0) {
-        zz.err = "expected a file name";
+        zz.err = ZAP_E_EXPECTED_FILE_NAME;
 
         return false;
     }
@@ -5567,21 +5867,21 @@ static bool file_name(const char** pp, const char* e,
 static bool incbin_file(const char* name) {
     const uint8_t fh = mos_fopen(name, FA_READ);
     if (fh == 0) {
-        zz.err = "cannot open the file";
+        zz.err = ZAP_E_CANNOT_OPEN_FILE;
 
         return false;
     }
     FIL* fil = mos_getfil(fh);
     if (fil == NULL) {
         mos_fclose(fh);
-        zz.err = "cannot open the file";
+        zz.err = ZAP_E_CANNOT_OPEN_FILE;
 
         return false;
     }
     const int n = (int) fil->obj.objsize;
     if (n < 0 || !out_reserve_n(n)) {
         mos_fclose(fh);
-        zz.err = "out of memory";
+        zz.err = ZAP_E_OUT_MEMORY;
 
         return false;
     }
@@ -5589,7 +5889,7 @@ static bool incbin_file(const char* name) {
         const unsigned got = mos_fread(fh, (char*) zz.o, (unsigned) n);
         if ((int) got != n) {
             mos_fclose(fh);
-            zz.err = "cannot read the file";
+            zz.err = ZAP_E_CANNOT_READ_FILE;
 
             return false;
         }
@@ -5624,7 +5924,7 @@ static bool include_file(const char* name) {
          * for this, one for the line loop and one for assemble_line, which is
          * 111 bytes on its own; the machine has no memory protection and would
          * simply stop. */
-        zz.err = "includes nested too deeply";
+        zz.err = ZAP_E_INCLUDES_NESTED_TOO_DEEPLY;
 
         return false;
     }
@@ -5639,7 +5939,7 @@ static bool include_file(const char* name) {
      * is refused and the handle it names has already been closed. */
     const bool was_file = !zz.rd.mem_;
     if (was_file && !br_suspend(&zz.rd)) {
-        zz.err = "cannot set the file aside";
+        zz.err = ZAP_E_CANNOT_SET_FILE_ASIDE;
 
         return false;
     }
@@ -5650,7 +5950,7 @@ static bool include_file(const char* name) {
         if (was_file) {
             br_resume(&zz.rd);
         }
-        zz.err = "cannot open the file";
+        zz.err = ZAP_E_CANNOT_OPEN_FILE;
 
         return false;
     }
@@ -5673,7 +5973,7 @@ static bool include_file(const char* name) {
 
     bool ok = run_lines();
     if (ok && zz.in_cond) {
-        zz.err = "IF left open at the end of the file";
+        zz.err = ZAP_E_IF_LEFT_OPEN_AT_END_FILE;
         ok = false;
     }
     zz.in_cond = saved_cond;
@@ -5703,7 +6003,7 @@ static bool include_file(const char* name) {
         return false;
     }
     if (!br_resume(&zz.rd)) {
-        zz.err = "cannot reopen the file";
+        zz.err = ZAP_E_CANNOT_REOPEN_FILE;
 
         return false;
     }
@@ -5733,7 +6033,7 @@ static bool cond_value(evalue* out, const char** pp, const char* e) {
         return false;
     }
     if (expr_fwd != NULL) {
-        zz.err = "a label here must be defined already";
+        zz.err = ZAP_E_LABEL_DEFINED_ALREADY;
 
         return false;
     }
@@ -5763,7 +6063,7 @@ static bool cond_value(evalue* out, const char** pp, const char* e) {
                 return false;
             }
             if (expr_fwd != NULL) {
-                zz.err = "a label here must be defined already";
+                zz.err = ZAP_E_LABEL_DEFINED_ALREADY;
 
                 return false;
             }
@@ -5863,7 +6163,7 @@ static bool directive_line(const char* s, int n, const char* p,
                  * NULL for a token that is not a suffixed mnemonic at all --
                  * `read.next` may be a macro. Refusing there would report this
                  * as "unknown instruction" and lose which of the two it was. */
-                zz.err = "no mode suffix on this CPU";
+                zz.err = ZAP_E_NO_MODE_SUFFIX_CPU;
 
                 return false;
             }
@@ -5877,7 +6177,8 @@ static bool directive_line(const char* s, int n, const char* p,
          * which the reference requires too. */
         const macro* m = macro_at(s, n);
         if (m == NULL) {
-            zz.err = "unknown instruction";
+            err_tok(s, n);
+            zz.err = ZAP_E_UNKNOWN_INSTRUCTION;
 
             return false;
         }
@@ -5896,7 +6197,7 @@ static bool directive_line(const char* s, int n, const char* p,
     if (kind == DIR_ENDMACRO) {
         /* Only ever reached outside a definition, since inside one the line
          * loop hands it to macro_capture instead. */
-        zz.err = "no MACRO is open";
+        zz.err = ZAP_E_NO_MACRO_OPEN;
 
         return false;
     }
@@ -5905,7 +6206,7 @@ static bool directive_line(const char* s, int n, const char* p,
         if (kind == DIR_ENDIF || kind == DIR_ELSE) {
             if (!zz.in_cond) {
                 /* "Missing IF directive" there, and the same here. */
-                zz.err = "no IF is open";
+                zz.err = ZAP_E_NO_IF_OPEN;
 
                 return false;
             }
@@ -5926,7 +6227,7 @@ static bool directive_line(const char* s, int n, const char* p,
         /* IF. Nesting is refused because the reference refuses it, and that is
          * what makes this a flag rather than a stack. */
         if (zz.in_cond) {
-            zz.err = "conditionals do not nest";
+            zz.err = ZAP_E_CONDITIONALS_DO_NOT_NEST;
 
             return false;
         }
@@ -5980,7 +6281,7 @@ static bool directive_line(const char* s, int n, const char* p,
         } else {
             /* "Unsupported CPU type" there. The Z280 has a bit in the table
              * and no rows tagged with it, so it is not offered. */
-            zz.err = "unsupported CPU type";
+            zz.err = ZAP_E_UNSUPPORTED_CPU_TYPE;
 
             return false;
         }
@@ -5992,7 +6293,7 @@ static bool directive_line(const char* s, int n, const char* p,
     if (kind == DIR_ENDRELOCATE) {
         if (!zz.reloc) {
             /* "Missing RELOCATE directive" there. */
-            zz.err = "no RELOCATE is open";
+            zz.err = ZAP_E_NO_RELOCATE_OPEN;
 
             return false;
         }
@@ -6012,7 +6313,7 @@ static bool directive_line(const char* s, int n, const char* p,
              * Z80 and the Z180 have no ADL to select, so `ADL=0` is refused
              * as well, though it names the mode they are already in.
              * Measured, all six ways. */
-            zz.err = "no ADL mode on this CPU";
+            zz.err = ZAP_E_NO_ADL_MODE_CPU;
 
             return false;
         }
@@ -6020,7 +6321,7 @@ static bool directive_line(const char* s, int n, const char* p,
             p++;
         }
         if (!dir_is(p, "adl", 3) || (cclass[(uint8_t) p[3]] & C_MNEM) != 0) {
-            zz.err = "expected ADL";
+            zz.err = ZAP_E_EXPECTED_ADL;
 
             return false;
         }
@@ -6029,7 +6330,7 @@ static bool directive_line(const char* s, int n, const char* p,
             p++;
         }
         if (*p != '=') {
-            zz.err = "expected = after ADL";
+            zz.err = ZAP_E_EXPECTED_AFTER_ADL;
 
             return false;
         }
@@ -6056,13 +6357,13 @@ static bool directive_line(const char* s, int n, const char* p,
                 return false;
             }
             if (expr_fwd != NULL) {
-                zz.err = "a label here must be defined already";
+                zz.err = ZAP_E_LABEL_DEFINED_ALREADY;
 
                 return false;
             }
         }
         if (mode != 0 && mode != 1) {
-            zz.err = "ADL is 0 or 1";
+            zz.err = ZAP_E_ADL_0_OR_1;
 
             return false;
         }
@@ -6123,7 +6424,7 @@ static bool directive_line(const char* s, int n, const char* p,
             return false;
         }
         if (expr_fwd != NULL) {
-            zz.err = "a label here must be defined already";
+            zz.err = ZAP_E_LABEL_DEFINED_ALREADY;
 
             return false;
         }
@@ -6136,7 +6437,7 @@ static bool directive_line(const char* s, int n, const char* p,
          * program rather than a feature, and there is no byte sequence worth
          * agreeing with. Same position as division by zero. */
         if (value < 0) {
-            zz.err = "ds needs a positive number";
+            zz.err = ZAP_E_DS_POSITIVE_NUMBER;
 
             return false;
         }
@@ -6172,7 +6473,7 @@ static bool directive_line(const char* s, int n, const char* p,
          * unaffected either way -- BLKB writes data, and takes the value in
          * force where it stands, in both assemblers. */
         if (zz.filled && (uint8_t) value != zz.fill) {
-            zz.err = "FILLBYTE must come before the space it fills";
+            zz.err = ZAP_E_FILLBYTE_COME_BEFORE_SPACE_FILLS;
 
             return false;
         }
@@ -6185,7 +6486,7 @@ static bool directive_line(const char* s, int n, const char* p,
     if (kind == DIR_RELOCATE) {
         if (zz.reloc) {
             /* "Nested relocate not allowed" there. */
-            zz.err = "RELOCATE does not nest";
+            zz.err = ZAP_E_RELOCATE_DOES_NOT_NEST;
 
             return false;
         }
@@ -6195,7 +6496,7 @@ static bool directive_line(const char* s, int n, const char* p,
              * space is exactly that, so this is the reference being right
              * rather than a quirk to reproduce. `$1000000` is one past it and
              * `-1` is the other end. */
-            zz.err = "address outside the 24-bit range";
+            zz.err = ZAP_E_ADDRESS_OUTSIDE_24_BIT_RANGE;
 
             return false;
         }
@@ -6220,7 +6521,7 @@ static bool directive_line(const char* s, int n, const char* p,
              * unsigned, so a negative one is sixteen megabytes of fill and a
              * successful assembly. On a 512 KB machine that is a way to lose
              * the program rather than a feature. */
-            zz.err = "blk needs a positive number";
+            zz.err = ZAP_E_BLK_POSITIVE_NUMBER;
 
             return false;
         }
@@ -6271,7 +6572,7 @@ static bool directive_line(const char* s, int n, const char* p,
                 fillpatch* grown =
                     (fillpatch*) realloc(zz.fillp, (size_t) want * sizeof(fillpatch));
                 if (grown == NULL) {
-                    zz.err = "out of memory for labels";
+                    zz.err = ZAP_E_OUT_MEMORY_LABELS;
 
                     return false;
                 }
@@ -6311,7 +6612,7 @@ static bool directive_line(const char* s, int n, const char* p,
                 /* "New address lower than current PC address" there, and the
                  * same here: an ORG that goes backwards would have to unwrite
                  * bytes that are already placed. */
-                zz.err = "org goes backwards";
+                zz.err = ZAP_E_ORG_GOES_BACKWARDS;
 
                 return false;
             }
@@ -6330,12 +6631,12 @@ static bool directive_line(const char* s, int n, const char* p,
     }
 
     if (value <= 0) {
-        zz.err = "align needs a positive number";
+        zz.err = ZAP_E_ALIGN_POSITIVE_NUMBER;
 
         return false;
     }
     if ((value & (value - 1)) != 0) {
-        zz.err = "align needs a power of two";
+        zz.err = ZAP_E_ALIGN_POWER_TWO;
 
         return false;
     }
@@ -6663,7 +6964,7 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
      * this folds away there. The suffixed copy lives in uncommon_line. */
     if (suffix != 0) {
         if ((row->flags & suffix) == 0) {
-            zz.err = "this instruction takes no mode suffix";
+            zz.err = ZAP_E_INSTRUCTION_NO_MODE_SUFFIX;
 
             return false;
         }
@@ -6762,7 +7063,7 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
         } else {
             const int d = rel->imm - (zz.org + (int) (o - zz.out) + 1);
             if (d < -128 || d > 127) {
-                zz.err = "relative jump too far";
+                zz.err = ZAP_E_RELATIVE_JUMP_TOO_FAR;
 
                 return false;
             }
@@ -6829,7 +7130,7 @@ static bool macro_capture(const char* s, int n, const char* p,
         return true;
     }
     if (kind == DIR_MACRO) {
-        zz.err = "macros do not nest";
+        zz.err = ZAP_E_MACROS_DO_NOT_NEST;
 
         return false;
     }
@@ -6948,7 +7249,8 @@ static bool suffixed_insn(const insninfo* insn, uint8_t suffix,
 
     const isa_row* const row = match_row(insn, &a, &b);
     if (row == NULL) {
-        zz.err = "no such instruction form";
+        err_tok(insn->name, insn->len);
+        zz.err = ZAP_E_NO_SUCH_INSTRUCTION_FORM;
 
         return false;
     }
@@ -6983,7 +7285,8 @@ static bool third_operand(const insninfo* insn, dop* a, dop* b,
     if (n + 1 > (int) sizeof(nm) || !a->noreg || (a->mode & IMM) == 0
         || (a->mode & INDIRECT) != 0 || a->fwd != NULL
         || (unsigned) a->imm > 7) {
-        zz.err = "no such instruction form";
+        err_tok(insn->name, insn->len);
+        zz.err = ZAP_E_NO_SUCH_INSTRUCTION_FORM;
 
         return false;
     }
@@ -6994,7 +7297,8 @@ static bool third_operand(const insninfo* insn, dop* a, dop* b,
 
     const insninfo* const alt = mnemonic_of(nm, n + 1);
     if (alt == NULL) {
-        zz.err = "no such instruction form";
+        err_tok(insn->name, insn->len);
+        zz.err = ZAP_E_NO_SUCH_INSTRUCTION_FORM;
 
         return false;
     }
@@ -7007,7 +7311,8 @@ static bool third_operand(const insninfo* insn, dop* a, dop* b,
 
     const isa_row* const row = match_row(alt, b, &c);
     if (row == NULL) {
-        zz.err = "no such instruction form";
+        err_tok(insn->name, insn->len);
+        zz.err = ZAP_E_NO_SUCH_INSTRUCTION_FORM;
 
         return false;
     }
@@ -7111,7 +7416,7 @@ __attribute__((noinline)) static bool assemble_line(const char* p, const char* e
     }
     int n = (int) (p - s);
     if (n == 0) {
-        zz.err = "expected an instruction";
+        zz.err = ZAP_E_EXPECTED_INSTRUCTION;
 
         return false;
     }
@@ -7157,7 +7462,7 @@ __attribute__((noinline)) static bool assemble_line(const char* p, const char* e
          * so they are written where the definition is, which is where they
          * are easiest to find. */
         if ((unsigned) n > LABEL_MAX) {
-            zz.err = "label too long";
+            zz.err = ZAP_E_LABEL_TOO_LONG;
 
             return false;
         }
@@ -7169,7 +7474,7 @@ __attribute__((noinline)) static bool assemble_line(const char* p, const char* e
                     /* "No anonymous labels allowed in macro definition"
                      * there, and refused at the invocation rather than at the
                      * definition, exactly as a global label in a body is. */
-                    zz.err = "no anonymous labels allowed in a macro";
+                    zz.err = ZAP_E_NO_ANONYMOUS_LABELS_ALLOWED_IN_MAC;
 
                     return false;
                 }
@@ -7184,12 +7489,12 @@ __attribute__((noinline)) static bool assemble_line(const char* p, const char* e
             }
         } else {
             if (numeric_token(s, n)) {
-                zz.err = "invalid label";
+                zz.err = ZAP_E_INVALID_LABEL;
 
                 return false;
             }
             if (zz.expanding != 0) {
-                zz.err = "no global labels allowed in a macro";
+                zz.err = ZAP_E_NO_GLOBAL_LABELS_ALLOWED_IN_MACRO;
 
                 return false;
             }
@@ -7236,7 +7541,7 @@ __attribute__((noinline)) static bool assemble_line(const char* p, const char* e
         }
         n = (int) (p - s);
         if (n == 0) {
-            zz.err = "expected an instruction";
+            zz.err = ZAP_E_EXPECTED_INSTRUCTION;
 
             return false;
         }
@@ -7301,7 +7606,8 @@ __attribute__((noinline)) static bool assemble_line(const char* p, const char* e
 
     const isa_row* row = match_row(insn, &a, &b);
     if (row == NULL) {
-        zz.err = "no such instruction form";
+        err_tok(insn->name, insn->len);
+        zz.err = ZAP_E_NO_SUCH_INSTRUCTION_FORM;
 
         return false;
     }
@@ -7351,7 +7657,7 @@ static bool resolve_deferred(void) {
             return false;
         }
         if (expr_fwd != NULL || expr_fwd_bad) {
-            zz.err = "unknown label";
+            zz.err = ZAP_E_UNKNOWN_LABEL;
 
             return false;
         }
@@ -7368,7 +7674,7 @@ static bool resolve_fills(void) {
         const fillpatch* fp = &zz.fillp[i];
         if (!fp->sp->defined) {
             zz.line = fp->line;
-            zz.err = "unknown label";
+            zz.err = ZAP_E_UNKNOWN_LABEL;
 
             return false;
         }
@@ -7442,7 +7748,7 @@ __attribute__((noinline)) static bool run_lines(void) {
         buf_reader* r = &zz.rd;
         if (p >= end) {
             if (!line_fill(r)) {
-                if (zz.err != NULL) {
+                if (zz.err != ZAP_OK) {
                     return false;
                 }
 
@@ -7457,6 +7763,17 @@ __attribute__((noinline)) static bool run_lines(void) {
 
         zz.line++;
         if (!assemble_line(p, end, &stop)) {
+            /* The innermost failure has already taken `errline`; this line
+             * is then the one that invoked it, and its text is the one thing
+             * the expansion could not record for itself. Which file and which
+             * line it was, it did record -- see macro_expand. */
+            if (!zz.errhave) {
+                err_line(zz.errline, p, end);
+                zz.errhave = true;
+            } else if (zz.errfrompath != NULL && zz.errfrom[0] == 0) {
+                err_line(zz.errfrom, p, end);
+            }
+
             return false;
         }
 
@@ -7492,7 +7809,7 @@ __attribute__((noinline)) static bool run_lines(void) {
                     q++;
                 }
             } else if (*q != '\n') {
-                zz.err = "unexpected text after the instruction";
+                zz.err = ZAP_E_UNEXPECTED_TEXT_AFTER_INSTRUCTION;
 
                 return false;
             }
@@ -7520,7 +7837,7 @@ __attribute__((noinline)) static bool run_lines(void) {
 __attribute__((noinline)) static bool run(const char* path) {
     Z_SITE("source reader");
     if (br_open(&zz.rd, path, BUF_KB) == NULL) {
-        zz.err = "cannot open source";
+        zz.err = ZAP_E_CANNOT_OPEN_SOURCE;
 
         return false;
     }
@@ -7532,7 +7849,7 @@ __attribute__((noinline)) static bool run(const char* path) {
     Z_SITE("output buffer");
     zz.out = (uint8_t*) malloc((size_t) zz.cap);
     if (zz.out == NULL) {
-        zz.err = "out of memory";
+        zz.err = ZAP_E_OUT_MEMORY;
 
         return false;
     }
@@ -7575,7 +7892,7 @@ __attribute__((noinline)) static bool run(const char* path) {
     Z_SITE("symbol buckets");
     zz.syms = (symslot*) calloc(NSYMB, sizeof(symslot));
     if (zz.syms == NULL) {
-        zz.err = "out of memory";
+        zz.err = ZAP_E_OUT_MEMORY;
 
         return false;
     }
@@ -7584,7 +7901,7 @@ __attribute__((noinline)) static bool run(const char* path) {
     Z_SITE("symbol blocks");
     zz.blocks = (symblock*) malloc(sizeof(symblock));
     if (zz.blocks == NULL) {
-        zz.err = "out of memory";
+        zz.err = ZAP_E_OUT_MEMORY;
 
         return false;
     }
@@ -7605,7 +7922,7 @@ __attribute__((noinline)) static bool run(const char* path) {
     if (zz.defining != NULL) {
         /* "Unfinished macro definition" there, and the same here: a body that
          * never closes has swallowed the rest of the file. */
-        zz.err = "a MACRO was never closed";
+        zz.err = ZAP_E_MACRO_WAS_NEVER_CLOSED;
 
         return false;
     }
@@ -7613,7 +7930,7 @@ __attribute__((noinline)) static bool run(const char* path) {
     if (zz.in_cond) {
         /* "Missing ENDIF directive" there, and the same here: a conditional
          * that never closes has silently dropped whatever followed it. */
-        zz.err = "an IF was never closed";
+        zz.err = ZAP_E_IF_WAS_NEVER_CLOSED;
 
         return false;
     }
@@ -7708,6 +8025,26 @@ static bool is_ez80_opt(const char* a) {
            && a[3] == '8' && a[4] == '0' && a[5] == 0;
 }
 
+/* Colour is asked for, not assumed.
+ *
+ * The reference emits it unconditionally, which is fine on a terminal and
+ * noise everywhere else -- and zap's own corpus runner reads what it prints.
+ * Off unless `-color` says otherwise, so a pipe gets text and a person gets
+ * the escape codes they wanted. Spelled the same way as the compilers, with
+ * `-colour` taken as well, because half the world writes it that way and
+ * neither half should have to look it up. */
+static bool is_color_opt(const char* a) {
+    if (a[0] != '-' || (a[1] | 0x20) != 'c' || (a[2] | 0x20) != 'o'
+        || (a[3] | 0x20) != 'l' || (a[4] | 0x20) != 'o') {
+        return false;
+    }
+    if ((a[5] | 0x20) == 'r' && a[6] == 0) {
+        return true;
+    }
+
+    return (a[5] | 0x20) == 'u' && (a[6] | 0x20) == 'r' && a[7] == 0;
+}
+
 /* One flag, taken from anywhere on the line so that `zap -ez80 a.s a.bin` and
  * `zap a.s a.bin -ez80` both work; the reference accepts its own options
  * either side of the filenames and this is meant to drop in.
@@ -7728,6 +8065,8 @@ __attribute__((noinline)) static bool parse_args(int argc, char* argv[],
         if (argv[i][0] == '-') {
             if (is_ez80_opt(argv[i])) {
                 compat_ez80 = true;
+            } else if (is_color_opt(argv[i])) {
+                use_color = true;
             } else {
                 printf("Unknown option %s\r\n", argv[i]);
 
@@ -7740,12 +8079,111 @@ __attribute__((noinline)) static bool parse_args(int argc, char* argv[],
         }
     }
     if (*in == NULL || *out == NULL) {
-        printf("Usage: zap [-ez80] <source> <output>\r\n");
+        printf("Usage: zap [-ez80] [-color] <source> <output>\r\n");
 
         return false;
     }
 
     return true;
+}
+
+/* The failing line, fetched back out of the file.
+ *
+ * Most failures happen while the line is still in the reader's buffer and are
+ * copied from there. An unresolved label is not one of them: it is found when
+ * the fixups are patched, long after the loop has moved on, and the fixup
+ * carries a line number precisely because the line itself is gone.
+ *
+ * Keeping the text on every fixup would answer it -- and there are 843 of
+ * them in isa_real, in a record that is sixteen bytes so that indexing it is a
+ * shift. Reopening the file costs one open, and it costs it **only when the
+ * assembly has already failed**, which is the rule the whole of this
+ * machinery is built on.
+ *
+ * Silent if anything goes wrong. A report that cannot be made is not an
+ * error; it is one less line of help. */
+static void err_reopen(const char* path, int line) {
+    if (path == NULL || line <= 0) {
+        return;
+    }
+    buf_reader r;
+    if (br_open(&r, path, 1) == NULL) {
+        return;
+    }
+    int n = 0;
+    bool too_long = false;
+    while (br_fill_lines(&r, &too_long)) {
+        const char* p = r.buf_;
+        const char* const e = p + r.bsz_;
+        while (p < e) {
+            const char* q = p;
+            while (q < e && *q != '\n') {
+                q++;
+            }
+            if (++n == line) {
+                err_line(zz.errline, p, q);
+                zz.errhave = true;
+                br_destroy(&r);
+
+                return;
+            }
+            p = q + 1;
+        }
+    }
+    br_destroy(&r);
+}
+
+/* What went wrong, said the way somebody trying to fix it needs to hear it.
+ *
+ * Three things the one-line form did not have. The **source line**, because a
+ * line number sends the reader to the file and the line sends them to the
+ * mistake. The **token**, where the site that failed had it in hand. And for
+ * a macro, **where it was invoked from** -- without which a failure inside a
+ * body reported a line number of a file the reader had to guess at, and a
+ * macro invoked in twenty places named none of them.
+ *
+ * All of it is captured when the failure happens and none of it is maintained
+ * in advance, so a source that assembles pays for none of this.
+ *
+ * Colour on request; see is_color_opt. The codes are the reference's: red for
+ * what went wrong, yellow for the text it went wrong in. */
+static void report(const char* in) {
+    const char* const red = use_color ? "\033[31m" : "";
+    const char* const yellow = use_color ? "\033[33m" : "";
+    const char* const off = use_color ? "\033[39m" : "";
+    const char* const file =
+        zz.errfile != NULL ? zz.errfile : (zz.path != NULL ? zz.path : in);
+
+    /* A failure found after the line was read -- an unresolved label -- has
+     * no text yet, and the file still has it. */
+    if (!zz.errhave && zz.errmacro == NULL) {
+        err_reopen(file, zz.line);
+    }
+
+    if (zz.errmacro != NULL) {
+        printf("%sMacro [%s] in \"%s\" line %d - %s", red, zz.errmacro, file,
+               zz.line, zap_err_text[zz.err]);
+    } else {
+        printf("%sFile \"%s\" line %d - %s", red, file, zz.line,
+               zap_err_text[zz.err]);
+    }
+    if (zz.errat != NULL && zz.erratlen > 0) {
+        printf("%s '%.*s'", yellow, zz.erratlen, zz.errat);
+    }
+    printf("%s\r\n", off);
+
+    /* The line as it was written, indent and all, which is how the reader
+     * will find it again. */
+    if (zz.errhave) {
+        printf("%s%s%s\r\n", yellow, zz.errline, off);
+    }
+    if (zz.errfrompath != NULL) {
+        printf("%sInvoked from \"%s\" line %d as%s\r\n", red,
+               zz.errfrompath, zz.errfromline, off);
+        if (zz.errfrom[0] != 0) {
+            printf("%s%s%s\r\n", yellow, zz.errfrom, off);
+        }
+    }
 }
 
 int main(int argc, char* argv[]) {
@@ -7765,10 +8203,7 @@ int main(int argc, char* argv[]) {
     const clock_t end = clock();
 
     if (!ok) {
-        /* zz.path, not `in`: an error inside an included file has to name
-         * that file, and the line number is already that file's. */
-        printf("%s line %d: %s\r\n", zz.path != NULL ? zz.path : in, zz.line,
-               zz.err ? zz.err : "out of memory for the output");
+        report(in);
         dz_free();
 
         return 1;

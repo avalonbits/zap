@@ -555,6 +555,29 @@ int main(void) {
               "0 5A5A5A");
     }
 
+    /* Every error code has a message.
+     *
+     * The table is a designated initialiser, so a code added without a line
+     * in it leaves a null in the middle and the size assertion in zap.c does
+     * not see it -- the program then prints nothing where it should have
+     * said what went wrong, and prints it exactly when a user is already
+     * having a bad time. */
+    {
+        int holes = 0;
+        int empty = 0;
+        for (int i = 0; i < ZAP_E_COUNT; i++) {
+            if (zap_err_text[i] == NULL) {
+                holes++;
+            } else if (zap_err_text[i][0] == 0) {
+                empty++;
+            }
+        }
+        char got[48];
+        snprintf(got, sizeof(got), "%d %d %d", ZAP_E_COUNT > 60 ? 1 : 0,
+                 holes, empty);
+        check("every error code has a message", got, "1 0 0");
+    }
+
     /* Growing the output buffer.
      *
      * realloc is allowed to move the block, so out_grow has to carry the

@@ -400,6 +400,17 @@ warn_same "  ld a, -129" 1
 warn_same "  dw 65535" 0
 warn_same "  dw 65536" 1
 warn_same "  dl 16777216" 1
+# An instruction's immediate is not checked against 24 bits and a directive is,
+# which is the reference's rule and not an obvious one. It was got wrong in the
+# direction that only shows on the host, where an int is four bytes: zap warned
+# about `ld hl, 0x12345678` there and stayed silent on the Agon, and the Agon
+# was the one that agreed with the reference.
+warn_same "  ld hl, 0x12345678" 0
+warn_same "  ld hl, 0x1234567" 0
+warn_same "  dw24 0x1234567" 1
+warn_same "  dl 0x123456789" 1
+
+
 
 # And the bytes are the reference's either way, which is the claim that makes
 # it a warning rather than a refusal -- and, now that the check is optional,

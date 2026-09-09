@@ -1287,15 +1287,21 @@ static inline bool fits_imm(int v, int width) {
     if (width == 2) {
         return ((unsigned) v + 32768u) <= 98303u;
     }
-    /* An `int` cannot be wider than an `int`: on the Agon this is a constant
-     * and folds away entirely. The host keeps the test, where it is four
-     * bytes and a three-byte write really can lose something, so the two
-     * machines warn about the same values. */
-    if ((int) sizeof(int) <= 3) {
-        return true;
-    }
-
-    return ((unsigned) v + 0x800000u) <= 0x17FFFFFu;
+    /* Three bytes always fits, and this is not the machine word talking.
+     *
+     * The reference does not check an instruction's immediate against 24
+     * bits: `ld hl, 0x12345678` is 21 78 56 34 there with nothing said, while
+     * `dw24 0x1234567` -- the directive -- is a truncation warning. Only the
+     * directive path checks, which is fits_width and not this.
+     *
+     * It was written the other way first, guarded by `sizeof(int) <= 3` so
+     * that the Agon folded it away and the host kept it. That made zap
+     * disagree with itself: the host warned about `ld hl, 0x12345678` and the
+     * Agon, where an `int` is three bytes and the value arrived already
+     * truncated, did not -- and the Agon was the one that matched the
+     * reference. A test that only fires on the machine the tests run on is
+     * worse than no test. */
+    return true;
 }
 
 /* The check and the complaint, kept apart.

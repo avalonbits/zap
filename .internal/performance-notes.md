@@ -4537,3 +4537,29 @@ where a pointer is three, and two instructions where a string address is two --
 **both on the failure path only**, so neither costs anything either way. The
 reason to do it was never speed: a library that reports by handing back
 English is a library nobody can branch on.
+
+## What the options cost
+
+Twelve of them, and eleven are free.
+
+    isa_real   5.32 -> 5.36
+    bbcbasic   3.74 -> 3.78
+
+`-o`, `-b` and `-a` set values the assembly starts with, which it was setting
+anyway. `-s` and `-x` run after the last line. `-v`, `-h`, `-c`, `-i`, `-m`
+touch nothing.
+
+**The listing is the exception, at about 1%.** It needs the output cursor and
+the address from *before* each line, so the loop asks twice a line whether
+anyone wants a listing -- and those two branches are the whole of it.
+
+Two locals holding that state measured **1.1%**, which is more than the branch
+guarding them can account for. They were live across `assemble_line` and took
+two frame slots in the loop with the least to spare. Moved into `dz` -- at a
+fixed address, so the stores are absolute and no slot is needed -- it is 0.75%
+on isa_real. Same lesson the whole struct taught in #114, arriving one field at
+a time.
+
+There is no version of a runtime-switchable listing that is free. A
+compile-time switch would be, and a duplicated line loop would be, and neither
+is what a flag means.

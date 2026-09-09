@@ -1010,6 +1010,10 @@ typedef struct _dz {
      * The innermost capture wins: a macro body writes `errline` and the loop
      * that invoked it then finds it taken and writes `errfrom` instead, which
      * is how the two halves of "Invoked from" find their own line. */
+    /* Where the line being listed started; see the line loop. */
+    const uint8_t* lst_o;
+    int lst_pc;
+
     bool errhave;          /* the failing line has been captured */
     char errline[ERRLINE_MAX];
     char errfrom[ERRLINE_MAX];   /* empty until the line loop fills it */
@@ -2234,10 +2238,44 @@ static uint8_t exprec[256];
 /* Set once, from the command line, and read in the operator loop. A file-scope
  * flag rather than a field on dz, because dz is reached through a pointer on
  * every line and this is read only where an expression has an operator in it. */
+/* Printed by -v. One place, so a release cannot say two things. */
+#define ZAP_VERSION "1.0"
+
+/* What -o, -b and -a set: the values the assembly starts with, which the
+ * source may still move with ORG, FILLBYTE and ASSUME ADL. The defaults are
+ * the reference's, which is what makes a command line carrying none of them
+ * mean the same thing to both. */
+static int opt_org = ZAP_ORG;
+static uint8_t opt_fill = 0xFF;
+static bool opt_adl = ZAP_ADL;
+
 static bool compat_ez80 = false;
 
-/* Whether the error report is coloured. See is_color_opt. */
-static bool use_color = false;
+/* Whether the error report is coloured.
+ *
+ * On, as the reference has it, and `-c` turns it off. It was the other way
+ * round for one commit, on the reasoning that a pipe should get plain text --
+ * which is true and is not zap's decision to make: a drop-in replacement that
+ * needs a flag the original did not is not a drop-in replacement. The test
+ * suite passes `-c`, which is the same thing said by the side that wants it. */
+static bool use_color = true;
+
+/* What the options ask for beyond the bytes: a listing, a symbol file, the
+ * statistics. All of them are written after the assembly is finished except
+ * the listing, which is the only one the loop has to know about. */
+static bool want_list = false;
+static bool want_console_list = false;
+static bool want_symbols = false;
+static bool want_stats = false;
+
+/* Either of the two listings, as one test.
+ *
+ * The line loop asks this twice a line -- once to remember where the output
+ * cursor was, once to print what went between -- and those two branches are
+ * the whole of what the feature costs a run that does not want it. Measured:
+ * see .internal/performance-notes.md. */
+static bool listing = false;
+static uint8_t list_fh = 0;
 
 /* Which instruction set is in force, as the bitmask an isa_row carries.
  *
@@ -4966,6 +5004,10 @@ static bool macro_line(const char* p, const char* e) {
  * redefinition, and `@a` cannot be named after the expansion ends.
  */
 __attribute__((noinline))
+/* Defined with the reporting, and called from both loops. */
+static void list_line(int pc, const uint8_t* from, const uint8_t* to, int line,
+                      int depth, const char* text, const char* tend);
+
 /* Defined with the line loop, and called from the macro expansion below --
  * which assembles the body itself rather than handing it to a reader. */
 static bool assemble_line(const char* p, const char* e, const char** stop);
@@ -7761,6 +7803,18 @@ __attribute__((noinline)) static bool run_lines(void) {
         /* The buffer holds whole lines, so this one's newline is in it. */
         const char* stop = p;
 
+        /* Where the output stood before this line, for the listing.
+         *
+         * In `dz` and not in a frame. As two locals they were live across
+         * assemble_line, which took two slots in the loop that has the least
+         * to spare, and the branch that never runs cost **1.1% of isa_real**
+         * -- more than the test it guards could account for. At a fixed
+         * address the stores are absolute and the loop keeps its registers. */
+        if (listing) {
+            zz.lst_o = zz.o;
+            zz.lst_pc = zz.org + (int) (zz.o - zz.out);
+        }
+
         zz.line++;
         if (!assemble_line(p, end, &stop)) {
             /* The innermost failure has already taken `errline`; this line
@@ -7815,6 +7869,10 @@ __attribute__((noinline)) static bool run_lines(void) {
             }
             stop = q;
         }
+        if (listing) {
+            list_line(zz.lst_pc, zz.lst_o, zz.o, zz.line, 0, p, stop);
+        }
+
         /* A line that was only a remark stops at the semicolon, so the rest
          * of it is walked here. This is the whole cost of a comment: one pass
          * over its bytes, looking for the newline and nothing else. */
@@ -7854,13 +7912,13 @@ __attribute__((noinline)) static bool run(const char* path) {
         return false;
     }
     zz.o = zz.out;
-    zz.org = ZAP_ORG;
+    zz.org = opt_org;
     zz.org_set = false;
-    zz.fill = 0xFF;
+    zz.fill = opt_fill;
     zz.filled = false;
     zz.reloc = false;
     zz.reloc_org = 0;
-    zz.adl = ZAP_ADL;
+    zz.adl = opt_adl;
     /* Reset with the rest, and it has to be: `cpu_mask` is a file-scope
      * static so that match_row need not carry it, and the unit tests assemble
      * many sources in one process. Without this, one `.cpu Z80` would decide
@@ -8025,24 +8083,45 @@ static bool is_ez80_opt(const char* a) {
            && a[3] == '8' && a[4] == '0' && a[5] == 0;
 }
 
-/* Colour is asked for, not assumed.
+/* A hexadecimal value on an option, attached or in the next argument.
  *
- * The reference emits it unconditionally, which is fine on a terminal and
- * noise everywhere else -- and zap's own corpus runner reads what it prints.
- * Off unless `-color` says otherwise, so a pipe gets text and a person gets
- * the escape codes they wanted. Spelled the same way as the compilers, with
- * `-colour` taken as well, because half the world writes it that way and
- * neither half should have to look it up. */
-static bool is_color_opt(const char* a) {
-    if (a[0] != '-' || (a[1] | 0x20) != 'c' || (a[2] | 0x20) != 'o'
-        || (a[3] | 0x20) != 'l' || (a[4] | 0x20) != 'o') {
+ * The reference takes both -- `-o50000` and `-o 50000` are the same thing --
+ * so a command line written for it works here unaltered. Returns false for a
+ * value that is not hexadecimal at all, which is worth saying rather than
+ * quietly assembling at an address nobody asked for. */
+static bool opt_hex(const char* attached, const char* next, int* used,
+                    int* out) {
+    const char* p = attached;
+    if (*p == 0) {
+        if (next == NULL) {
+            return false;
+        }
+        p = next;
+        *used = 1;
+    }
+    /* Read here rather than through hexval, which build_cclass fills and
+     * build_cclass runs after the arguments are parsed. Reaching for it left
+     * every digit reading as zero, so `-o 50000` assembled at 0 and said
+     * nothing -- the options were being parsed against a table of zeros. */
+    int v = 0;
+    int n = 0;
+    for (; *p != 0; p++, n++) {
+        int d;
+        if (*p >= '0' && *p <= '9') {
+            d = *p - '0';
+        } else if ((*p | 0x20) >= 'a' && (*p | 0x20) <= 'f') {
+            d = (*p | 0x20) - 'a' + 10;
+        } else {
+            return false;
+        }
+        v = (v << 4) | d;
+    }
+    if (n == 0) {
         return false;
     }
-    if ((a[5] | 0x20) == 'r' && a[6] == 0) {
-        return true;
-    }
+    *out = v;
 
-    return (a[5] | 0x20) == 'u' && (a[6] | 0x20) == 'r' && a[7] == 0;
+    return true;
 }
 
 /* One flag, taken from anywhere on the line so that `zap -ez80 a.s a.bin` and
@@ -8056,30 +8135,119 @@ static bool is_color_opt(const char* a) {
  * the same wall the mnemonic chain and the symbol chain compare sit behind,
  * reached from the other side: not code that runs, code that is merely
  * *there*. */
+static void usage(void) {
+    printf("Usage: zap <filename> [output filename] [OPTION]\r\n\r\n");
+    printf("  -v\tList version information only\r\n");
+    printf("  -h\tList help information\r\n");
+    printf("  -o\tOrg start address in hexadecimal format, default is 040000\r\n");
+    printf("  -b\tFillbyte in hexadecimal format, default is FF\r\n");
+    printf("  -a\tADL mode 1/0, default is 1\r\n");
+    printf("  -i\tIgnore value truncation warnings\r\n");
+    printf("  -l\tListing to file with .lst extension\r\n");
+    printf("  -s\tExport symbols\r\n");
+    printf("  -d\tDirect listing to console\r\n");
+    printf("  -c\tNo color codes in output\r\n");
+    printf("  -x\tDisplay assembly statistics\r\n");
+    printf("  -ez80\tThe reference assembler's expression rules\r\n");
+}
+
+/* The reference's options, taken by the same letters and in the same forms.
+ *
+ * A drop-in replacement that needs the command line rewritten is not one, so
+ * every flag it has is accepted here -- three of them change the bytes and
+ * have to be implemented, two are recognised and do nothing because zap has
+ * nothing for them to turn off, and the rest do what they say.
+ *
+ * `-m` is minimum memory. It is taken and ignored: zap has one memory
+ * configuration and it is the small one, so there is nothing to shrink from
+ * and nothing for a script that passes it to be surprised by.
+ *
+ * `-i` ignores value truncation warnings, and zap has no warnings at all --
+ * every diagnostic it has is fatal. Taken and ignored, and the gap it stands
+ * for is written up in .internal/completeness.md rather than hidden behind a
+ * flag that appears to do something. */
 __attribute__((noinline)) static bool parse_args(int argc, char* argv[],
                                                  const char** in,
-                                                 const char** out) {
+                                                 const char** out,
+                                                 bool* stop) {
     *in = NULL;
     *out = NULL;
+    *stop = false;
     for (int i = 1; i < argc; i++) {
-        if (argv[i][0] == '-') {
-            if (is_ez80_opt(argv[i])) {
-                compat_ez80 = true;
-            } else if (is_color_opt(argv[i])) {
-                use_color = true;
-            } else {
-                printf("Unknown option %s\r\n", argv[i]);
+        const char* a = argv[i];
+        if (a[0] != '-') {
+            if (*in == NULL) {
+                *in = a;
+            } else if (*out == NULL) {
+                *out = a;
+            }
+            continue;
+        }
+        if (is_ez80_opt(a)) {
+            compat_ez80 = true;
+            continue;
+        }
+        const char* const next = (i + 1 < argc) ? argv[i + 1] : NULL;
+        int used = 0;
+        int v = 0;
+        switch (a[1] | 0x20) {
+            case 'v':
+                printf("zap version %s\r\n", ZAP_VERSION);
+                *stop = true;
+
+                return true;
+            case 'h':
+                usage();
+                *stop = true;
+
+                return true;
+            case 'o':
+                if (!opt_hex(a + 2, next, &used, &v)) {
+                    printf("Option -o needs a hexadecimal address\r\n");
+
+                    return false;
+                }
+                opt_org = v;
+                break;
+            case 'b':
+                if (!opt_hex(a + 2, next, &used, &v)) {
+                    printf("Option -b needs a hexadecimal byte\r\n");
+
+                    return false;
+                }
+                opt_fill = (uint8_t) v;
+                break;
+            case 'a':
+                if (!opt_hex(a + 2, next, &used, &v) || (v != 0 && v != 1)) {
+                    printf("Option -a needs 0 or 1\r\n");
+
+                    return false;
+                }
+                opt_adl = v != 0;
+                break;
+            case 'c': use_color = false; break;
+            case 'l': want_list = true; break;
+            case 'd': want_console_list = true; break;
+            case 's': want_symbols = true; break;
+            case 'x': want_stats = true; break;
+            case 'i': break;   /* zap has no warnings to ignore */
+            case 'm': break;   /* one memory configuration, and it is small */
+            default:
+                printf("Unknown option %s\r\n", a);
 
                 return false;
-            }
-        } else if (*in == NULL) {
-            *in = argv[i];
-        } else if (*out == NULL) {
-            *out = argv[i];
         }
+        i += used;
     }
-    if (*in == NULL || *out == NULL) {
-        printf("Usage: zap [-ez80] [-color] <source> <output>\r\n");
+    if (*in == NULL) {
+        printf("No input filename\r\n");
+        usage();
+
+        return false;
+    }
+    if (*out == NULL) {
+        printf("No output filename\r\n");
+        usage();
 
         return false;
     }
@@ -8131,6 +8299,260 @@ static void err_reopen(const char* path, int line) {
         }
     }
     br_destroy(&r);
+}
+
+/* One row of the listing, in the reference's columns.
+ *
+ *     PC     Output      Line
+ *     040000 01 02 03 04 0001   db 1,2,3,4
+ *            05 06 07 08
+ *
+ * Six hex digits of address, then four bytes to a row in a twelve-character
+ * field, then the line number in four digits, then the source line as it was
+ * written. A line that emitted more than four bytes carries on underneath with
+ * the address column blank.
+ *
+ * An invocation is one row carrying the bytes its expansion produced, and the
+ * body lines are not listed separately. The reference lists them, indented and
+ * numbered `0001M1`, *after* the invocation -- and getting that order right
+ * here would mean printing a row before the line is assembled, when the bytes
+ * it emits are not yet known. One row with the right bytes on it reads better
+ * than two with the wrong order, and a listing is a convenience rather than a
+ * thing anybody diffs against the reference.
+ *
+ * The source text is echoed as it was written. The reference reformats it --
+ * a line with no indent comes back with two spaces -- which is a difference
+ * worth having on this side.
+ *
+ * Whatever it cannot write, it drops. A listing is a convenience and must
+ * never be able to fail an assembly. */
+static void list_out(const char* buf, int n) {
+    if (want_console_list) {
+        printf("%.*s", n, buf);
+    }
+    if (list_fh != 0) {
+        mos_fwrite(list_fh, (char*) buf, (uint24_t) n);
+    }
+}
+
+static void list_hex(char* buf, int* w, uint32_t v, int digits) {
+    for (int shift = (digits - 1) * 4; shift >= 0; shift -= 4) {
+        const int d = (int) ((v >> shift) & 0xF);
+        buf[(*w)++] = (char) (d < 10 ? '0' + d : 'A' + d - 10);
+    }
+}
+
+static void list_line(int pc, const uint8_t* from, const uint8_t* to, int line,
+                      int depth, const char* text, const char* tend) {
+    char buf[ERRLINE_MAX + 48];
+    int n = (int) (to - from);
+    int row = 0;
+
+    do {
+        int w = 0;
+        if (row == 0) {
+            list_hex(buf, &w, (uint32_t) pc, 6);
+            buf[w++] = ' ';
+        } else {
+            for (int i = 0; i < 7; i++) {
+                buf[w++] = ' ';
+            }
+        }
+        int put = 0;
+        while (put < 4 && row * 4 + put < n) {
+            list_hex(buf, &w, from[row * 4 + put], 2);
+            buf[w++] = ' ';
+            put++;
+        }
+        /* The output field is a fixed twelve characters on every row, so a
+         * continuation lines up under the row above it. */
+        while (put < 4) {
+            buf[w++] = ' ';
+            buf[w++] = ' ';
+            buf[w++] = ' ';
+            put++;
+        }
+        if (row == 0) {
+            /* Four digits, and the depth after them for a macro body. */
+            const int d0 = (line / 1000) % 10;
+            const int d1 = (line / 100) % 10;
+            const int d2 = (line / 10) % 10;
+            buf[w++] = (char) ('0' + d0);
+            buf[w++] = (char) ('0' + d1);
+            buf[w++] = (char) ('0' + d2);
+            buf[w++] = (char) ('0' + line % 10);
+            if (depth > 0) {
+                buf[w++] = 'M';
+                buf[w++] = (char) ('0' + (depth % 10));
+            }
+            buf[w++] = ' ';
+            for (const char* q = text; q < tend && *q != '\n'
+                                       && w < (int) sizeof(buf) - 3; q++) {
+                buf[w++] = *q;
+            }
+        }
+        buf[w++] = '\r';
+        buf[w++] = '\n';
+        list_out(buf, w);
+        row++;
+    } while (row * 4 < n);
+}
+
+/* An output file beside the source: `prog.s` gives `prog.symbols`.
+ *
+ * From the *source* name and not the output, which is what the reference does
+ * -- `ez80asm prog.s out.bin -s` writes `prog.symbols`. An extension is
+ * replaced if there is one and appended if there is not.
+ *
+ * Returns false if the name will not fit, which is the only way it can fail.
+ */
+static bool sidecar_name(const char* src, const char* ext, char* out, int cap) {
+    int n = 0;
+    int dot = -1;
+    while (src[n] != 0) {
+        if (src[n] == '.') {
+            dot = n;
+        } else if (src[n] == '/' || src[n] == '\\' || src[n] == ':') {
+            dot = -1;
+        }
+        n++;
+    }
+    if (dot >= 0) {
+        n = dot;
+    }
+    int e = 0;
+    while (ext[e] != 0) {
+        e++;
+    }
+    if (n + e + 1 > cap) {
+        return false;
+    }
+    for (int i = 0; i < n; i++) {
+        out[i] = src[i];
+    }
+    for (int i = 0; i <= e; i++) {
+        out[n + i] = ext[i];
+    }
+
+    return true;
+}
+
+/* Every global, by name and value, for whatever reads a symbol file next.
+ *
+ * Globals only. A local belongs to the scope that opened it and is gone by
+ * the time this runs -- there is nothing left to export and no name that
+ * would mean anything outside. The reference exports the same set.
+ *
+ * Sorted, because a symbol file that is not is a symbol file nobody can diff.
+ * By an array of pointers rather than by moving the nodes, which are pointed
+ * at from every fixup that named one.
+ *
+ * All of it after the assembly is over: not a byte of this is on the path
+ * that assembles anything. */
+static int sym_cmp(const void* a, const void* b) {
+    const sym* const x = *(const sym* const*) a;
+    const sym* const y = *(const sym* const*) b;
+    const int n = x->len < y->len ? x->len : y->len;
+    for (int i = 0; i < n; i++) {
+        const uint8_t cx = (uint8_t) x->name[i];
+        const uint8_t cy = (uint8_t) y->name[i];
+        if (cx != cy) {
+            return cx < cy ? -1 : 1;
+        }
+    }
+
+    return x->len - y->len;
+}
+
+static void write_symbols(const char* src) {
+    int n = 0;
+    for (const symblock* b = zz.blocks; b != NULL; b = b->next) {
+        n += (b == zz.blocks) ? zz.syms_used : SYMS_STEP;
+    }
+    if (n == 0) {
+        return;
+    }
+    const sym** list = (const sym**) malloc((size_t) n * sizeof(sym*));
+    if (list == NULL) {
+        printf("Cannot export symbols: out of memory\r\n");
+
+        return;
+    }
+    int k = 0;
+    for (const symblock* b = zz.blocks; b != NULL; b = b->next) {
+        const int used = (b == zz.blocks) ? zz.syms_used : SYMS_STEP;
+        for (int i = 0; i < used; i++) {
+            if (b->nodes[i].defined) {
+                list[k++] = &b->nodes[i];
+            }
+        }
+    }
+    qsort(list, (size_t) k, sizeof(list[0]), sym_cmp);
+
+    char path[INCLUDE_NAME_MAX];
+    if (!sidecar_name(src, ".symbols", path, (int) sizeof(path))) {
+        free(list);
+
+        return;
+    }
+    const uint8_t fh = mos_fopen(path, FA_WRITE | FA_CREATE_ALWAYS);
+    if (fh == 0) {
+        printf("Cannot write %s\r\n", path);
+        free(list);
+
+        return;
+    }
+    for (int i = 0; i < k; i++) {
+        char buf[LABEL_MAX + 24];
+        int w = 0;
+        for (int j = 0; j < list[i]->len; j++) {
+            buf[w++] = list[i]->name[j];
+        }
+        buf[w++] = ' ';
+        buf[w++] = '$';
+        /* Upper case and no leading zeros, as the reference writes them. */
+        const uint32_t v = (uint32_t) list[i]->addr;
+        int shift = 28;
+        while (shift > 0 && ((v >> shift) & 0xF) == 0) {
+            shift -= 4;
+        }
+        for (; shift >= 0; shift -= 4) {
+            const int d = (int) ((v >> shift) & 0xF);
+            buf[w++] = (char) (d < 10 ? '0' + d : 'A' + d - 10);
+        }
+        buf[w++] = '\r';
+        buf[w++] = '\n';
+        mos_fwrite(fh, buf, (uint24_t) w);
+    }
+    mos_fclose(fh);
+    free(list);
+}
+
+/* What the assembly used, for -x. Counted rather than measured: these are the
+ * numbers zap already keeps, not an instrumented run. */
+static void write_stats(void) {
+    int syms = 0;
+    for (const symblock* b = zz.blocks; b != NULL; b = b->next) {
+        syms += (b == zz.blocks) ? zz.syms_used : SYMS_STEP;
+    }
+    int names = 0;
+    for (const namblock* b = zz.names; b != NULL; b = b->next) {
+        names += NAMES_BLOCK;
+    }
+    int macros = 0;
+    int macbytes = 0;
+    for (const macro* m = zz.macros; m != NULL; m = m->next) {
+        macros++;
+        macbytes += m->bodycap;
+    }
+    printf("\r\nAssembly statistics\r\n");
+    printf("=============================\r\n");
+    printf("Label memory         : %6d\r\n", (int) (syms * (int) sizeof(sym) + names));
+    printf("Labels               : %6d\r\n", syms);
+    printf("\r\nMacro memory         : %6d\r\n", macbytes);
+    printf("Macros               : %6d\r\n", macros);
+    printf("\r\nOutput               : %6d\r\n", (int) (zz.o - zz.out));
+    printf("Output buffer        : %6d\r\n", zz.cap);
 }
 
 /* What went wrong, said the way somebody trying to fix it needs to hear it.
@@ -8189,15 +8611,38 @@ static void report(const char* in) {
 int main(int argc, char* argv[]) {
     const char* in;
     const char* out;
-    if (!parse_args(argc, argv, &in, &out)) {
+    bool stop = false;
+    if (!parse_args(argc, argv, &in, &out, &stop)) {
         return 1;
+    }
+    if (stop) {
+        return 0;
     }
 
     /* After the flag is read: the operator table it builds depends on it. */
     build_tables();
     build_cclass();
 
+    /* The listing is opened before a line is read, so its header sits above
+     * the first of them, and closed after the last. Either destination, or
+     * both: -l writes the file, -d writes the console, and a run that asks
+     * for both gets both. */
+    listing = want_list || want_console_list;
+    if (want_list) {
+        char lpath[INCLUDE_NAME_MAX];
+        if (sidecar_name(in, ".lst", lpath, (int) sizeof(lpath))) {
+            list_fh = mos_fopen(lpath, FA_WRITE | FA_CREATE_ALWAYS);
+            if (list_fh == 0) {
+                printf("Cannot write %s\r\n", lpath);
+            }
+        }
+    }
+
     printf("Assembling %s\r\n", in);
+    if (listing) {
+        static const char head[] = "PC     Output      Line\r\n";
+        list_out(head, (int) sizeof(head) - 1);
+    }
     const clock_t begin = clock();
     const bool ok = run(in);
     const clock_t end = clock();
@@ -8222,7 +8667,22 @@ int main(int argc, char* argv[]) {
     }
     mos_fclose(fh);
 
+    if (list_fh != 0) {
+        mos_fclose(list_fh);
+        list_fh = 0;
+    }
+
     printf("Wrote %s, %d bytes\r\n", out, written);
+
+    /* After the bytes are safe, and only if asked. Neither of these can fail
+     * the assembly: the file is written, and a symbol table nobody could save
+     * is worth a line of complaint and not an exit code. */
+    if (want_symbols) {
+        write_symbols(in);
+    }
+    if (want_stats) {
+        write_stats();
+    }
 
 #ifdef ZMALLOC
     z_report();

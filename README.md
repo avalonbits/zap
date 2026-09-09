@@ -21,10 +21,6 @@ them too rather than being right and incompatible:
   - **`0bh` is hexadecimal**, not binary: the `h` suffix is claimed before the
     `0b` prefix.
 
-`-color` (or `-colour`) puts the error report in the reference's colours: red
-for what went wrong, yellow for the text it went wrong in. Off by default, so
-a pipe gets plain text and a person gets the escapes they asked for.
-
 Without `-ez80` the defaults are the ones a reader expects. Where the two
 disagree it is on purpose and it is written down; where they disagree by
 accident it is a bug.
@@ -33,6 +29,27 @@ Against the reference's own 507-source corpus, **nothing disagrees**: 128
 assemble to identical bytes and 379 are refused by both. `test/corpus.sh`
 prints that table. So do BBC BASIC and Rokky, assembled whole with their
 include trees.
+
+## Options
+
+The reference's, by the same letters and in the same forms -- `-o 50000` and
+`-o50000` are the same thing there and are here, so a command line written for
+it works unaltered.
+
+    -v   version, and assemble nothing        -l   listing to <source>.lst
+    -h   list the options                     -d   listing to the console
+    -o   org start, hex, default 040000       -s   export <source>.symbols
+    -b   fillbyte, hex, default FF            -x   assembly statistics
+    -a   ADL mode 1/0, default 1              -c   no colour
+    -i   accepted, does nothing               -m   accepted, does nothing
+    -ez80  the reference's expression rules
+
+`-o`, `-b` and `-a` change the bytes, and each is checked against the
+reference by assembling the same source through both. `-i` ignores value
+truncation warnings and zap has none -- every diagnostic it has is fatal;
+`-m` is a memory configuration and zap has one, the small one. Both are taken
+and do nothing, silently, so a script that passes them need not care. An
+option that is not the reference's is still refused.
 
 ## When something is wrong
 

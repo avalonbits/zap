@@ -342,6 +342,7 @@ typedef enum {
     ZAP_E_MACRO_PARAMETER_NOT_NUMBER_OR_MNEM,
     ZAP_E_STRING_DB,
     ZAP_E_UNARY_OPERATOR_VALUE,
+    ZAP_E_ADDRESS_OUTSIDE_16_BIT_RANGE,
     ZAP_E_ADDRESS_OUTSIDE_24_BIT_RANGE,
     ZAP_E_ALIGN_POSITIVE_NUMBER,
     ZAP_E_ALIGN_POWER_TWO,
@@ -424,6 +425,7 @@ static const char* const zap_err_text[] = {
     [ZAP_E_MACRO_PARAMETER_NOT_NUMBER_OR_MNEM] = "a macro parameter may not be a number or a mnemonic",
     [ZAP_E_STRING_DB] = "a string needs DB",
     [ZAP_E_UNARY_OPERATOR_VALUE] = "a unary operator needs a value",
+    [ZAP_E_ADDRESS_OUTSIDE_16_BIT_RANGE] = "address outside the 16-bit range",
     [ZAP_E_ADDRESS_OUTSIDE_24_BIT_RANGE] = "address outside the 24-bit range",
     [ZAP_E_ALIGN_POSITIVE_NUMBER] = "align needs a positive number",
     [ZAP_E_ALIGN_POWER_TWO] = "align needs a power of two",
@@ -6871,6 +6873,18 @@ static bool directive_line(const char* s, int n, const char* p,
     }
 
     if (kind == DIR_ORG) {
+        /* Out of ADL mode an address is two bytes, and the reference refuses
+         * one that is not -- "Address outside 16-bit range". Only here: it
+         * does not check ORG against the 24-bit ceiling in ADL mode, and it
+         * does not check RELOCATE against 16 bits out of it, so neither does
+         * this. Rare enough that a compare costs nothing measurable, and it is
+         * on the directive path rather than the instruction path anyway. */
+        if (!zz.adl && value > 0xFFFF) {
+            zz.err = ZAP_E_ADDRESS_OUTSIDE_16_BIT_RANGE;
+
+            return false;
+        }
+
         /* The first ORG in a file moves the origin; every later one pads out
          * to its address. That is not a guess -- two ORGs with nothing between
          * them write the 64 KB gap in the reference, so the second is already

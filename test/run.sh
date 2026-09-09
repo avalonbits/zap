@@ -189,6 +189,32 @@ cli_check "an option that is not the reference's is still refused" \
     "$("$OUT/zap" -c -Q "$OUT/opt2.s" "$OUT/opt2.bin" 2>&1 | tr -d '\r' \
        | grep -c 'Unknown option -Q')" 1
 
+# Out of ADL mode an address is two bytes and ORG has to fit one. The
+# reference checks this and nothing else nearby: not ORG against 24 bits in
+# ADL mode, not RELOCATE against 16 out of it. Each of those is checked here
+# against the reference rather than against what a careful assembler would do.
+org_same() {
+    local text="$1"
+    printf '%b' "$text" > "$OUT/org.s"
+    local zo ro
+    zo=$("$OUT/zap" -c "$OUT/org.s" "$OUT/orgz.bin" 2>&1 | tr -d '\r' \
+         | grep -c 'outside the 16-bit range' || true)
+    if [ -x "$OPTREF" ]; then
+        ro=$("$OPTREF" "$OUT/org.s" "$OUT/orgr.bin" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' \
+             | grep -c 'Address outside 16-bit range' || true)
+        cli_check "[${text%\\n}] 16-bit range agrees with the reference" "$zo" "$ro"
+    fi
+}
+org_same '  .assume adl=0\n  org 0x10000\n  nop\n'
+org_same '  .assume adl=0\n  org 0x123456\n  nop\n'
+org_same '  .assume adl=0\n  org 0xFFFF\n  nop\n'
+org_same '  org 0x123456\n  nop\n'
+org_same '  org $1000000\n  nop\n'
+org_same '  .assume adl=0\n  org 0x100\n  .relocate 0x12345\n  nop\n'
+cli_check "-a 0 puts ORG under the same rule" \
+    "$("$OUT/zap" -c -a 0 "$OUT/org.s" "$OUT/orgz.bin" 2>&1 | tr -d '\r' \
+       | grep -c 'outside the 16-bit range' || true)" 0
+
 # An operand that folds into the opcode has to fit the field it folds into.
 # zap used to mask it: `bit 8, a` assembled as `bit 0, a` and `rst 0x09` as
 # `rst 0x08` -- wrong bytes with nothing said, which is the one failure an

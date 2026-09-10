@@ -767,6 +767,12 @@ work). Readings are deterministic to the centisecond.
 * **Shrinking a hot struct pays.** A 17-byte token to 13 bytes: **-3.4%**.
 * **Inlining small hot functions pays.** Removing one call per token: **-2.9%**.
 * **`memcpy` over a hand-written byte loop pays, a lot.** Block-copying `.incbin` data instead of a byte at a time: **-22.8%**.
+* **`memset` over a hand-written byte loop, likewise.** The fill an `ORG`
+  writes when it skips forward, a byte at a time against one `memset`: a
+  source with 96 KB of gap went **0.56 s to 0.10 s**. Worth noting that this
+  rule was already written down here and the loop was there anyway -- a
+  four-line loop filling a buffer does not look like a hot path until
+  something asks it for 96 KB.
 * **Not passing structs by value pays** -- the token result above is exactly this effect.
 * **Allocation is cheap; touching memory is not.** Replacing a 39.7 KB fixed
   array with per-item allocation was free, and cost 95% of the struct's size.

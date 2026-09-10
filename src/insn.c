@@ -17,6 +17,11 @@
  */
 
 #include "zap.h"
+#include "insn.h"
+#include "directive.h"
+#include "expr.h"
+#include "scan.h"
+#include "symtab.h"
 
 /* ======================================================================
  * MNEMONICS

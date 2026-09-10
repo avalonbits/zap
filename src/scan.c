@@ -17,6 +17,8 @@
  */
 
 #include "zap.h"
+#include "scan.h"
+#include "insn.h"
 
 bool reg_of_text(const char* s, int n, dop* op, bool* is_cc,
                         uint8_t* cc_index) {

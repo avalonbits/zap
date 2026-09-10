@@ -17,6 +17,11 @@
  */
 
 #include "zap.h"
+#include "expr.h"
+#include "directive.h"
+#include "insn.h"
+#include "scan.h"
+#include "symtab.h"
 
 /* How deep the brackets go, counted in a file-scope byte rather than passed
  * down. A bracket recurses through expr_term and expr_value, both of which run

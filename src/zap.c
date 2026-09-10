@@ -17,6 +17,11 @@
  */
 
 #include "zap.h"
+#include "directive.h"
+#include "expr.h"
+#include "insn.h"
+#include "scan.h"
+#include "symtab.h"
 
 __attribute__((noinline)) bool assemble_line(const char* p, const char* e, const char** stop) {
     /* Bounded, like every character scan in the file. Every line of the source

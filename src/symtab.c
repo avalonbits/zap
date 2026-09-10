@@ -17,6 +17,7 @@
  */
 
 #include "zap.h"
+#include "symtab.h"
 
 /* Indexed by the code, so a message and its name cannot drift apart. */
 const char* const zap_err_text[] = {

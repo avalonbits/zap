@@ -17,6 +17,11 @@
  */
 
 #include "zap.h"
+#include "directive.h"
+#include "expr.h"
+#include "insn.h"
+#include "scan.h"
+#include "symtab.h"
 
 /* Macro bodies grow a line at a time and are not in the name blocks, because a
  * block is fixed and a body is not known until ENDMACRO. One allocation per

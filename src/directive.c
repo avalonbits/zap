@@ -17,6 +17,11 @@
  */
 
 #include "zap.h"
+#include "directive.h"
+#include "expr.h"
+#include "insn.h"
+#include "scan.h"
+#include "symtab.h"
 
 /* ======================================================================
  * OUTPUT

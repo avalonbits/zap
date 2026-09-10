@@ -1647,7 +1647,6 @@ _Static_assert((R_IXL | R_IYL)
 /* expr.c      */ bool expr_value(evalue* out, const char** pp, const char* e, uint8_t* fwdmask);
 /* expr.c      */ bool fwd_finish(dop* op);
 /* expr.c      */ uint8_t fwd_live(void);
-/* expr.c      */ void fwd_reset(const sym* seed);
 /* expr.c      */ bool is_equ_at(const char* p);
 /* expr.c      */ bool line_fill(buf_reader* r);
 /* expr.c      */ bool scope_pop(locsave* sv);
@@ -1657,7 +1656,6 @@ _Static_assert((R_IXL | R_IYL)
 /* insn.c      */ extern bool compat_ez80;
 /* insn.c      */ bool cond_skip(const char* s, int n, const char* p, const char* e, const char** stop);
 /* insn.c      */ extern uint8_t cpu_mask;
-/* insn.c      */ uint8_t* emit_imm(uint8_t* o, const dop* op, uint8_t cond, bool adl);
 /* insn.c      */ extern uint8_t exop[256];
 /* insn.c      */ extern uint8_t exprec[256];
 /* insn.c      */ bool fold_defer(uint8_t type, const dop* op, uint8_t prefix1, uint8_t prefix2, uint8_t flags, int off);
@@ -1691,13 +1689,10 @@ _Static_assert((R_IXL | R_IYL)
 /* scan.c      */ extern const dop dop_none;
 /* scan.c      */ extern uint8_t hexval[256];
 /* scan.c      */ bool numeric_token(const char* s, int n);
-/* scan.c      */ bool reg_of_text(const char* s, int n, dop* op, bool* is_cc, uint8_t* cc_index);
-/* symtab.c    */ bool anon_define(int addr);
 /* symtab.c    */ sym* anon_next(void);
 /* symtab.c    */ void build_pearson(void);
 /* symtab.c    */ extern volatile int dup_hash_sink;
 /* symtab.c    */ void err_line(char* dst, const char* p, const char* e);
-/* symtab.c    */ void err_tok(const char* s, int n);
 /* symtab.c    */ bool fix_add(const sym* target, const sym* sub, int addend, uint8_t width, int off);
 /* symtab.c    */ bool fold_subs(int from);
 /* symtab.c    */ sym* loc_intern(const char* name, int len);
@@ -1719,4 +1714,5 @@ _Static_assert((R_IXL | R_IYL)
 /* zap.c       */ void warn_initializer(const char* t, int n);
 /* zap.c       */ void warn_trunc(evalue v, int width);
 
+/* expr.c      */ extern uint8_t expr_depth;
 #endif /* ZAP_H */

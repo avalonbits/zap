@@ -32,7 +32,7 @@ flowchart TD
 [`parse_args()`](../src/zap.c#L756) ·
 [`run()`](../src/zap.c#L481) ·
 [`run_lines()`](../src/zap.c#L343) ·
-[`scope_end()`](../src/symtab.c#L710) ·
+[`scope_end()`](../src/symtab.c#L700) ·
 [`resolve_fixups()`](../src/zap.c#L319)
 
 There is no intermediate representation and no syntax tree. A line is read,
@@ -77,7 +77,7 @@ Three kinds of thing wait for the end of the run:
 
 | | resolved by | holds |
 |---|---|---|
-| fixup | [`patch_fixup()`](../src/symtab.c#L575) | one or two symbols, an addend, a width, an offset |
+| fixup | [`patch_fixup()`](../src/symtab.c#L565) | one or two symbols, an addend, a width, an offset |
 | deferred expression | [`resolve_deferred()`](../src/zap.c#L262) | expression text a fixup cannot represent |
 | deferred fill | [`resolve_fills()`](../src/zap.c#L286) | a `BLK` whose fill value was not known yet |
 
@@ -175,14 +175,14 @@ flowchart TD
     J --> N["error: no such instruction"]
 ```
 
-[`equ_line()`](../src/expr.c#L592) ·
-[`mnemonic_of()`](../src/insn.h#L66) ·
-[`parse_operand()`](../src/expr.h#L65) ·
-[`match_row()`](../src/insn.h#L129) ·
-[`emit_row()`](../src/insn.h#L306) ·
+[`equ_line()`](../src/expr.c#L583) ·
+[`mnemonic_of()`](../src/insn.h#L87) ·
+[`parse_operand()`](../src/expr.h#L74) ·
+[`match_row()`](../src/insn.h#L150) ·
+[`emit_row()`](../src/insn.h#L327) ·
 [`directive_line()`](../src/directive.c#L793) ·
-[`suffixed_mnemonic()`](../src/insn.c#L590) ·
-[`third_operand()`](../src/insn.c#L681)
+[`suffixed_mnemonic()`](../src/insn.c#L569) ·
+[`third_operand()`](../src/insn.c#L660)
 
 * **The mnemonic lookup** buckets by first letter *and* length, so it compares
   one or two candidates rather than five, and never measures a length at run
@@ -222,11 +222,11 @@ flowchart TD
   than row by row. The four mnemonics that take condition codes — `call`,
   `jp`, `jr`, `ret` — are left ungrouped, because a condition code can arrive
   in a shape the group test would reject.
-* [`match_row()`](../src/insn.h#L129) tests operand A first and reaches B only
+* [`match_row()`](../src/insn.h#L150) tests operand A first and reaches B only
   if A survives. Most rejections are rows of the right shape with the wrong
   registers.
 
-Once a row is chosen, [`emit_row()`](../src/insn.h#L306) writes the bytes in
+Once a row is chosen, [`emit_row()`](../src/insn.h#L327) writes the bytes in
 this order:
 
 ```mermaid
@@ -272,21 +272,21 @@ flowchart TD
 ```
 
 **Global labels and EQU values** ([`sym`](../src/zap.h#L198),
-[`sym_intern()`](../src/symtab.c#L417)) are **interned on first sight**, defined
+[`sym_intern()`](../src/symtab.c#L407)) are **interned on first sight**, defined
 or not, so a reference to a label that has not appeared yet gets an entry and a
 fixup points at it. Nodes and names come from arenas of blocks that never move:
 a growing array would have to be reallocated, and a realloc that moves holds
 both copies at once.
 
-**Local labels** (`@name`, [`loc_intern()`](../src/symtab.c#L773)) belong to the
+**Local labels** (`@name`, [`loc_intern()`](../src/symtab.c#L763)) belong to the
 global label above them. A scope ends at the next global label — thousands of
 times in a real source — so it must empty in constant time. Each slot carries
 the generation it belongs to: advancing the counter in
-[`scope_end()`](../src/symtab.c#L710) makes every bucket read as empty, whatever
+[`scope_end()`](../src/symtab.c#L700) makes every bucket read as empty, whatever
 chain it still holds.
 
 **Anonymous labels** (`@@`, referred to as `@f` and `@b`) are not table entries
-at all. [`anon_define()`](../src/symtab.c#L854) keeps the address of the last
+at all. [`anon_define()`](../src/symtab.h#L30) keeps the address of the last
 `@@` for `@b`, and one nameless symbol that every `@f` since the last `@@`
 waits on, settled the moment the next `@@` appears.
 
@@ -301,8 +301,8 @@ local's node is about to be recycled.
 Most operands never reach the evaluator: a register, a plain literal
 ([`lit_value()`](../src/directive.h#L27)) and a bare name each have a reader of
 their own. What does reach it is a precedence climb
-([`expr_value()`](../src/expr.c#L533),
-[`expr_atom()`](../src/expr.c#L199)) over `+ - * / << >> & | ^` with unary `-`
+([`expr_value()`](../src/expr.c#L524),
+[`expr_atom()`](../src/expr.c#L190)) over `+ - * / << >> & | ^` with unary `-`
 and `~`, grouped with `[...]` because parentheses already mean indirection.
 
 Two things make it unusual:
@@ -393,7 +393,7 @@ flowchart TD
 [`macro_expand()`](../src/macro.c#L507) ·
 [`macro_args()`](../src/macro.c#L358) ·
 [`macro_subst()`](../src/macro.c#L421) ·
-[`scope_push()`](../src/expr.c#L698)
+[`scope_push()`](../src/expr.c#L689)
 
 There is no reader and no nested line loop for an expansion: the body is
 already a run of lines. Substitution is textual and by whole identifier, which
@@ -426,7 +426,7 @@ flowchart LR
 ```
 
 [`err_line()`](../src/symtab.c#L238) ·
-[`err_tok()`](../src/symtab.c#L317) ·
+[`err_tok()`](../src/symtab.h#L47) ·
 [`report()`](../src/zap.c#L1376)
 
 ```

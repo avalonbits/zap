@@ -22,6 +22,15 @@
 #include "zap.h"
 #include "scan.h"
 
+static inline void fwd_reset(const sym* seed) {
+    expr_depth = 0;
+    expr_fwd = seed;
+    expr_fwd2 = NULL;
+    expr_fwd_neg = false;
+    expr_fwd2_neg = false;
+    expr_fwd_bad = false;
+}
+
 /* Inlined into callers in other files, so the bodies live here. */
 
 static inline bool fwd_result(const sym** target, const sym** sub,

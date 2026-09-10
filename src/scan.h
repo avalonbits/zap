@@ -21,6 +21,85 @@
 
 #include "zap.h"
 
+static inline bool reg_of_text(const char* s, int n, dop* op, bool* is_cc,
+                        uint8_t* cc_index) {
+    *is_cc = false;
+    *cc_index = 0;
+
+    const char a = (char) (s[0] | 0x20);
+    if (n == 1) {
+        switch (a) {
+            case 'a': SETREG(R_A, 7); return true;
+            case 'b': SETREG(R_B, 0); return true;
+            case 'c': SETREG(R_C, 1);
+                      /* Carry has no name of its own: it would collide with
+                       * register C, so the instruction decides which it meant. */
+                      *is_cc = true; *cc_index = 3; return true;
+            case 'd': SETREG(R_D, 2); return true;
+            case 'e': SETREG(R_E, 3); return true;
+            case 'h': SETREG(R_H, 4); return true;
+            case 'l': SETREG(R_L, 5); return true;
+            case 'i': SETREG(R_I, 0); return true;
+            case 'r': SETREG(R_R, 0); return true;
+            case 'z': SETREG(R_NONE, 0); *is_cc = true; *cc_index = 1; return true;
+            case 'p': SETREG(R_NONE, 0); *is_cc = true; *cc_index = 6; return true;
+            case 'm': SETREG(R_NONE, 0); *is_cc = true; *cc_index = 7; return true;
+            default:  return false;
+        }
+    }
+
+    if (n == 2) {
+        const char b = (char) (s[1] | 0x20);
+        switch (a) {
+            case 'a': if (b == 'f') { SETREG(R_AF, 3); return true; } return false;
+            case 'b': if (b == 'c') { SETREG(R_BC, 0); return true; } return false;
+            case 'd': if (b == 'e') { SETREG(R_DE, 1); return true; } return false;
+            case 'h': if (b == 'l') { SETREG(R_HL, 2); return true; } return false;
+            case 's': if (b == 'p') { SETREG(R_SP, 3); return true; } return false;
+            case 'm': if (b == 'b') { SETREG(R_MB, 0); return true; } return false;
+            case 'i':
+                if (b == 'x') { SETREG(R_IX, 2); return true; }
+                if (b == 'y') { SETREG(R_IY, 2); return true; }
+
+                return false;
+            case 'n':
+                if (b == 'z') { SETREG(R_NONE, 0); *is_cc = true; *cc_index = 0; return true; }
+                if (b == 'c') { SETREG(R_NONE, 0); *is_cc = true; *cc_index = 2; return true; }
+
+                return false;
+            case 'p':
+                if (b == 'o') { SETREG(R_NONE, 0); *is_cc = true; *cc_index = 4; return true; }
+                if (b == 'e') { SETREG(R_NONE, 0); *is_cc = true; *cc_index = 5; return true; }
+
+                return false;
+            default: return false;
+        }
+    }
+
+    /* af', which the table holds as plain R_AF -- the row for `ex af, af'` is
+     * R_AF on both sides, so the apostrophe distinguishes nothing here and
+     * only has to be accepted. */
+    if (n == 3 && a == 'a' && (s[1] | 0x20) == 'f' && s[2] == '\'') {
+        SETREG(R_AF, 3);
+
+        return true;
+    }
+
+    if (n == 3 && a == 'i') {
+        const char b = (char) (s[1] | 0x20);
+        const char c = (char) (s[2] | 0x20);
+        if (b == 'x') {
+            if (c == 'h') { SETREG(R_IXH, 4); return true; }
+            if (c == 'l') { SETREG(R_IXL, 5); return true; }
+        } else if (b == 'y') {
+            if (c == 'h') { SETREG(R_IYH, 4); return true; }
+            if (c == 'l') { SETREG(R_IYL, 5); return true; }
+        }
+    }
+
+    return false;
+}
+
 /* Inlined into callers in other files, so the bodies live here. */
 
 static inline bool is_space_ch(char c) {

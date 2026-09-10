@@ -31,7 +31,7 @@
  * It has to be counted here and not by `depth` below: `depth` bounds one
  * precedence climb, and a bracket starts a fresh climb at zero, so nesting
  * would otherwise be unbounded. */
-static uint8_t expr_depth;
+uint8_t expr_depth;
 
 /* The forward references an expression is carrying, and whether they are still
  * in a shape a fixup can hold.
@@ -178,15 +178,6 @@ bool fwd_finish(dop* op) {
     op->fwd2_neg = subneg;
 
     return true;
-}
-
-void fwd_reset(const sym* seed) {
-    expr_depth = 0;
-    expr_fwd = seed;
-    expr_fwd2 = NULL;
-    expr_fwd_neg = false;
-    expr_fwd2_neg = false;
-    expr_fwd_bad = false;
 }
 
 /* A bare token inside an expression: a number in any radix the reference takes,

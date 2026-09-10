@@ -21,6 +21,27 @@
 
 #include "zap.h"
 
+static inline uint8_t* emit_imm(uint8_t* o, const dop* op, uint8_t cond, bool adl) {
+    const int width = (cond & IMM_N) ? 1 : (adl ? 3 : 2);
+
+    /* Written out rather than looped, and reading op->imm afresh each time
+     * rather than through a local. The loop's `>> (i * 8)` is a variable shift
+     * and cost a call to __ishru per byte. A constant shift cast to uint8_t is
+     * better but not free: from a local the compiler still calls __ishru for
+     * `>> 16`, because the value is in a stack slot it has already loaded as a
+     * whole. Left as a field read it is an indexed load of the one byte
+     * wanted -- `ld a, (iy+n)` -- for all three. */
+    *o++ = (uint8_t) op->imm;
+    if (width > 1) {
+        *o++ = (uint8_t) (op->imm >> 8);
+    }
+    if (width > 2) {
+        *o++ = (uint8_t) (op->imm >> 16);
+    }
+
+    return o;
+}
+
 /* Inlined into callers in other files, so the bodies live here. */
 
 /* The same bucket, reached the way the hot path wants it.

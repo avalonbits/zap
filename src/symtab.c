@@ -309,16 +309,6 @@ void warn_imm(int v, int width) {
     }
 }
 
-/* The token a message is about, when the site that failed has it in hand.
- *
- * Not every one does -- an unresolved label is reported long after its line is
- * gone -- so this is set where it is cheap and true, and the report simply
- * leaves the quotation off where it is not. */
-void err_tok(const char* s, int n) {
-    state.errat = s;
-    state.erratlen = n;
-}
-
 /* Marginal pricing of the label paths. Each duplicates a call to a function
  * that is already out of line, so nothing gets outlined by the measurement and
  * the difference is one extra execution. The data-only flags above are still
@@ -843,24 +833,6 @@ sym* loc_intern(const char* name, int len) {
     state.locs[b].head = sp;
 
     return sp;
-}
-
-/* Writes an anonymous label here.
- *
- * It takes effect at once, which is what separates it from a global: `@@: jp
- * @b` jumps to itself, while `two: jp @l` still reads `@l` in the scope `two`
- * is closing. And `@f` on the same line means the *next* one, which falls out
- * of resolving the pending symbol before a new one is made for what follows. */
-bool anon_define(int addr) {
-    state.anon_prev = addr;
-    state.anon_has_prev = true;
-    if (state.anon_fwd != NULL) {
-        state.anon_fwd->defined = true;
-        state.anon_fwd->addr = addr;
-        state.anon_fwd = NULL;
-    }
-
-    return true;
 }
 
 /* The symbol every `@f` since the last `@@` is waiting on, made if there is

@@ -773,6 +773,24 @@ work). Readings are deterministic to the centisecond.
   rule was already written down here and the loop was there anyway -- a
   four-line loop filling a buffer does not look like a hot path until
   something asks it for 96 KB.
+* **A file write is a MOS call whatever its size, so buffer it.** The listing
+  went out unbuffered, two calls per line -- the text, then the newline on its
+  own. On a 7,509-line source that is 21,630 MOS calls, and a kilobyte of
+  buffer took `-l` from **13.10 s to 12.22 s**, -6.7%.
+* **The 128-byte frame rule again, in a function nobody had measured.**
+  `list_line` built each row in a 176-byte local, 220 bytes of frame with the
+  rest, so every one of its thirty-odd `buf[w++]` stores went through a
+  computed address. Making the buffer `static` took the frame to 29 bytes and
+  `-l` from **12.22 s to 10.80 s**, -11.6%. Nothing found it earlier because
+  no test produced a listing large enough to care.
+* **Divisions were the obvious suspect and cost nothing.** `(line / 1000) % 10`
+  and its three neighbours are five library calls per listed line, 37,000 of
+  them for that source. Replacing them with a four-digit counter that carries
+  -- verified to take the fast path 7,508 times out of 7,509 -- measured
+  **10.80 s to 10.82 s**, which is to say nothing at all, and was reverted.
+  "There is no division instruction" is true and says nothing about magnitude:
+  37,000 calls disappeared into the clock's resolution. Measure before
+  believing a rule applies here.
 * **Not passing structs by value pays** -- the token result above is exactly this effect.
 * **Allocation is cheap; touching memory is not.** Replacing a 39.7 KB fixed
   array with per-item allocation was free, and cost 95% of the struct's size.

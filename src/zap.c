@@ -920,13 +920,52 @@ static void err_reopen(const char* path, int line) {
  * which on an Agon means every line of a `-d` listing starts where the last
  * one ended; that is a quirk to leave behind rather than reproduce, and it is
  * on a channel nothing compares. */
+/* The listing goes out through a buffer, for the reason the binary does: a
+ * write to the card is a MOS call, and this file is produced a line at a time.
+ * Unbuffered it cost two calls per line -- the text, then the newline on its
+ * own -- which for a 7,500-line program is 21,630 of them, and measured 4.4x
+ * on the whole assembly.
+ *
+ * A kilobyte, which is twenty-odd lines. The point is not to hold the listing;
+ * it is to stop paying a MOS call for one byte. */
+#define LST_BUF 1024
+static char lst_buf[LST_BUF];
+static int lst_len;
+
+/* Everything held, in one write.
+ *
+ * Called before anything seeks in this file and before it is closed.
+ * lstfix_apply() goes back over the lines that left a fixup behind, and it has
+ * to find them written: a seek past bytes still sitting here would land in the
+ * wrong place and the rows it patched would then be overwritten by the flush. */
+static void lst_flush(void) {
+    if (lst_len > 0) {
+        mos_fwrite(list_fh, lst_buf, (uint24_t) lst_len);
+        lst_len = 0;
+    }
+}
+
+static void lst_put(const char* s, int n) {
+    if (n > LST_BUF - lst_len) {
+        lst_flush();
+    }
+    if (n > LST_BUF) {
+        /* Longer than the buffer, so nothing is gained by copying it in. */
+        mos_fwrite(list_fh, (char*) s, (uint24_t) n);
+
+        return;
+    }
+    memcpy(lst_buf + lst_len, s, (size_t) n);
+    lst_len += n;
+}
+
 static void list_out(const char* buf, int n) {
     if (want_console_list) {
         printf("%.*s\r\n", n, buf);
     }
     if (list_fh != 0) {
-        mos_fwrite(list_fh, (char*) buf, (uint24_t) n);
-        mos_fwrite(list_fh, (char*) "\n", 1);
+        lst_put(buf, n);
+        lst_put("\n", 1);
         state.lst_pos += n + 1;
     }
 }
@@ -940,7 +979,11 @@ static void list_hex(char* buf, int* w, uint32_t v, int digits) {
 
 void list_line(int pc, const uint8_t* from, const uint8_t* to, int line,
                       int depth, const char* text, const char* tend) {
-    char buf[ERRLINE_MAX + 48];
+    /* Static, and that is the whole point of it. 176 bytes of frame put every
+     * `buf[w++]` past the signed-byte displacement -- the frame measured 220
+     * and the compiler was computing an address for each one. Nothing here
+     * re-enters: list_out() writes and returns. */
+    static char buf[ERRLINE_MAX + 48];
     int n = (int) (to - from);
     int row = 0;
 
@@ -1450,7 +1493,7 @@ int main(int argc, char* argv[]) {
         static const char head[] = "PC     Output      Line";
         list_out(head, (int) sizeof(head) - 1);
         if (list_fh != 0) {
-            mos_fwrite(list_fh, (char*) "\r", 1);
+            lst_put("\r", 1);
             /* Counted, like everything else written to this file. It is one
              * byte and it is the header's, and leaving it out put every line
              * offset one character to the left -- which lstfix_apply then
@@ -1484,7 +1527,9 @@ int main(int argc, char* argv[]) {
 
     if (list_fh != 0) {
         /* Every fixup is settled by now, so the lines that held one can be
-         * given the bytes they actually got. */
+         * given the bytes they actually got. The buffer goes out first:
+         * lstfix_apply() seeks, and it can only patch what is on the card. */
+        lst_flush();
         lstfix_apply();
         mos_fclose(list_fh);
         list_fh = 0;

@@ -4,3 +4,20 @@ bin/*.noname.bin
 
 # Local annotations, never in the repo.
 .internal/
+
+# Sources somebody sent in to look at, which are not ours to redistribute.
+# slow.asm is a 419 KB Z80 program that came with a report that zap was
+# slower on it than ez80asm; it stays out of the repository until whoever
+# wrote it says otherwise.
+#
+# Nothing is lost by keeping it out. `test/corpus.sh slow.asm` compares it
+# against the reference the same way the vendored sources are compared, and
+# `test/bench/time-one.sh bin/zap.bin slow.asm` times it on the Agon -- both
+# take a path, so a file sitting here is measured without being committed.
+slow.asm
+slow-zap.jpeg
+*.local.s
+*.local.asm
+
+# Binaries built to answer one question, and the pictures that came with it.
+hwprofile/

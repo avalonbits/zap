@@ -1,17 +1,36 @@
 # How zap works
 
-zap assembles eZ80 source into a binary in **one pass**, in a **single
-translation unit**, on a machine with **512 KB of RAM and no cache**. Those
-three facts explain most of the design; this document describes the parts and
-how they fit together.
+zap assembles eZ80 source into a binary in **one pass**, on a machine with
+**512 KB of RAM and no cache**. Those two facts explain most of the design;
+this document describes the parts and how they fit together.
 
-Nearly everything is in [`src/zap.c`](../src/zap.c), about 9,000 lines, divided
-into sections whose banner comments match the headings below. The instruction
-table is generated into [`src/isa_table.c`](../src/isa_table.c); the buffered
-reader, the number parser and the character conversions are small units of
-their own.
+The assembler is seven files. Each has a header holding what the other parts
+need from it, and the sections below follow them:
 
-Links in this document point at the definition of the thing being described.
+| file | what is in it | sections |
+|---|---|---|
+| [`zap.c`](../src/zap.c) | the line loop, listing, reporting, the command line, `main` | 1, 11, 12 |
+| [`scan.c`](../src/scan.c) | character classes, tokens, registers | 4 |
+| [`insn.c`](../src/insn.c) | mnemonic tables, row selection, emitting | 5, 6 |
+| [`symtab.c`](../src/symtab.c) | symbols, interning, local labels, fixups | 7 |
+| [`expr.c`](../src/expr.c) | expressions, forward references, `EQU` | 8 |
+| [`directive.c`](../src/directive.c) | directives, and the output buffer | 9 |
+| [`macro.c`](../src/macro.c) | definition and expansion | 10 |
+
+[`zap.h`](../src/zap.h) holds what all of them share: the types, the state, the
+constants that size it, and one declaration per symbol a part offers the
+others. The instruction table is generated into
+[`src/isa_table.c`](../src/isa_table.c); the buffered reader, the number parser
+and the character conversions are small units of their own.
+
+The hot path crosses those boundaries on purpose. `assemble_line` has the
+operand parser, the row match and the emitter inlined into it, and a compiler
+inlines only what it can see — so the twenty functions in that position have
+their bodies in `<part>.h` rather than `<part>.c`. Nothing else does; rule 5 in
+section 14 is the long version.
+
+Links in this document point at the definition of the thing being described,
+which for those twenty is the header.
 
 ---
 
@@ -91,13 +110,14 @@ correctly.
 
 ## 3. The state
 
-Everything the assembler knows lives in one file-scope object,
+Everything the assembler knows lives in one object,
 [`state`](../src/symtab.c#L228), of type
-[`zap_state`](../src/zap.h#L1004).
+[`zap_state`](../src/zap.h#L1004). It is defined in `symtab.c` and declared in
+`zap.h`, so every part reaches the same one.
 
 ```mermaid
 flowchart LR
-    S["state<br/>(one file-scope object)"]
+    S["state<br/>(one object, shared by every part)"]
     S --- O["output<br/>out, o, lim, org"]
     S --- G["global symbols<br/>2048 buckets + node/name arenas"]
     S --- L["local scope<br/>64 buckets, generation stamp"]
@@ -485,8 +505,8 @@ one place the two command lines mean different things.
 
 ## 14. What the target imposes
 
-The eZ80 shapes this code more than any other single factor. Four rules run
-through the whole file:
+The eZ80 shapes this code more than any other single factor. Five rules run
+through the whole of it:
 
 1. **Ordinary C becomes library calls.** A 24-bit AND, a multiply, a variable
    shift, a signed comparison — each is a call, not an instruction. Byte
@@ -503,6 +523,11 @@ through the whole file:
    rotate the loop so that the first character is never examined — correct on
    the host, wrong on the target. [`test/run.sh`](../test/run.sh) checks the
    source for it.
+5. **A function inlined across a file boundary needs its body in a header.**
+   There is no link-time optimisation here: a compiler given a declaration
+   emits a call. The twenty functions folded into `assemble_line` are
+   therefore defined in `<part>.h`. Left in `<part>.c` they measured 3% on
+   bbcbasic, which is what that rule is worth.
 
 [`ez80_advanced_optimization_guide.md`](../ez80_advanced_optimization_guide.md)
 is the long form, with the measurements behind each rule.

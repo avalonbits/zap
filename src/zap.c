@@ -5840,11 +5840,11 @@ static bool emit_fill(int n) {
     state.fill_len = (at == state.fill_end) ? state.fill_len + n : n;
 
     state.filled = true;
-    uint8_t* o = state.o;
-    while (n-- != 0) {
-        *o++ = state.fill;
-    }
-    state.o = o;
+    /* memset rather than a loop: on the eZ80 it is `lddr`, and the runs here
+     * are not small. An ORG that skips 96 KB spends all of its time in this
+     * one line, and a character loop makes that a second and a half. */
+    memset(state.o, state.fill, (size_t) n);
+    state.o += n;
     state.fill_end = (int) (state.o - state.out);
 
     return true;

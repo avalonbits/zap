@@ -15,5 +15,9 @@ bin/*.noname.bin
 # `test/bench/time-one.sh bin/zap.bin slow.asm` times it on the Agon -- both
 # take a path, so a file sitting here is measured without being committed.
 slow.asm
+slow-zap.jpeg
 *.local.s
 *.local.asm
+
+# Binaries built to answer one question, and the pictures that came with it.
+hwprofile/

@@ -979,7 +979,11 @@ static void list_hex(char* buf, int* w, uint32_t v, int digits) {
 
 void list_line(int pc, const uint8_t* from, const uint8_t* to, int line,
                       int depth, const char* text, const char* tend) {
-    char buf[ERRLINE_MAX + 48];
+    /* Static, and that is the whole point of it. 176 bytes of frame put every
+     * `buf[w++]` past the signed-byte displacement -- the frame measured 220
+     * and the compiler was computing an address for each one. Nothing here
+     * re-enters: list_out() writes and returns. */
+    static char buf[ERRLINE_MAX + 48];
     int n = (int) (to - from);
     int row = 0;
 

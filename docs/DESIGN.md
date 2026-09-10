@@ -47,7 +47,7 @@ flowchart TD
     out --> side["listing, symbol file, statistics<br/>(optional; none can fail the run)"]
 ```
 
-[`main()`](../src/zap.c#L1415) ·
+[`main()`](../src/zap.c#L1458) ·
 [`parse_args()`](../src/zap.c#L756) ·
 [`run()`](../src/zap.c#L481) ·
 [`run_lines()`](../src/zap.c#L343) ·
@@ -447,7 +447,7 @@ flowchart LR
 
 [`err_line()`](../src/symtab.c#L238) ·
 [`err_tok()`](../src/symtab.h#L47) ·
-[`report()`](../src/zap.c#L1376)
+[`report()`](../src/zap.c#L1419)
 
 ```
 Macro [mos_call] in "kernel.s" line 12 - unknown label 'MOS_SYSVARS'
@@ -456,7 +456,7 @@ Invoked from "main.s" line 84 as
   mos_call MOS_SYSVARS
 ```
 
-There is one warning, [`warn_trunc()`](../src/zap.c#L1338), for a value too
+There is one warning, [`warn_trunc()`](../src/zap.c#L1381), for a value too
 large for the space it is written into. It is the only diagnostic that asks a
 question of every value in every source rather than doing work after something
 has gone wrong, so it is behind `-w`.
@@ -467,19 +467,19 @@ has gone wrong, so it is behind `-w`.
 
 `-l` and `-d` write a listing in the reference's columns — address, up to four
 bytes per row, line number, and the source line as written — through
-[`list_line()`](../src/zap.c#L941) and [`list_out()`](../src/zap.c#L923). A
+[`list_line()`](../src/zap.c#L980) and [`list_out()`](../src/zap.c#L962). A
 macro expansion is listed as the reference lists it: the invocation with no
 bytes, the arguments, then a row per body line tagged with its depth.
 
 A line holding a forward reference is listed before that reference is patched,
-so those lines are remembered by [`lstfix_add()`](../src/zap.c#L1013) and their
+so those lines are remembered by [`lstfix_add()`](../src/zap.c#L1056) and their
 byte columns written again from the finished output by
-[`lstfix_apply()`](../src/zap.c#L1046) before the file is closed. The console
+[`lstfix_apply()`](../src/zap.c#L1089) before the file is closed. The console
 listing cannot be given that treatment and shows the bytes as they were
 emitted.
 
-[`write_symbols()`](../src/zap.c#L1213) writes the global symbols sorted, in
-the reference's format. [`write_stats()`](../src/zap.c#L1279) prints what the
+[`write_symbols()`](../src/zap.c#L1256) writes the global symbols sorted, in
+the reference's format. [`write_stats()`](../src/zap.c#L1322) prints what the
 run used. None of the three can fail an assembly: the output file is already
 written when they run.
 

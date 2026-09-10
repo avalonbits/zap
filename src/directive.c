@@ -34,7 +34,7 @@
  * instruction is allowed. A directive can ask for a whole string or a `DS` of
  * thousands, and growing 32 KB at a time until it fits would be a loop and a
  * realloc per step. */
-static bool out_grow(int need) {
+bool out_grow(int need) {
         Z_SITE("output buffer");
     /* Doubled, not stepped.
      *

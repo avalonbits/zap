@@ -59,10 +59,15 @@
  * read, so the output is built in memory and the references to it are patched
  * at the end. Everything else follows from never looking at a line twice.
  *
- * ONE FILE, and not for the usual reasons. The eZ80 has no cache and a
+ * SEVEN FILES, AND THE HOT PATH IN HEADERS. The eZ80 has no cache and a
  * function call is expensive, so what matters is how much of the hot path the
  * compiler can see at once: `assemble_line` has the operand parser, the row
- * match and the emitter inlined into it.
+ * match and the emitter inlined into it. A compiler only inlines what it can
+ * see, so the twenty functions that have to cross a file boundary inlined
+ * have their bodies in <part>.h rather than in <part>.c -- parse_operand,
+ * match_row, emit_row and the small ones they call. This header holds what
+ * every part shares: the types, the state, the constants, and one declaration
+ * per symbol a part offers the others.
  *
  * EVERY CHARACTER SCAN IS BOUNDED. A loop that walks a character pointer must
  * compare that pointer against the end of the buffer as well as testing what
@@ -1626,6 +1631,7 @@ _Static_assert((R_IXL | R_IYL)
  * The comment on each definition says what it does. */
 /* directive.c */ bool directive_line(const char* s, int n, const char* p, const char* e, const char** stop);
 /* directive.c */ uint8_t directive_of(const char* s, int n);
+/* directive.c */ bool out_grow(int need);
 /* directive.c */ bool out_reserve(void);
 /* directive.c */ int str_escape(char c);
 /* expr.c      */ bool defer_expr(const char* text, int n, dop* op);

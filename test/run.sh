@@ -1,12 +1,13 @@
 #!/bin/bash
 # Host test runner.
 #
-# zap is a single translation unit with its own main, and everything in it is
-# static, so there is no library for a test to link against: a test that needs
-# the internals includes zap.c and renames main out of the way. That is why
-# zap.c is not in SRCS below -- each test that wants it brings its own copy,
-# and the ones that only exercise a shared file (test_number.c, test_timing.c)
-# link it from there.
+# zap is seven translation units and one shared header. Everything not named
+# in zap.h is static to its part, so a test that needs the internals of a part
+# includes that part's .c and renames main out of the way -- test_encode.c
+# does that for zap.c (the line loop) and symtab.c (the bucket function its
+# distribution check calls). The parts it includes are then left out of its
+# link line, and the rest are linked in. Tests that only exercise a shared
+# file (test_number.c, test_timing.c) link that file and nothing else.
 #
 # Three kinds of check, in order: the unit tests, the command line, and every
 # source in test/cases assembled against the vendored ez80asm and compared byte
@@ -25,15 +26,23 @@ CFLAGS=(-std=gnu11 -Wall -Wextra -fsigned-char -g -fsanitize=address,undefined
         -include "$ROOT/test/stubs/host_types.h" -Isrc
         -I"$ROOT/test/stubs")
 
-# The shared sources zap links, minus zap.c itself.
+# The shared sources zap links, minus the assembler's own parts.
 SRCS=(src/buf_reader.c src/value.c src/conv.c src/isa_table.c
       "$ROOT/test/stubs/agon_stubs.c")
+
+# The assembler itself, and the subset test_encode.c links rather than
+# including: it brings zap.c and symtab.c in by hand.
+ZAPSRCS=(src/zap.c src/symtab.c src/scan.c src/expr.c src/macro.c
+         src/directive.c src/insn.c)
+ENCODE_LINK=(src/scan.c src/expr.c src/macro.c src/directive.c src/insn.c)
 
 status=0
 for t in test/test_*.c; do
     name=$(basename "$t" .c)
     echo "=== $name ==="
-    cc "${CFLAGS[@]}" -o "$OUT/$name" "$t" "${SRCS[@]}"
+    extra=()
+    [ "$name" = test_encode ] && extra=("${ENCODE_LINK[@]}")
+    cc "${CFLAGS[@]}" -o "$OUT/$name" "$t" "${extra[@]}" "${SRCS[@]}"
     "$OUT/$name" || status=$?
 done
 
@@ -50,7 +59,7 @@ cli_check() {
     fi
 }
 
-cc "${CFLAGS[@]}" -o "$OUT/zap" src/zap.c "${SRCS[@]}"
+cc "${CFLAGS[@]}" -o "$OUT/zap" "${ZAPSRCS[@]}" "${SRCS[@]}"
 printf '  nop\n  ret\n' > "$OUT/ok.s"
 printf '  ld a,\n' > "$OUT/bad.s"
 
@@ -1113,15 +1122,23 @@ else
         # LTRUNC and PTRUNC name a stage inside a stage, so each is paired
         # with the TRUNC that reaches it; that is how they have always been
         # used and not a workaround.
+        : > "$OUT/mflags.log"
         for flags in "-DTRUNC=1" "-DTRUNC=7" "-DTRUNC=4 -DTRUNC_NODIR" \
                      "-DTRUNC=4 -DTRUNC_NODIR -DMTRUNC" "-DTRUNC=3 -DLTRUNC=1" \
                      "-DTRUNC=5 -DPTRUNC=1" "-DETRUNC=1" "-DMTRUNC" \
                      "-DNOFIX" "-DEVAL=int" "-DZMALLOC"; do
             # shellcheck disable=SC2086
-            if "$CC_EZ80" -mllvm -z80-gas-style -mllvm -z80-print-zero-offset \
-                -nostdinc -isystem "$HOME/agondev/include" -target ez80-none-elf \
-                -DAGONDEV -Oz -Isrc -S -o /dev/null $flags src/zap.c \
-                > "$OUT/mflags.log" 2>&1; then
+            # Every part, not only zap.c: these flags gate code in the
+            # scanner, the expression parser and the emitter as well, and
+            # compiling one file would miss a break in any of the others.
+            mf=0
+            for part in "${ZAPSRCS[@]}"; do
+                "$CC_EZ80" -mllvm -z80-gas-style -mllvm -z80-print-zero-offset \
+                    -nostdinc -isystem "$HOME/agondev/include" -target ez80-none-elf \
+                    -DAGONDEV -Oz -Isrc -S -o /dev/null $flags "$part" \
+                    >> "$OUT/mflags.log" 2>&1 || mf=1
+            done
+            if [ "$mf" = 0 ]; then
                 echo "PASS  the measuring build $flags still compiles"
             else
                 echo "FAIL  the measuring build $flags does not compile"
@@ -1287,7 +1304,7 @@ cli_check "an unknown option is refused" \
     "$(printf '%s' "$unk" | grep -c 'Unknown option -zat')" 1
 
 for flag in DUP_ROW DUP_GROUP DUP_BUCKET DUP_HASH DUP_SYMCHAIN DUP_INTERN DUP_LOCINTERN DUP_NUMTOK; do
-    if ! cc "${CFLAGS[@]}" "-D$flag" -o "$OUT/zap_$flag" src/zap.c "${SRCS[@]}" \
+    if ! cc "${CFLAGS[@]}" "-D$flag" -o "$OUT/zap_$flag" "${ZAPSRCS[@]}" "${SRCS[@]}" \
          2>"$OUT/$flag.log"; then
         echo "FAIL  -D$flag does not build"
         status=1

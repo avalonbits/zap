@@ -28,11 +28,14 @@
 #include <string.h>
 #include <unistd.h>
 
-/* zap is one translation unit and everything in it is static, so there is no
- * library to link against: the test includes the program and moves its main
- * out of the way. */
+/* Everything not named in zap.h is static to its part, so a test that reaches
+ * into one has to include it: zap.c for the line loop, and symtab.c for
+ * sym_bucket, whose distribution the bucket check below measures. main is
+ * moved out of the way, and test/run.sh leaves these two out of the link line
+ * and links the other five parts. */
 #define main zap_main
 #include "zap.c"
+#include "symtab.c"
 #undef main
 
 static int failures = 0;

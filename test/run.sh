@@ -729,40 +729,75 @@ anon=$("$OUT/zap" -c "$OUT/anon.s" "$OUT/anon.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an anonymous label in a macro is refused" \
     "$(printf '%s' "$anon" | grep -c 'no anonymous labels allowed in a macro')" 1
 
-# A FILLBYTE that would change the fill of a reservation already written.
+# FILLBYTE reaching backwards, which in the reference it does.
 #
-# The reference fills a reservation when it writes the file out, so the last
-# FILLBYTE wins for every one of them, backwards as well. One pass writes the
-# bytes where it meets them; reproducing that means remembering every reserved
-# range to go back over, for a case that appears nowhere in the reference's own
-# corpus, where every FILLBYTE precedes the reservations it is for.
-printf '  ds 2\n  fillbyte 0xAA\n  nop\n' > "$OUT/fb1.s"
-fb1=$("$OUT/zap" -c "$OUT/fb1.s" "$OUT/fb1.bin" 2>&1 | tr -d '\r' || true)
-cli_check "a FILLBYTE that reaches backwards is refused" \
-    "$(printf '%s' "$fb1" | grep -c 'line 2 - FILLBYTE must come before the space it fills')" 1
+# A reservation there is a gap filled when the next byte is written, with the
+# FILLBYTE in force at that moment -- and the reference's `fillbyte` survives
+# the pass boundary, so pass two starts with the value the *last* FILLBYTE in
+# the file left behind. A run reserved before the first FILLBYTE is reached
+# therefore takes the file's final value, and one reserved after takes the
+# value in force where it stands. Each case below is the reference's own
+# output, taken from it.
+fb() {
+    printf '%b' "$2" > "$OUT/fb.s"
+    "$OUT/zap" -c -ez80 "$OUT/fb.s" "$OUT/fb.bin" > /dev/null 2>&1 || true
+    cli_check "$1" "$(od -An -tx1 "$OUT/fb.bin" 2>/dev/null | tr -s ' ')" " $3"
+    rm -f "$OUT/fb.s" "$OUT/fb.bin"
+}
 
-# The same fault, inside a macro whose lines above it named a label further
-# down the body.
+fb "a FILLBYTE fills the reservation the output still ends with" \
+    '  ds 2\n  fillbyte 0xAA\n  nop\n' "aa aa 00"
+fb "and one reaches back over a reservation already written out" \
+    '  nop\n  ds 2\n  nop\n  fillbyte 0xAA\n  nop\n' "00 aa aa 00 00"
+fb "with 0xFF still the answer where the file has no FILLBYTE at all" \
+    '  nop\n  ds 2\n  nop\n' "00 ff ff 00"
+fb "a run written out before the first one takes the file's last value" \
+    '  nop\n  ds 2\n  nop\n  fillbyte 0xAA\n  fillbyte 0xBB\n  nop\n' "00 bb bb 00 00"
+fb "and a run after it takes the value in force where it stands" \
+    '  nop\n  fillbyte 0xAA\n  ds 2\n  nop\n  fillbyte 0xBB\n  nop\n' "00 aa aa 00 00"
+fb "so the two halves of one file can differ" \
+    '  nop\n  ds 2\n  nop\n  fillbyte 0xAA\n  nop\n  ds 2\n  nop\n  fillbyte 0xBB\n  nop\n' \
+    "00 bb bb 00 00 aa aa 00 00"
+fb "a run a FILLBYTE decided is not decided again by a later one" \
+    '  ds 2\n  fillbyte 0xAA\n  nop\n  fillbyte 0xBB\n' "aa aa 00"
+fb "ORG padding is a reservation like the others" \
+    '  nop\n  org $+4\n  fillbyte 0xAA\n  nop\n' "00 aa aa aa aa 00"
+fb "and so is ALIGN padding" \
+    '  nop\n  align 4\n  nop\n  fillbyte 0xAA\n  nop\n' "00 aa aa aa 00 00"
+fb "two reservations with output between them are two runs" \
+    '  nop\n  ds 2\n  nop\n  ds 3\n  nop\n  fillbyte 0xAA\n  nop\n' \
+    "00 aa aa 00 aa aa aa 00 00"
+fb "two with nothing between them are one" \
+    '  nop\n  ds 2\n  ds 3\n  nop\n  fillbyte 0x5A\n  nop\n' "00 5a 5a 5a 5a 5a 00 00"
+fb "a BLK keeps its own value through all of it" \
+    '  nop\n  blkb 2,0x11\n  ds 2\n  nop\n  fillbyte 0xAA\n  nop\n' "00 11 11 aa aa 00 00"
+fb "and a reservation still reaching the end of the file is dropped" \
+    '  nop\n  ds 2\n  fillbyte 0xAA\n' "00"
+
+# A macro that is a FILLBYTE and a DS, which is what tomm/vga-ez80's REP_NOP
+# is, after an ALIGN whose padding is still waiting on the file's last value.
+printf '  macro REP_NOP num\n  fillbyte 0\n  ds num\n  endmacro\n  align $40\n  REP_NOP 3\n  nop\n' \
+    > "$OUT/fb4.s"
+"$OUT/zap" -c -ez80 "$OUT/fb4.s" "$OUT/fb4.bin" > /dev/null 2>&1 || true
+cli_check "a macro that sets the FILLBYTE and reserves in one breath" \
+    "$(od -An -tx1 "$OUT/fb4.bin" 2>/dev/null | tr -s ' ')" " 00 00 00 00"
+
+# A macro that fails part way, whose lines above the failure named a label
+# further down the body.
 #
-# The expansion stops at the FILLBYTE, so it never reaches @skip, and the
-# reference to it cannot be settled. That is a consequence of the failure and
-# not the failure: reported instead of the real error it sends a reader to a
-# label that is perfectly well defined four lines below. This is what a real
-# source did -- tomm/vga-ez80, whose REP_NOP macro is a FILLBYTE and a DS --
-# and it said "unknown label '@empty'" against the wrong file and line.
-printf '  ds 2\n  macro M\n    jr z,@skip\n    fillbyte 0xAA\n  @skip:\n    nop\n  endmacro\n  M\n' \
+# The expansion stops at the second RELOCATE, so it never reaches @skip, and
+# the reference to it cannot be settled. That is a consequence of the failure
+# and not the failure: reported instead of the real error it sends a reader to
+# a label that is perfectly well defined two lines below. This is what a real
+# source did -- tomm/vga-ez80 -- and it said "unknown label '@empty'" against
+# the wrong file and line.
+printf '  macro M\n    jr z,@skip\n    relocate 0x100\n    relocate 0x200\n  @skip:\n    nop\n  endmacro\n  M\n' \
     > "$OUT/fb3.s"
 fb3=$("$OUT/zap" -c "$OUT/fb3.s" "$OUT/fb3.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a macro that fails part way reports its own error, not a stranded label" \
-    "$(printf '%s' "$fb3" | grep -c 'FILLBYTE must come before the space it fills')" 1
+    "$(printf '%s' "$fb3" | grep -c 'RELOCATE does not nest')" 1
 cli_check "and says nothing about the label it never reached" \
     "$(printf '%s' "$fb3" | grep -c 'unknown label')" 0
-
-# The same value twice is not a change, so it is allowed.
-printf '  fillbyte 0xAA\n  ds 2\n  fillbyte 0xAA\n  nop\n' > "$OUT/fb2.s"
-"$OUT/zap" -c "$OUT/fb2.s" "$OUT/fb2.bin" > /dev/null 2>&1 || true
-cli_check "the same FILLBYTE twice is not a change" \
-    "$(od -An -tx1 "$OUT/fb2.bin" 2>/dev/null | tr -s ' ')" " aa aa 00"
 
 # RELOCATE, whose three refusals the reference also makes.
 #

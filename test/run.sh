@@ -741,6 +741,23 @@ fb1=$("$OUT/zap" -c "$OUT/fb1.s" "$OUT/fb1.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a FILLBYTE that reaches backwards is refused" \
     "$(printf '%s' "$fb1" | grep -c 'line 2 - FILLBYTE must come before the space it fills')" 1
 
+# The same fault, inside a macro whose lines above it named a label further
+# down the body.
+#
+# The expansion stops at the FILLBYTE, so it never reaches @skip, and the
+# reference to it cannot be settled. That is a consequence of the failure and
+# not the failure: reported instead of the real error it sends a reader to a
+# label that is perfectly well defined four lines below. This is what a real
+# source did -- tomm/vga-ez80, whose REP_NOP macro is a FILLBYTE and a DS --
+# and it said "unknown label '@empty'" against the wrong file and line.
+printf '  ds 2\n  macro M\n    jr z,@skip\n    fillbyte 0xAA\n  @skip:\n    nop\n  endmacro\n  M\n' \
+    > "$OUT/fb3.s"
+fb3=$("$OUT/zap" -c "$OUT/fb3.s" "$OUT/fb3.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a macro that fails part way reports its own error, not a stranded label" \
+    "$(printf '%s' "$fb3" | grep -c 'FILLBYTE must come before the space it fills')" 1
+cli_check "and says nothing about the label it never reached" \
+    "$(printf '%s' "$fb3" | grep -c 'unknown label')" 0
+
 # The same value twice is not a change, so it is allowed.
 printf '  fillbyte 0xAA\n  ds 2\n  fillbyte 0xAA\n  nop\n' > "$OUT/fb2.s"
 "$OUT/zap" -c "$OUT/fb2.s" "$OUT/fb2.bin" > /dev/null 2>&1 || true

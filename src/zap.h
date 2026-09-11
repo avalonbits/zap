@@ -1207,7 +1207,7 @@ _Static_assert(sizeof(bucketslot) > sizeof(const insninfo*),
  * flag rather than a field on zap_state, because zap_state is reached through a pointer on
  * every line and this is read only where an expression has an operator in it. */
 /* Printed by -v. One place, so a release cannot say two things. */
-#define ZAP_VERSION "1.0.0"
+#define ZAP_VERSION "1.0.1"
 
 /* ======================================================================
  * REGISTERS AND CONDITION CODES

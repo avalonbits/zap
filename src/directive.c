@@ -400,6 +400,55 @@ static bool emit_data(uint8_t width, const char** pp, const char* e) {
     return true;
 }
 
+/* Remembers a run at `off`, or extends the last one if it carries straight on
+ * from it -- `DS 2` twice is one run of four, and coalescing keeps the list to
+ * one entry per gap rather than one per directive. */
+static bool earlyf_add(int off, int n) {
+    if (state.earlyf_used > 0) {
+        fillrun* last = &state.earlyf[state.earlyf_used - 1];
+        if (last->off + last->count == off) {
+            last->count += n;
+
+            return true;
+        }
+    }
+    if (state.earlyf_used == state.earlyf_cap) {
+        Z_SITE("early fills");
+        const int want = state.earlyf_cap == 0 ? 4 : state.earlyf_cap + state.earlyf_cap;
+        fillrun* grown =
+            (fillrun*) realloc(state.earlyf, (size_t) want * sizeof(fillrun));
+        if (grown == NULL) {
+            state.err = ZAP_E_OUT_MEMORY_LABELS;
+
+            return false;
+        }
+        state.earlyf = grown;
+        state.earlyf_cap = want;
+    }
+    fillrun* r = &state.earlyf[state.earlyf_used++];
+    r->off = off;
+    r->count = n;
+
+    return true;
+}
+
+/* Takes `n` bytes off the end of the run ending at `end`, which a FILLBYTE has
+ * just decided. Only the newest run can be the one still pending, and it ends
+ * exactly there, so there is never a list to search. */
+static void earlyf_drop(int end, int n) {
+    if (state.earlyf_used == 0) {
+        return;
+    }
+    fillrun* last = &state.earlyf[state.earlyf_used - 1];
+    if (last->off + last->count != end) {
+        return;
+    }
+    last->count -= n;
+    if (last->count <= 0) {
+        state.earlyf_used--;
+    }
+}
+
 /* Fills `n` bytes with the FILLBYTE, which defaults to 0xFF -- what `DS`
  * reserves and what `ALIGN` pads with, as in the reference. */
 static bool emit_fill(int n) {
@@ -415,7 +464,12 @@ static bool emit_fill(int n) {
     const int at = (int) (state.o - state.out);
     state.fill_len = (at == state.fill_end) ? state.fill_len + n : n;
 
-    state.filled = true;
+    /* Before the first FILLBYTE, what goes here is not settled: the reference
+     * fills such a run with the file's *final* value. Remember it, and write
+     * the current value meanwhile so the bytes are never undefined. */
+    if (!state.fill_seen && !earlyf_add(at, n)) {
+        return false;
+    }
     /* memset rather than a loop: on the eZ80 it is `lddr`, and the runs here
      * are not small. An ORG that skips 96 KB spends all of its time in this
      * one line, and a character loop makes that a second and a half. */
@@ -1129,25 +1183,22 @@ bool directive_line(const char* s, int n, const char* p,
     }
 
     if (kind == DIR_FILLBYTE) {
-        /* One byte, and it stands for the rest of the assembly.
+        /* One byte, and it stands for the rest of the assembly -- and, for
+         * the reservations before the first one of these, backwards over the
+         * whole of it. `earlyf` in zap.h has why.
          *
-         * In the reference it stands for the *whole* assembly, backwards as
-         * well: `ds 2 / fillbyte 0xAA` fills that earlier reservation with
-         * 0xAA, because a reservation there is a gap filled when the file is
-         * written out, and the last FILLBYTE wins. One pass writes the bytes
-         * where it meets them, so reproducing that would mean remembering
-         * every reserved range in the file to go back over.
-         *
-         * So a FILLBYTE that would change the fill of a reservation already
-         * written is refused rather than got wrong. A second one with the same
-         * value changes nothing and is allowed. Blocks are unaffected either
-         * way: BLKB writes data, and takes the value in force where it
-         * stands. */
-        if (state.filled && (uint8_t) value != state.fill) {
-            state.err = ZAP_E_FILLBYTE_COME_BEFORE_SPACE_FILLS;
-
-            return false;
+         * A run the output still ends with has not been written out in the
+         * reference yet -- it is filled when the next byte is -- so this
+         * FILLBYTE is the one that decides it. Put the new value through it,
+         * and take it off the list waiting on the file's final value, which is
+         * no longer the value it gets. */
+        const int here = (int) (state.o - state.out);
+        if (state.fill_len > 0 && state.fill_end == here) {
+            memset(state.o - state.fill_len, (uint8_t) value,
+                   (size_t) state.fill_len);
+            earlyf_drop(here, state.fill_len);
         }
+        state.fill_seen = true;
         state.fill = (uint8_t) value;
         *stop = p;
 

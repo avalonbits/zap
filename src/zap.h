@@ -392,7 +392,6 @@ struct _macro {
 typedef enum {
     ZAP_OK = 0,
     ZAP_E_ADL_0_OR_1,
-    ZAP_E_FILLBYTE_COME_BEFORE_SPACE_FILLS,
     ZAP_E_IF_LEFT_OPEN_AT_END_FILE,
     ZAP_E_RELOCATE_DOES_NOT_NEST,
     ZAP_E_MACRO_WAS_NEVER_CLOSED,
@@ -556,6 +555,12 @@ typedef struct {
     uint8_t width;
     int line;
 } fillpatch;
+
+/* A reserved run still waiting on the file's final FILLBYTE. See `earlyf`. */
+typedef struct {
+    int off;
+    int count;
+} fillrun;
 
 /* A saved bucket, so an expansion can take the table over and give it back.
  * See scope_push. */
@@ -942,9 +947,6 @@ typedef struct _zap_state {
      * it back -- labels, `$`, EQU and every fixup follow without knowing. */
     int reloc_org;
     bool reloc;
-    /* Whether a reservation has been written yet. See FILLBYTE. */
-    bool filled;
-
     /* Where `path` points when an include fails.
      *
      * The name of an included file lives in the frame of the include that
@@ -989,6 +991,24 @@ typedef struct _zap_state {
     fillpatch* fillp;
     int fillp_used;
     int fillp_cap;
+    /* Reserved runs whose fill the reference has not decided yet.
+     *
+     * There it is decided twice over. A reservation is a gap filled when the
+     * next byte is written, with the FILLBYTE in force at that moment -- and
+     * `fillbyte` survives the pass boundary, so pass two begins with the value
+     * the *last* FILLBYTE in the file left behind. A run written before any
+     * FILLBYTE has been reached therefore takes the file's final value, and
+     * one written after takes the latest value before it.
+     *
+     * The second half needs nothing: zap writes the bytes as it meets them,
+     * with the value in force, which is the same answer. The first half is the
+     * one pass cannot answer at the time, so those runs are remembered here
+     * and filled in at the end of the source. `fill_seen` says which half a
+     * run falls in. */
+    fillrun* earlyf;
+    int earlyf_used;
+    int earlyf_cap;
+    bool fill_seen;
     /* One expansion buffer per level of nesting, kept and grown rather than
      * allocated per invocation, because a malloc and a free are a large part
      * of what an expansion costs. There is one per level because an outer

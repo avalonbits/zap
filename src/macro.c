@@ -590,7 +590,10 @@ bool macro_expand(const macro* m, const char* p, const char* e,
          * 5.48 -> 5.52 and bbcbasic 3.84 -> 3.86. The same fields the line
          * loop uses serve here, because a line that is listed by an inner
          * expansion is not listed again by this one. */
-        const uint8_t* bo = state.o;
+        /* An offset, for the reason state.lst_off is one: the body line is
+         * assembled between here and the listing below, and that can grow the
+         * output buffer out from under a pointer. */
+        const int bo = (int) (state.o - state.out);
         int bpc = 0;
         if (listing) {
             bpc = state.org + (int) (state.o - state.out);
@@ -655,10 +658,11 @@ bool macro_expand(const macro* m, const char* p, const char* e,
                 /* The body **as written**, parameters and all, which is what
                  * the reference shows: `db x`, not `db 7`. What x was is on
                  * the Args line above it. */
-                list_line(bpc, bo, state.o, state.line, state.depth,
+                const uint8_t* const from = state.out + bo;
+                list_line(bpc, from, state.o, state.line, state.depth,
                           m->body + b, m->body + le + 1);
                 if (state.fix_touched) {
-                    lstfix_add(bo, state.o);
+                    lstfix_add(from, state.o);
                 }
             }
             state.lst_done = false;

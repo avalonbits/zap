@@ -486,6 +486,23 @@ cli_check "the inner expansion is one deeper" \
     "$(printf '%s' "$lst3" | grep -c 'M2 Args: none$')" 1
 cli_check "and its body line is tagged M2" \
     "$(printf '%s' "$lst3" | grep -c '0001M2 nop$')" 1
+# A listed line that grows the output buffer while it is being assembled.
+#
+# The listing holds where the line started so it can print the bytes it wrote.
+# Held as a pointer, that is a pointer into a buffer the line itself can
+# realloc -- `blkb 20000` asks for more than the 16 KB the buffer starts at --
+# and realloc is allowed to move. After it moves, the pointer is freed memory
+# and `to - from` in list_line is not a length at all. The ASan build this runs
+# under aborts on it, so a regression here is a failed run, not a wrong byte.
+printf '  blkb 20000, 0xAA\n  nop\n' > "$OUT/grow.s"
+rm -f "$OUT/grow.lst" "$OUT/grow.bin"
+"$OUT/zap" -c -l "$OUT/grow.s" "$OUT/grow.bin" > /dev/null 2>&1 || true
+cli_check "a listed line that grows the buffer still writes its bytes" \
+    "$(wc -c < "$OUT/grow.bin" 2>/dev/null || echo 0)" 20001
+cli_check "and lists them from where they actually are" \
+    "$(head -2 "$OUT/grow.lst" 2>/dev/null | tail -1 | tr -d '\r' | cut -c1-18)" \
+    "040000 AA AA AA AA"
+
 # -d prints the same listing and still writes no file.
 rm -f "$OUT/lst2.lst"
 cli_check "-d lists an expansion too" \

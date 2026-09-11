@@ -392,7 +392,7 @@ __attribute__((noinline)) bool run_lines(void) {
          * and take two registers from the loop that has fewest to spare. At a
          * fixed address the stores are absolute. */
         if (listing) {
-            state.lst_o = state.o;
+            state.lst_off = (int) (state.o - state.out);
             state.lst_pc = state.org + (int) (state.o - state.out);
             state.lst_p = p;
         }
@@ -468,9 +468,12 @@ __attribute__((noinline)) bool run_lines(void) {
 
         if (listing) {
             if (!state.lst_done) {
-                list_line(state.lst_pc, state.lst_o, state.o, state.line, 0, p, stop);
+                /* Resolved here rather than carried, because the buffer may
+                 * have moved while the line was assembled. */
+                const uint8_t* const from = state.out + state.lst_off;
+                list_line(state.lst_pc, from, state.o, state.line, 0, p, stop);
                 if (state.fix_touched) {
-                    lstfix_add(state.lst_o, state.o);
+                    lstfix_add(from, state.o);
                 }
             }
             state.lst_done = false;

@@ -842,8 +842,14 @@ typedef struct _zap_state {
      * The innermost capture wins: a macro body writes `errline` and the loop
      * that invoked it then finds it taken and writes `errfrom` instead, which
      * is how the two halves of "Invoked from" find their own line. */
-    /* Where the line being listed started; see the line loop. */
-    const uint8_t* lst_o;
+    /* Where the line being listed started; see the line loop.
+     *
+     * An offset and not a pointer. The line it belongs to is assembled between
+     * the store and the load, and a line that needs more room than is left
+     * grows the buffer -- which is a realloc, and a realloc may move. A
+     * pointer taken before that reads freed memory after it, and `to - from`
+     * in list_line comes out as nonsense besides. */
+    int lst_off;
     int lst_pc;
     /* The start of the line being assembled, and whether the listing for it
      * has already been written. A macro invocation writes its own -- the

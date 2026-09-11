@@ -4,9 +4,9 @@
 ; differently in the reference and identically here -- bytes are what this
 ; file is for, and the difference is in docs/DESIGN.md.
 ;
-; The FILLBYTE is first because a later one is the one refusal zap keeps in
-; this area: the reference fills every reservation at write-out, so a FILLBYTE
-; after a DS changes bytes already emitted here. Also in completeness.md.
+; The FILLBYTE is first here so that every reservation below takes it where it
+; stands. fills_late.s is the other half: what a FILLBYTE that comes after a
+; reservation does to it.
     .assume adl=1
     .org $40000
     fillbyte 0x55

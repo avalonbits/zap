@@ -23,7 +23,6 @@
 const char* const zap_err_text[] = {
     [ZAP_OK] = "no error",
     [ZAP_E_ADL_0_OR_1] = "ADL is 0 or 1",
-    [ZAP_E_FILLBYTE_COME_BEFORE_SPACE_FILLS] = "FILLBYTE must come before the space it fills",
     [ZAP_E_IF_LEFT_OPEN_AT_END_FILE] = "IF left open at the end of the file",
     [ZAP_E_RELOCATE_DOES_NOT_NEST] = "RELOCATE does not nest",
     [ZAP_E_MACRO_WAS_NEVER_CLOSED] = "a MACRO was never closed",

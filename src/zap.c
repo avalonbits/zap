@@ -316,10 +316,26 @@ static bool resolve_fills(void) {
     return true;
 }
 
+/* Fills the runs that were reserved before the file's first FILLBYTE, which
+ * the reference gives the *last* FILLBYTE in the file. See `earlyf` in zap.h.
+ *
+ * Nothing to do unless a FILLBYTE moved the value off the 0xFF these runs were
+ * written with, which is the case for every source that has none. */
+static void resolve_early_fills(void) {
+    if (!state.fill_seen || state.fill == 0xFF) {
+        return;
+    }
+    for (int i = 0; i < state.earlyf_used; i++) {
+        const fillrun* r = &state.earlyf[i];
+        memset(state.out + r->off, state.fill, (size_t) r->count);
+    }
+}
+
 static bool resolve_fixups(void) {
     if (!resolve_deferred() || !resolve_fills()) {
         return false;
     }
+    resolve_early_fills();
     for (int i = 0; i < state.fix_used; i++) {
         if (!patch_fixup(&state.fixups[i])) {
             return false;
@@ -501,7 +517,6 @@ __attribute__((noinline)) static bool run(const char* path) {
     state.org = opt_org;
     state.org_set = false;
     state.fill = opt_fill;
-    state.filled = false;
     state.reloc = false;
     state.reloc_org = 0;
     state.adl = opt_adl;
@@ -528,6 +543,10 @@ __attribute__((noinline)) static bool run(const char* path) {
     state.fillp = NULL;
     state.fillp_used = 0;
     state.fillp_cap = 0;
+    state.earlyf = NULL;
+    state.earlyf_used = 0;
+    state.earlyf_cap = 0;
+    state.fill_seen = false;
     for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
         state.expbuf[i] = NULL;
         state.expcap[i] = 0;
@@ -612,6 +631,7 @@ static void dz_free(void) {
     free(state.subfix);
     free(state.defer);
     free(state.fillp);
+    free(state.earlyf);
     free(state.lstfix);
     for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
         free(state.expbuf[i]);

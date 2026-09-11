@@ -27,16 +27,17 @@ That is the only thing the runner can check, and it is the thing that matters.
                 of the boundary, LF and CRLF
     values/     bytes that are warned about but still written -- truncation,
                 a reservation's dropped initializer, an immediate wider than
-                the machine -- and what DS, ALIGN and BLK each emit
+                the machine -- and what DS, ALIGN and BLK each emit, with the
+                FILLBYTE before and after the runs it decides
     listing/    sources whose `.lst` is compared as well as their bytes
 
 ## What is deliberately not here
 
-**The four differences zap keeps on purpose.** They are argued in
+**The three differences zap keeps on purpose.** They are argued in
 docs/DESIGN.md and a file for any of them would fail by design: a
-negative reservation (4 GB in the reference), a FILLBYTE that would change a
-reservation already written, `@local - global` with both still ahead, and the
-reference substituting a macro parameter inside a longer identifier.
+negative reservation (4 GB in the reference), `@local - global` with both
+still ahead, and the reference substituting a macro parameter inside a longer
+identifier.
 
 **Anything that only differs in a message.** The runner compares bytes and
 refusals. zap's diagnostics are its own words and always have been, so a

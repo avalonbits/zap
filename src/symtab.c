@@ -587,7 +587,7 @@ bool patch_fixup(const fixup* f) {
     }
 
     const uint8_t w = (uint8_t) (f->width & FIX_WIDTH);
-    uint8_t* at = state.out + f->off;
+    uint8_t* at = out_ptr(f->off);
     if (w == 0) {
         /* The byte after the displacement byte, which is where a relative
          * jump is measured from. */

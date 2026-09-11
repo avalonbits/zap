@@ -45,11 +45,11 @@ bool out_grow(int need) {
      * 1.5 times the final size, where stepping by a fixed amount makes it
      * about twice. */
     int want = state.cap + (state.cap < OUT_STEP ? OUT_STEP : state.cap);
-    const int least = (int) (state.o - state.out) + need + OUT_MAX_INSN;
+    const int least = (int) (state.o - state.win) + need + OUT_MAX_INSN;
     if (want < least) {
         want = least;
     }
-    uint8_t* grown = (uint8_t*) realloc(state.out, (size_t) want);
+    uint8_t* grown = (uint8_t*) realloc(state.win, (size_t) want);
     if (grown == NULL) {
         /* Set here rather than left to a fallback in main, so that every
          * failure leaves a code behind it. */
@@ -60,8 +60,8 @@ bool out_grow(int need) {
 
     /* realloc is allowed to move the buffer, so the cursor and the limit are
      * both relative to a base that may no longer be there. */
-    state.o = grown + (state.o - state.out);
-    state.out = grown;
+    state.o = grown + (state.o - state.win);
+    state.win = grown;
     state.cap = want;
     state.lim = grown + want - OUT_MAX_INSN;
 
@@ -356,7 +356,7 @@ static bool emit_data(uint8_t width, const char** pp, const char* e) {
                 }
                 if (!fix_add(target, sub, (int) value,
                              (uint8_t) (width | (subneg ? FIX_SUB2 : 0)),
-                             (int) (state.o - state.out))) {
+                             out_here())) {
                     return false;
                 }
                 value = 0;
@@ -461,7 +461,7 @@ static bool emit_fill(int n) {
 
     /* A run that starts where the last one ended is the same run. `DS 4` twice
      * at the end of a file is eight bytes to drop, not four. */
-    const int at = (int) (state.o - state.out);
+    const int at = out_here();
     state.fill_len = (at == state.fill_end) ? state.fill_len + n : n;
 
     /* Before the first FILLBYTE, what goes here is not settled: the reference
@@ -475,7 +475,7 @@ static bool emit_fill(int n) {
      * one line, and a character loop makes that a second and a half. */
     memset(state.o, state.fill, (size_t) n);
     state.o += n;
-    state.fill_end = (int) (state.o - state.out);
+    state.fill_end = out_here();
 
     return true;
 }
@@ -1192,7 +1192,7 @@ bool directive_line(const char* s, int n, const char* p,
          * FILLBYTE is the one that decides it. Put the new value through it,
          * and take it off the list waiting on the file's final value, which is
          * no longer the value it gets. */
-        const int here = (int) (state.o - state.out);
+        const int here = out_here();
         if (state.fill_len > 0 && state.fill_end == here) {
             memset(state.o - state.fill_len, (uint8_t) value,
                    (size_t) state.fill_len);
@@ -1229,7 +1229,7 @@ bool directive_line(const char* s, int n, const char* p,
          * this directive and nothing else has to know. */
         state.reloc_org = state.org;
         state.reloc = true;
-        state.org = (int) value - (int) (state.o - state.out);
+        state.org = (int) value - out_here();
         *stop = p;
 
         return true;
@@ -1303,7 +1303,7 @@ bool directive_line(const char* s, int n, const char* p,
             }
             fillpatch* fp = &state.fillp[state.fillp_used++];
             fp->sp = pending;
-            fp->off = (int) (state.o - state.out);
+            fp->off = out_here();
             fp->count = value;
             fp->width = (uint8_t) width;
             fp->line = state.line;
@@ -1338,10 +1338,10 @@ bool directive_line(const char* s, int n, const char* p,
          * to its address. That is not a guess -- two ORGs with nothing between
          * them write the 64 KB gap in the reference, so the second is already
          * behaving as a pad even though nothing has been emitted. */
-        if (!state.org_set && state.o == state.out) {
+        if (!state.org_set && out_here() == 0) {
             state.org = value;
         } else {
-            const int here = state.org + (int) (state.o - state.out);
+            const int here = state.org + out_here();
             if (value < here) {
                 /* "New address lower than current PC address" there, and the
                  * same here: an ORG that goes backwards would have to unwrite
@@ -1377,7 +1377,7 @@ bool directive_line(const char* s, int n, const char* p,
     /* Pad to the next multiple. `-addr & (n - 1)` is the distance to it, and
      * the AND is a call to __iand on a 24-bit value -- once per ALIGN, which
      * is a price a directive can pay. */
-    const int addr = state.org + (int) (state.o - state.out);
+    const int addr = state.org + out_here();
     if (!emit_fill((-addr) & (value - 1))) {
         return false;
     }

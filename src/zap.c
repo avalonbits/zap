@@ -74,7 +74,7 @@ __attribute__((noinline)) bool assemble_line(const char* p, const char* e, const
      * and so is `foo:` alone. */
     if (*p == ':') {
         LTRUNC_AT(1);
-        const int addr = state.org + (int) (state.o - state.out);
+        const int addr = state.org + out_here();
         /* "Label too long" at sixty-five characters, as in the reference. The
          * `@` of a local counts towards the limit, which is why this is asked
          * once for both rather than after the two are told apart.
@@ -293,7 +293,7 @@ static bool resolve_fills(void) {
             return false;
         }
         const evalue v = fp->sp->addr;
-        uint8_t* o = state.out + fp->off;
+        uint8_t* o = out_ptr(fp->off);
         const int nv = (int) v;
         for (int n = fp->count; n != 0; n--) {
             if (fp->width > 3) {
@@ -327,7 +327,7 @@ static void resolve_early_fills(void) {
     }
     for (int i = 0; i < state.earlyf_used; i++) {
         const fillrun* r = &state.earlyf[i];
-        memset(state.out + r->off, state.fill, (size_t) r->count);
+        memset(out_ptr(r->off), state.fill, (size_t) r->count);
     }
 }
 
@@ -392,8 +392,8 @@ __attribute__((noinline)) bool run_lines(void) {
          * and take two registers from the loop that has fewest to spare. At a
          * fixed address the stores are absolute. */
         if (listing) {
-            state.lst_off = (int) (state.o - state.out);
-            state.lst_pc = state.org + (int) (state.o - state.out);
+            state.lst_off = out_here();
+            state.lst_pc = state.org + out_here();
             state.lst_p = p;
         }
 
@@ -470,7 +470,7 @@ __attribute__((noinline)) bool run_lines(void) {
             if (!state.lst_done) {
                 /* Resolved here rather than carried, because the buffer may
                  * have moved while the line was assembled. */
-                const uint8_t* const from = state.out + state.lst_off;
+                const uint8_t* const from = out_ptr(state.lst_off);
                 list_line(state.lst_pc, from, state.o, state.line, 0, p, stop);
                 if (state.fix_touched) {
                     lstfix_add(from, state.o);
@@ -510,13 +510,15 @@ __attribute__((noinline)) static bool run(const char* path) {
         state.cap = OUT_MIN;
     }
     Z_SITE("output buffer");
-    state.out = (uint8_t*) malloc((size_t) state.cap);
-    if (state.out == NULL) {
+    state.win = (uint8_t*) malloc((size_t) state.cap);
+    if (state.win == NULL) {
         state.err = ZAP_E_OUT_MEMORY;
 
         return false;
     }
-    state.o = state.out;
+    state.o = state.win;
+    /* The buffer holds the whole output, so its first byte is the output's. */
+    state.wbase = 0;
     state.org = opt_org;
     state.org_set = false;
     state.fill = opt_fill;
@@ -554,7 +556,7 @@ __attribute__((noinline)) static bool run(const char* path) {
         state.expbuf[i] = NULL;
         state.expcap[i] = 0;
     }
-    state.lim = state.out + state.cap - OUT_MAX_INSN;
+    state.lim = state.win + state.cap - OUT_MAX_INSN;
     Z_SITE("symbol buckets");
     state.syms = (symslot*) calloc(NSYMB, sizeof(symslot));
     if (state.syms == NULL) {
@@ -616,7 +618,7 @@ __attribute__((noinline)) static bool run(const char* path) {
      *
      * After the fixups rather than before, so that nothing has to reason about
      * whether shortening the output could move a patch site. */
-    if (state.fill_len != 0 && (int) (state.o - state.out) == state.fill_end) {
+    if (state.fill_len != 0 && out_here() == state.fill_end) {
         state.o -= state.fill_len;
     }
 
@@ -626,7 +628,7 @@ __attribute__((noinline)) static bool run(const char* path) {
 /* Everything run() may have allocated, freed in one place so that the two
  * error paths and the success path cannot drift apart. */
 static void dz_free(void) {
-    free(state.out);
+    free(state.win);
     free(state.syms);
     free(state.fixups);
     free(state.lfixups);
@@ -1094,7 +1096,7 @@ void lstfix_add(const uint8_t* from, const uint8_t* to) {
     lstfix* r = &state.lstfix[state.lstfix_used++];
     r->lstat = state.lst_lineat;
     r->row0 = state.lst_row0;
-    r->outoff = (int) (from - state.out);
+    r->outoff = out_at(from);
     r->nbytes = (int) (to - from);
 }
 
@@ -1122,7 +1124,7 @@ static void lstfix_apply(void) {
             int w = 0;
             int put = 0;
             while (put < 4 && row * 4 + put < r->nbytes) {
-                list_hex(field, &w, state.out[r->outoff + row * 4 + put], 2);
+                list_hex(field, &w, out_ptr(r->outoff)[row * 4 + put], 2);
                 field[w++] = ' ';
                 put++;
             }
@@ -1363,7 +1365,7 @@ static void write_stats(void) {
     printf("Labels               : %6d\r\n", syms);
     printf("\r\nMacro memory         : %6d\r\n", macbytes);
     printf("Macros               : %6d\r\n", macros);
-    printf("\r\nOutput               : %6d\r\n", (int) (state.o - state.out));
+    printf("\r\nOutput               : %6d\r\n", out_here());
     printf("Output buffer        : %6d\r\n", state.cap);
 }
 
@@ -1542,9 +1544,9 @@ int main(int argc, char* argv[]) {
 
         return 1;
     }
-    const int written = (int) (state.o - state.out);
+    const int written = out_here();
     if (written > 0) {
-        mos_fwrite(fh, (char*) state.out, (uint24_t) written);
+        mos_fwrite(fh, (char*) state.win, (uint24_t) written);
     }
     mos_fclose(fh);
 

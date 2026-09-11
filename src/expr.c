@@ -398,7 +398,7 @@ static bool expr_term(evalue* out, const char** pp, const char* e,
             /* The address of the instruction being assembled. `$` on its own;
              * with hex digits after it, it is the radix prefix instead, and
              * the scan above has already taken them. */
-            v = state.org + (int) (state.o - state.out);
+            v = state.org + out_here();
         } else if (!expr_atom(&v, ts, n)) {
             return false;
         }

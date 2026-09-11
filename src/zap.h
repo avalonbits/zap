@@ -337,7 +337,7 @@ typedef struct {
 typedef struct {
     int lstat;      /* offset in the listing file of the line's first row */
     int row0;       /* length of that row, through its newline */
-    int outoff;     /* the line's first byte, as an index into state.out */
+    int outoff;     /* the line's first byte, counted from the start of the output */
     int nbytes;     /* how many bytes it printed */
 } lstfix;
 
@@ -756,9 +756,21 @@ typedef struct _zap_state {
      * flags, once per instruction assembled. The emitter also takes and
      * returns its cursor directly, with nothing to add or subtract at either
      * end. */
-    uint8_t* out;   /* the buffer, for realloc and for writing it out */
+    uint8_t* win;   /* the buffer, for realloc and for writing it out */
     uint8_t* o;     /* the next byte to write */
     uint8_t* lim;   /* the last address at which a whole instruction still fits */
+
+    /* What `win[0]` is, counted from the first byte of the output.
+     *
+     * Zero for now, and the whole output is in the buffer -- so `out_here()`
+     * is the same number it always was. It exists so that the buffer can
+     * become a window onto a longer output that is being written as it goes,
+     * and so that every position in the program is already asking for the
+     * answer that will still be right when it does.
+     *
+     * Next to the cursor because `out_here()` reads both, on every label, every
+     * `$`, every relative jump and every fixup. */
+    int wbase;
 
     /* Where the first byte of the output goes, which `ORG` may move.
      *
@@ -1052,6 +1064,7 @@ _Static_assert(__builtin_offsetof(zap_state, locs) > __builtin_offsetof(zap_stat
 #ifdef AGONDEV
 _Static_assert(__builtin_offsetof(zap_state, line) < 128, "zap_state.line is out of range");
 _Static_assert(__builtin_offsetof(zap_state, o) < 128, "zap_state.o is out of range");
+_Static_assert(__builtin_offsetof(zap_state, wbase) < 128, "zap_state.wbase is out of range");
 _Static_assert(__builtin_offsetof(zap_state, lim) < 128, "zap_state.lim is out of range");
 _Static_assert(__builtin_offsetof(zap_state, org) < 128, "zap_state.org is out of range");
 #endif
@@ -1741,4 +1754,35 @@ _Static_assert((R_IXL | R_IYL)
 /* zap.c       */ void warn_trunc(evalue v, int width);
 
 /* expr.c      */ extern uint8_t expr_depth;
+
+/* ======================================================================
+ * WHERE IN THE OUTPUT
+ *
+ * A position counted from the first byte of the output, which is not the same
+ * thing as a position in the buffer the moment the buffer stops holding all of
+ * it. Everything that records a place -- a label's address, `$`, a fixup's
+ * offset, the start of a listed line -- asks through these rather than
+ * subtracting pointers, so there is one place that has to know the difference.
+ *
+ * Inline and in the header because the instruction path uses them: an
+ * out-of-line call here would cost more than the arithmetic.
+ * ====================================================================== */
+
+/* Where the next byte goes. */
+static inline int out_here(void) {
+    return state.wbase + (int) (state.o - state.win);
+}
+
+/* The same, for the cursor an emitter holds while it writes an instruction --
+ * which is ahead of `state.o` until it is written back. */
+static inline int out_at(const uint8_t* p) {
+    return state.wbase + (int) (p - state.win);
+}
+
+/* The other way round: where a position sits in the buffer. Only meaningful
+ * while the buffer still holds that position. */
+static inline uint8_t* out_ptr(int off) {
+    return state.win + (off - state.wbase);
+}
+
 #endif /* ZAP_H */

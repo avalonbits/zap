@@ -361,7 +361,7 @@ full_expression:
             /* The address of the instruction being assembled. `$` alone; with
              * hex digits after it the scan has already taken them and it is
              * the radix prefix instead. */
-            v = state.org + (int) (state.o - state.out);
+            v = state.org + out_here();
             got = true;
         } else if (ns[0] == '@') {
             /* `@f` and `@n` are the next anonymous label, `@b` and `@p` the

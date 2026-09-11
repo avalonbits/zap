@@ -86,10 +86,10 @@ static const char* emit(const char* src) {
     if (!ok) {
         n = snprintf(out, sizeof(out), "ERR");
     } else {
-        const int len = (int) (state.o - state.out);
+        const int len = out_here();
         for (int i = 0; i < len && n < (int) sizeof(out) - 4; i++) {
             n += snprintf(&out[n], sizeof(out) - (size_t) n, "%s%02X",
-                          i ? " " : "", state.out[i]);
+                          i ? " " : "", state.win[i]);
         }
     }
     out[n] = 0;
@@ -595,9 +595,10 @@ int main(void) {
     {
         memset(&state, 0, sizeof(state));
         state.cap = OUT_MIN;
-        state.out = (uint8_t*) malloc((size_t) state.cap);
-        state.o = state.out;
-        state.lim = state.out + state.cap - OUT_MAX_INSN;
+        state.win = (uint8_t*) malloc((size_t) state.cap);
+        state.o = state.win;
+        state.wbase = 0;
+        state.lim = state.win + state.cap - OUT_MAX_INSN;
         for (int i = 0; i < 100; i++) {
             *state.o++ = (uint8_t) i;
         }
@@ -605,8 +606,8 @@ int main(void) {
         const bool grew = out_grow(0);
         char got[64];
         snprintf(got, sizeof(got), "%d %d %d %d", grew ? 1 : 0,
-                 (int) (state.o - state.out), (int) (state.lim - state.out),
-                 state.out[99] == 99 && state.out[0] == 0);
+                 (int) (state.o - state.win), (int) (state.lim - state.win),
+                 state.win[99] == 99 && state.win[0] == 0);
         char want[64];
         snprintf(want, sizeof(want), "1 100 %d 1", OUT_MIN + OUT_STEP - OUT_MAX_INSN);
         check("out_grow carries the cursor and the limit", got, want);
@@ -614,8 +615,8 @@ int main(void) {
         /* And that the rebased limit still leaves room for a whole
          * instruction, which is the property the reserve relies on. */
         check("a grown buffer has room for the longest form",
-              (state.lim + OUT_MAX_INSN == state.out + state.cap) ? "yes" : "no", "yes");
-        free(state.out);
+              (state.lim + OUT_MAX_INSN == state.win + state.cap) ? "yes" : "no", "yes");
+        free(state.win);
     }
 
     /* Labels.

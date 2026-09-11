@@ -329,7 +329,7 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
         return false;
     }
 
-    /* One cursor for the whole instruction rather than state.out[state.pos++] per
+    /* One cursor for the whole instruction rather than the window[state.pos++] per
      * byte. put() reloaded both the output base and the position, added them,
      * stored the byte and stored the position back, for every byte written --
      * twenty-three loads of those two fields in this function alone. The
@@ -384,7 +384,7 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
         if (r != TRF_OK
             && (r == TRF_ERR
                 || !fold_defer(row->transformA, a, out.prefix1, out.prefix2,
-                               row->flags, (int) (o - state.out)))) {
+                               row->flags, out_at(o)))) {
             return false;
         }
     }
@@ -393,7 +393,7 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
         if (r != TRF_OK
             && (r == TRF_ERR
                 || !fold_defer(row->transformB, b, out.prefix1, out.prefix2,
-                               row->flags, (int) (o - state.out)))) {
+                               row->flags, out_at(o)))) {
             return false;
         }
     }
@@ -452,12 +452,12 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
              * it is in reach is decided when it is patched. */
             if (!fix_add(rel->fwd, rel->fwd2, rel->imm,
                          rel->fwd2_neg ? FIX_SUB2 : 0,
-                         (int) (o - state.out))) {
+                         out_at(o))) {
                 return false;
             }
             *o++ = 0;
         } else {
-            const int d = rel->imm - (state.org + (int) (o - state.out) + 1);
+            const int d = rel->imm - (state.org + out_at(o) + 1);
             if (d < -128 || d > 127) {
                 state.err = ZAP_E_RELATIVE_JUMP_TOO_FAR;
 
@@ -481,7 +481,7 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
                             (uint8_t) (((row->condA & IMM_N) ? 1
                                                              : (SFX_WIDE ? 3 : 2))
                                        | (a->fwd2_neg ? FIX_SUB2 : 0)),
-                            (int) (o - state.out))) {
+                            out_at(o))) {
                 return false;
             }
             warn_imm(a->imm, (row->condA & IMM_N) ? 1 : (SFX_WIDE ? 3 : 2));
@@ -493,7 +493,7 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
                             (uint8_t) (((row->condB & IMM_N) ? 1
                                                              : (SFX_WIDE ? 3 : 2))
                                        | (b->fwd2_neg ? FIX_SUB2 : 0)),
-                            (int) (o - state.out))) {
+                            out_at(o))) {
                 return false;
             }
             warn_imm(b->imm, (row->condB & IMM_N) ? 1 : (SFX_WIDE ? 3 : 2));

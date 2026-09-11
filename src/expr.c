@@ -727,12 +727,22 @@ bool scope_pop(locsave* sv) {
     /* The body's locals go the same way a scope's do, so a fixup that names a
      * global and one of them is settled in halves here too -- and only the
      * ones this expansion added: the caller's are still outstanding and its
-     * locals are not defined yet. */
-    bool ok = fold_subs(sv->subfix_used);
-    for (int i = sv->lfix_used; ok && i < state.lfix_used; i++) {
-        if (!patch_fixup(&state.lfixups[i])) {
-            ok = false;
-            break;
+     * locals are not defined yet.
+     *
+     * Not when the body has already failed. An expansion that stopped part way
+     * never reached the labels the lines above it referred to, so those
+     * references cannot be settled and are not the fault: reporting them
+     * replaces the real error with a consequence of it. A macro whose second
+     * line is refused used to come back as "unknown label" against a label
+     * further down its own body, which is a long way from what went wrong. */
+    bool ok = state.err == ZAP_OK;
+    if (ok) {
+        ok = fold_subs(sv->subfix_used);
+        for (int i = sv->lfix_used; ok && i < state.lfix_used; i++) {
+            if (!patch_fixup(&state.lfixups[i])) {
+                ok = false;
+                break;
+            }
         }
     }
 

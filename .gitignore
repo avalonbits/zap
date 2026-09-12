@@ -23,5 +23,9 @@ slow-zap.jpeg
 hwprofile/
 
 # The hardware test kit, built by test/hwkit.sh. 16 MB of generated sources
-# and nine binaries; the script that makes it is what is worth keeping.
+# and nine binaries; the script that makes it is what is worth keeping. The
+# zips are for carrying it to the machine, and kit.log is what comes back.
 hwkit/
+hwkit.zip
+zap-hwtest.zip
+kit.log

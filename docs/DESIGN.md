@@ -47,7 +47,7 @@ flowchart TD
     out --> side["listing, symbol file, statistics<br/>(optional; none can fail the run)"]
 ```
 
-[`main()`](../src/zap.c#L1619) ·
+[`main()`](../src/zap.c#L1657) ·
 [`parse_args()`](../src/zap.c#L889) ·
 [`run()`](../src/zap.c#L605) ·
 [`run_lines()`](../src/zap.c#L463) ·
@@ -497,7 +497,7 @@ flowchart LR
 
 [`err_line()`](../src/symtab.c#L239) ·
 [`err_tok()`](../src/symtab.h#L47) ·
-[`report()`](../src/zap.c#L1580)
+[`report()`](../src/zap.c#L1618)
 
 ```
 Macro [mos_call] in "kernel.s" line 12 - unknown label 'MOS_SYSVARS'

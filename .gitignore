@@ -21,3 +21,7 @@ slow-zap.jpeg
 
 # Binaries built to answer one question, and the pictures that came with it.
 hwprofile/
+
+# The hardware test kit, built by test/hwkit.sh. 16 MB of generated sources
+# and nine binaries; the script that makes it is what is worth keeping.
+hwkit/

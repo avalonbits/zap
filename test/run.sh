@@ -590,6 +590,25 @@ rm -f "$OUT/win3.bin"
 cli_check "a failed assembly leaves no output, even after a flush" \
     "$([ -f "$OUT/win3.bin" ] && echo present || echo absent)" "absent"
 
+# The hardware kit's log line.
+#
+# -DKITLOG is compiled out of every build anyone runs, so nothing else here
+# would notice it breaking -- and it is the only way a timing gets off the
+# Agon, since MOS has no output redirection and no program can run another.
+# test/hwkit.sh parses these lines, so the shape of one is a contract.
+cc "${CFLAGS[@]}" -DKITLOG -DKITLOG_FILE="\"$OUT/kit.log\"" \
+   -o "$OUT/zapkit" "${ZAPSRCS[@]}" "${SRCS[@]}"
+rm -f "$OUT/kit.log"
+printf '  nop\n  ret\n' > "$OUT/kit.s"
+"$OUT/zapkit" -c -ez80 "$OUT/kit.s" "$OUT/kit.bin" > /dev/null 2>&1 || true
+"$OUT/zapkit" -c -ez80 "$OUT/kit.s" "$OUT/kit.bin" > /dev/null 2>&1 || true
+cli_check "the kit log records the window, the source and the size" \
+    "$(tr -d '\r' < "$OUT/kit.log" 2>/dev/null | head -1 \
+       | sed -E 's/t=[0-9]+\.[0-9]+/t=N/; s#src=[^ ]*/#src=#')" \
+    "zap w=65536 src=kit.s out=2 t=N"
+cli_check "and appends rather than starting again" \
+    "$(wc -l < "$OUT/kit.log" 2>/dev/null | tr -d ' ')" "2"
+
 # -d prints the same listing and still writes no file.
 rm -f "$OUT/lst2.lst"
 cli_check "-d lists an expansion too" \

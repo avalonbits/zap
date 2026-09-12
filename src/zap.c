@@ -1577,6 +1577,44 @@ void warn_initializer(const char* t, int n) {
  *
  * The colour codes are the reference's: red for what went wrong, yellow for
  * the text it went wrong in. */
+#ifdef KITLOG
+/* Appends a line to KITLOG_FILE, for the hardware test kit. See the call site
+ * at the end of main for why this exists and why it rewrites the whole file. */
+#include <stdarg.h>
+
+#ifndef KITLOG_FILE
+#define KITLOG_FILE "kit.log"
+#endif
+
+#define KITLOG_MAX 8192
+
+static void kit_log(const char* fmt, ...) {
+    static char buf[KITLOG_MAX];
+    int n = 0;
+    uint8_t fh = mos_fopen(KITLOG_FILE, FA_READ);
+    if (fh != 0) {
+        n = (int) mos_fread(fh, buf, (uint24_t) (KITLOG_MAX - 256));
+        mos_fclose(fh);
+        if (n < 0) {
+            n = 0;
+        }
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    n += vsprintf(buf + n, fmt, ap);
+    va_end(ap);
+
+    fh = mos_fopen(KITLOG_FILE, FA_WRITE | FA_CREATE_ALWAYS);
+    if (fh == 0) {
+        printf("kit: cannot write %s\r\n", KITLOG_FILE);
+
+        return;
+    }
+    mos_fwrite(fh, buf, (uint24_t) n);
+    mos_fclose(fh);
+}
+#endif
+
 static void report(const char* in) {
     const char* const red = use_color ? "\033[31m" : "";
     const char* const yellow = use_color ? "\033[33m" : "";
@@ -1741,6 +1779,22 @@ int main(int argc, char* argv[]) {
     const uint24_t cs = elapsed_cs(begin, end);
     printf("Done in %u.%02u seconds\r\n", (unsigned) (cs / 100),
            (unsigned) (cs % 100));
+
+#ifdef KITLOG
+    /* A line in a file as well as on the screen, for the hardware test kit.
+     *
+     * Written by the assembler and not by the script around it, because MOS
+     * has no output redirection and a program cannot run another program --
+     * so the only thing that can put a timing in a file is the thing that
+     * measured it. Off unless the kit asks for it: nothing here is wanted in
+     * an ordinary build.
+     *
+     * Read the whole file and write it back with a line added, rather than
+     * opening to append: this MOS refuses FA_OPEN_APPEND and FA_OPEN_ALWAYS,
+     * both of which hand back a zero handle. The log is a few hundred bytes. */
+    kit_log("zap w=%d src=%s out=%d t=%u.%02u\r\n", state.cap, in, written,
+            (unsigned) (cs / 100), (unsigned) (cs % 100));
+#endif
 
     dz_free();
 

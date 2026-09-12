@@ -552,6 +552,7 @@ __attribute__((noinline)) static bool run(const char* path) {
     state.earlyf_used = 0;
     state.earlyf_cap = 0;
     state.fill_seen = false;
+    state.pend = 0;
     for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
         state.expbuf[i] = NULL;
         state.expcap[i] = 0;
@@ -613,14 +614,10 @@ __attribute__((noinline)) static bool run(const char* path) {
 
     /* Space that was reserved and never written over is not output: `DS 4` at
      * the end of a file produces nothing, and neither does a trailing `ALIGN`,
-     * as in the reference. Dropped here, once, rather than tested on every
-     * write.
-     *
-     * After the fixups rather than before, so that nothing has to reason about
-     * whether shortening the output could move a patch site. */
-    if (state.fill_len != 0 && out_here() == state.fill_end) {
-        state.o -= state.fill_len;
-    }
+     * as in the reference. Nothing has to be taken back -- it was never
+     * written -- but out_here() counts it, and from here on that number is the
+     * length of the file. */
+    state.pend = 0;
 
     return true;
 }

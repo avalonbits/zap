@@ -47,8 +47,8 @@ flowchart TD
     out --> side["listing, symbol file, statistics<br/>(optional; none can fail the run)"]
 ```
 
-[`main()`](../src/zap.c#L1483) ·
-[`parse_args()`](../src/zap.c#L781) ·
+[`main()`](../src/zap.c#L1480) ·
+[`parse_args()`](../src/zap.c#L778) ·
 [`run()`](../src/zap.c#L500) ·
 [`run_lines()`](../src/zap.c#L359) ·
 [`scope_end()`](../src/symtab.c#L699) ·
@@ -112,7 +112,7 @@ correctly.
 
 Everything the assembler knows lives in one object,
 [`state`](../src/symtab.c#L227), of type
-[`zap_state`](../src/zap.h#L1042). It is defined in `symtab.c` and declared in
+[`zap_state`](../src/zap.h#L1057). It is defined in `symtab.c` and declared in
 `zap.h`, so every part reaches the same one.
 
 ```mermaid
@@ -163,7 +163,7 @@ Two consequences the rest of the assembler relies on:
 * there is always a newline one byte past the content — the **sentinel** — so
   every scan terminates on it without testing the end.
 
-[`include_file()`](../src/directive.c#L645) opens a second reader and re-enters the same
+[`include_file()`](../src/directive.c#L669) opens a second reader and re-enters the same
 line loop; the parent's reader is saved in the include's own stack frame. The
 parent's file handle is closed while the child runs and reopened afterwards,
 seeking back to where the parent had reached, because MOS has few handles.
@@ -200,7 +200,7 @@ flowchart TD
 [`parse_operand()`](../src/expr.h#L74) ·
 [`match_row()`](../src/insn.h#L150) ·
 [`emit_row()`](../src/insn.h#L327) ·
-[`directive_line()`](../src/directive.c#L847) ·
+[`directive_line()`](../src/directive.c#L871) ·
 [`suffixed_mnemonic()`](../src/insn.c#L569) ·
 [`third_operand()`](../src/insn.c#L660)
 
@@ -354,9 +354,9 @@ flowchart TD
 ## 9. Directives
 
 Reached only after the mnemonic lookup has failed, and dispatched by
-[`directive_of()`](../src/directive.c#L106) — a switch on the token's length and
+[`directive_of()`](../src/directive.c#L117) — a switch on the token's length and
 characters rather than a table — then handled in
-[`directive_line()`](../src/directive.c#L847).
+[`directive_line()`](../src/directive.c#L871).
 
 | group | directives |
 |---|---|
@@ -371,13 +371,21 @@ characters rather than a table — then handled in
 
 Two distinctions in this group are easy to get wrong and worth stating:
 
-* **`DS` reserves ([`emit_fill()`](../src/directive.c#L454)), `BLK` emits
-  ([`emit_block()`](../src/directive.c#L493)).** Reserved space that reaches the end
-  of the file with nothing after it is not written at all; a block always is.
-  `FILLBYTE` sets what a reservation is filled with -- and for the
-  reservations before the file's first one, it reaches backwards, which
-  [`earlyf`](../src/zap.h#L1026) explains and `resolve_early_fills()` settles at
-  the end of the source.
+* **`DS` reserves ([`fill_take()`](../src/directive.c#L478)), `BLK` emits
+  ([`emit_block()`](../src/directive.c#L517)).** A reservation is a count, not
+  bytes: nothing is written until something is written *after* it, which is
+  what `out_settle()` does from `out_reserve()`. So space that reaches the end
+  of the file with nothing after it is never written at all, and a `FILLBYTE`
+  while a run is still pending simply changes what it will be written with.
+  A block always is written.
+* **`ORG` padding is not a reservation.** It goes through
+  [`fill_put()`](../src/directive.c#L452) and is written where it stands, as
+  the reference writes it: it survives at the end of a file where a `DS` is
+  dropped, and a later `FILLBYTE` does not reach back to it. `fillbyte 0x11 /
+  org $+4 / fillbyte 0xAA` is four `0x11`; the same shape with `DS` is `0xAA`.
+* For the reservations written out before the file's *first* `FILLBYTE`, that
+  byte reaches backwards, which [`earlyf`](../src/zap.h#L1041) explains and
+  `resolve_early_fills()` settles at the end of the source.
 * **`ORG` is two directives sharing a name.** The first in a file moves the
   origin; every later one pads out to its address.
 
@@ -450,7 +458,7 @@ flowchart LR
 
 [`err_line()`](../src/symtab.c#L237) ·
 [`err_tok()`](../src/symtab.h#L47) ·
-[`report()`](../src/zap.c#L1444)
+[`report()`](../src/zap.c#L1441)
 
 ```
 Macro [mos_call] in "kernel.s" line 12 - unknown label 'MOS_SYSVARS'
@@ -459,7 +467,7 @@ Invoked from "main.s" line 84 as
   mos_call MOS_SYSVARS
 ```
 
-There is one warning, [`warn_trunc()`](../src/zap.c#L1406), for a value too
+There is one warning, [`warn_trunc()`](../src/zap.c#L1403), for a value too
 large for the space it is written into. It is the only diagnostic that asks a
 question of every value in every source rather than doing work after something
 has gone wrong, so it is behind `-w`.
@@ -470,19 +478,19 @@ has gone wrong, so it is behind `-w`.
 
 `-l` and `-d` write a listing in the reference's columns — address, up to four
 bytes per row, line number, and the source line as written — through
-[`list_line()`](../src/zap.c#L1005) and [`list_out()`](../src/zap.c#L987). A
+[`list_line()`](../src/zap.c#L1002) and [`list_out()`](../src/zap.c#L984). A
 macro expansion is listed as the reference lists it: the invocation with no
 bytes, the arguments, then a row per body line tagged with its depth.
 
 A line holding a forward reference is listed before that reference is patched,
-so those lines are remembered by [`lstfix_add()`](../src/zap.c#L1081) and their
+so those lines are remembered by [`lstfix_add()`](../src/zap.c#L1078) and their
 byte columns written again from the finished output by
-[`lstfix_apply()`](../src/zap.c#L1114) before the file is closed. The console
+[`lstfix_apply()`](../src/zap.c#L1111) before the file is closed. The console
 listing cannot be given that treatment and shows the bytes as they were
 emitted.
 
-[`write_symbols()`](../src/zap.c#L1281) writes the global symbols sorted, in
-the reference's format. [`write_stats()`](../src/zap.c#L1347) prints what the
+[`write_symbols()`](../src/zap.c#L1278) writes the global symbols sorted, in
+the reference's format. [`write_stats()`](../src/zap.c#L1344) prints what the
 run used. None of the three can fail an assembly: the output file is already
 written when they run.
 
@@ -557,8 +565,8 @@ to do.
 * **An instruction form** belongs in the generator,
   [`tools/gen_isa.py`](../tools/gen_isa.py), not in the generated table.
 * **A directive** needs a `DIR_` constant, a spelling in
-  [`directive_of()`](../src/directive.c#L106), a case in
-  [`directive_line()`](../src/directive.c#L847), a case file under `test/cases`
+  [`directive_of()`](../src/directive.c#L117), a case in
+  [`directive_line()`](../src/directive.c#L871), a case file under `test/cases`
   compared against the reference, and a row in the README's directive table.
 * **A diagnostic** needs a [`zap_err`](../src/zap.h#L472) code and one line in
   the message table. The static assert on the table size catches a code with no

@@ -685,6 +685,16 @@ typedef struct {
 
 #define ADDEND_MAX ((evalue)  0x7FFFFFL)
 
+/* The most that may be reserved and not yet written.
+ *
+ * Reserving stopped allocating when it became a count, so nothing else refuses
+ * a `DS` of millions any more -- it used to fail asking malloc for it. `int` is
+ * three bytes on the eZ80, so without this two large reservations wrap to a
+ * negative and the output quietly comes out short. Typed and written out for
+ * the reason ADDEND_MAX is: derived from `int` it would be a different number
+ * on the host, and the two builds would disagree about what they refuse. */
+#define PEND_MAX ((evalue) 0x7FFFFFL)
+
 /* Sixteen bytes, and the size is the point: `&list[i]` on a record whose size
  * is not a power of two is a call to __imulu, because the eZ80's multiply is
  * 8-bit. At sixteen it is a shift. */
@@ -771,6 +781,25 @@ typedef struct _zap_state {
      * Next to the cursor because `out_here()` reads both, on every label, every
      * `$`, every relative jump and every fixup. */
     int wbase;
+
+    /* Reserved bytes that have not been written yet.
+     *
+     * `DS` and `ALIGN` reserve space rather than emit it, and the reference
+     * materialises that space only when something is written after it, with
+     * the FILLBYTE in force at *that* moment -- which is why `ds 2 / fillbyte
+     * 0xAA / nop` is `aa aa 00` there. Counting the bytes instead of writing
+     * them says the same thing without having to go back over them: a
+     * FILLBYTE while a run is still pending simply changes what it will be
+     * written with, and a run still pending at the end of the file is never
+     * written at all, which is how `DS 4` at the end comes to emit nothing.
+     *
+     * `ORG` padding is not this. The reference writes that where it stands,
+     * so a later FILLBYTE does not reach it -- see ORG in directive.c.
+     *
+     * Counted in `out_here()`, so `$` and every label after a reservation are
+     * past it whether or not it has been written. Beside the cursor for the
+     * same reason `wbase` is: those three are what a position is made of. */
+    int pend;
 
     /* Where the first byte of the output goes, which `ORG` may move.
      *
@@ -942,20 +971,6 @@ typedef struct _zap_state {
     const char* path;
     uint8_t depth;
 
-    /* The run of reserved bytes the output currently ends with, if it ends
-     * with one.
-     *
-     * `DS` and `ALIGN` reserve space rather than emit it, and the reference
-     * materialises that space only when something is written after it: a file
-     * ending in `DS 4` is four bytes shorter there, and a trailing `ALIGN`
-     * emits nothing. `ORG` is different and does pad.
-     *
-     * Held as where the run ends and how long it is, rather than as a flag on
-     * every write. Only `emit_fill` touches these, so nothing on the path an
-     * instruction takes has to know they exist, and a trailing run is dropped
-     * once, at the end. */
-    int fill_end;
-    int fill_len;
     /* What DS, ALIGN, ORG padding and a BLK with no fill of its own write.
      * 0xFF until FILLBYTE says otherwise, and it says so for the rest of the
      * assembly rather than for the next directive only. */
@@ -1065,6 +1080,7 @@ _Static_assert(__builtin_offsetof(zap_state, locs) > __builtin_offsetof(zap_stat
 _Static_assert(__builtin_offsetof(zap_state, line) < 128, "zap_state.line is out of range");
 _Static_assert(__builtin_offsetof(zap_state, o) < 128, "zap_state.o is out of range");
 _Static_assert(__builtin_offsetof(zap_state, wbase) < 128, "zap_state.wbase is out of range");
+_Static_assert(__builtin_offsetof(zap_state, pend) < 128, "zap_state.pend is out of range");
 _Static_assert(__builtin_offsetof(zap_state, lim) < 128, "zap_state.lim is out of range");
 _Static_assert(__builtin_offsetof(zap_state, org) < 128, "zap_state.org is out of range");
 #endif
@@ -1768,9 +1784,11 @@ _Static_assert((R_IXL | R_IYL)
  * out-of-line call here would cost more than the arithmetic.
  * ====================================================================== */
 
-/* Where the next byte goes. */
+/* Where the next byte goes -- past anything reserved and not yet written, so
+ * that a label after `DS 4` is four further on whether or not those four bytes
+ * exist yet. */
 static inline int out_here(void) {
-    return state.wbase + (int) (state.o - state.win);
+    return state.wbase + (int) (state.o - state.win) + state.pend;
 }
 
 /* The same, for the cursor an emitter holds while it writes an instruction --

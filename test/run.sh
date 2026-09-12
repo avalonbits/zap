@@ -503,6 +503,42 @@ cli_check "and lists them from where they actually are" \
     "$(head -2 "$OUT/grow.lst" 2>/dev/null | tail -1 | tr -d '\r' | cut -c1-18)" \
     "040000 AA AA AA AA"
 
+# A reservation too large to count.
+#
+# Reserving stopped allocating when it became a count, so nothing else refuses
+# this any more -- it used to fail asking malloc for the bytes. `int` is three
+# bytes on the eZ80, so two of these wrap to a negative and the file comes out
+# short with nothing said.
+printf '  ds 8000000\n  ds 8000000\n  nop\n' > "$OUT/dsbig.s"
+dsbig=$("$OUT/zap" -c "$OUT/dsbig.s" "$OUT/dsbig.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a reservation larger than the machine can count is refused" \
+    "$(printf '%s' "$dsbig" | grep -c 'out of memory for the output')" 1
+
+# What a reservation looks like in a listing, now that reserving does not
+# write anything.
+#
+# The reference leaves the first row empty and puts the fill on a continuation
+# row under it; zap leaves the first row empty and writes no continuation row,
+# because at the time the line is listed those bytes do not exist. An ORG pad
+# is not a reservation -- it is written where it stands -- so that one is the
+# reference's row exactly.
+printf '  nop\n  ds 3\n  nop\n' > "$OUT/dsl.s"
+rm -f "$OUT/dsl.lst"
+"$OUT/zap" -c -l "$OUT/dsl.s" "$OUT/dsl.bin" > /dev/null 2>&1 || true
+cli_check "a reservation lists an empty first row, as the reference does" \
+    "$(sed -n '3p' "$OUT/dsl.lst" 2>/dev/null | tr -d '\r' | cut -c1-18)" \
+    "040001            "
+cli_check "and the line after it is the next instruction, not a fill row" \
+    "$(sed -n '4p' "$OUT/dsl.lst" 2>/dev/null | tr -d '\r' | cut -c1-9)" \
+    "040004 00"
+
+printf '  nop\n  org $+4\n  ret\n' > "$OUT/orgl.s"
+rm -f "$OUT/orgl.lst"
+"$OUT/zap" -c -l "$OUT/orgl.s" "$OUT/orgl.bin" > /dev/null 2>&1 || true
+cli_check "an ORG pad is written where it stands, so it lists inline" \
+    "$(sed -n '3p' "$OUT/orgl.lst" 2>/dev/null | tr -d '\r' | cut -c1-18)" \
+    "040001 FF FF FF FF"
+
 # -d prints the same listing and still writes no file.
 rm -f "$OUT/lst2.lst"
 cli_check "-d lists an expansion too" \

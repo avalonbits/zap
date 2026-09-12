@@ -173,6 +173,21 @@ done
 # memory, so the larger sizes have nowhere to go. That failure is a result and
 # not an accident, and the run has to carry on past it.
 # ----------------------------------------------------------------------
+# ez80asm holds its source and its output in memory, and refuses anything
+# large with "Error allocating memory; try the -m option". -m is how it is run
+# on anything sizeable -- test/bench/bench.sh uses the same 256 KB threshold on
+# the source, and BASELINE.md's figures for bbcbasic and synth are -m figures.
+#
+# Leaving it out is not a fair comparison, it is no comparison: the run simply
+# fails and writes no line. That is what happened the first time this kit ran,
+# and it cost the part 1 baseline and all of part 3 above 32 KiB.
+EZMEM=$((256 * 1024))
+ezflag() {
+    if [ "$(stat -c%s "$OUT/$1")" -gt "$EZMEM" ]; then
+        printf -- ' -m'
+    fi
+}
+
 echo "writing kit.obey"
 {
     printf 'Echo\r\n'
@@ -185,20 +200,20 @@ echo "writing kit.obey"
     for n in $NAMES; do
         printf 'Try %s -ez80 p1w.s o-p1-%s.bin\r\n' "$n" "$n"
     done
-    printf 'Try ezlog p1w.s o-p1-ez.bin\r\n'
+    printf 'Try ezlog%s p1w.s o-p1-ez.bin\r\n' "$(ezflag p1w.s)"
     printf 'Echo\r\n'
 
     printf 'Echo -- 2. output size alone, no forward references --\r\n'
     for s in 32k 64k 128k 256k 512k 1m; do
         printf 'Try zw64k -ez80 p2-%s.s o-p2-%s-z.bin\r\n' "$s" "$s"
-        printf 'Try ezlog p2-%s.s o-p2-%s-e.bin\r\n' "$s" "$s"
+        printf 'Try ezlog%s p2-%s.s o-p2-%s-e.bin\r\n' "$(ezflag p2-$s.s)" "$s" "$s"
     done
     printf 'Echo\r\n'
 
     printf 'Echo -- 3. the same sizes, every reference settled last --\r\n'
     for s in 32k 64k 128k 256k 512k 1m; do
         printf 'Try zw64k -ez80 p3-%s.s o-p3-%s-z.bin\r\n' "$s" "$s"
-        printf 'Try ezlog p3-%s.s o-p3-%s-e.bin\r\n' "$s" "$s"
+        printf 'Try ezlog%s p3-%s.s o-p3-%s-e.bin\r\n' "$(ezflag p3-$s.s)" "$s" "$s"
     done
     printf 'Echo\r\n'
     printf 'Echo === done. Copy kit.log off the card. ===\r\n'

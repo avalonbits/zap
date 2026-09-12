@@ -1498,7 +1498,11 @@ static void write_stats(void) {
     printf("\r\nMacro memory         : %6d\r\n", macbytes);
     printf("Macros               : %6d\r\n", macros);
     printf("\r\nOutput               : %6d\r\n", out_here());
-    printf("Output buffer        : %6d\r\n", state.cap);
+    /* The window is a constant, so on its own it says nothing. What is worth
+     * knowing is whether the output outgrew it -- and if it did, how much had
+     * to be patched behind it, which is what the sweep at the end costs. */
+    printf("Output window        : %6d\r\n", state.cap);
+    printf("Late patches         : %6d\r\n", state.late_used);
 }
 
 /* A value that did not fit where it was written: said, and the assembly
@@ -1668,6 +1672,13 @@ int main(int argc, char* argv[]) {
 
     if (!ok) {
         report(in);
+        /* An assembly that failed leaves no output, even if it had already
+         * filled a window and written part of itself out. That is what the
+         * reference does -- it writes as it assembles too, and a source that
+         * fails at the end leaves nothing behind -- and test/corpus.sh reads a
+         * missing file as "this was refused", so a partial one would be read
+         * as a disagreement. */
+        out_discard();
         dz_free();
 
         return 1;
@@ -1687,6 +1698,7 @@ int main(int argc, char* argv[]) {
      * source into a disagreement. */
     if (!out_create() || !out_flush() || !resolve_late()) {
         report(in);
+        out_discard();
         dz_free();
 
         return 1;

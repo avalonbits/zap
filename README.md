@@ -21,6 +21,10 @@ reference assembler's own test corpus it is **3.2x faster** per source and
 **5.8x faster** on a real program (BBC BASIC for Agon: 3.9 seconds against
 22.4). It produces byte-identical output, so switching costs nothing.
 
+The output is written as it is assembled rather than held in memory, so what
+zap can assemble is bounded by the card and not by the machine: a 172 KB
+binary takes 4.4 seconds where the reference takes 23.7.
+
 ## Getting it
 
 **From the [releases page](https://github.com/avalonbits/zap/releases) --
@@ -79,7 +83,7 @@ file names.
 | `-c` | No colour in messages |
 | `-w` | Warn when a value does not fit where it is written |
 | `-i` | Accepted for compatibility; the default already ignores those warnings |
-| `-m` | Accepted for compatibility; zap has one memory configuration |
+| `-m` | Accepted for compatibility; zap has one memory configuration, and it does not depend on the size of the output |
 | `-ez80` | Use the reference assembler's expression rules (see below) |
 
 ## What it assembles
@@ -167,6 +171,13 @@ detects the fault.
     test/corpus.sh              the reference's whole corpus and zap's own
                                 regression sources, the same way
     test/corpus.sh --regress    just zap's own, in about two seconds
+    ZAP_WINDOW=512 test/corpus.sh
+                                the same, with the output window forced small
+                                enough that every source is written out in
+                                pieces and patched behind
+    test/window.sh              a generated source several windows wide, with
+                                every kind of fixup settled long after the
+                                bytes holding it were written
     test/bench/bench.sh         throughput against ez80asm on the emulator
 
 The reference assembler and its corpus are vendored under `test/ref` and

@@ -87,6 +87,17 @@ bool out_flush(void) {
     return true;
 }
 
+/* Closes the output and takes it away again, for an assembly that failed after
+ * it had already written part of itself out. */
+void out_discard(void) {
+    if (state.out_fh == 0) {
+        return;
+    }
+    mos_fclose(state.out_fh);
+    state.out_fh = 0;
+    mos_del(state.out_path);
+}
+
 /* Reads `n` bytes of the output at `off`, from wherever they are.
  *
  * The range may straddle the window: a listed line whose first bytes were

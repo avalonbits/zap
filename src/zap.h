@@ -1753,6 +1753,7 @@ _Static_assert((R_IXL | R_IYL)
 /* directive.c */ bool directive_line(const char* s, int n, const char* p, const char* e, const char** stop);
 /* directive.c */ uint8_t directive_of(const char* s, int n);
 /* directive.c */ bool out_create(void);
+/* directive.c */ void out_discard(void);
 /* directive.c */ bool out_flush(void);
 /* directive.c */ bool out_late(int off, uint8_t kind, const uint8_t* b);
 /* directive.c */ bool out_peek(int off, uint8_t* dst, int n);

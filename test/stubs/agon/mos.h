@@ -20,6 +20,7 @@ uint8_t  mos_fclose(uint8_t fh);
 uint24_t mos_fread(uint8_t fh, char* buf, uint24_t n);
 uint24_t mos_fwrite(uint8_t fh, char* buf, uint24_t n);
 uint8_t  mos_flseek(uint8_t fh, uint32_t offset);
+uint8_t  mos_del(const char* fname);
 FIL*     mos_getfil(uint8_t fh);
 void     mos_puts(const char* buf, uint24_t size, char delim);
 int      putch(int ch);

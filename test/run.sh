@@ -539,6 +539,57 @@ cli_check "an ORG pad is written where it stands, so it lists inline" \
     "$(sed -n '3p' "$OUT/orgl.lst" 2>/dev/null | tr -d '\r' | cut -c1-18)" \
     "040001 FF FF FF FF"
 
+# The output window, forced small enough that these little sources fill it.
+#
+# A second binary, because the window is a build-time size: at 64 KB nothing
+# here emits enough to flush even once, so without this the whole streaming
+# path -- writing a window out, recording the patches that fall behind it,
+# sweeping the file at the end -- is never reached by this file. corpus.sh
+# does the same thing across 560 sources with ZAP_WINDOW; these are the cases
+# that need a specific shape rather than a corpus.
+cc "${CFLAGS[@]}" -DOUT_WINDOW=512 -o "$OUT/zapw" "${ZAPSRCS[@]}" "${SRCS[@]}"
+
+# A forward reference from the first line to the last, over more output than
+# the window holds: the site is written and gone by the time the label is
+# known, so it can only be patched behind the window.
+printf '    .assume adl=1\n    .org 0x40000\n    jp far\n    blkb 2000, 0x5A\nfar:\n    ret\n' \
+    > "$OUT/win1.s"
+"$OUT/zap"  -c -ez80 "$OUT/win1.s" "$OUT/win1a.bin" > /dev/null 2>&1 || true
+"$OUT/zapw" -c -ez80 "$OUT/win1.s" "$OUT/win1b.bin" > /dev/null 2>&1 || true
+cli_check "a windowed build writes the same bytes as one that never flushes" \
+    "$(cmp -s "$OUT/win1a.bin" "$OUT/win1b.bin" && echo same || echo differ)" "same"
+if [ -x "$OPTREF" ]; then
+    "$OPTREF" "$OUT/win1.s" "$OUT/win1r.bin" > /dev/null 2>&1 || true
+    cli_check "and the same bytes as the reference" \
+        "$(cmp -s "$OUT/win1r.bin" "$OUT/win1b.bin" && echo same || echo differ)" "same"
+fi
+
+# -x counts what had to be patched behind the window, which is the only
+# visible sign that any of this happened.
+cli_check "-x counts the patches left behind the window" \
+    "$("$OUT/zapw" -c -ez80 -x "$OUT/win1.s" "$OUT/win1c.bin" 2>&1 | tr -d '\r' \
+       | grep -c '^Late patches         :      1$')" 1
+cli_check "and counts none when the output never fills it" \
+    "$("$OUT/zap" -c -ez80 -x "$OUT/win1.s" "$OUT/win1d.bin" 2>&1 | tr -d '\r' \
+       | grep -c '^Late patches         :      0$')" 1
+
+# A source that emits nothing still produces an empty file. The output is
+# opened on the first flush, so this is the path where nothing ever flushes --
+# and test/corpus.sh reads a missing file as "zap refused this".
+printf '; nothing at all\n' > "$OUT/win2.s"
+rm -f "$OUT/win2.bin"
+"$OUT/zapw" -c -ez80 "$OUT/win2.s" "$OUT/win2.bin" > /dev/null 2>&1 || true
+cli_check "a source that emits nothing still writes an empty output" \
+    "$([ -f "$OUT/win2.bin" ] && wc -c < "$OUT/win2.bin" || echo missing)" "0"
+
+# A failed assembly leaves no output file at all, even one that had already
+# filled a window and written part of itself out.
+printf '    .assume adl=1\n    blkb 2000, 0x5A\n    ld a,\n' > "$OUT/win3.s"
+rm -f "$OUT/win3.bin"
+"$OUT/zapw" -c -ez80 "$OUT/win3.s" "$OUT/win3.bin" > /dev/null 2>&1 || true
+cli_check "a failed assembly leaves no output, even after a flush" \
+    "$([ -f "$OUT/win3.bin" ] && echo present || echo absent)" "absent"
+
 # -d prints the same listing and still writes no file.
 rm -f "$OUT/lst2.lst"
 cli_check "-d lists an expansion too" \

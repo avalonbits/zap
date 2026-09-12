@@ -73,6 +73,10 @@ uint8_t mos_flseek(uint8_t fh, uint32_t offset) {
     return 0;
 }
 
+uint8_t mos_del(const char* fname) {
+    return (uint8_t) (remove(fname) == 0 ? 0 : 1);
+}
+
 FIL* mos_getfil(uint8_t fh) {
     if (fh == 0 || fh > MAX_FH || files[fh] == NULL) {
         return NULL;

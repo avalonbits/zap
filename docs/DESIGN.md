@@ -47,7 +47,7 @@ flowchart TD
     out --> side["listing, symbol file, statistics<br/>(optional; none can fail the run)"]
 ```
 
-[`main()`](../src/zap.c#L1615) ·
+[`main()`](../src/zap.c#L1619) ·
 [`parse_args()`](../src/zap.c#L889) ·
 [`run()`](../src/zap.c#L605) ·
 [`run_lines()`](../src/zap.c#L463) ·
@@ -88,23 +88,62 @@ patch time — an unknown label, a jump out of range, a value that does not fit 
 is reported against the line that *used* the label rather than wherever the
 patching happened to be.
 
-The price is that the whole output has to be in memory at once. On a 512 KB
-machine that bounds what can be assembled, and it is the trade the design
-makes: memory instead of a second pass over the source.
+The price used to be that the whole output had to be in memory at once, which
+on a 512 KB machine bounded what could be assembled. It does not any more: the
+buffer is a **window** onto a file written as it fills, `OUT_WINDOW` wide, and
+what an assembly costs in memory no longer depends on how much it emits. §2a
+is how a patch reaches output the window has already passed.
 
-Three kinds of thing wait for the end of the run:
+Four kinds of thing wait for the end of the run:
 
 | | resolved by | holds |
 |---|---|---|
 | fixup | [`patch_fixup()`](../src/symtab.c#L573) | one or two symbols, an addend, a width, an offset |
 | deferred expression | [`resolve_deferred()`](../src/zap.c#L262) | expression text a fixup cannot represent |
 | deferred fill | [`resolve_fills()`](../src/zap.c#L290) | a `BLK` whose fill value was not known yet |
+| reserved run | [`resolve_late()`](../src/zap.c#L398) | space reserved before the file's first `FILLBYTE`, which takes its *last* |
 
 A [`fixup`](../src/zap.h#L695)'s width is normally a byte count, 1 to 4, or 0
 for a relative displacement. Three values above those mean the operand belongs
 in the **opcode byte itself** rather than after it — a bit number, an interrupt
 mode, a restart address — so `bit n, a` with `n` defined later still assembles
 correctly.
+
+### 2a. Patching output that is no longer in memory
+
+A fixup is settled long after its site was written, and with a window only the
+last 64 KB of the output is still there. The rest is on the card.
+
+So a patch whose site is behind the window is *worked out* where it always was
+— which keeps every diagnostic where it was, reported against the line that
+used the label — and only the finished bytes are recorded, in a
+[`latepatch`](../src/zap.h#L591). Only the bytes: a local symbol's node is
+handed back when its scope ends, so a record that kept the symbol would name a
+different label by the time it was applied. The three folds become a checked
+mask for the same reason, checked here and OR'd into the opcode byte later.
+
+[`resolve_late()`](../src/zap.c#L398) then sweeps the file once, ascending, in
+window-sized chunks, applying the late patches, the deferred fills and the
+reserved runs together, and skipping chunks none of them touch. Ascending and
+chunked because of the filesystem: `FF_FS_TINY` means a `FIL` has no sector
+buffer of its own and every partial write is a read-modify-write through the
+one the FAT is also using, and `FF_USE_FASTSEEK` is off, so a seek walks the
+cluster chain. A seek and a write per patch would be two sector transfers and a
+chain walk each; this is two transfers per chunk.
+
+The list is **two** ascending runs rather than one, and that is not an
+accident of ordering: local fixups are settled at every global label, while the
+output is still moving, and global ones are all settled at the end and start
+again from the top of the file. `late_split` is where the second run begins.
+
+Nothing in the corpus emits enough to fill a real window, so the flush, the
+recording and the sweep are tested by forcing a small one:
+
+    ZAP_WINDOW=512 test/corpus.sh
+
+Every source must produce the same bytes at any window size. `test/window.sh`
+is the other half — a generated source whose output is several windows wide and
+whose every fixup is settled long after its site was written.
 
 ---
 
@@ -163,7 +202,7 @@ Two consequences the rest of the assembler relies on:
 * there is always a newline one byte past the content — the **sentinel** — so
   every scan terminates on it without testing the end.
 
-[`include_file()`](../src/directive.c#L790) opens a second reader and re-enters the same
+[`include_file()`](../src/directive.c#L801) opens a second reader and re-enters the same
 line loop; the parent's reader is saved in the include's own stack frame. The
 parent's file handle is closed while the child runs and reopened afterwards,
 seeking back to where the parent had reached, because MOS has few handles.
@@ -200,7 +239,7 @@ flowchart TD
 [`parse_operand()`](../src/expr.h#L74) ·
 [`match_row()`](../src/insn.h#L150) ·
 [`emit_row()`](../src/insn.h#L327) ·
-[`directive_line()`](../src/directive.c#L992) ·
+[`directive_line()`](../src/directive.c#L1003) ·
 [`suffixed_mnemonic()`](../src/insn.c#L569) ·
 [`third_operand()`](../src/insn.c#L660)
 
@@ -354,9 +393,9 @@ flowchart TD
 ## 9. Directives
 
 Reached only after the mnemonic lookup has failed, and dispatched by
-[`directive_of()`](../src/directive.c#L202) — a switch on the token's length and
+[`directive_of()`](../src/directive.c#L213) — a switch on the token's length and
 characters rather than a table — then handled in
-[`directive_line()`](../src/directive.c#L992).
+[`directive_line()`](../src/directive.c#L1003).
 
 | group | directives |
 |---|---|
@@ -371,15 +410,15 @@ characters rather than a table — then handled in
 
 Two distinctions in this group are easy to get wrong and worth stating:
 
-* **`DS` reserves ([`fill_take()`](../src/directive.c#L579)), `BLK` emits
-  ([`emit_block()`](../src/directive.c#L618)).** A reservation is a count, not
+* **`DS` reserves ([`fill_take()`](../src/directive.c#L590)), `BLK` emits
+  ([`emit_block()`](../src/directive.c#L629)).** A reservation is a count, not
   bytes: nothing is written until something is written *after* it, which is
   what `out_settle()` does from `out_reserve()`. So space that reaches the end
   of the file with nothing after it is never written at all, and a `FILLBYTE`
   while a run is still pending simply changes what it will be written with.
   A block always is written.
 * **`ORG` padding is not a reservation.** It goes through
-  [`fill_put()`](../src/directive.c#L537) and is written where it stands, as
+  [`fill_put()`](../src/directive.c#L548) and is written where it stands, as
   the reference writes it: it survives at the end of a file where a `DS` is
   dropped, and a later `FILLBYTE` does not reach back to it. `fillbyte 0x11 /
   org $+4 / fillbyte 0xAA` is four `0x11`; the same shape with `DS` is `0xAA`.
@@ -458,7 +497,7 @@ flowchart LR
 
 [`err_line()`](../src/symtab.c#L239) ·
 [`err_tok()`](../src/symtab.h#L47) ·
-[`report()`](../src/zap.c#L1576)
+[`report()`](../src/zap.c#L1580)
 
 ```
 Macro [mos_call] in "kernel.s" line 12 - unknown label 'MOS_SYSVARS'
@@ -467,7 +506,7 @@ Invoked from "main.s" line 84 as
   mos_call MOS_SYSVARS
 ```
 
-There is one warning, [`warn_trunc()`](../src/zap.c#L1538), for a value too
+There is one warning, [`warn_trunc()`](../src/zap.c#L1542), for a value too
 large for the space it is written into. It is the only diagnostic that asks a
 question of every value in every source rather than doing work after something
 has gone wrong, so it is behind `-w`.
@@ -565,8 +604,8 @@ to do.
 * **An instruction form** belongs in the generator,
   [`tools/gen_isa.py`](../tools/gen_isa.py), not in the generated table.
 * **A directive** needs a `DIR_` constant, a spelling in
-  [`directive_of()`](../src/directive.c#L202), a case in
-  [`directive_line()`](../src/directive.c#L992), a case file under `test/cases`
+  [`directive_of()`](../src/directive.c#L213), a case in
+  [`directive_line()`](../src/directive.c#L1003), a case file under `test/cases`
   compared against the reference, and a row in the README's directive table.
 * **A diagnostic** needs a [`zap_err`](../src/zap.h#L487) code and one line in
   the message table. The static assert on the table size catches a code with no

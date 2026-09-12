@@ -673,6 +673,16 @@ typedef struct {
 
 #define FIX_FOLD_IM  7   /* 0, 1, 2 as y = 0, 2, 3, shifted into the opcode */
 
+/* An index displacement -- the signed byte of `(ix+d)` -- whose value was
+ * still ahead when the instruction was written. Its own widths rather than a
+ * plain one-byte fixup, because what goes in that byte is not simply the low
+ * eight bits of the value: the reference truncates to sixteen and then refuses
+ * anything outside a signed byte, and the sign written outside the brackets
+ * negates the whole expression rather than its first term. */
+#define FIX_DISP     8
+
+#define FIX_DISP_NEG 9
+
 /* The range an addend has to fit, written out rather than derived from `int`,
  * which is three bytes on the Agon and four on the host. Deriving it would
  * make this refuse on one machine and accept on the other.
@@ -1227,7 +1237,7 @@ _Static_assert(sizeof(bucketslot) > sizeof(const insninfo*),
  * flag rather than a field on zap_state, because zap_state is reached through a pointer on
  * every line and this is read only where an expression has an operator in it. */
 /* Printed by -v. One place, so a release cannot say two things. */
-#define ZAP_VERSION "1.0.2"
+#define ZAP_VERSION "1.0.3"
 
 /* ======================================================================
  * REGISTERS AND CONDITION CODES

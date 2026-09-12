@@ -34,6 +34,13 @@
 #define IMM_N        0x10
 #define IMM_MMN      0x20
 #define IMM_BIT      0x40
+
+/* Flags an *operand* carries, rather than conditions a row requires -- the two
+ * share this file but not the field. They sit above the low nibble on purpose:
+ * the row matcher compares `a->mode & 15` against the row, so anything at or
+ * below 0x08 would have to mean the same thing to both. */
+#define DISPFWD      0x10   /* the displacement names a label not defined yet */
+#define DISPNEG      0x20   /* ...and the sign outside the brackets negates it */
 #define IMM_NSELECT  0x80
 #define MODECHECK    (INDIRECT | IMM | CC | CCA)
 

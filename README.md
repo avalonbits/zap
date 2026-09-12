@@ -34,7 +34,7 @@ the Agon; there is nothing to compile, install or configure.
 3. Run it: `zap hello.s hello.bin`.
 
 `zap -v` prints the version, so you can check which one you have. The current
-release is [v1.0.2](https://github.com/avalonbits/zap/releases/tag/v1.0.2).
+release is [v1.0.3](https://github.com/avalonbits/zap/releases/tag/v1.0.3).
 
 ## Building it yourself
 

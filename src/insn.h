@@ -429,10 +429,30 @@ __attribute__((always_inline)) static inline bool emit_row(const isa_row* row, d
         if (!dd_before_opcode) {
             *o++ = out.opcode;
         }
+        /* A displacement whose value is still ahead leaves a placeholder and
+         * a fixup on the byte it occupies. Its position is whatever it is --
+         * `bit n, (ix+d)` puts it *before* the opcode -- and this is the one
+         * place that knows, which is why the fixup is recorded here. */
         if (dflags & F_DISPA) {
+            if ((a->mode & DISPFWD) != 0
+                && !fix_add(a->fwd, a->fwd2, a->disp,
+                            (uint8_t) (((a->mode & DISPNEG) ? FIX_DISP_NEG
+                                                            : FIX_DISP)
+                                       | (a->fwd2_neg ? FIX_SUB2 : 0)),
+                            (int) (o - state.out))) {
+                return false;
+            }
             *o++ = (uint8_t) (a->disp & 0xFF);
         }
         if (dflags & F_DISPB) {
+            if ((b->mode & DISPFWD) != 0
+                && !fix_add(b->fwd, b->fwd2, b->disp,
+                            (uint8_t) (((b->mode & DISPNEG) ? FIX_DISP_NEG
+                                                            : FIX_DISP)
+                                       | (b->fwd2_neg ? FIX_SUB2 : 0)),
+                            (int) (o - state.out))) {
+                return false;
+            }
             *o++ = (uint8_t) (b->disp & 0xFF);
         }
         if (dd_before_opcode) {

@@ -18,6 +18,7 @@
 
 #include "zap.h"
 #include "symtab.h"
+#include "expr.h"
 
 /* Indexed by the code, so a message and its name cannot drift apart. */
 const char* const zap_err_text[] = {
@@ -599,6 +600,22 @@ bool patch_fixup(const fixup* f) {
             return false;
         }
         *at = (uint8_t) d;
+
+        return true;
+    }
+
+    if (w == FIX_DISP || w == FIX_DISP_NEG) {
+        /* The sign outside the brackets negates the whole expression and not
+         * its first term: `(ix-v+1)` with v five is -6 in the reference, not
+         * -4. Sixteen bits first, then a signed byte -- see disp_fit. */
+        const int d16 = disp_fit((int) (w == FIX_DISP_NEG ? -val : val));
+        if (d16 < -128 || d16 > 127) {
+            state.line = f->line;
+            state.err = ZAP_E_INDEX_OFFSET_OUT_RANGE;
+
+            return false;
+        }
+        *at = (uint8_t) d16;
 
         return true;
     }

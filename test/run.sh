@@ -799,6 +799,42 @@ cli_check "a macro that fails part way reports its own error, not a stranded lab
 cli_check "and says nothing about the label it never reached" \
     "$(printf '%s' "$fb3" | grep -c 'unknown label')" 0
 
+# An index displacement whose value is still ahead.
+#
+# `ld a, (ix+field)` with the EQU below it is how a structure is read, and zap
+# refused it until a user said so. The bytes are checked against the reference
+# in test/regress/values; these are the parts a differential file cannot show:
+# the diagnostic, and that the range test happens when the fixup is settled
+# rather than where the instruction was written.
+printf '  ld a, (ix+v)\nv: equ 0x1008\n' > "$OUT/ixb.s"
+ixb=$("$OUT/zap" -c -ez80 "$OUT/ixb.s" "$OUT/ixb.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a forward index displacement that does not fit is refused" \
+    "$(printf '%s' "$ixb" | grep -c 'index offset out of range')" 1
+cli_check "and against the line that used it" \
+    "$(printf '%s' "$ixb" | grep -c 'line 1')" 1
+
+# Sixteen bits, then a signed byte -- the reference keeps this field in two
+# bytes, so a value above them is truncated rather than refused. Backwards as
+# well as forwards, and for a literal: this was wrong for all three.
+ixv() {
+    printf '%b' "$2" > "$OUT/ixv.s"
+    "$OUT/zap" -c -ez80 "$OUT/ixv.s" "$OUT/ixv.bin" > /dev/null 2>&1 || true
+    cli_check "$1" "$(od -An -tx1 "$OUT/ixv.bin" 2>/dev/null | tr -s ' ')" " $3"
+    rm -f "$OUT/ixv.s" "$OUT/ixv.bin"
+}
+ixv "a displacement is sixteen bits before it is a byte" \
+    '  ld a, (ix+0x40018)\n' "dd 7e 18"
+ixv "the same for one that is still ahead" \
+    '  ld a, (ix+v)\nv: equ 0x40018\n' "dd 7e 18"
+ixv "and for one already behind" \
+    'v: equ 0x40018\n  ld a, (ix+v)\n' "dd 7e 18"
+ixv "the sixteenth bit is the sign" \
+    'v: equ 0x4FFFB\n  ld a, (ix+v)\n' "dd 7e fb"
+ixv "the sign outside the brackets negates the whole expression" \
+    '  ld a, (ix-v+1)\nv: equ 5\n' "dd 7e fa"
+ixv "and the displacement of a CB form sits before its opcode" \
+    '  bit 3, (ix+v)\nv: equ 5\n' "dd cb 05 5e"
+
 # RELOCATE, whose three refusals the reference also makes.
 #
 # `$1000000` is the corpus's own spelling of the address one past the eZ80's

@@ -181,10 +181,24 @@ done
 # Leaving it out is not a fair comparison, it is no comparison: the run simply
 # fails and writes no line. That is what happened the first time this kit ran,
 # and it cost the part 1 baseline and all of part 3 above 32 KiB.
+#
+# -i goes on everything. ez80asm checks every value against the field it is
+# written to and says so; p1w.s is gen_isa.sh's `real` distribution, which
+# emits every instruction form there is, so it contains `ld.sis hl, label` --
+# a sixteen-bit load of a twenty-four-bit address -- 126 times. The warnings
+# are correct and tell us nothing: the source is built to cover the
+# instruction set, not to be clean.
+#
+# Measured before being switched off, because "it is only console output" is
+# the sort of thing that turns out to be eight seconds: 68.04s against 67.28s
+# with -i, so 1.1%, and the bytes are identical either way. What it buys is a
+# screen someone can read while the run is going.
 EZMEM=$((256 * 1024))
 ezflag() {
     if [ "$(stat -c%s "$OUT/$1")" -gt "$EZMEM" ]; then
-        printf -- ' -m'
+        printf -- ' -m -i'
+    else
+        printf -- ' -i'
     fi
 }
 

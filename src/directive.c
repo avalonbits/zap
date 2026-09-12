@@ -30,48 +30,121 @@
  * `DS` and `ALIGN` leave in it.
  * ====================================================================== */
 
-/* `need` is how many bytes the caller is about to write beyond the twelve an
- * instruction is allowed. A directive can ask for a whole string or a `DS` of
- * thousands, and growing 32 KB at a time until it fits would be a loop and a
- * realloc per step. */
 static bool out_settle(void);
 
-bool out_grow(int need) {
-        Z_SITE("output buffer");
-    /* Doubled, not stepped.
-     *
-     * A realloc that has to move holds the old block and the new one at once,
-     * so what decides whether a growth fits is the transient peak rather than
-     * the final size. Doubling reaches a given size in fewer growths, and the
-     * largest of them asks for less: for a 197 KB output the peak is about
-     * 1.5 times the final size, where stepping by a fixed amount makes it
-     * about twice. */
-    int want = state.cap + (state.cap < OUT_STEP ? OUT_STEP : state.cap);
-    const int least = (int) (state.o - state.win) + need + OUT_MAX_INSN;
-    if (want < least) {
-        want = least;
+/* Writes the window out and starts it again at the beginning.
+ *
+ * The whole window, never part of it. Nothing reads backwards in it -- a
+ * reservation is a count now, and a patch that falls behind the window is
+ * recorded instead -- so there is nothing to keep, and a partial flush would
+ * leave every later write straddling a sector. 64 KB is 128 whole ones.
+ *
+ * The file is opened here rather than at startup, so that an assembly which
+ * fails before it fills a window leaves no output file at all. FA_READ as well
+ * as FA_WRITE: the sweep at the end reads chunks back to patch them, and
+ * FatFS refuses a read on a handle that was not opened for it. */
+bool out_create(void) {
+    if (state.out_fh != 0) {
+        return true;
     }
-    uint8_t* grown = (uint8_t*) realloc(state.win, (size_t) want);
-    if (grown == NULL) {
-        /* Set here rather than left to a fallback in main, so that every
-         * failure leaves a code behind it. */
-        state.err = ZAP_E_OUT_MEMORY_OUTPUT;
+    state.out_fh = mos_fopen(state.out_path,
+                             FA_READ | FA_WRITE | FA_CREATE_ALWAYS);
+    if (state.out_fh == 0) {
+        state.err = ZAP_E_CANNOT_WRITE_OUTPUT;
 
         return false;
     }
 
-    /* realloc is allowed to move the buffer, so the cursor and the limit are
-     * both relative to a base that may no longer be there. */
-    state.o = grown + (state.o - state.win);
-    state.win = grown;
-    state.cap = want;
-    state.lim = grown + want - OUT_MAX_INSN;
+    return true;
+}
+
+bool out_flush(void) {
+    const int n = (int) (state.o - state.win);
+    if (n == 0) {
+        return true;
+    }
+    if (!out_create()) {
+        return false;
+    }
+    /* Positioned rather than appended. The listing reads bytes back out of
+     * this file while the assembly is still running -- a line whose bytes were
+     * flushed before it was listed -- and a read leaves the file wherever it
+     * finished. Without this the next window lands on top of one already
+     * written. */
+    if (mos_flseek(state.out_fh, (uint32_t) state.wbase) != 0) {
+        state.err = ZAP_E_CANNOT_WRITE_OUTPUT;
+
+        return false;
+    }
+    if ((int) mos_fwrite(state.out_fh, (char*) state.win, (uint24_t) n) != n) {
+        state.err = ZAP_E_CANNOT_WRITE_OUTPUT;
+
+        return false;
+    }
+    state.wbase += n;
+    state.o = state.win;
 
     return true;
 }
 
-/* One `if`, not a loop: OUT_STEP is 32 KB and an instruction is at most 12
- * bytes, so one growth always leaves room. */
+/* Reads `n` bytes of the output at `off`, from wherever they are.
+ *
+ * The range may straddle the window: a listed line whose first bytes were
+ * flushed while the rest of it was still being assembled wants both halves,
+ * and asking the file for the half it does not have is a short read. */
+bool out_peek(int off, uint8_t* dst, int n) {
+    if (off < state.wbase) {
+        int from_file = state.wbase - off;
+        if (from_file > n) {
+            from_file = n;
+        }
+        if (state.out_fh == 0 || mos_flseek(state.out_fh, (uint32_t) off) != 0
+            || (int) mos_fread(state.out_fh, (char*) dst, (uint24_t) from_file)
+                   != from_file) {
+            state.err = ZAP_E_CANNOT_READ_OUTPUT;
+
+            return false;
+        }
+        dst += from_file;
+        off += from_file;
+        n -= from_file;
+    }
+    if (n > 0) {
+        memcpy(dst, state.win + (off - state.wbase), (size_t) n);
+    }
+
+    return true;
+}
+
+/* Remembers a patch to output the window has passed. Ascending by construction
+ * -- fixups are recorded in the order they are applied, and that order follows
+ * the order they were emitted in. resolve_late relies on it. */
+bool out_late(int off, uint8_t kind, const uint8_t* b) {
+    if (state.late_used == state.late_cap) {
+        Z_SITE("late patches");
+        const int want = state.late_cap == 0 ? 64 : state.late_cap + state.late_cap;
+        latepatch* grown =
+            (latepatch*) realloc(state.late, (size_t) want * sizeof(latepatch));
+        if (grown == NULL) {
+            state.err = ZAP_E_OUT_MEMORY_LABELS;
+
+            return false;
+        }
+        state.late = grown;
+        state.late_cap = want;
+    }
+    latepatch* r = &state.late[state.late_used++];
+    r->off = off;
+    r->kind = kind;
+    r->b[0] = b[0];
+    r->b[1] = b[1];
+    r->b[2] = b[2];
+    r->b[3] = b[3];
+
+    return true;
+}
+
+/* Room for one instruction. */
 bool out_reserve(void) {
     /* Asking for room is the signal that a byte is about to be written, and
      * that is the moment the reference fills whatever was reserved. Every
@@ -83,12 +156,15 @@ bool out_reserve(void) {
         return true;
     }
 
-    return out_grow(0);
+    return out_flush();
 }
 
 /* Room for `n` bytes, for the directives, which are the only things that write
- * more than an instruction's worth at once. Also one `if`, because out_grow
- * takes the amount and asks for it all in one go. */
+ * more than an instruction's worth at once.
+ *
+ * `n` may not exceed the window. The three callers that could ask for more --
+ * ORG padding, BLK and INCBIN -- write in window-sized pieces instead, because
+ * there is no longer anywhere for a larger request to go. */
 static bool out_reserve_n(int n) {
     if (state.pend != 0 && !out_settle()) {
         return false;
@@ -96,8 +172,17 @@ static bool out_reserve_n(int n) {
     if (state.o + n <= state.lim) {
         return true;
     }
+    if (!out_flush()) {
+        return false;
+    }
+    if (state.o + n > state.lim) {
+        /* A caller asked for more than a window and did not chunk it. */
+        state.err = ZAP_E_OUT_MEMORY_OUTPUT;
 
-    return out_grow(n);
+        return false;
+    }
+
+    return true;
 }
 
 /* Case-insensitive against a lower-case literal of known length. Deliberately
@@ -453,9 +538,6 @@ static bool fill_put(int n) {
     if (n <= 0) {
         return true;
     }
-    if (!out_reserve_n(n)) {
-        return false;
-    }
     /* Before the first FILLBYTE, what goes here is still not settled: the
      * reference fills a run written out this early with the file's *final*
      * value, because its `fillbyte` survives into the second pass. Remember
@@ -464,11 +546,30 @@ static bool fill_put(int n) {
     if (!state.fill_seen && !earlyf_add(out_here(), n)) {
         return false;
     }
-    /* memset rather than a loop: on the eZ80 it is `lddr`, and the runs here
-     * are not small. An ORG that skips 96 KB spends all of its time in this
-     * one line, and a character loop makes that a second and a half. */
-    memset(state.o, state.fill, (size_t) n);
-    state.o += n;
+    /* In pieces, because an ORG can skip further than the window is wide and
+     * the window is the only memory there is. Whole windows at a time, so each
+     * flush stays a whole number of sectors.
+     *
+     * Not a seek past the gap: seeking beyond the end of a FatFS file and
+     * writing there leaves whatever the clusters held, not the fill byte. The
+     * bytes have to be written. */
+    while (n > 0) {
+        /* Asking for one byte is asking for room: it flushes if there is none,
+         * and after a flush the room is a whole window. So the loop runs at
+         * most once with less than that. */
+        if (!out_reserve_n(1)) {
+            return false;
+        }
+        const int room = (int) (state.lim - state.o);
+        const int take = n < room ? n : room;
+        /* memset rather than a loop: on the eZ80 it is `lddr`, and the runs
+         * here are not small. An ORG that skips 96 KB spends all of its time
+         * in this one line, and a character loop makes that a second and a
+         * half. */
+        memset(state.o, state.fill, (size_t) take);
+        state.o += take;
+        n -= take;
+    }
 
     return true;
 }
@@ -518,39 +619,49 @@ static bool emit_block(int n, int width, evalue fill) {
     if (n <= 0) {
         return true;
     }
-    if (!out_reserve_n(n * width)) {
-        return false;
-    }
-
     if (want_warn && !fits_width(fill, width)) {
         warn_trunc(fill, width);
     }
 
-    /* Narrowed once, outside the loop, for the reason emit_data splits its
-     * write: three of the four widths fit the machine and only BLKL does not. */
-    uint8_t* o = state.o;
-    if (width > 3) {
-        while (n-- != 0) {
-            *o++ = (uint8_t) fill;
-            *o++ = (uint8_t) (fill >> 8);
-            *o++ = (uint8_t) (fill >> 16);
-            *o++ = (uint8_t) (fill >> 24);
+    /* A unit at a time would be a reserve per unit; a whole block at once can
+     * be wider than the window. So: as many whole units as the window has room
+     * for, then flush and carry on. `width` is at most four, so the room is
+     * never short of a single unit after a flush. */
+    const int f = (int) fill;
+    while (n > 0) {
+        if (!out_reserve_n(width)) {
+            return false;
+        }
+        int fit = (int) (state.lim - state.o) / width;
+        if (fit > n) {
+            fit = n;
+        }
+        n -= fit;
+
+        /* Narrowed once, outside the loop, for the reason emit_data splits its
+         * write: three of the four widths fit the machine and only BLKL does
+         * not. */
+        uint8_t* o = state.o;
+        if (width > 3) {
+            while (fit-- != 0) {
+                *o++ = (uint8_t) fill;
+                *o++ = (uint8_t) (fill >> 8);
+                *o++ = (uint8_t) (fill >> 16);
+                *o++ = (uint8_t) (fill >> 24);
+            }
+        } else {
+            while (fit-- != 0) {
+                *o++ = (uint8_t) f;
+                if (width > 1) {
+                    *o++ = (uint8_t) (f >> 8);
+                }
+                if (width > 2) {
+                    *o++ = (uint8_t) (f >> 16);
+                }
+            }
         }
         state.o = o;
-
-        return true;
     }
-    const int f = (int) fill;
-    while (n-- != 0) {
-        *o++ = (uint8_t) f;
-        if (width > 1) {
-            *o++ = (uint8_t) (f >> 8);
-        }
-        if (width > 2) {
-            *o++ = (uint8_t) (f >> 16);
-        }
-    }
-    state.o = o;
 
     /* Nothing to do about a reservation still pending. The drop at the end of
      * the file only fires when the run ends exactly where the output does, and
@@ -629,22 +740,32 @@ static bool incbin_file(const char* name) {
 
         return false;
     }
-    const int n = (int) fil->obj.objsize;
-    if (n < 0 || !out_reserve_n(n)) {
+    int n = (int) fil->obj.objsize;
+    if (n < 0) {
         mos_fclose(fh);
         state.err = ZAP_E_OUT_MEMORY;
 
         return false;
     }
-    if (n > 0) {
-        const unsigned got = mos_fread(fh, (char*) state.o, (unsigned) n);
-        if ((int) got != n) {
+    /* Through the window rather than into it. The file may be larger than the
+     * window is wide -- the corpus has a 150 KB one -- and the read still goes
+     * straight to the cursor rather than through a staging buffer. */
+    while (n > 0) {
+        if (!out_reserve_n(1)) {
+            mos_fclose(fh);
+
+            return false;
+        }
+        const int room = (int) (state.lim - state.o);
+        const int take = n < room ? n : room;
+        if ((int) mos_fread(fh, (char*) state.o, (unsigned) take) != take) {
             mos_fclose(fh);
             state.err = ZAP_E_CANNOT_READ_FILE;
 
             return false;
         }
-        state.o += n;
+        state.o += take;
+        n -= take;
     }
     mos_fclose(fh);
 

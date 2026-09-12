@@ -41,6 +41,10 @@ fi
 # source turns a tenth of a second into a minute.
 CFLAGS=(-std=gnu11 -Wall -Wextra -fsigned-char -O1
         -include "$ROOT/test/stubs/host_types.h" -Isrc -I"$ROOT/test/stubs")
+if [ -n "${ZAP_WINDOW:-}" ]; then
+    CFLAGS+=(-DOUT_WINDOW="$ZAP_WINDOW")
+    echo "window forced to $ZAP_WINDOW bytes"
+fi
 SRCS=(src/buf_reader.c src/value.c src/conv.c src/isa_table.c
       src/zap.c src/symtab.c src/scan.c src/expr.c src/macro.c
       src/directive.c src/insn.c "$ROOT/test/stubs/agon_stubs.c")

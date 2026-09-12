@@ -169,23 +169,36 @@ _Static_assert(sizeof(evalue) >= 4,
 
 #define ZAP_ORG  0x040000
 
-/* The output buffer is sized once, from the source, and never doubled.
+/* What the output buffer used to be, and why it is not that any more.
  *
+ * It was sized from the source and grown by doubling when that was not enough.
  * Doubling needs the old block and the new one at the same time: growing to
- * 512 KB asks a 512 KB machine for 768 KB, and 2 MiB of these instructions
- * wants exactly that. It failed at line 64,727 with nothing to say but "out of
- * memory", which is the memory wall the notes describe, reached by a program
- * that does no bookkeeping at all.
+ * 512 KB asks a 512 KB machine for 768 KB, and 2 MiB of instructions wants
+ * exactly that. It failed at line 64,727 with nothing to say but "out of
+ * memory", reached by a program that does no bookkeeping at all.
  *
- * These instructions average a shade under a fifth of a byte of output per
- * source byte. A quarter is a comfortable margin over that and still fits, and
- * the growth path below exists only so a denser source is refused rather than
- * silently truncated. */
-#define OUT_SHIFT 2
-
+ * OUT_MIN survives because test_encode builds a buffer by hand and wants a
+ * size to build it at. */
 #define OUT_MIN   (16 * 1024)
 
-#define OUT_STEP  (32 * 1024)
+/* How much of the output is in memory at once.
+ *
+ * The buffer is a window onto a file that is written as it is assembled, not
+ * the file itself, so this bounds what an assembly costs in memory no matter
+ * how large its output is. 64 KB is 128 sectors: a flush is always a whole
+ * number of them, which is the one case FatFS does not have to read a sector
+ * before writing it.
+ *
+ * Overridable at build time, and that is not a convenience -- it is the only
+ * way this code gets tested. Nothing in the corpus produces enough output to
+ * fill a 64 KB window, so a build with a small one is what makes 560 sources
+ * exercise the flush, the patches behind it and the sweep at the end:
+ *
+ *     make EXTRA_CFLAGS=-DOUT_WINDOW=512
+ */
+#ifndef OUT_WINDOW
+#define OUT_WINDOW (64 * 1024)
+#endif
 
 #define BUF_KB    16
 
@@ -454,6 +467,8 @@ typedef enum {
     ZAP_E_OUT_MEMORY_LABELS,
     ZAP_E_OUT_MEMORY_MACROS,
     ZAP_E_OUT_MEMORY_OUTPUT,
+    ZAP_E_CANNOT_WRITE_OUTPUT,
+    ZAP_E_CANNOT_READ_OUTPUT,
     ZAP_E_RELATIVE_JUMP_TOO_FAR,
     ZAP_E_RESTART_ADDRESS,
     ZAP_E_STRING_NOT_TERMINATED,
@@ -555,6 +570,30 @@ typedef struct {
     uint8_t width;
     int line;
 } fillpatch;
+
+/* A patch to a part of the output the window no longer holds.
+ *
+ * Its bytes are worked out where the patch would have been applied, not in the
+ * sweep that applies it: a fixup names a symbol, and a *local* symbol's node is
+ * handed back at the end of its scope (see scope_end), so by the time the
+ * sweep runs it may mean a different label. Everything a late patch needs is
+ * therefore copied into it. It also keeps the diagnostics where they were --
+ * an unknown label or a jump out of range is still reported from patch_fixup,
+ * in the order it always was.
+ *
+ * `kind` is a byte count of 1 to 4, or one of the FIX_FOLD_ codes, which go
+ * into the opcode byte rather than after it and so have to read what is
+ * already there. The sweep has the chunk in memory, so that read is free. */
+typedef struct {
+    int off;
+    uint8_t kind;
+    uint8_t b[4];
+} latepatch;
+
+/* `kind` above 4 is not a byte count. There is one such value: OR this byte
+ * into what is already there, which is what the three folds come to once the
+ * value has been checked and turned into a mask. */
+#define LATE_OR 5
 
 /* A reserved run still waiting on the file's final FILLBYTE. See `earlyf`. */
 typedef struct {
@@ -1042,6 +1081,33 @@ typedef struct _zap_state {
     int earlyf_used;
     int earlyf_cap;
     bool fill_seen;
+
+    /* The output file, and where the window sits in it.
+     *
+     * Opened on the first flush and not before. That is not laziness: an
+     * assembly that fails must leave no output file, which is how
+     * test/corpus.sh tells a refusal from a success, and how a failed run
+     * leaves the previous output alone. An assembly whose output fits the
+     * window never opens it until the end and behaves exactly as it did when
+     * the buffer was the whole file. */
+    uint8_t out_fh;
+    const char* out_path;
+
+    /* Patches to output the window has already passed. Applied in one
+     * ascending sweep at the end -- see resolve_late. */
+    latepatch* late;
+    int late_used;
+    int late_cap;
+    /* Where the second ascending run starts.
+     *
+     * The list is not one ascending sequence but two. Local fixups are settled
+     * at every global label, while the assembly is still going, so they are
+     * recorded as the output passes them; the global ones are all settled at
+     * the end, and start again from the top of the file. Treating that as one
+     * sorted list silently drops every global patch below the last local one,
+     * which is most of the file. Sorting ten thousand records on this machine
+     * to avoid holding one integer would be a poor trade. */
+    int late_split;
     /* One expansion buffer per level of nesting, kept and grown rather than
      * allocated per invocation, because a malloc and a free are a large part
      * of what an expansion costs. There is one per level because an outer
@@ -1686,7 +1752,10 @@ _Static_assert((R_IXL | R_IYL)
  * The comment on each definition says what it does. */
 /* directive.c */ bool directive_line(const char* s, int n, const char* p, const char* e, const char** stop);
 /* directive.c */ uint8_t directive_of(const char* s, int n);
-/* directive.c */ bool out_grow(int need);
+/* directive.c */ bool out_create(void);
+/* directive.c */ bool out_flush(void);
+/* directive.c */ bool out_late(int off, uint8_t kind, const uint8_t* b);
+/* directive.c */ bool out_peek(int off, uint8_t* dst, int n);
 /* directive.c */ bool out_reserve(void);
 /* directive.c */ int str_escape(char c);
 /* expr.c      */ bool defer_expr(const char* text, int n, dop* op);
@@ -1763,8 +1832,8 @@ _Static_assert((R_IXL | R_IYL)
 /* zap.c       */ bool assemble_line(const char* p, const char* e, const char** stop);
 /* zap.c       */ void list_args(const macro* m, int base, int depth);
 /* zap.c       */ void list_invocation(const macro* m, int base, int line, int depth, const char* e);
-/* zap.c       */ void list_line(int pc, const uint8_t* from, const uint8_t* to, int line, int depth, const char* text, const char* tend);
-/* zap.c       */ void lstfix_add(const uint8_t* from, const uint8_t* to);
+/* zap.c       */ void list_line(int pc, int from, int to, int line, int depth, const char* text, const char* tend);
+/* zap.c       */ void lstfix_add(int from, int to);
 /* zap.c       */ bool run_lines(void);
 /* zap.c       */ void warn_initializer(const char* t, int n);
 /* zap.c       */ void warn_trunc(evalue v, int width);
@@ -1789,6 +1858,14 @@ _Static_assert((R_IXL | R_IYL)
  * exist yet. */
 static inline int out_here(void) {
     return state.wbase + (int) (state.o - state.win) + state.pend;
+}
+
+/* How much has actually been written, which is out_here() without the bytes
+ * that are only reserved. The listing wants this for the *end* of a line --
+ * what the line put down -- while the start of it is out_here(), because a
+ * line's bytes begin after whatever was reserved above it. */
+static inline int out_written(void) {
+    return state.wbase + (int) (state.o - state.win);
 }
 
 /* The same, for the cursor an emitter holds while it writes an instruction --

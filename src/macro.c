@@ -658,11 +658,10 @@ bool macro_expand(const macro* m, const char* p, const char* e,
                 /* The body **as written**, parameters and all, which is what
                  * the reference shows: `db x`, not `db 7`. What x was is on
                  * the Args line above it. */
-                const uint8_t* const from = out_ptr(bo);
-                list_line(bpc, from, state.o, state.line, state.depth,
+                list_line(bpc, bo, out_written(), state.line, state.depth,
                           m->body + b, m->body + le + 1);
                 if (state.fix_touched) {
-                    lstfix_add(from, state.o);
+                    lstfix_add(bo, out_written());
                 }
             }
             state.lst_done = false;

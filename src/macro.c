@@ -603,7 +603,7 @@ bool macro_expand(const macro* m, const char* p, const char* e,
 
         const char* st = ls;
         if (!assemble_line(ls, lend, &st)) {
-            if (!state.errhave) {
+            if (!state.errhave && !state.err_elsewhere) {
                 err_line(state.errline, ls, lend);
                 state.errhave = true;
                 /* The body line, named as a line of the file it was written
@@ -636,7 +636,7 @@ bool macro_expand(const macro* m, const char* p, const char* e,
                 }
             } else if (*q != '\n') {
                 state.err = ZAP_E_UNEXPECTED_TEXT_AFTER_INSTRUCTION;
-                if (!state.errhave) {
+                if (!state.errhave && !state.err_elsewhere) {
                     err_line(state.errline, ls, lend);
                     state.errhave = true;
                     state.line = m->defline + state.line;

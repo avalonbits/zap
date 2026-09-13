@@ -134,6 +134,15 @@ if [ -n "${ZAP_WINDOW:-}" ]; then
     WIN=(-DOUT_WINDOW="$ZAP_WINDOW")
     echo "window forced to $ZAP_WINDOW bytes"
 fi
+# FIX_CAP caps the fixup list, so that the sweep which settles what it can when
+# the list will not grow runs on every source rather than only where memory
+# happens to run out. On a host it otherwise never runs at all.
+#
+#     FIX_CAP=64 test/corpus.sh
+if [ -n "${FIX_CAP:-}" ]; then
+    WIN+=(-DFIX_CAP_MAX="$FIX_CAP")
+    echo "fixup list capped at $FIX_CAP"
+fi
 cc -std=gnu11 -Wall -Wextra -fsigned-char -O1 "${WIN[@]}" \
    -include test/stubs/host_types.h -Isrc -Itest/stubs \
    -o "$OUT/zap" src/*.c test/stubs/agon_stubs.c || exit 1

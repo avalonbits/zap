@@ -47,8 +47,8 @@ flowchart TD
     out --> side["listing, symbol file, statistics<br/>(optional; none can fail the run)"]
 ```
 
-[`main()`](../src/zap.c#L1657) ·
-[`parse_args()`](../src/zap.c#L889) ·
+[`main()`](../src/zap.c#L1666) ·
+[`parse_args()`](../src/zap.c#L892) ·
 [`run()`](../src/zap.c#L605) ·
 [`run_lines()`](../src/zap.c#L463) ·
 [`scope_end()`](../src/symtab.c#L727) ·
@@ -151,7 +151,7 @@ whose every fixup is settled long after its site was written.
 
 Everything the assembler knows lives in one object,
 [`state`](../src/symtab.c#L229), of type
-[`zap_state`](../src/zap.h#L1123). It is defined in `symtab.c` and declared in
+[`zap_state`](../src/zap.h#L1146). It is defined in `symtab.c` and declared in
 `zap.h`, so every part reaches the same one.
 
 ```mermaid
@@ -423,7 +423,7 @@ Two distinctions in this group are easy to get wrong and worth stating:
   dropped, and a later `FILLBYTE` does not reach back to it. `fillbyte 0x11 /
   org $+4 / fillbyte 0xAA` is four `0x11`; the same shape with `DS` is `0xAA`.
 * For the reservations written out before the file's *first* `FILLBYTE`, that
-  byte reaches backwards, which [`earlyf`](../src/zap.h#L1082) explains and
+  byte reaches backwards, which [`earlyf`](../src/zap.h#L1103) explains and
   `resolve_early_fills()` settles at the end of the source.
 * **`ORG` is two directives sharing a name.** The first in a file moves the
   origin; every later one pads out to its address.
@@ -497,7 +497,7 @@ flowchart LR
 
 [`err_line()`](../src/symtab.c#L239) ·
 [`err_tok()`](../src/symtab.h#L47) ·
-[`report()`](../src/zap.c#L1618)
+[`report()`](../src/zap.c#L1627)
 
 ```
 Macro [mos_call] in "kernel.s" line 12 - unknown label 'MOS_SYSVARS'
@@ -506,7 +506,7 @@ Invoked from "main.s" line 84 as
   mos_call MOS_SYSVARS
 ```
 
-There is one warning, [`warn_trunc()`](../src/zap.c#L1542), for a value too
+There is one warning, [`warn_trunc()`](../src/zap.c#L1551), for a value too
 large for the space it is written into. It is the only diagnostic that asks a
 question of every value in every source rather than doing work after something
 has gone wrong, so it is behind `-w`.
@@ -517,19 +517,19 @@ has gone wrong, so it is behind `-w`.
 
 `-l` and `-d` write a listing in the reference's columns — address, up to four
 bytes per row, line number, and the source line as written — through
-[`list_line()`](../src/zap.c#L1117) and [`list_out()`](../src/zap.c#L1095). A
+[`list_line()`](../src/zap.c#L1120) and [`list_out()`](../src/zap.c#L1098). A
 macro expansion is listed as the reference lists it: the invocation with no
 bytes, the arguments, then a row per body line tagged with its depth.
 
 A line holding a forward reference is listed before that reference is patched,
-so those lines are remembered by [`lstfix_add()`](../src/zap.c#L1201) and their
+so those lines are remembered by [`lstfix_add()`](../src/zap.c#L1204) and their
 byte columns written again from the finished output by
-[`lstfix_apply()`](../src/zap.c#L1234) before the file is closed. The console
+[`lstfix_apply()`](../src/zap.c#L1237) before the file is closed. The console
 listing cannot be given that treatment and shows the bytes as they were
 emitted.
 
-[`write_symbols()`](../src/zap.c#L1413) writes the global symbols sorted, in
-the reference's format. [`write_stats()`](../src/zap.c#L1479) prints what the
+[`write_symbols()`](../src/zap.c#L1416) writes the global symbols sorted, in
+the reference's format. [`write_stats()`](../src/zap.c#L1482) prints what the
 run used. None of the three can fail an assembly: the output file is already
 written when they run.
 

@@ -904,6 +904,21 @@ typedef struct _zap_state {
     int names_used;     /* within the newest block */
     symblock* blocks;   /* symbol nodes, in blocks that never move */
     int syms_used;      /* used in the newest block */
+    /* How many forward references the file made, and the most that were
+     * outstanding at once.
+     *
+     * The two are the same number while nothing ever leaves the list. They
+     * stop being the same when a fixup is settled as soon as its label
+     * appears, and the gap between them is the whole of what that is worth --
+     * which is why -x prints both. The peak is sampled where the list is about
+     * to grow and once at the end, because that is where a peak can be: it is
+     * not counted per fixup. */
+    /* How many the sweep has taken off the list. The total the file made is
+     * this plus whatever is still on it -- derived rather than counted,
+     * because counting would be an increment on the path every forward
+     * reference takes and this is a number only -x ever asks for. */
+    int fix_settled;
+    int fix_peak;
     fixup* fixups;
     int fix_used;
     int fix_cap;
@@ -958,6 +973,14 @@ typedef struct _zap_state {
     int lstfix_cap;
 
     bool errhave;          /* the failing line has been captured */
+    /* The failure belongs to a line other than the one being assembled.
+     *
+     * A fixup settled early is settled in the middle of some later line, and
+     * if that line captured its own text the report would name the right line
+     * number and quote the wrong source. Set where the failure is raised, read
+     * where a line would otherwise claim it; report() then re-reads the file
+     * at the line the fixup carried. */
+    bool err_elsewhere;
     char errline[ERRLINE_MAX];
     char errfrom[ERRLINE_MAX];   /* empty until the line loop fills it */
     const char* errfrompath;     /* NULL unless the failure was in a macro */
@@ -1167,6 +1190,34 @@ _Static_assert(__builtin_offsetof(zap_state, org) < 128, "zap_state.org is out o
 #define SYMS_STEP   512
 
 #define FIX_STEP    512
+
+/* A ceiling on the fixup list, for tests.
+ *
+ * The list is settled and compacted only when asking for more room fails, so
+ * on a host where malloc does not fail that path is never taken and nothing
+ * exercises it. This makes it fail on demand, the same way OUT_WINDOW makes
+ * the output window fill on demand:
+ *
+ *     make EXTRA_CFLAGS=-DFIX_CAP_MAX=1024
+ *     FIX_CAP=1024 test/corpus.sh
+ *
+ * Meaningful only in multiples of FIX_STEP: the first allocation asks for a
+ * whole step, so any cap below one refuses every source that has a forward
+ * reference at all. 1024 is the useful setting for the corpus -- it makes BBC
+ * BASIC sweep, and nothing there legitimately needs more.
+ *
+ * It does not combine with a small OUT_WINDOW. A fixup is only settleable
+ * while its site is still in the window, so at a 512-byte window almost
+ * nothing is, the sweep frees nothing and a capped list simply fills. That is
+ * the mechanism working as designed rather than a fault, but it means the two
+ * knobs are turned one at a time.
+ *
+ * Zero in an ordinary build, which means no ceiling and one compare against a
+ * constant the compiler folds away. */
+#ifndef FIX_CAP_MAX
+#define FIX_CAP_MAX 0
+#endif
+
 
 /* Symbols are allocated in blocks that are never moved.
  *

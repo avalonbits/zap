@@ -539,6 +539,59 @@ cli_check "an ORG pad is written where it stands, so it lists inline" \
     "$(sed -n '3p' "$OUT/orgl.lst" 2>/dev/null | tr -d '\r' | cut -c1-18)" \
     "040001 FF FF FF FF"
 
+# A global fixup is settled when its label appears -- but only when the list
+# cannot grow any further, because a sweep buys nothing for a file that fits
+# and costs 3.1% on BBC BASIC if it runs at every growth.
+#
+# A second binary with the list capped, because on a host malloc does not fail
+# and the path would otherwise never be taken. Same idea as OUT_WINDOW.
+cc "${CFLAGS[@]}" -DFIX_CAP_MAX=512 -o "$OUT/zapcap" "${ZAPSRCS[@]}" "${SRCS[@]}"
+
+# Two thousand references each resolved three bytes later, through a list that
+# holds 512. Without the sweep this is "out of memory for labels" at 512.
+{
+    printf '    .assume adl=1\n    .org 0x40000\n'
+    i=0
+    while [ "$i" -lt 2000 ]; do
+        printf '    jp near_%d\nnear_%d:\n' "$i" "$i"
+        i=$((i + 1))
+    done
+} > "$OUT/fixnear.s"
+near=$("$OUT/zapcap" -c -ez80 -x "$OUT/fixnear.s" "$OUT/fixnear.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a list that cannot grow settles what it can and carries on" \
+    "$(wc -c < "$OUT/fixnear.bin" 2>/dev/null || echo 0)" 8000
+cli_check "all two thousand references are accounted for" \
+    "$(printf '%s' "$near" | grep -c '^Forward references   :   2000$')" 1
+cli_check "and no more than the cap is ever outstanding" \
+    "$(printf '%s' "$near" | awk '/^Most outstanding/ { print ($4 <= 512) ? "yes" : $4 }')" "yes"
+
+# The same pressure with nothing settleable: every reference waits on a label
+# at the end of the file, so the sweep frees nothing and the refusal stands.
+# Without this the check above would pass on an assembler that lost them.
+{
+    printf '    .assume adl=1\n    .org 0x40000\n'
+    i=0
+    while [ "$i" -lt 600 ]; do printf '    jp far_end\n'; i=$((i + 1)); done
+    printf 'far_end:\n    ret\n'
+} > "$OUT/fixfar.s"
+far=$("$OUT/zapcap" -c -ez80 "$OUT/fixfar.s" "$OUT/fixfar.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a sweep that can free nothing still refuses" \
+    "$(printf '%s' "$far" | grep -c 'out of memory for labels')" 1
+
+# A fixup settled by the sweep is reported against the line that *used* it, and
+# quotes that line -- not the one being assembled when the list filled up.
+{
+    printf '    .assume adl=1\n    jr toofar\n    blkb 300, 0\ntoofar:\n'
+    i=0
+    while [ "$i" -lt 600 ]; do printf '    jp far_end\n'; i=$((i + 1)); done
+    printf 'far_end:\n    ret\n'
+} > "$OUT/two.s"
+two=$("$OUT/zapcap" -c -ez80 "$OUT/two.s" "$OUT/two.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a fixup settled early reports against the line that used it" \
+    "$(printf '%s' "$two" | grep -c 'line 2 - relative jump too far')" 1
+cli_check "and quotes that line, not the one being assembled" \
+    "$(printf '%s' "$two" | grep -c '^    jr toofar$')" 1
+
 # The output window, forced small enough that these little sources fill it.
 #
 # A second binary, because the window is a build-time size: at 64 KB nothing

@@ -486,6 +486,129 @@ cli_check "the inner expansion is one deeper" \
     "$(printf '%s' "$lst3" | grep -c 'M2 Args: none$')" 1
 cli_check "and its body line is tagged M2" \
     "$(printf '%s' "$lst3" | grep -c '0001M2 nop$')" 1
+# A listed line that grows the output buffer while it is being assembled.
+#
+# The listing holds where the line started so it can print the bytes it wrote.
+# Held as a pointer, that is a pointer into a buffer the line itself can
+# realloc -- `blkb 20000` asks for more than the 16 KB the buffer starts at --
+# and realloc is allowed to move. After it moves, the pointer is freed memory
+# and `to - from` in list_line is not a length at all. The ASan build this runs
+# under aborts on it, so a regression here is a failed run, not a wrong byte.
+printf '  blkb 20000, 0xAA\n  nop\n' > "$OUT/grow.s"
+rm -f "$OUT/grow.lst" "$OUT/grow.bin"
+"$OUT/zap" -c -l "$OUT/grow.s" "$OUT/grow.bin" > /dev/null 2>&1 || true
+cli_check "a listed line that grows the buffer still writes its bytes" \
+    "$(wc -c < "$OUT/grow.bin" 2>/dev/null || echo 0)" 20001
+cli_check "and lists them from where they actually are" \
+    "$(head -2 "$OUT/grow.lst" 2>/dev/null | tail -1 | tr -d '\r' | cut -c1-18)" \
+    "040000 AA AA AA AA"
+
+# A reservation too large to count.
+#
+# Reserving stopped allocating when it became a count, so nothing else refuses
+# this any more -- it used to fail asking malloc for the bytes. `int` is three
+# bytes on the eZ80, so two of these wrap to a negative and the file comes out
+# short with nothing said.
+printf '  ds 8000000\n  ds 8000000\n  nop\n' > "$OUT/dsbig.s"
+dsbig=$("$OUT/zap" -c "$OUT/dsbig.s" "$OUT/dsbig.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a reservation larger than the machine can count is refused" \
+    "$(printf '%s' "$dsbig" | grep -c 'out of memory for the output')" 1
+
+# What a reservation looks like in a listing, now that reserving does not
+# write anything.
+#
+# The reference leaves the first row empty and puts the fill on a continuation
+# row under it; zap leaves the first row empty and writes no continuation row,
+# because at the time the line is listed those bytes do not exist. An ORG pad
+# is not a reservation -- it is written where it stands -- so that one is the
+# reference's row exactly.
+printf '  nop\n  ds 3\n  nop\n' > "$OUT/dsl.s"
+rm -f "$OUT/dsl.lst"
+"$OUT/zap" -c -l "$OUT/dsl.s" "$OUT/dsl.bin" > /dev/null 2>&1 || true
+cli_check "a reservation lists an empty first row, as the reference does" \
+    "$(sed -n '3p' "$OUT/dsl.lst" 2>/dev/null | tr -d '\r' | cut -c1-18)" \
+    "040001            "
+cli_check "and the line after it is the next instruction, not a fill row" \
+    "$(sed -n '4p' "$OUT/dsl.lst" 2>/dev/null | tr -d '\r' | cut -c1-9)" \
+    "040004 00"
+
+printf '  nop\n  org $+4\n  ret\n' > "$OUT/orgl.s"
+rm -f "$OUT/orgl.lst"
+"$OUT/zap" -c -l "$OUT/orgl.s" "$OUT/orgl.bin" > /dev/null 2>&1 || true
+cli_check "an ORG pad is written where it stands, so it lists inline" \
+    "$(sed -n '3p' "$OUT/orgl.lst" 2>/dev/null | tr -d '\r' | cut -c1-18)" \
+    "040001 FF FF FF FF"
+
+# The output window, forced small enough that these little sources fill it.
+#
+# A second binary, because the window is a build-time size: at 64 KB nothing
+# here emits enough to flush even once, so without this the whole streaming
+# path -- writing a window out, recording the patches that fall behind it,
+# sweeping the file at the end -- is never reached by this file. corpus.sh
+# does the same thing across 560 sources with ZAP_WINDOW; these are the cases
+# that need a specific shape rather than a corpus.
+cc "${CFLAGS[@]}" -DOUT_WINDOW=512 -o "$OUT/zapw" "${ZAPSRCS[@]}" "${SRCS[@]}"
+
+# A forward reference from the first line to the last, over more output than
+# the window holds: the site is written and gone by the time the label is
+# known, so it can only be patched behind the window.
+printf '    .assume adl=1\n    .org 0x40000\n    jp far\n    blkb 2000, 0x5A\nfar:\n    ret\n' \
+    > "$OUT/win1.s"
+"$OUT/zap"  -c -ez80 "$OUT/win1.s" "$OUT/win1a.bin" > /dev/null 2>&1 || true
+"$OUT/zapw" -c -ez80 "$OUT/win1.s" "$OUT/win1b.bin" > /dev/null 2>&1 || true
+cli_check "a windowed build writes the same bytes as one that never flushes" \
+    "$(cmp -s "$OUT/win1a.bin" "$OUT/win1b.bin" && echo same || echo differ)" "same"
+if [ -x "$OPTREF" ]; then
+    "$OPTREF" "$OUT/win1.s" "$OUT/win1r.bin" > /dev/null 2>&1 || true
+    cli_check "and the same bytes as the reference" \
+        "$(cmp -s "$OUT/win1r.bin" "$OUT/win1b.bin" && echo same || echo differ)" "same"
+fi
+
+# -x counts what had to be patched behind the window, which is the only
+# visible sign that any of this happened.
+cli_check "-x counts the patches left behind the window" \
+    "$("$OUT/zapw" -c -ez80 -x "$OUT/win1.s" "$OUT/win1c.bin" 2>&1 | tr -d '\r' \
+       | grep -c '^Late patches         :      1$')" 1
+cli_check "and counts none when the output never fills it" \
+    "$("$OUT/zap" -c -ez80 -x "$OUT/win1.s" "$OUT/win1d.bin" 2>&1 | tr -d '\r' \
+       | grep -c '^Late patches         :      0$')" 1
+
+# A source that emits nothing still produces an empty file. The output is
+# opened on the first flush, so this is the path where nothing ever flushes --
+# and test/corpus.sh reads a missing file as "zap refused this".
+printf '; nothing at all\n' > "$OUT/win2.s"
+rm -f "$OUT/win2.bin"
+"$OUT/zapw" -c -ez80 "$OUT/win2.s" "$OUT/win2.bin" > /dev/null 2>&1 || true
+cli_check "a source that emits nothing still writes an empty output" \
+    "$([ -f "$OUT/win2.bin" ] && wc -c < "$OUT/win2.bin" || echo missing)" "0"
+
+# A failed assembly leaves no output file at all, even one that had already
+# filled a window and written part of itself out.
+printf '    .assume adl=1\n    blkb 2000, 0x5A\n    ld a,\n' > "$OUT/win3.s"
+rm -f "$OUT/win3.bin"
+"$OUT/zapw" -c -ez80 "$OUT/win3.s" "$OUT/win3.bin" > /dev/null 2>&1 || true
+cli_check "a failed assembly leaves no output, even after a flush" \
+    "$([ -f "$OUT/win3.bin" ] && echo present || echo absent)" "absent"
+
+# The hardware kit's log line.
+#
+# -DKITLOG is compiled out of every build anyone runs, so nothing else here
+# would notice it breaking -- and it is the only way a timing gets off the
+# Agon, since MOS has no output redirection and no program can run another.
+# test/hwkit.sh parses these lines, so the shape of one is a contract.
+cc "${CFLAGS[@]}" -DKITLOG -DKITLOG_FILE="\"$OUT/kit.log\"" \
+   -o "$OUT/zapkit" "${ZAPSRCS[@]}" "${SRCS[@]}"
+rm -f "$OUT/kit.log"
+printf '  nop\n  ret\n' > "$OUT/kit.s"
+"$OUT/zapkit" -c -ez80 "$OUT/kit.s" "$OUT/kit.bin" > /dev/null 2>&1 || true
+"$OUT/zapkit" -c -ez80 "$OUT/kit.s" "$OUT/kit.bin" > /dev/null 2>&1 || true
+cli_check "the kit log records the window, the source and the size" \
+    "$(tr -d '\r' < "$OUT/kit.log" 2>/dev/null | head -1 \
+       | sed -E 's/t=[0-9]+\.[0-9]+/t=N/; s#src=[^ ]*/#src=#')" \
+    "zap w=65536 src=kit.s out=2 t=N"
+cli_check "and appends rather than starting again" \
+    "$(wc -l < "$OUT/kit.log" 2>/dev/null | tr -d ' ')" "2"
+
 # -d prints the same listing and still writes no file.
 rm -f "$OUT/lst2.lst"
 cli_check "-d lists an expansion too" \

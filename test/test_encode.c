@@ -86,10 +86,10 @@ static const char* emit(const char* src) {
     if (!ok) {
         n = snprintf(out, sizeof(out), "ERR");
     } else {
-        const int len = (int) (state.o - state.out);
+        const int len = out_here();
         for (int i = 0; i < len && n < (int) sizeof(out) - 4; i++) {
             n += snprintf(&out[n], sizeof(out) - (size_t) n, "%s%02X",
-                          i ? " " : "", state.out[i]);
+                          i ? " " : "", state.win[i]);
         }
     }
     out[n] = 0;
@@ -595,27 +595,40 @@ int main(void) {
     {
         memset(&state, 0, sizeof(state));
         state.cap = OUT_MIN;
-        state.out = (uint8_t*) malloc((size_t) state.cap);
-        state.o = state.out;
-        state.lim = state.out + state.cap - OUT_MAX_INSN;
+        state.win = (uint8_t*) malloc((size_t) state.cap);
+        state.o = state.win;
+        state.wbase = 0;
+        state.lim = state.win + state.cap - OUT_MAX_INSN;
         for (int i = 0; i < 100; i++) {
             *state.o++ = (uint8_t) i;
         }
 
-        const bool grew = out_grow(0);
-        char got[64];
-        snprintf(got, sizeof(got), "%d %d %d %d", grew ? 1 : 0,
-                 (int) (state.o - state.out), (int) (state.lim - state.out),
-                 state.out[99] == 99 && state.out[0] == 0);
-        char want[64];
-        snprintf(want, sizeof(want), "1 100 %d 1", OUT_MIN + OUT_STEP - OUT_MAX_INSN);
-        check("out_grow carries the cursor and the limit", got, want);
+        state.out_path = "out_flush_test.bin";
+        const bool flushed = out_flush();
 
-        /* And that the rebased limit still leaves room for a whole
-         * instruction, which is the property the reserve relies on. */
-        check("a grown buffer has room for the longest form",
-              (state.lim + OUT_MAX_INSN == state.out + state.cap) ? "yes" : "no", "yes");
-        free(state.out);
+        /* The window starts again at its beginning and the file has grown by
+         * what was in it, which is the whole of what a flush is. */
+        char got[64];
+        snprintf(got, sizeof(got), "%d %d %d", flushed ? 1 : 0,
+                 (int) (state.o - state.win), state.wbase);
+        check("out_flush empties the window and carries the base", got, "1 0 100");
+
+        /* And the limit still leaves room for a whole instruction, which is
+         * the property every reserve relies on. */
+        check("a flushed window has room for the longest form",
+              (state.lim + OUT_MAX_INSN == state.win + state.cap) ? "yes" : "no", "yes");
+
+        /* What was in the window is on the card, in order. */
+        uint8_t back[100];
+        memset(back, 0, sizeof(back));
+        const bool read_ok = out_peek(0, back, 100);
+        check("and what it held can be read back", read_ok && back[0] == 0
+              && back[99] == 99 ? "yes" : "no", "yes");
+
+        mos_fclose(state.out_fh);
+        state.out_fh = 0;
+        remove("out_flush_test.bin");
+        free(state.win);
     }
 
     /* Labels.

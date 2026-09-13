@@ -60,8 +60,10 @@ one does, all written up in docs/DESIGN.md:
 * a macro body loses the indentation it was written with, because the body is
   stored from its first token;
 * a reservation's fill is listed on a continuation row with the first row
-  left empty, and an ALIGN's too, while an ORG's pad is listed inline. zap
-  lists all three inline.
+  left empty, and an ALIGN's too. zap leaves the first row empty as the
+  reference does, and writes no continuation row, because the bytes are not
+  written until something follows them. An ORG's pad the reference lists
+  inline, and so does zap -- that one now agrees byte for byte.
 
 Sources in `listing/` avoid all three, so their `.lst` can be compared byte
 for byte -- which is how it was found that zap wrote CRLF where the reference

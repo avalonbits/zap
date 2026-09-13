@@ -118,7 +118,23 @@ OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
 
 # The host build of zap, over the same stubs the unit tests use.
-cc -std=gnu11 -Wall -Wextra -fsigned-char -O1 \
+#
+# ZAP_WINDOW, if set, is the size of the output window. Nothing in the corpus
+# produces enough output to fill the real one, so a run at a small window is
+# what makes these 560 sources exercise the flush, the patches recorded behind
+# it and the sweep that applies them:
+#
+#     ZAP_WINDOW=512 test/corpus.sh
+#
+# Every source must produce the same bytes at any window size; that is the
+# whole claim of the streaming work, and this is the only place it is tested
+# across a corpus rather than on one file.
+WIN=()
+if [ -n "${ZAP_WINDOW:-}" ]; then
+    WIN=(-DOUT_WINDOW="$ZAP_WINDOW")
+    echo "window forced to $ZAP_WINDOW bytes"
+fi
+cc -std=gnu11 -Wall -Wextra -fsigned-char -O1 "${WIN[@]}" \
    -include test/stubs/host_types.h -Isrc -Itest/stubs \
    -o "$OUT/zap" src/*.c test/stubs/agon_stubs.c || exit 1
 

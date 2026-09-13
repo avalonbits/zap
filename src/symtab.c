@@ -86,6 +86,8 @@ const char* const zap_err_text[] = {
     [ZAP_E_OUT_MEMORY_LABELS] = "out of memory for labels",
     [ZAP_E_OUT_MEMORY_MACROS] = "out of memory for macros",
     [ZAP_E_OUT_MEMORY_OUTPUT] = "out of memory for the output",
+    [ZAP_E_CANNOT_WRITE_OUTPUT] = "cannot write the output",
+    [ZAP_E_CANNOT_READ_OUTPUT] = "cannot read the output back",
     [ZAP_E_RELATIVE_JUMP_TOO_FAR] = "relative jump too far",
     [ZAP_E_RESTART_ADDRESS] = "not a restart address",
     [ZAP_E_STRING_NOT_TERMINATED] = "string not terminated",
@@ -523,7 +525,14 @@ static bool loc_room(void) {
  * The range checks are the emitter's, and so are their limits: the reference
  * refuses a bit number above 7 and an interrupt mode above 2 while masking
  * negative ones into range. */
-static bool patch_fold(const fixup* f, evalue val, uint8_t w, uint8_t* at) {
+/* The bits a fold puts into the opcode byte, and the check that the value
+ * belongs there at all.
+ *
+ * A mask rather than the write itself, because the byte it goes into may no
+ * longer be in the window -- and then the OR happens in the sweep at the end,
+ * while the *check* has to happen here, where the line number that would be
+ * reported is still the one that used the label. */
+static bool fold_mask(const fixup* f, evalue val, uint8_t w, uint8_t* mask) {
     const int v = (int) val;
     if (w == FIX_FOLD_BIT) {
         if (v > 7) {
@@ -532,7 +541,7 @@ static bool patch_fold(const fixup* f, evalue val, uint8_t w, uint8_t* at) {
 
             return false;
         }
-        *at |= (uint8_t) ((unsigned) v << 3);
+        *mask = (uint8_t) ((unsigned) v << 3);
 
         return true;
     }
@@ -543,7 +552,7 @@ static bool patch_fold(const fixup* f, evalue val, uint8_t w, uint8_t* at) {
 
             return false;
         }
-        *at |= (uint8_t) v;
+        *mask = (uint8_t) v;
 
         return true;
     }
@@ -554,7 +563,7 @@ static bool patch_fold(const fixup* f, evalue val, uint8_t w, uint8_t* at) {
 
         return false;
     }
-    *at |= (uint8_t) ((v == 1 ? 2 : v == 2 ? 3 : 0) << 3);
+    *mask = (uint8_t) ((v == 1 ? 2 : v == 2 ? 3 : 0) << 3);
 
     return true;
 }
@@ -588,7 +597,15 @@ bool patch_fixup(const fixup* f) {
     }
 
     const uint8_t w = (uint8_t) (f->width & FIX_WIDTH);
-    uint8_t* at = state.out + f->off;
+
+    /* Where the bytes go. If the window has passed this offset they go into a
+     * staging buffer and are recorded, to be applied in one sweep at the end;
+     * the code below cannot tell the difference. What it must not do is hold
+     * on to anything of the symbol's -- a local's node is handed back when its
+     * scope ends -- so the record carries the finished bytes and nothing else. */
+    const bool inwin = f->off >= state.wbase;
+    uint8_t buf[4] = {0, 0, 0, 0};
+    uint8_t* at = inwin ? out_ptr(f->off) : buf;
     if (w == 0) {
         /* The byte after the displacement byte, which is where a relative
          * jump is measured from. */
@@ -601,7 +618,7 @@ bool patch_fixup(const fixup* f) {
         }
         *at = (uint8_t) d;
 
-        return true;
+        return inwin || out_late(f->off, 1, buf);
     }
 
     if (w == FIX_DISP || w == FIX_DISP_NEG) {
@@ -621,7 +638,18 @@ bool patch_fixup(const fixup* f) {
     }
 
     if (w > 4) {
-        return patch_fold(f, val, w, at);
+        uint8_t mask;
+        if (!fold_mask(f, val, w, &mask)) {
+            return false;
+        }
+        if (inwin) {
+            *at |= mask;
+
+            return true;
+        }
+        buf[0] = mask;
+
+        return out_late(f->off, LATE_OR, buf);
     }
 
     if (want_warn && !fits_width(val, (int) w)) {
@@ -642,7 +670,7 @@ bool patch_fixup(const fixup* f) {
         at[2] = (uint8_t) (val >> 16);
         at[3] = (uint8_t) (val >> 24);
 
-        return true;
+        return inwin || out_late(f->off, 4, buf);
     }
     const int v = (int) val;
     at[0] = (uint8_t) v;
@@ -653,7 +681,7 @@ bool patch_fixup(const fixup* f) {
         at[2] = (uint8_t) (v >> 16);
     }
 
-    return true;
+    return inwin || out_late(f->off, w, buf);
 }
 
 /* Ends the current scope: settles every local reference it left pending, then

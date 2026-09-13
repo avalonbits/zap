@@ -74,7 +74,7 @@ __attribute__((noinline)) bool assemble_line(const char* p, const char* e, const
      * and so is `foo:` alone. */
     if (*p == ':') {
         LTRUNC_AT(1);
-        const int addr = state.org + (int) (state.o - state.out);
+        const int addr = state.org + out_here();
         /* "Label too long" at sixty-five characters, as in the reference. The
          * `@` of a local counts towards the limit, which is why this is asked
          * once for both rather than after the two are told apart.
@@ -282,7 +282,11 @@ static bool resolve_deferred(void) {
     return true;
 }
 
-/* Fills in the blocks whose value was not known when they were written. */
+/* Checks the blocks whose fill value was not known when they were written.
+ *
+ * The bytes themselves are written by the sweep, with everything else; this is
+ * only the part that has to happen here, where the line that wrote the block
+ * is still the line a failure is reported against. */
 static bool resolve_fills(void) {
     for (int i = 0; i < state.fillp_used; i++) {
         const fillpatch* fp = &state.fillp[i];
@@ -292,50 +296,150 @@ static bool resolve_fills(void) {
 
             return false;
         }
+    }
+
+    return true;
+}
+
+/* Whether the runs reserved before the file's first FILLBYTE need anything.
+ *
+ * They were written with 0xFF, and the reference gives them the file's *last*
+ * FILLBYTE. If there was none, or it was 0xFF anyway, what is already there is
+ * right -- which is the case for every source that never says FILLBYTE. */
+static bool early_fills_pending(void) {
+    return state.fill_seen && state.fill != 0xFF && state.earlyf_used > 0;
+}
+
+/* Writes into `buf`, which holds the output over [lo, hi), everything still
+ * owed to that range: the point patches left behind by the window, the blocks
+ * whose fill was a forward reference, and the runs waiting on the last
+ * FILLBYTE. Each is clipped to the range, because a patch or a run may straddle
+ * the edge of it. */
+/* One ascending run of late patches, over [from, to). */
+static void apply_late(uint8_t* buf, int lo, int hi, int from, int to, int* cur) {
+    for (int i = *cur < from ? from : *cur; i < to; i++) {
+        const latepatch* lp = &state.late[i];
+        if (lp->off >= hi) {
+            break;
+        }
+        const int n = lp->kind == LATE_OR ? 1 : lp->kind;
+        if (lp->off + n <= lo) {
+            /* Wholly behind this chunk, and so is everything before it in this
+             * run: the next chunk can start here. */
+            *cur = i + 1;
+            continue;
+        }
+        if (lp->kind == LATE_OR) {
+            buf[lp->off - lo] |= lp->b[0];
+            continue;
+        }
+        for (int k = 0; k < n; k++) {
+            const int at = lp->off + k;
+            if (at >= lo && at < hi) {
+                buf[at - lo] = lp->b[k];
+            }
+        }
+    }
+}
+
+static void apply_range(uint8_t* buf, int lo, int hi, int* cur) {
+    apply_late(buf, lo, hi, 0, state.late_split, &cur[0]);
+    apply_late(buf, lo, hi, state.late_split, state.late_used, &cur[3]);
+
+    for (int i = cur[1]; i < state.fillp_used; i++) {
+        const fillpatch* fp = &state.fillp[i];
+        const int n = fp->count * fp->width;
+        if (fp->off >= hi) {
+            break;
+        }
+        if (fp->off + n <= lo) {
+            cur[1] = i + 1;
+            continue;
+        }
         const evalue v = fp->sp->addr;
-        uint8_t* o = state.out + fp->off;
-        const int nv = (int) v;
-        for (int n = fp->count; n != 0; n--) {
-            if (fp->width > 3) {
-                *o++ = (uint8_t) v;
-                *o++ = (uint8_t) (v >> 8);
-                *o++ = (uint8_t) (v >> 16);
-                *o++ = (uint8_t) (v >> 24);
+        for (int k = 0; k < n; k++) {
+            const int at = fp->off + k;
+            if (at >= lo && at < hi) {
+                buf[at - lo] = (uint8_t) (v >> (8 * (k % fp->width)));
+            }
+        }
+    }
+
+    if (early_fills_pending()) {
+        for (int i = cur[2]; i < state.earlyf_used; i++) {
+            const fillrun* r = &state.earlyf[i];
+            if (r->off >= hi) {
+                break;
+            }
+            if (r->off + r->count <= lo) {
+                cur[2] = i + 1;
                 continue;
             }
-            *o++ = (uint8_t) nv;
-            if (fp->width > 1) {
-                *o++ = (uint8_t) (nv >> 8);
-            }
-            if (fp->width > 2) {
-                *o++ = (uint8_t) (nv >> 16);
-            }
+            int from = r->off < lo ? lo : r->off;
+            int to = r->off + r->count > hi ? hi : r->off + r->count;
+            memset(buf + (from - lo), state.fill, (size_t) (to - from));
+        }
+    }
+}
+
+/* Applies everything the window left behind, in one pass up the file.
+ *
+ * Ascending, and in chunks the size of the window, because of the filesystem
+ * this runs on: FF_FS_TINY means a FIL has no sector buffer of its own and
+ * every partial write is a read-modify-write through the one the FAT is also
+ * using, and FF_USE_FASTSEEK is off, so a seek walks the cluster chain -- from
+ * the current position when it goes forward, from the start when it goes back.
+ * A seek and a write per patch would be two sector transfers each and a chain
+ * walk between them. This is two transfers per *chunk*, and a chunk with
+ * nothing owed to it costs one forward seek and no transfer at all.
+ *
+ * When the output never outgrew the window there is no file, and the whole of
+ * it is one chunk that is already in memory. */
+static bool resolve_late(void) {
+    if (state.late_used == 0 && state.fillp_used == 0 && !early_fills_pending()) {
+        return true;
+    }
+    const int total = out_here();
+    /* Where each list has got to. The lists ascend and so do the chunks, so a
+     * patch is looked at once rather than once per chunk -- which matters at a
+     * small window, where there are many chunks and the same thousands of
+     * patches. */
+    int cur[4] = {0, 0, 0, state.late_split};
+    if (state.out_fh == 0) {
+        apply_range(state.win, 0, total, cur);
+
+        return true;
+    }
+    for (int base = 0; base < total; base += state.cap) {
+        int n = total - base;
+        if (n > state.cap) {
+            n = state.cap;
+        }
+        if (mos_flseek(state.out_fh, (uint32_t) base) != 0
+            || (int) mos_fread(state.out_fh, (char*) state.win, (uint24_t) n) != n) {
+            state.err = ZAP_E_CANNOT_READ_OUTPUT;
+
+            return false;
+        }
+        apply_range(state.win, base, base + n, cur);
+        if (mos_flseek(state.out_fh, (uint32_t) base) != 0
+            || (int) mos_fwrite(state.out_fh, (char*) state.win, (uint24_t) n) != n) {
+            state.err = ZAP_E_CANNOT_WRITE_OUTPUT;
+
+            return false;
         }
     }
 
     return true;
 }
 
-/* Fills the runs that were reserved before the file's first FILLBYTE, which
- * the reference gives the *last* FILLBYTE in the file. See `earlyf` in zap.h.
- *
- * Nothing to do unless a FILLBYTE moved the value off the 0xFF these runs were
- * written with, which is the case for every source that has none. */
-static void resolve_early_fills(void) {
-    if (!state.fill_seen || state.fill == 0xFF) {
-        return;
-    }
-    for (int i = 0; i < state.earlyf_used; i++) {
-        const fillrun* r = &state.earlyf[i];
-        memset(state.out + r->off, state.fill, (size_t) r->count);
-    }
-}
-
 static bool resolve_fixups(void) {
     if (!resolve_deferred() || !resolve_fills()) {
         return false;
     }
-    resolve_early_fills();
+    /* Everything recorded from here is a global fixup, and the globals start
+     * again at the top of the file. See late_split. */
+    state.late_split = state.late_used;
     for (int i = 0; i < state.fix_used; i++) {
         if (!patch_fixup(&state.fixups[i])) {
             return false;
@@ -392,8 +496,8 @@ __attribute__((noinline)) bool run_lines(void) {
          * and take two registers from the loop that has fewest to spare. At a
          * fixed address the stores are absolute. */
         if (listing) {
-            state.lst_o = state.o;
-            state.lst_pc = state.org + (int) (state.o - state.out);
+            state.lst_off = out_here();
+            state.lst_pc = state.org + out_here();
             state.lst_p = p;
         }
 
@@ -468,9 +572,13 @@ __attribute__((noinline)) bool run_lines(void) {
 
         if (listing) {
             if (!state.lst_done) {
-                list_line(state.lst_pc, state.lst_o, state.o, state.line, 0, p, stop);
+                /* Ending where the writing ended, not where the next byte
+                 * would go: a line that only reserves space wrote nothing, and
+                 * lists nothing. */
+                list_line(state.lst_pc, state.lst_off, out_written(), state.line,
+                          0, p, stop);
                 if (state.fix_touched) {
-                    lstfix_add(state.lst_o, state.o);
+                    lstfix_add(state.lst_off, out_written());
                 }
             }
             state.lst_done = false;
@@ -502,18 +610,20 @@ __attribute__((noinline)) static bool run(const char* path) {
         return false;
     }
 
-    state.cap = (int) (state.rd.fsz_ >> OUT_SHIFT);
-    if (state.cap < OUT_MIN) {
-        state.cap = OUT_MIN;
-    }
+    /* One window, allocated once and never grown. What the source is worth in
+     * output no longer decides anything: the buffer is a view on a file that
+     * is written as it fills. */
+    state.cap = OUT_WINDOW;
     Z_SITE("output buffer");
-    state.out = (uint8_t*) malloc((size_t) state.cap);
-    if (state.out == NULL) {
+    state.win = (uint8_t*) malloc((size_t) state.cap);
+    if (state.win == NULL) {
         state.err = ZAP_E_OUT_MEMORY;
 
         return false;
     }
-    state.o = state.out;
+    state.o = state.win;
+    /* The buffer holds the whole output, so its first byte is the output's. */
+    state.wbase = 0;
     state.org = opt_org;
     state.org_set = false;
     state.fill = opt_fill;
@@ -547,11 +657,17 @@ __attribute__((noinline)) static bool run(const char* path) {
     state.earlyf_used = 0;
     state.earlyf_cap = 0;
     state.fill_seen = false;
+    state.pend = 0;
+    state.late = NULL;
+    state.late_used = 0;
+    state.late_cap = 0;
+    state.late_split = 0;
+    state.out_fh = 0;
     for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
         state.expbuf[i] = NULL;
         state.expcap[i] = 0;
     }
-    state.lim = state.out + state.cap - OUT_MAX_INSN;
+    state.lim = state.win + state.cap - OUT_MAX_INSN;
     Z_SITE("symbol buckets");
     state.syms = (symslot*) calloc(NSYMB, sizeof(symslot));
     if (state.syms == NULL) {
@@ -608,14 +724,10 @@ __attribute__((noinline)) static bool run(const char* path) {
 
     /* Space that was reserved and never written over is not output: `DS 4` at
      * the end of a file produces nothing, and neither does a trailing `ALIGN`,
-     * as in the reference. Dropped here, once, rather than tested on every
-     * write.
-     *
-     * After the fixups rather than before, so that nothing has to reason about
-     * whether shortening the output could move a patch site. */
-    if (state.fill_len != 0 && (int) (state.o - state.out) == state.fill_end) {
-        state.o -= state.fill_len;
-    }
+     * as in the reference. Nothing has to be taken back -- it was never
+     * written -- but out_here() counts it, and from here on that number is the
+     * length of the file. */
+    state.pend = 0;
 
     return true;
 }
@@ -623,7 +735,7 @@ __attribute__((noinline)) static bool run(const char* path) {
 /* Everything run() may have allocated, freed in one place so that the two
  * error paths and the success path cannot drift apart. */
 static void dz_free(void) {
-    free(state.out);
+    free(state.win);
     free(state.syms);
     free(state.fixups);
     free(state.lfixups);
@@ -632,6 +744,7 @@ static void dz_free(void) {
     free(state.defer);
     free(state.fillp);
     free(state.earlyf);
+    free(state.late);
     free(state.lstfix);
     for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
         free(state.expbuf[i]);
@@ -997,14 +1110,18 @@ static void list_hex(char* buf, int* w, uint32_t v, int digits) {
     }
 }
 
-void list_line(int pc, const uint8_t* from, const uint8_t* to, int line,
+/* `from` and `to` are positions in the output, not pointers into it. A line
+ * that fills the window is flushed while it is still being assembled, and then
+ * the bytes it wrote are on the card and not in memory at all -- out_peek
+ * fetches them from wherever they ended up. */
+void list_line(int pc, int from, int to, int line,
                       int depth, const char* text, const char* tend) {
     /* Static, and that is the whole point of it. 176 bytes of frame put every
      * `buf[w++]` past the signed-byte displacement -- the frame measured 220
      * and the compiler was computing an address for each one. Nothing here
      * re-enters: list_out() writes and returns. */
     static char buf[ERRLINE_MAX + 48];
-    int n = (int) (to - from);
+    int n = to - from;
     int row = 0;
 
     /* Kept for lstfix_add, which the caller reaches for only when the line
@@ -1023,9 +1140,17 @@ void list_line(int pc, const uint8_t* from, const uint8_t* to, int line,
                 buf[w++] = ' ';
             }
         }
+        int have = n - row * 4;
+        if (have > 4) {
+            have = 4;
+        }
+        uint8_t bytes[4];
+        if (have > 0 && !out_peek(from + row * 4, bytes, have)) {
+            have = 0;
+        }
         int put = 0;
-        while (put < 4 && row * 4 + put < n) {
-            list_hex(buf, &w, from[row * 4 + put], 2);
+        while (put < have) {
+            list_hex(buf, &w, bytes[put], 2);
             buf[w++] = ' ';
             put++;
         }
@@ -1073,7 +1198,7 @@ void list_line(int pc, const uint8_t* from, const uint8_t* to, int line,
  * A listing that runs out of memory is not a failed assembly: the output bytes
  * are correct either way, and what is lost is that some lines of the listing
  * show what was emitted rather than what was patched. */
-void lstfix_add(const uint8_t* from, const uint8_t* to) {
+void lstfix_add(int from, int to) {
     if (list_fh == 0 || to == from || state.lst_row0 == 0) {
         return;
     }
@@ -1091,8 +1216,8 @@ void lstfix_add(const uint8_t* from, const uint8_t* to) {
     lstfix* r = &state.lstfix[state.lstfix_used++];
     r->lstat = state.lst_lineat;
     r->row0 = state.lst_row0;
-    r->outoff = (int) (from - state.out);
-    r->nbytes = (int) (to - from);
+    r->outoff = from;
+    r->nbytes = to - from;
 }
 
 /* Writes the byte columns of every remembered line again, from the output as
@@ -1115,11 +1240,23 @@ static void lstfix_apply(void) {
             const int at = (row == 0)
                                ? r->lstat
                                : r->lstat + r->row0 + (row - 1) * LIST_ROW_LEN;
+            /* Read rather than indexed. By the time this runs the window has
+             * been flushed and holds none of the output, so these bytes come
+             * off the card -- which is why the output file is still open here
+             * and closed after. */
+            int have = r->nbytes - row * 4;
+            if (have > 4) {
+                have = 4;
+            }
+            uint8_t bytes[4];
+            if (have > 0 && !out_peek(r->outoff + row * 4, bytes, have)) {
+                return;
+            }
             char field[12];
             int w = 0;
             int put = 0;
-            while (put < 4 && row * 4 + put < r->nbytes) {
-                list_hex(field, &w, state.out[r->outoff + row * 4 + put], 2);
+            while (put < have) {
+                list_hex(field, &w, bytes[put], 2);
                 field[w++] = ' ';
                 put++;
             }
@@ -1157,7 +1294,7 @@ static void lstfix_apply(void) {
 __attribute__((noinline))
 void list_invocation(const macro* m, int base, int line, int depth,
                             const char* e) {
-    list_line(state.lst_pc, state.o, state.o, line, depth, state.lst_p, e);
+    list_line(state.lst_pc, out_written(), out_written(), line, depth, state.lst_p, e);
     list_args(m, base, depth + 1);
 }
 
@@ -1360,8 +1497,12 @@ static void write_stats(void) {
     printf("Labels               : %6d\r\n", syms);
     printf("\r\nMacro memory         : %6d\r\n", macbytes);
     printf("Macros               : %6d\r\n", macros);
-    printf("\r\nOutput               : %6d\r\n", (int) (state.o - state.out));
-    printf("Output buffer        : %6d\r\n", state.cap);
+    printf("\r\nOutput               : %6d\r\n", out_here());
+    /* The window is a constant, so on its own it says nothing. What is worth
+     * knowing is whether the output outgrew it -- and if it did, how much had
+     * to be patched behind it, which is what the sweep at the end costs. */
+    printf("Output window        : %6d\r\n", state.cap);
+    printf("Late patches         : %6d\r\n", state.late_used);
 }
 
 /* A value that did not fit where it was written: said, and the assembly
@@ -1436,6 +1577,44 @@ void warn_initializer(const char* t, int n) {
  *
  * The colour codes are the reference's: red for what went wrong, yellow for
  * the text it went wrong in. */
+#ifdef KITLOG
+/* Appends a line to KITLOG_FILE, for the hardware test kit. See the call site
+ * at the end of main for why this exists and why it rewrites the whole file. */
+#include <stdarg.h>
+
+#ifndef KITLOG_FILE
+#define KITLOG_FILE "kit.log"
+#endif
+
+#define KITLOG_MAX 8192
+
+static void kit_log(const char* fmt, ...) {
+    static char buf[KITLOG_MAX];
+    int n = 0;
+    uint8_t fh = mos_fopen(KITLOG_FILE, FA_READ);
+    if (fh != 0) {
+        n = (int) mos_fread(fh, buf, (uint24_t) (KITLOG_MAX - 256));
+        mos_fclose(fh);
+        if (n < 0) {
+            n = 0;
+        }
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    n += vsprintf(buf + n, fmt, ap);
+    va_end(ap);
+
+    fh = mos_fopen(KITLOG_FILE, FA_WRITE | FA_CREATE_ALWAYS);
+    if (fh == 0) {
+        printf("kit: cannot write %s\r\n", KITLOG_FILE);
+
+        return;
+    }
+    mos_fwrite(fh, buf, (uint24_t) n);
+    mos_fclose(fh);
+}
+#endif
+
 static void report(const char* in) {
     const char* const red = use_color ? "\033[31m" : "";
     const char* const yellow = use_color ? "\033[33m" : "";
@@ -1486,6 +1665,10 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+    /* Where the output goes, kept in the state because the window is flushed
+     * from deep inside the assembler and has to be able to open it there. */
+    state.out_path = out;
+
     /* After the flag is read: the operator table it builds depends on it. */
     build_tables();
     build_cclass();
@@ -1527,32 +1710,54 @@ int main(int argc, char* argv[]) {
 
     if (!ok) {
         report(in);
+        /* An assembly that failed leaves no output, even if it had already
+         * filled a window and written part of itself out. That is what the
+         * reference does -- it writes as it assembles too, and a source that
+         * fails at the end leaves nothing behind -- and test/corpus.sh reads a
+         * missing file as "this was refused", so a partial one would be read
+         * as a disagreement. */
+        out_discard();
         dz_free();
 
         return 1;
     }
 
-    const uint8_t fh = mos_fopen(out, FA_WRITE | FA_CREATE_ALWAYS);
-    if (fh == 0) {
-        printf("Cannot write %s\r\n", out);
+    /* The tail of the output, and then everything the window left behind.
+     *
+     * In this order because the sweep reads the file: the last window has to
+     * be on the card before a chunk covering it can be read back. For an
+     * output that never filled the window this opens the file here, writes it
+     * once and sweeps in memory, which is what it always did. */
+    const int written = out_here();
+    /* Created even when there is nothing to put in it. A source that emits no
+     * bytes still produces an empty file, as it did when the whole output was
+     * written in one call here -- and test/corpus.sh reads the absence of the
+     * file as "zap refused this", so not creating it would turn every such
+     * source into a disagreement. */
+    if (!out_create() || !out_flush() || !resolve_late()) {
+        report(in);
+        out_discard();
         dz_free();
 
         return 1;
     }
-    const int written = (int) (state.o - state.out);
-    if (written > 0) {
-        mos_fwrite(fh, (char*) state.out, (uint24_t) written);
-    }
-    mos_fclose(fh);
-
     if (list_fh != 0) {
         /* Every fixup is settled by now, so the lines that held one can be
          * given the bytes they actually got. The buffer goes out first:
-         * lstfix_apply() seeks, and it can only patch what is on the card. */
+         * lstfix_apply() seeks, and it can only patch what is on the card.
+         *
+         * Before the output is closed, not after: the bytes it puts in the
+         * listing are read back out of the output file, which by now is where
+         * all of them are. */
         lst_flush();
         lstfix_apply();
         mos_fclose(list_fh);
         list_fh = 0;
+    }
+
+    if (state.out_fh != 0) {
+        mos_fclose(state.out_fh);
+        state.out_fh = 0;
     }
 
     printf("Wrote %s, %d bytes\r\n", out, written);
@@ -1574,6 +1779,22 @@ int main(int argc, char* argv[]) {
     const uint24_t cs = elapsed_cs(begin, end);
     printf("Done in %u.%02u seconds\r\n", (unsigned) (cs / 100),
            (unsigned) (cs % 100));
+
+#ifdef KITLOG
+    /* A line in a file as well as on the screen, for the hardware test kit.
+     *
+     * Written by the assembler and not by the script around it, because MOS
+     * has no output redirection and a program cannot run another program --
+     * so the only thing that can put a timing in a file is the thing that
+     * measured it. Off unless the kit asks for it: nothing here is wanted in
+     * an ordinary build.
+     *
+     * Read the whole file and write it back with a line added, rather than
+     * opening to append: this MOS refuses FA_OPEN_APPEND and FA_OPEN_ALWAYS,
+     * both of which hand back a zero handle. The log is a few hundred bytes. */
+    kit_log("zap w=%d src=%s out=%d t=%u.%02u\r\n", state.cap, in, written,
+            (unsigned) (cs / 100), (unsigned) (cs % 100));
+#endif
 
     dz_free();
 

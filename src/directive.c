@@ -30,63 +30,170 @@
  * `DS` and `ALIGN` leave in it.
  * ====================================================================== */
 
-/* `need` is how many bytes the caller is about to write beyond the twelve an
- * instruction is allowed. A directive can ask for a whole string or a `DS` of
- * thousands, and growing 32 KB at a time until it fits would be a loop and a
- * realloc per step. */
-bool out_grow(int need) {
-        Z_SITE("output buffer");
-    /* Doubled, not stepped.
-     *
-     * A realloc that has to move holds the old block and the new one at once,
-     * so what decides whether a growth fits is the transient peak rather than
-     * the final size. Doubling reaches a given size in fewer growths, and the
-     * largest of them asks for less: for a 197 KB output the peak is about
-     * 1.5 times the final size, where stepping by a fixed amount makes it
-     * about twice. */
-    int want = state.cap + (state.cap < OUT_STEP ? OUT_STEP : state.cap);
-    const int least = (int) (state.o - state.out) + need + OUT_MAX_INSN;
-    if (want < least) {
-        want = least;
+static bool out_settle(void);
+
+/* Writes the window out and starts it again at the beginning.
+ *
+ * The whole window, never part of it. Nothing reads backwards in it -- a
+ * reservation is a count now, and a patch that falls behind the window is
+ * recorded instead -- so there is nothing to keep, and a partial flush would
+ * leave every later write straddling a sector. 64 KB is 128 whole ones.
+ *
+ * The file is opened here rather than at startup, so that an assembly which
+ * fails before it fills a window leaves no output file at all. FA_READ as well
+ * as FA_WRITE: the sweep at the end reads chunks back to patch them, and
+ * FatFS refuses a read on a handle that was not opened for it. */
+bool out_create(void) {
+    if (state.out_fh != 0) {
+        return true;
     }
-    uint8_t* grown = (uint8_t*) realloc(state.out, (size_t) want);
-    if (grown == NULL) {
-        /* Set here rather than left to a fallback in main, so that every
-         * failure leaves a code behind it. */
+    state.out_fh = mos_fopen(state.out_path,
+                             FA_READ | FA_WRITE | FA_CREATE_ALWAYS);
+    if (state.out_fh == 0) {
+        state.err = ZAP_E_CANNOT_WRITE_OUTPUT;
+
+        return false;
+    }
+
+    return true;
+}
+
+bool out_flush(void) {
+    const int n = (int) (state.o - state.win);
+    if (n == 0) {
+        return true;
+    }
+    if (!out_create()) {
+        return false;
+    }
+    /* Positioned rather than appended. The listing reads bytes back out of
+     * this file while the assembly is still running -- a line whose bytes were
+     * flushed before it was listed -- and a read leaves the file wherever it
+     * finished. Without this the next window lands on top of one already
+     * written. */
+    if (mos_flseek(state.out_fh, (uint32_t) state.wbase) != 0) {
+        state.err = ZAP_E_CANNOT_WRITE_OUTPUT;
+
+        return false;
+    }
+    if ((int) mos_fwrite(state.out_fh, (char*) state.win, (uint24_t) n) != n) {
+        state.err = ZAP_E_CANNOT_WRITE_OUTPUT;
+
+        return false;
+    }
+    state.wbase += n;
+    state.o = state.win;
+
+    return true;
+}
+
+/* Closes the output and takes it away again, for an assembly that failed after
+ * it had already written part of itself out. */
+void out_discard(void) {
+    if (state.out_fh == 0) {
+        return;
+    }
+    mos_fclose(state.out_fh);
+    state.out_fh = 0;
+    mos_del(state.out_path);
+}
+
+/* Reads `n` bytes of the output at `off`, from wherever they are.
+ *
+ * The range may straddle the window: a listed line whose first bytes were
+ * flushed while the rest of it was still being assembled wants both halves,
+ * and asking the file for the half it does not have is a short read. */
+bool out_peek(int off, uint8_t* dst, int n) {
+    if (off < state.wbase) {
+        int from_file = state.wbase - off;
+        if (from_file > n) {
+            from_file = n;
+        }
+        if (state.out_fh == 0 || mos_flseek(state.out_fh, (uint32_t) off) != 0
+            || (int) mos_fread(state.out_fh, (char*) dst, (uint24_t) from_file)
+                   != from_file) {
+            state.err = ZAP_E_CANNOT_READ_OUTPUT;
+
+            return false;
+        }
+        dst += from_file;
+        off += from_file;
+        n -= from_file;
+    }
+    if (n > 0) {
+        memcpy(dst, state.win + (off - state.wbase), (size_t) n);
+    }
+
+    return true;
+}
+
+/* Remembers a patch to output the window has passed. Ascending by construction
+ * -- fixups are recorded in the order they are applied, and that order follows
+ * the order they were emitted in. resolve_late relies on it. */
+bool out_late(int off, uint8_t kind, const uint8_t* b) {
+    if (state.late_used == state.late_cap) {
+        Z_SITE("late patches");
+        const int want = state.late_cap == 0 ? 64 : state.late_cap + state.late_cap;
+        latepatch* grown =
+            (latepatch*) realloc(state.late, (size_t) want * sizeof(latepatch));
+        if (grown == NULL) {
+            state.err = ZAP_E_OUT_MEMORY_LABELS;
+
+            return false;
+        }
+        state.late = grown;
+        state.late_cap = want;
+    }
+    latepatch* r = &state.late[state.late_used++];
+    r->off = off;
+    r->kind = kind;
+    r->b[0] = b[0];
+    r->b[1] = b[1];
+    r->b[2] = b[2];
+    r->b[3] = b[3];
+
+    return true;
+}
+
+/* Room for one instruction. */
+bool out_reserve(void) {
+    /* Asking for room is the signal that a byte is about to be written, and
+     * that is the moment the reference fills whatever was reserved. Every
+     * emitter asks here first, so this is the only place that has to know. */
+    if (state.pend != 0 && !out_settle()) {
+        return false;
+    }
+    if (state.o <= state.lim) {
+        return true;
+    }
+
+    return out_flush();
+}
+
+/* Room for `n` bytes, for the directives, which are the only things that write
+ * more than an instruction's worth at once.
+ *
+ * `n` may not exceed the window. The three callers that could ask for more --
+ * ORG padding, BLK and INCBIN -- write in window-sized pieces instead, because
+ * there is no longer anywhere for a larger request to go. */
+static bool out_reserve_n(int n) {
+    if (state.pend != 0 && !out_settle()) {
+        return false;
+    }
+    if (state.o + n <= state.lim) {
+        return true;
+    }
+    if (!out_flush()) {
+        return false;
+    }
+    if (state.o + n > state.lim) {
+        /* A caller asked for more than a window and did not chunk it. */
         state.err = ZAP_E_OUT_MEMORY_OUTPUT;
 
         return false;
     }
 
-    /* realloc is allowed to move the buffer, so the cursor and the limit are
-     * both relative to a base that may no longer be there. */
-    state.o = grown + (state.o - state.out);
-    state.out = grown;
-    state.cap = want;
-    state.lim = grown + want - OUT_MAX_INSN;
-
     return true;
-}
-
-/* One `if`, not a loop: OUT_STEP is 32 KB and an instruction is at most 12
- * bytes, so one growth always leaves room. */
-bool out_reserve(void) {
-    if (state.o <= state.lim) {
-        return true;
-    }
-
-    return out_grow(0);
-}
-
-/* Room for `n` bytes, for the directives, which are the only things that write
- * more than an instruction's worth at once. Also one `if`, because out_grow
- * takes the amount and asks for it all in one go. */
-static bool out_reserve_n(int n) {
-    if (state.o + n <= state.lim) {
-        return true;
-    }
-
-    return out_grow(n);
 }
 
 /* Case-insensitive against a lower-case literal of known length. Deliberately
@@ -356,7 +463,7 @@ static bool emit_data(uint8_t width, const char** pp, const char* e) {
                 }
                 if (!fix_add(target, sub, (int) value,
                              (uint8_t) (width | (subneg ? FIX_SUB2 : 0)),
-                             (int) (state.o - state.out))) {
+                             out_here())) {
                     return false;
                 }
                 value = 0;
@@ -432,60 +539,89 @@ static bool earlyf_add(int off, int n) {
     return true;
 }
 
-/* Takes `n` bytes off the end of the run ending at `end`, which a FILLBYTE has
- * just decided. Only the newest run can be the one still pending, and it ends
- * exactly there, so there is never a list to search. */
-static void earlyf_drop(int end, int n) {
-    if (state.earlyf_used == 0) {
-        return;
-    }
-    fillrun* last = &state.earlyf[state.earlyf_used - 1];
-    if (last->off + last->count != end) {
-        return;
-    }
-    last->count -= n;
-    if (last->count <= 0) {
-        state.earlyf_used--;
-    }
-}
-
-/* Fills `n` bytes with the FILLBYTE, which defaults to 0xFF -- what `DS`
- * reserves and what `ALIGN` pads with, as in the reference. */
-static bool emit_fill(int n) {
+/* Writes `n` bytes of the FILLBYTE here and now, which is what `ORG` padding
+ * is: the reference puts it down where it stands, so the value in force at
+ * this moment is the value it keeps.
+ *
+ * Not what `DS` and `ALIGN` do -- those reserve, and reserving is `fill_take`.
+ */
+static bool fill_put(int n) {
     if (n <= 0) {
         return true;
     }
-    if (!out_reserve_n(n)) {
+    /* Before the first FILLBYTE, what goes here is still not settled: the
+     * reference fills a run written out this early with the file's *final*
+     * value, because its `fillbyte` survives into the second pass. Remember
+     * the range, and write the current value meanwhile so that nothing is ever
+     * undefined. resolve_early_fills comes back for it. */
+    if (!state.fill_seen && !earlyf_add(out_here(), n)) {
         return false;
     }
-
-    /* A run that starts where the last one ended is the same run. `DS 4` twice
-     * at the end of a file is eight bytes to drop, not four. */
-    const int at = (int) (state.o - state.out);
-    state.fill_len = (at == state.fill_end) ? state.fill_len + n : n;
-
-    /* Before the first FILLBYTE, what goes here is not settled: the reference
-     * fills such a run with the file's *final* value. Remember it, and write
-     * the current value meanwhile so the bytes are never undefined. */
-    if (!state.fill_seen && !earlyf_add(at, n)) {
-        return false;
+    /* In pieces, because an ORG can skip further than the window is wide and
+     * the window is the only memory there is. Whole windows at a time, so each
+     * flush stays a whole number of sectors.
+     *
+     * Not a seek past the gap: seeking beyond the end of a FatFS file and
+     * writing there leaves whatever the clusters held, not the fill byte. The
+     * bytes have to be written. */
+    while (n > 0) {
+        /* Asking for one byte is asking for room: it flushes if there is none,
+         * and after a flush the room is a whole window. So the loop runs at
+         * most once with less than that. */
+        if (!out_reserve_n(1)) {
+            return false;
+        }
+        const int room = (int) (state.lim - state.o);
+        const int take = n < room ? n : room;
+        /* memset rather than a loop: on the eZ80 it is `lddr`, and the runs
+         * here are not small. An ORG that skips 96 KB spends all of its time
+         * in this one line, and a character loop makes that a second and a
+         * half. */
+        memset(state.o, state.fill, (size_t) take);
+        state.o += take;
+        n -= take;
     }
-    /* memset rather than a loop: on the eZ80 it is `lddr`, and the runs here
-     * are not small. An ORG that skips 96 KB spends all of its time in this
-     * one line, and a character loop makes that a second and a half. */
-    memset(state.o, state.fill, (size_t) n);
-    state.o += n;
-    state.fill_end = (int) (state.o - state.out);
 
     return true;
 }
 
+/* Reserves `n` bytes without writing them, which is what `DS` and `ALIGN` do.
+ * Nothing decides what they hold until something is written after them. */
+static bool fill_take(int n) {
+    if (n > 0) {
+        if ((evalue) state.pend > PEND_MAX - (evalue) n) {
+            state.err = ZAP_E_OUT_MEMORY_OUTPUT;
+
+            return false;
+        }
+        state.pend += n;
+    }
+
+    return true;
+}
+
+/* Writes out what was reserved, at the value in force now.
+ *
+ * `pend` is cleared before the write rather than after, so that the
+ * out_reserve_n inside fill_put comes back here, finds nothing pending and
+ * stops -- which is what keeps this from calling itself.
+ */
+static bool out_settle(void) {
+    const int n = state.pend;
+    if (n == 0) {
+        return true;
+    }
+    state.pend = 0;
+
+    return fill_put(n);
+}
+
 /* `BLKB n, fill` and its wider relatives: n units of `fill`, written out.
  *
- * Not emit_fill, which reserves space that is dropped if it reaches the end of
+ * Not fill_take, which reserves space that is dropped if it reaches the end of
  * the file with nothing after it. A block writes bytes and is kept wherever it
- * lands, and ending the reserved run is what says so: `ds 3 / blkb 3` at the
- * end of a file is six bytes and `blkb 3 / ds 3` is three.
+ * lands, and asking for room is what settles the reservation above it: `ds 3 /
+ * blkb 3` at the end of a file is six bytes and `blkb 3 / ds 3` is three.
  *
  * Little-endian at the unit width, and the default fill is the value 0xFF
  * written at that width rather than all ones: `blkw 1` is FF 00. */
@@ -494,39 +630,49 @@ static bool emit_block(int n, int width, evalue fill) {
     if (n <= 0) {
         return true;
     }
-    if (!out_reserve_n(n * width)) {
-        return false;
-    }
-
     if (want_warn && !fits_width(fill, width)) {
         warn_trunc(fill, width);
     }
 
-    /* Narrowed once, outside the loop, for the reason emit_data splits its
-     * write: three of the four widths fit the machine and only BLKL does not. */
-    uint8_t* o = state.o;
-    if (width > 3) {
-        while (n-- != 0) {
-            *o++ = (uint8_t) fill;
-            *o++ = (uint8_t) (fill >> 8);
-            *o++ = (uint8_t) (fill >> 16);
-            *o++ = (uint8_t) (fill >> 24);
+    /* A unit at a time would be a reserve per unit; a whole block at once can
+     * be wider than the window. So: as many whole units as the window has room
+     * for, then flush and carry on. `width` is at most four, so the room is
+     * never short of a single unit after a flush. */
+    const int f = (int) fill;
+    while (n > 0) {
+        if (!out_reserve_n(width)) {
+            return false;
+        }
+        int fit = (int) (state.lim - state.o) / width;
+        if (fit > n) {
+            fit = n;
+        }
+        n -= fit;
+
+        /* Narrowed once, outside the loop, for the reason emit_data splits its
+         * write: three of the four widths fit the machine and only BLKL does
+         * not. */
+        uint8_t* o = state.o;
+        if (width > 3) {
+            while (fit-- != 0) {
+                *o++ = (uint8_t) fill;
+                *o++ = (uint8_t) (fill >> 8);
+                *o++ = (uint8_t) (fill >> 16);
+                *o++ = (uint8_t) (fill >> 24);
+            }
+        } else {
+            while (fit-- != 0) {
+                *o++ = (uint8_t) f;
+                if (width > 1) {
+                    *o++ = (uint8_t) (f >> 8);
+                }
+                if (width > 2) {
+                    *o++ = (uint8_t) (f >> 16);
+                }
+            }
         }
         state.o = o;
-
-        return true;
     }
-    const int f = (int) fill;
-    while (n-- != 0) {
-        *o++ = (uint8_t) f;
-        if (width > 1) {
-            *o++ = (uint8_t) (f >> 8);
-        }
-        if (width > 2) {
-            *o++ = (uint8_t) (f >> 16);
-        }
-    }
-    state.o = o;
 
     /* Nothing to do about a reservation still pending. The drop at the end of
      * the file only fires when the run ends exactly where the output does, and
@@ -588,7 +734,7 @@ static bool file_name(const char** pp, const char* e,
 /* `INCBIN "file"`: the file's bytes, straight into the output.
  *
  * No reader, no lines, nothing to save and nothing to restore -- it is
- * emit_fill with a file in place of the 0xFF. The size is known before a byte
+ * fill_put with a file in place of the 0xFF. The size is known before a byte
  * is read, so the room is asked for once and the read goes directly to the
  * cursor rather than through a staging buffer. */
 static bool incbin_file(const char* name) {
@@ -605,22 +751,32 @@ static bool incbin_file(const char* name) {
 
         return false;
     }
-    const int n = (int) fil->obj.objsize;
-    if (n < 0 || !out_reserve_n(n)) {
+    int n = (int) fil->obj.objsize;
+    if (n < 0) {
         mos_fclose(fh);
         state.err = ZAP_E_OUT_MEMORY;
 
         return false;
     }
-    if (n > 0) {
-        const unsigned got = mos_fread(fh, (char*) state.o, (unsigned) n);
-        if ((int) got != n) {
+    /* Through the window rather than into it. The file may be larger than the
+     * window is wide -- the corpus has a 150 KB one -- and the read still goes
+     * straight to the cursor rather than through a staging buffer. */
+    while (n > 0) {
+        if (!out_reserve_n(1)) {
+            mos_fclose(fh);
+
+            return false;
+        }
+        const int room = (int) (state.lim - state.o);
+        const int take = n < room ? n : room;
+        if ((int) mos_fread(fh, (char*) state.o, (unsigned) take) != take) {
             mos_fclose(fh);
             state.err = ZAP_E_CANNOT_READ_FILE;
 
             return false;
         }
-        state.o += n;
+        state.o += take;
+        n -= take;
     }
     mos_fclose(fh);
 
@@ -1141,7 +1297,7 @@ bool directive_line(const char* s, int n, const char* p,
 
             return false;
         }
-        if (!emit_fill((int) value)) {
+        if (!fill_take((int) value)) {
             return false;
         }
         /* `DS 3,1,2` is three bytes in the reference: the arguments after the
@@ -1187,17 +1343,9 @@ bool directive_line(const char* s, int n, const char* p,
          * the reservations before the first one of these, backwards over the
          * whole of it. `earlyf` in zap.h has why.
          *
-         * A run the output still ends with has not been written out in the
-         * reference yet -- it is filled when the next byte is -- so this
-         * FILLBYTE is the one that decides it. Put the new value through it,
-         * and take it off the list waiting on the file's final value, which is
-         * no longer the value it gets. */
-        const int here = (int) (state.o - state.out);
-        if (state.fill_len > 0 && state.fill_end == here) {
-            memset(state.o - state.fill_len, (uint8_t) value,
-                   (size_t) state.fill_len);
-            earlyf_drop(here, state.fill_len);
-        }
+         * Anything still reserved is decided by this and needs nothing done
+         * to it: it has not been written, so it will be written with whatever
+         * is in force when it finally is, which is this. */
         state.fill_seen = true;
         state.fill = (uint8_t) value;
         *stop = p;
@@ -1229,7 +1377,7 @@ bool directive_line(const char* s, int n, const char* p,
          * this directive and nothing else has to know. */
         state.reloc_org = state.org;
         state.reloc = true;
-        state.org = (int) value - (int) (state.o - state.out);
+        state.org = (int) value - out_here();
         *stop = p;
 
         return true;
@@ -1303,7 +1451,7 @@ bool directive_line(const char* s, int n, const char* p,
             }
             fillpatch* fp = &state.fillp[state.fillp_used++];
             fp->sp = pending;
-            fp->off = (int) (state.o - state.out);
+            fp->off = out_here();
             fp->count = value;
             fp->width = (uint8_t) width;
             fp->line = state.line;
@@ -1338,10 +1486,10 @@ bool directive_line(const char* s, int n, const char* p,
          * to its address. That is not a guess -- two ORGs with nothing between
          * them write the 64 KB gap in the reference, so the second is already
          * behaving as a pad even though nothing has been emitted. */
-        if (!state.org_set && state.o == state.out) {
+        if (!state.org_set && out_here() == 0) {
             state.org = value;
         } else {
-            const int here = state.org + (int) (state.o - state.out);
+            const int here = state.org + out_here();
             if (value < here) {
                 /* "New address lower than current PC address" there, and the
                  * same here: an ORG that goes backwards would have to unwrite
@@ -1350,13 +1498,18 @@ bool directive_line(const char* s, int n, const char* p,
 
                 return false;
             }
-            if (!emit_fill(value - here)) {
+            /* Whatever was reserved above this ORG is written first, at the
+             * value in force now -- the pad is a write, and a write is what
+             * settles a reservation.
+             *
+             * Then the pad itself, written rather than reserved. The reference
+             * puts it down where it stands: it survives at the end of a file
+             * where a DS is dropped, and a later FILLBYTE does not reach back
+             * to it. `fillbyte 0x11 / org $+4 / fillbyte 0xAA` is four 0x11
+             * there, where the same shape with DS gives 0xAA. */
+            if (!out_settle() || !fill_put(value - here)) {
                 return false;
             }
-            /* Padding to an address is not reserving space: the reference
-             * writes it out even at the end of a file, where it drops a DS.
-             * Forgetting the run is what says so. */
-            state.fill_len = 0;
         }
         state.org_set = true;
         *stop = p;
@@ -1377,8 +1530,8 @@ bool directive_line(const char* s, int n, const char* p,
     /* Pad to the next multiple. `-addr & (n - 1)` is the distance to it, and
      * the AND is a call to __iand on a 24-bit value -- once per ALIGN, which
      * is a price a directive can pay. */
-    const int addr = state.org + (int) (state.o - state.out);
-    if (!emit_fill((-addr) & (value - 1))) {
+    const int addr = state.org + out_here();
+    if (!fill_take((-addr) & (value - 1))) {
         return false;
     }
     *stop = p;

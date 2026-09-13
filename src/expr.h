@@ -31,6 +31,22 @@ static inline void fwd_reset(const sym* seed) {
     expr_fwd_bad = false;
 }
 
+/* A displacement as the reference keeps it: sixteen bits, signed.
+ *
+ * Not a detail of the evaluator but of the reference's operand, which holds
+ * this field in two bytes -- so `(ix+0x40018)` is 0x18 there and not out of
+ * range, while `(ix+0x1008)` is 4104 and is. The signed-byte test the caller
+ * makes afterwards is a separate thing and happens on what this returns.
+ *
+ * Written as arithmetic rather than a cast to int16_t because `int` is three
+ * bytes on the eZ80 and four on the host, and this has to be the same number
+ * on both. */
+static inline int disp_fit(int v) {
+    v &= 0xFFFF;
+
+    return v >= 0x8000 ? v - 0x10000 : v;
+}
+
 /* Inlined into callers in other files, so the bodies live here. */
 
 static inline bool fwd_result(const sym** target, const sym** sub,
@@ -202,12 +218,11 @@ __attribute__((always_inline)) static inline bool parse_operand(dop* op, const c
                      * reference, not -4 -- which is what negating the result
                      * below already does.
                      *
-                     * A name still ahead is refused. The reference has a
-                     * second pass and resolves it; here the displacement is
-                     * one byte of an instruction that is being written now,
-                     * and there is nowhere to put a fixup for a field that is
-                     * not a whole operand. Same position as the count of a DS
-                     * and the value of an EQU. */
+                     * A name still ahead is carried as a fixup on the
+                     * displacement byte, whose position the emitter knows. The
+                     * value cannot be checked here -- there is nothing to
+                     * check yet -- so the range test moves to patch time with
+                     * it, which is where the reference does it too. */
                     p = ds;
                     fwd_reset(NULL);
                     uint8_t dmask = 0;
@@ -222,12 +237,22 @@ __attribute__((always_inline)) static inline bool parse_operand(dop* op, const c
                     }
                     d = (int) dv32;
                     if (expr_fwd != NULL) {
-                        state.err = ZAP_E_LABEL_DEFINED_ALREADY;
-
-                        return false;
+                        if (!fwd_result(&op->fwd, &op->fwd2, &op->fwd2_neg)) {
+                            return false;
+                        }
+                        /* The known terms become the addend; the symbol and
+                         * the sign are the fixup's. An index operand has no
+                         * immediate, so `fwd` is free to mean this -- DISPFWD
+                         * is what tells the emitter which it is. */
+                        op->mode |= (uint8_t) (neg ? (DISPFWD | DISPNEG) : DISPFWD);
+                        op->disp = d;
+                        while (p < e && is_space_ch(*p)) {
+                            p++;
+                        }
+                        goto disp_done;
                     }
                 }
-                op->disp = neg ? -d : d;
+                op->disp = disp_fit(neg ? -d : d);
                 if (op->disp < -128 || op->disp > 127) {
                     /* "Index register offset exceeded" there. One signed byte
                      * is what the instruction has room for, so anything else
@@ -239,6 +264,7 @@ __attribute__((always_inline)) static inline bool parse_operand(dop* op, const c
                 while (p < e && is_space_ch(*p)) {
                     p++;
                 }
+            disp_done: ;
             }
 
             if ((op->mode & INDIRECT) != 0) {

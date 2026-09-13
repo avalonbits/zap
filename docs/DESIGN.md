@@ -51,7 +51,7 @@ flowchart TD
 [`parse_args()`](../src/zap.c#L889) ·
 [`run()`](../src/zap.c#L605) ·
 [`run_lines()`](../src/zap.c#L463) ·
-[`scope_end()`](../src/symtab.c#L727) ·
+[`scope_end()`](../src/symtab.c#L744) ·
 [`resolve_fixups()`](../src/zap.c#L436)
 
 There is no intermediate representation and no syntax tree. A line is read,
@@ -98,7 +98,7 @@ Four kinds of thing wait for the end of the run:
 
 | | resolved by | holds |
 |---|---|---|
-| fixup | [`patch_fixup()`](../src/symtab.c#L573) | one or two symbols, an addend, a width, an offset |
+| fixup | [`patch_fixup()`](../src/symtab.c#L574) | one or two symbols, an addend, a width, an offset |
 | deferred expression | [`resolve_deferred()`](../src/zap.c#L262) | expression text a fixup cannot represent |
 | deferred fill | [`resolve_fills()`](../src/zap.c#L290) | a `BLK` whose fill value was not known yet |
 | reserved run | [`resolve_late()`](../src/zap.c#L398) | space reserved before the file's first `FILLBYTE`, which takes its *last* |
@@ -150,8 +150,8 @@ whose every fixup is settled long after its site was written.
 ## 3. The state
 
 Everything the assembler knows lives in one object,
-[`state`](../src/symtab.c#L229), of type
-[`zap_state`](../src/zap.h#L1123). It is defined in `symtab.c` and declared in
+[`state`](../src/symtab.c#L230), of type
+[`zap_state`](../src/zap.h#L1133). It is defined in `symtab.c` and declared in
 `zap.h`, so every part reaches the same one.
 
 ```mermaid
@@ -236,7 +236,7 @@ flowchart TD
 
 [`equ_line()`](../src/expr.c#L583) ·
 [`mnemonic_of()`](../src/insn.h#L87) ·
-[`parse_operand()`](../src/expr.h#L74) ·
+[`parse_operand()`](../src/expr.h#L90) ·
 [`match_row()`](../src/insn.h#L150) ·
 [`emit_row()`](../src/insn.h#L327) ·
 [`directive_line()`](../src/directive.c#L1003) ·
@@ -273,7 +273,7 @@ flowchart TD
     R1 --> E["emit_row"]
 ```
 
-* An [`isa_row`](../src/isa.h#L105) says what the two operands must be, how each
+* An [`isa_row`](../src/isa.h#L112) says what the two operands must be, how each
   folds into the opcode, the prefix and opcode bytes, which CPUs have it, and
   which mode suffixes it accepts.
 * A **mode group** collects the rows of one mnemonic that expect the same
@@ -331,17 +331,17 @@ flowchart TD
 ```
 
 **Global labels and EQU values** ([`sym`](../src/zap.h#L211),
-[`sym_intern()`](../src/symtab.c#L408)) are **interned on first sight**, defined
+[`sym_intern()`](../src/symtab.c#L409)) are **interned on first sight**, defined
 or not, so a reference to a label that has not appeared yet gets an entry and a
 fixup points at it. Nodes and names come from arenas of blocks that never move:
 a growing array would have to be reallocated, and a realloc that moves holds
 both copies at once.
 
-**Local labels** (`@name`, [`loc_intern()`](../src/symtab.c#L790)) belong to the
+**Local labels** (`@name`, [`loc_intern()`](../src/symtab.c#L807)) belong to the
 global label above them. A scope ends at the next global label — thousands of
 times in a real source — so it must empty in constant time. Each slot carries
 the generation it belongs to: advancing the counter in
-[`scope_end()`](../src/symtab.c#L727) makes every bucket read as empty, whatever
+[`scope_end()`](../src/symtab.c#L744) makes every bucket read as empty, whatever
 chain it still holds.
 
 **Anonymous labels** (`@@`, referred to as `@f` and `@b`) are not table entries
@@ -423,7 +423,7 @@ Two distinctions in this group are easy to get wrong and worth stating:
   dropped, and a later `FILLBYTE` does not reach back to it. `fillbyte 0x11 /
   org $+4 / fillbyte 0xAA` is four `0x11`; the same shape with `DS` is `0xAA`.
 * For the reservations written out before the file's *first* `FILLBYTE`, that
-  byte reaches backwards, which [`earlyf`](../src/zap.h#L1082) explains and
+  byte reaches backwards, which [`earlyf`](../src/zap.h#L1090) explains and
   `resolve_early_fills()` settles at the end of the source.
 * **`ORG` is two directives sharing a name.** The first in a file moves the
   origin; every later one pads out to its address.
@@ -480,7 +480,7 @@ rather than allocated per expansion.
 
 Errors are **codes**, not strings: `state.err` is a
 [`zap_err`](../src/zap.h#L487), and the message text lives in
-[one table](../src/symtab.c#L23) beside the enum. A caller other than `main` can
+[one table](../src/symtab.c#L24) beside the enum. A caller other than `main` can
 branch on the code, which is what makes the assembler usable as a library.
 
 Everything a report needs is **captured at the moment of failure and never
@@ -495,7 +495,7 @@ flowchart LR
     E4 --> RP["report — prints all of it"]
 ```
 
-[`err_line()`](../src/symtab.c#L239) ·
+[`err_line()`](../src/symtab.c#L240) ·
 [`err_tok()`](../src/symtab.h#L47) ·
 [`report()`](../src/zap.c#L1618)
 

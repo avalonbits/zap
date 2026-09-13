@@ -909,6 +909,96 @@ sym* anon_next(void) {
  * the mixed-width compare off the instruction path entirely: an operand's
  * immediate is an `int` and cannot be out of range. The one caller that can
  * hand over something wider is emit_data, and it checks before it calls. */
+/* Whether this fixup can be settled now rather than at the end of the source.
+ *
+ * Four conditions, and the last three are correctness and not thrift:
+ *
+ *   * the labels it names are known. The nameless stand-ins resolve_deferred
+ *     fills in stay undefined until the end, so they fall out here with no
+ *     special case;
+ *   * its site is still in the window. state.late is two ascending runs with
+ *     late_split between them, and apply_late walks each with a cursor that
+ *     only moves forward -- a record out of order is skipped in silence. A
+ *     fixup settled here is patched in place and appends nothing, which is
+ *     what keeps that true. No fixup in rokky, BBC BASIC or CP/M has a span
+ *     anywhere near a window, so this costs nothing real;
+ *   * a relative displacement is measured from `state.org`, which RELOCATE
+ *     moves. Outside a relocate the origin is the file's own and is what it
+ *     will still be at the end -- ENDRELOCATE restores it exactly and
+ *     RELOCATE does not nest -- so `!state.reloc` is the whole test. Without
+ *     it these would have to be excluded outright, and they are 641 of BBC
+ *     BASIC's 2,209.
+ */
+static bool fix_ready(const fixup* f) {
+    if (!f->target->defined) {
+        return false;
+    }
+    if (f->sub != NULL && !f->sub->defined) {
+        return false;
+    }
+    if (f->off < state.wbase) {
+        return false;
+    }
+
+    return (f->width & FIX_WIDTH) != 0 || !state.reloc;
+}
+
+/* Settles what can be settled and closes the gaps.
+ *
+ * Run where the list is about to grow rather than where a label is defined,
+ * and that is not a performance choice. `X: EQU v` is defined twice: the label
+ * path stores the line's PC first and equ_line overwrites it with the real
+ * value a moment later, so a sweep hung off "a label became defined" would
+ * settle every reference to every EQU against a program counter. Nothing
+ * creates a fixup between those two points, so a sweep here cannot see it.
+ *
+ * subfix holds *indices* into this list and fold_subs walks them at every
+ * scope end, so compacting under it would corrupt them silently. Both lists
+ * ascend, so one pass rewrites each index as its entry moves. A fixup subfix
+ * names is pinned rather than settled: its `sub` is a local the scope has not
+ * folded yet.
+ *
+ * state.line is saved and put back because patch_fixup's truncation warning
+ * assigns it and does not restore it -- harmless when everything was settled
+ * after the last line was read, and every line number after this point once it
+ * is not. */
+static bool fix_sweep(void) {
+    const int saved_line = state.line;
+    int si = 0;
+    int w = 0;
+
+    for (int r = 0; r < state.fix_used; r++) {
+        const bool pinned =
+            si < state.subfix_used && state.subfix[si] == r;
+        if (pinned) {
+            state.subfix[si++] = w;
+        }
+        if (!pinned && fix_ready(&state.fixups[r])) {
+            state.fix_settled++;
+            if (!patch_fixup(&state.fixups[r])) {
+                /* Not restored here. patch_fixup set state.line to the line
+                 * that *used* the label, which is the line the failure has to
+                 * be reported against; putting the current one back would
+                 * name whichever line happened to fill the list. And the line
+                 * being assembled must not capture its own text for this, or
+                 * the report would quote a line that is not the one it names. */
+                state.err_elsewhere = true;
+
+                return false;
+            }
+            continue;
+        }
+        if (w != r) {
+            state.fixups[w] = state.fixups[r];
+        }
+        w++;
+    }
+    state.fix_used = w;
+    state.line = saved_line;
+
+    return true;
+}
+
 bool fix_add(const sym* target, const sym* sub, int addend,
                     uint8_t width, int off) {
 #ifdef NOFIX
@@ -944,16 +1034,55 @@ bool fix_add(const sym* target, const sym* sub, int addend,
     }
 
     if (*used == *cap) {
+        /* The list is as full as it has ever been, so this is where a peak is.
+         * Sampled here rather than counted on every fixup: the only other
+         * place one can be is the end of the run, and write_stats takes that. */
+        if (*used > state.fix_peak) {
+            state.fix_peak = *used;
+        }
         Z_SITE("fixups");
         const int want = *cap + FIX_STEP;
-        fixup* grown = (fixup*) realloc(*list, (size_t) want * sizeof(fixup));
+        fixup* grown = (FIX_CAP_MAX != 0 && want > FIX_CAP_MAX)
+                           ? NULL
+                           : (fixup*) realloc(*list, (size_t) want * sizeof(fixup));
         if (grown == NULL) {
-            state.err = ZAP_E_OUT_MEMORY_LABELS;
+            /* Out of room. Settle whatever can be settled and carry on with
+             * what is left -- most of a list is usually references whose
+             * labels have long since been read.
+             *
+             * Here and nowhere else, which is the whole of why this costs
+             * nothing. A sweep looks at every record and copies the survivors,
+             * and it buys exactly nothing for a file that was going to fit;
+             * measured on the Agon, sweeping at every growth costs BBC BASIC
+             * 3.1% and saves it 161 records it did not need saving. So it
+             * happens only when the alternative is failing.
+             *
+             * Only for the global list: the local one is drained at every
+             * scope end already. */
+            if (list != &state.fixups) {
+                state.err = ZAP_E_OUT_MEMORY_LABELS;
 
-            return false;
+                return false;
+            }
+            if (!fix_sweep()) {
+                /* The sweep found something wrong with a fixup it settled --
+                 * a jump out of range, a value that does not fit. That is the
+                 * failure, not the memory; patch_fixup has already said so and
+                 * named the line, and overwriting it here would report running
+                 * out of room for a program that has plenty. */
+                return false;
+            }
+            if (*used == *cap) {
+                /* Nothing could be settled -- every reference in this file is
+                 * still waiting on a label further down it. */
+                state.err = ZAP_E_OUT_MEMORY_LABELS;
+
+                return false;
+            }
+        } else {
+            *list = grown;
+            *cap = want;
         }
-        *list = grown;
-        *cap = want;
     }
 
     /* A fixup on the global list whose `sub` is a local has to be settled in

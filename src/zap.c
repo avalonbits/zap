@@ -507,7 +507,7 @@ __attribute__((noinline)) bool run_lines(void) {
              * is the one that invoked it, and its text is the one thing the
              * expansion could not record for itself. Which file and which line
              * it was, it did record -- see macro_expand. */
-            if (!state.errhave) {
+            if (!state.errhave && !state.err_elsewhere) {
                 err_line(state.errline, p, end);
                 state.errhave = true;
             } else if (state.errfrompath != NULL && state.errfrom[0] == 0) {
@@ -647,6 +647,9 @@ __attribute__((noinline)) static bool run(const char* path) {
     state.subfix = NULL;
     state.subfix_used = 0;
     state.subfix_cap = 0;
+    state.fix_settled = 0;
+    state.fix_peak = 0;
+    state.err_elsewhere = false;
     state.defer = NULL;
     state.defer_used = 0;
     state.defer_cap = 0;
@@ -1503,6 +1506,12 @@ static void write_stats(void) {
      * to be patched behind it, which is what the sweep at the end costs. */
     printf("Output window        : %6d\r\n", state.cap);
     printf("Late patches         : %6d\r\n", state.late_used);
+    if (state.fix_used > state.fix_peak) {
+        state.fix_peak = state.fix_used;
+    }
+    printf("\r\nForward references   : %6d\r\n",
+           state.fix_used + state.fix_settled);
+    printf("Most outstanding     : %6d\r\n", state.fix_peak);
 }
 
 /* A value that did not fit where it was written: said, and the assembly

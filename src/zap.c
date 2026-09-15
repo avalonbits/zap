@@ -764,10 +764,11 @@ static void dz_free(void) {
         free(state.names);
         state.names = next;
     }
-    /* The local blocks are rewound rather than freed at the end of a scope, so
-     * `locnames` may be pointing part way down a list that is still whole.
-     * Freed from the first, which is the only pointer that always names the
-     * head. */
+    /* The local name blocks are rewound rather than freed at the end of a
+     * scope, so `locnames` may be pointing part way down a list that is still
+     * whole. Freed from `locnamfirst`, which is the head: locnam_take links
+     * each new block on at the end so that this walk reaches all of them and
+     * the rewind can fill them again. */
     while (state.locnamfirst != NULL) {
         namblock* next = state.locnamfirst->next;
         free(state.locnamfirst);

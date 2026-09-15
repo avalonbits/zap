@@ -634,7 +634,7 @@ bool patch_fixup(const fixup* f) {
         }
         *at = (uint8_t) d16;
 
-        return true;
+        return inwin || out_late(f->off, 1, buf);
     }
 
     if (w > 4) {

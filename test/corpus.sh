@@ -60,8 +60,8 @@ ONLY=""
 # the same file. A regression in any of them shows up here as a DIFFER, in
 # the runner that has to stay green, rather than only in run.sh.
 #
-# What is deliberately *not* here: the four differences zap keeps on purpose,
-# which are in docs/DESIGN.md. A negative reservation would want
+# What is deliberately *not* here: the two differences zap keeps on purpose,
+# which are in docs/DESIGN.md section 13. A negative reservation would want
 # four gigabytes of disk to compare.
 REGRESS="test/regress"
 EZ=""
@@ -195,14 +195,15 @@ for dir in "$CORPUS"/*/ "$REGRESS"/*/; do
 
         # The listing is compared for one group of zap's own sources and no
         # others -- test/regress/listing, whose files are written to be
-        # comparable. Four things a one-pass assembler cannot put in a listing
-        # the way a two-pass one does, all of them in docs/DESIGN.md
+        # comparable. Three things a one-pass assembler cannot put in a listing
+        # the way a two-pass one does, all of them in docs/DESIGN.md section 12
         # and none of them a regression: the reference widens the line-number
         # column for the whole file when it lists an expansion, a macro body
-        # loses the indentation it was written with, a forward reference shows
-        # the bytes as they were emitted rather than as they were patched, and
-        # a reservation's fill is listed differently again. A file in that
-        # group avoids all four.
+        # loses the indentation it was written with, and a reservation's fill
+        # is listed on a continuation row. A file in that group avoids all
+        # three. A fourth -- a forward reference listed with the bytes as
+        # emitted rather than as patched -- was closed by lstfix_apply, and
+        # listing/list_forward.s is here to keep it closed.
         #
         # It is worth having even so: the .lst is the reference's bytes, LF
         # with one stray CR after the header, and nothing short of comparing

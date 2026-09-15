@@ -14,7 +14,7 @@ need from it, and the sections below follow them:
 | [`insn.c`](../src/insn.c) | mnemonic tables, row selection, emitting | 5, 6 |
 | [`symtab.c`](../src/symtab.c) | symbols, interning, local labels, fixups | 7 |
 | [`expr.c`](../src/expr.c) | expressions, forward references, `EQU` | 8 |
-| [`directive.c`](../src/directive.c) | directives, and the output buffer | 9 |
+| [`directive.c`](../src/directive.c) | directives, and the output window | 9 |
 | [`macro.c`](../src/macro.c) | definition and expansion | 10 |
 
 [`zap.h`](../src/zap.h) holds what all of them share: the types, the state, the
@@ -39,12 +39,15 @@ which for those twenty is the header.
 ```mermaid
 flowchart TD
     main["main()"] --> args["parse_args() — the command line"]
-    args --> run["run() — open source, size the output buffer"]
+    args --> run["run() — open source, allocate the window"]
     run --> loop["run_lines() — one line at a time, to the end"]
+    loop -->|"each time the window fills"| flush["out_flush() — the window to the card"]
+    flush --> loop
     loop --> scope["scope_end() — settle the last local scope"]
     scope --> fix["resolve_fixups() — deferred expressions,<br/>block fills, then every forward reference"]
-    fix --> out["write the output file"]
-    out --> side["listing, symbol file, statistics<br/>(optional; none can fail the run)"]
+    fix --> tail["out_flush() — the tail of the output"]
+    tail --> late["resolve_late() — one ascending sweep,<br/>applying everything owed to bytes<br/>already on the card"]
+    late --> side["listing, symbol file, statistics<br/>(optional; none can fail the run)"]
 ```
 
 [`main()`](../src/zap.c#L1666) ·
@@ -52,7 +55,9 @@ flowchart TD
 [`run()`](../src/zap.c#L605) ·
 [`run_lines()`](../src/zap.c#L463) ·
 [`scope_end()`](../src/symtab.c#L744) ·
-[`resolve_fixups()`](../src/zap.c#L436)
+[`resolve_fixups()`](../src/zap.c#L436) ·
+[`out_flush()`](../src/directive.c#L61) ·
+[`resolve_late()`](../src/zap.c#L398)
 
 There is no intermediate representation and no syntax tree. A line is read,
 turned into bytes, and forgotten. What survives a line is only what a later
@@ -83,6 +88,12 @@ sequenceDiagram
     F->>O: overwrite the three bytes at that offset
 ```
 
+Nothing leaves the fixup list on its own, so on a long source it only grows.
+When it will not grow any further — the allocation refused, on a machine with
+no more to give — [`fix_sweep()`](../src/symtab.c#L965) settles everything in
+it whose labels have since been read and closes the gaps, and the assembly
+carries on with what is left. §7 is what may be settled there and what may not.
+
 The fixup carries the line number as well as the offset, so a failure found at
 patch time — an unknown label, a jump out of range, a value that does not fit —
 is reported against the line that *used* the label rather than wherever the
@@ -104,10 +115,19 @@ Four kinds of thing wait for the end of the run:
 | reserved run | [`resolve_late()`](../src/zap.c#L398) | space reserved before the file's first `FILLBYTE`, which takes its *last* |
 
 A [`fixup`](../src/zap.h#L695)'s width is normally a byte count, 1 to 4, or 0
-for a relative displacement. Three values above those mean the operand belongs
-in the **opcode byte itself** rather than after it — a bit number, an interrupt
-mode, a restart address — so `bit n, a` with `n` defined later still assembles
-correctly.
+for a relative displacement. Five values above those are operands that are not
+whole fields after the opcode:
+
+* three **folds**, where the operand belongs in the **opcode byte itself** — a
+  bit number, an interrupt mode, a restart address — so `bit n, a` with `n`
+  defined later still assembles correctly. The value is turned into a mask by
+  [`fold_mask()`](../src/symtab.c#L535), checked there, and OR'd in;
+* two for an **index displacement**, the signed byte of `(ix+d)`. It has widths
+  of its own rather than being a one-byte fixup because what goes in that byte
+  is not the low eight bits of the value: the reference truncates to sixteen
+  and then refuses anything outside a signed byte, and a sign written outside
+  the brackets negates the whole expression rather than its first term, which
+  is what the second of the two records.
 
 ### 2a. Patching output that is no longer in memory
 
@@ -157,7 +177,7 @@ Everything the assembler knows lives in one object,
 ```mermaid
 flowchart LR
     S["state<br/>(one object, shared by every part)"]
-    S --- O["output<br/>out, o, lim, org"]
+    S --- O["output window<br/>win, o, lim, wbase, pend, org<br/>and the file it is a view on"]
     S --- G["global symbols<br/>2048 buckets + node/name arenas"]
     S --- L["local scope<br/>64 buckets, generation stamp"]
     S --- F["fixups<br/>global list + per-scope list"]
@@ -353,6 +373,62 @@ When a scope ends, its local fixups are patched, and any fixup naming a global
 *and* a local has the local half folded into its addend there and then — the
 local's node is about to be recycled.
 
+### 7a. The fixup list, and when it is swept
+
+Sixteen bytes a record, grown `FIX_STEP` at a time by
+[`fix_add()`](../src/symtab.c#L1002), and nothing ever leaves it during an
+ordinary assembly: what a source costs here is one record per forward
+reference, however early the label it names turns up. `-x` prints both the
+total and the high-water mark, which are the same number for a file that never
+filled the list.
+
+They stop being the same number when the allocation is refused. Rather than
+give up, [`fix_sweep()`](../src/symtab.c#L965) settles what it can and closes
+the gaps. Real programs have much to settle: measured by span, BBC BASIC for
+Agon would hold 490 of its 2,209 records at once and a CP/M implementation 950
+of 1,859, the rest being references whose labels had long since been read.
+
+Four things must be true of a record before it may be settled early, and each
+is a correctness requirement rather than a refinement
+([`fix_ready()`](../src/symtab.c#L932)):
+
+* its target — and its second symbol, if it has one — is **defined**. The
+  nameless stand-ins `resolve_deferred()` fills in stay undefined until the end
+  of the run, so they are excluded without a special case;
+* its site is **still inside the window**. `state.late` is two ascending runs
+  and `apply_late` walks each with a cursor that only moves forward, so a
+  record appended out of order would be skipped in silence. A fixup settled
+  here is patched in place and appends nothing, which is what keeps that true;
+* it is **not a relative displacement while a `RELOCATE` is open**, because
+  that width is measured from `state.org`, which `RELOCATE` moves. Outside a
+  relocate the origin is the file's own and is what it will still be at the
+  end, so `!state.reloc` is the whole test;
+* it is **not named by `subfix`**, whose entries are waiting for a local that
+  the scope has not folded yet.
+
+`subfix` holds *indices* into the list, and [`fold_subs()`](../src/symtab.c#L710)
+walks them at every scope end, so compacting under it would corrupt them
+silently. Both lists ascend, so one pass rewrites each index as its entry moves.
+
+**The trigger is growth and not a label being defined**, and that is not a
+performance choice. `X: EQU v` is defined twice — the label path stores the
+line's program counter and `equ_line` overwrites it with the real value a
+moment later — so a sweep hung off "a label became defined" would settle every
+reference to every EQU against a program counter. Nothing creates a fixup
+between those two points, because `EQU` refuses a forward reference outright,
+so a sweep in `fix_add` cannot see that window. Sweeping only on refusal is
+also what makes it free: on the Agon, sweeping at every growth costs BBC BASIC
+3.1% and saves it 161 records it did not need saving.
+
+Settling early moves when a fixup's diagnostic happens. A `-w` truncation
+warning is printed where the list filled rather than after the last line of the
+source, and a failure there — a jump out of range, a value that does not fit —
+ends the run at that point, so it is reported in place of whatever the rest of
+the file would have been refused for. Both still name the line that *used* the
+label: `patch_fixup` sets `state.line` for exactly that, and the sweep puts the
+assembler's own line number back on the way out — except on the failing path,
+where the number `patch_fixup` set is the one the report needs.
+
 ---
 
 ## 8. Expressions
@@ -423,8 +499,10 @@ Two distinctions in this group are easy to get wrong and worth stating:
   dropped, and a later `FILLBYTE` does not reach back to it. `fillbyte 0x11 /
   org $+4 / fillbyte 0xAA` is four `0x11`; the same shape with `DS` is `0xAA`.
 * For the reservations written out before the file's *first* `FILLBYTE`, that
-  byte reaches backwards, which [`earlyf`](../src/zap.h#L1113) explains and
-  `resolve_early_fills()` settles at the end of the source.
+  byte reaches backwards, which [`earlyf`](../src/zap.h#L1113) explains. Those
+  runs are settled by the same sweep as everything else the window left behind,
+  in [`resolve_late()`](../src/zap.c#L398), because by then they may be
+  anywhere in a file most of which is on the card.
 * **`ORG` is two directives sharing a name.** The first in a file moves the
   origin; every later one pads out to its address.
 
@@ -528,6 +606,24 @@ byte columns written again from the finished output by
 listing cannot be given that treatment and shows the bytes as they were
 emitted.
 
+Three things a one-pass assembler cannot list the way a two-pass one does, and
+`test/regress/listing` holds only sources that avoid all three:
+
+* **the line-number column's width.** The reference widens it for the whole
+  file when the file lists a macro expansion, which it decides before it writes
+  line 1 — a two-pass decision, taken with the whole source already read;
+* **a macro body's indentation.** The body is stored from its first token, so
+  the spaces it was written with are not there to list;
+* **a reservation's fill.** The reference lists it on a continuation row with
+  the first row left empty. zap leaves the first row empty as the reference
+  does and writes no continuation row, because those bytes are not written
+  until something follows them. An `ORG`'s padding is written where it stands
+  and is listed inline by both.
+
+A fourth used to belong on that list and no longer does: a line holding a
+forward reference showed the bytes as they were emitted rather than as they
+were patched, which is what `lstfix_add` and `lstfix_apply` above are for.
+
 [`write_symbols()`](../src/zap.c#L1416) writes the global symbols sorted, in
 the reference's format. [`write_stats()`](../src/zap.c#L1482) prints what the
 run used. None of the three can fail an assembly: the output file is already
@@ -542,10 +638,26 @@ the reference does something surprising, `-ez80` reproduces it rather than
 being right and incompatible: no operator precedence, `IF a == b` discarding
 the comparison, `0bh` read as hex.
 
-Three differences are deliberate and permanent, each argued in
-`docs/DESIGN.md`: a negative reservation (which the reference turns
-into gigabytes of output), `@local - global` with both still ahead, and
-substituting a macro parameter inside a longer identifier.
+Two differences are deliberate and permanent:
+
+* **A negative reservation is refused.** `DS -1` is a count the reference
+  treats as unsigned, so it writes about four gigabytes; zap says so and stops.
+  This is the one place zap refuses something the reference accepts, and it is
+  refused rather than reproduced because reproducing it means filling the card.
+* **A macro parameter is substituted as a whole identifier.** The reference
+  substitutes any occurrence that *ends* an identifier, so with a parameter `x`
+  bound to `1`, a body line `db max` becomes `db ma1` and the expansion fails
+  on an unknown identifier. Matching that would make a macro body's meaning
+  depend on the spelling of its parameters against every name it mentions.
+
+Both are files that would fail by design, which is why neither is in
+`test/regress`; its README says the same from the other side.
+
+A third used to be listed here — `@local - global` with both labels still
+ahead — and is not a difference any more. The local half of such a fixup is
+folded into its addend when the scope ends, which is the last moment the local
+still means what it said, and the rest is settled with the globals;
+`test/regress/scopes` is the source that keeps the three shapes agreeing.
 
 `-w` is zap's own flag, and the truncation check being off by default is the
 one place the two command lines mean different things.
@@ -589,8 +701,12 @@ is the long form, with the measurements behind each rule.
 |---|---|
 | [`test/run.sh`](../test/run.sh) | unit and CLI tests, and every source in `test/cases` assembled by both zap and the vendored reference and compared byte for byte |
 | [`test/corpus.sh`](../test/corpus.sh) | the reference's own 507-source corpus plus zap's regression sources, the same way |
+| `ZAP_WINDOW=512 test/corpus.sh` | the same again with the window forced small, so every source is written out in pieces and patched behind |
+| `FIX_CAP=1024 test/corpus.sh` | and again with the fixup list capped, so the sweep in §7a runs on sources that would never have filled it |
+| [`test/window.sh`](../test/window.sh) | a generated source several windows wide, holding one of every fixup width, each settled long after the bytes carrying it were written |
 | [`test/bench/bench.sh`](../test/bench/bench.sh) | throughput against ez80asm on the emulator |
 | [`test/bench/corpus-target.sh`](../test/bench/corpus-target.sh) | per-source speedups over the whole corpus, on the Agon |
+| [`test/hwkit.sh`](../test/hwkit.sh) | builds an SD card of binaries, sources and an Obey script that measure the window on real hardware, which is the one thing the emulator cannot: it models no SD write cost |
 
 The rule the project runs on is that **the reference is the oracle**: a
 question about what zap should do is answered by assembling the case with

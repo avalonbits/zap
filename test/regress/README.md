@@ -29,15 +29,22 @@ That is the only thing the runner can check, and it is the thing that matters.
                 a reservation's dropped initializer, an immediate wider than
                 the machine -- and what DS, ALIGN and BLK each emit, with the
                 FILLBYTE before and after the runs it decides
+    scopes/     label arithmetic that crosses a scope, where the local half
+                has to be folded in when the scope ends and the global half
+                left for the end of the source
     listing/    sources whose `.lst` is compared as well as their bytes
 
 ## What is deliberately not here
 
-**The three differences zap keeps on purpose.** They are argued in
-docs/DESIGN.md and a file for any of them would fail by design: a
-negative reservation (4 GB in the reference), `@local - global` with both
-still ahead, and the reference substituting a macro parameter inside a longer
-identifier.
+**The two differences zap keeps on purpose.** They are argued in
+docs/DESIGN.md section 13 and a file for either of them would fail by design:
+a negative reservation (4 GB in the reference), and the reference substituting
+a macro parameter inside a longer identifier -- any occurrence that ends one,
+so `db max` becomes `db ma1`.
+
+A third was listed here until it stopped being a difference: `@local - global`
+with both labels still ahead now agrees, and `scopes/local_minus_global.s` is
+the source that keeps it agreeing.
 
 **Anything that only differs in a message.** The runner compares bytes and
 refusals. zap's diagnostics are its own words and always have been, so a
@@ -53,7 +60,7 @@ and are compared against the reference in test/run.sh.
 ## The listing group, and why it is only some of the sources
 
 Three things a one-pass assembler cannot put in a listing the way a two-pass
-one does, all written up in docs/DESIGN.md:
+one does, all written up in docs/DESIGN.md section 12:
 
 * the reference widens the line-number column for the whole file when it
   lists a macro expansion, which it decides before it writes line 1;

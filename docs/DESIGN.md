@@ -254,7 +254,7 @@ flowchart TD
     J --> N["error: no such instruction"]
 ```
 
-[`equ_line()`](../src/expr.c#L583) ·
+[`equ_line()`](../src/expr.c#L592) ·
 [`mnemonic_of()`](../src/insn.h#L87) ·
 [`parse_operand()`](../src/expr.h#L90) ·
 [`match_row()`](../src/insn.h#L150) ·
@@ -436,7 +436,7 @@ where the number `patch_fixup` set is the one the report needs.
 Most operands never reach the evaluator: a register, a plain literal
 ([`lit_value()`](../src/directive.h#L27)) and a bare name each have a reader of
 their own. What does reach it is a precedence climb
-([`expr_value()`](../src/expr.c#L524),
+([`expr_value()`](../src/expr.c#L533),
 [`expr_atom()`](../src/expr.c#L190)) over `+ - * / << >> & | ^` with unary `-`
 and `~`, grouped with `[...]` because parentheses already mean indirection.
 
@@ -541,7 +541,7 @@ flowchart TD
 [`macro_expand()`](../src/macro.c#L507) ·
 [`macro_args()`](../src/macro.c#L358) ·
 [`macro_subst()`](../src/macro.c#L421) ·
-[`scope_push()`](../src/expr.c#L689)
+[`scope_push()`](../src/expr.c#L698)
 
 There is no reader and no nested line loop for an expansion: the body is
 already a run of lines. Substitution is textual and by whole identifier, which

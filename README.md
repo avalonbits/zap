@@ -175,6 +175,10 @@ detects the fault.
                                 the same, with the output window forced small
                                 enough that every source is written out in
                                 pieces and patched behind
+    FIX_CAP=1024 test/corpus.sh
+                                and again with the fixup list capped, so that
+                                the sweep which settles what it can when the
+                                list will not grow runs on every source
     test/window.sh              a generated source several windows wide, with
                                 every kind of fixup settled long after the
                                 bytes holding it were written

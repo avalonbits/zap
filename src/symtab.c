@@ -347,7 +347,8 @@ static const char* volatile dup_hash_name;
  *
  * `used` is the offset within the newest one, so the blocks below it are full
  * and are never looked at again -- nothing walks this list except the free at
- * the end, and the local one, which rewinds it. */
+ * the end. The newest block goes on the front, which is why a scope's names
+ * are not kept here: see locnam_take, which needs the other order. */
 char* nam_take(namblock** head, int* used, int len) {
     namblock* b = *head;
     if (b == NULL || *used + len > NAMES_BLOCK) {
@@ -362,6 +363,46 @@ char* nam_take(namblock** head, int* used, int len) {
     }
     char* at = &b->buf[*used];
     *used += len;
+
+    return at;
+}
+
+/* Room for `len` characters of a *local* label's name.
+ *
+ * The same arena as nam_take's and a different list. A scope ends on every
+ * global label, so its names are rewound rather than freed -- `locnames` goes
+ * back to `locnamfirst` and the blocks are filled again -- and that only works
+ * if the list runs in the order the blocks were allocated. nam_take pushes
+ * each new block on the *front*, which puts the first one allocated at the
+ * end of the chain: rewinding to it orphaned every block above it, so a scope
+ * whose names outgrew one block leaked 4 KB of it and the free at the end of
+ * the run reached exactly one.
+ *
+ * loc_room does this for the local nodes and this is the same thing for their
+ * names, down to reusing `->next` before asking for more. */
+static char* locnam_take(int len) {
+    namblock* b = state.locnames;
+    if (b == NULL || state.locnames_used + len > NAMES_BLOCK) {
+        namblock* next = b != NULL ? b->next : state.locnamfirst;
+        if (next == NULL) {
+            Z_SITE("label names");
+            next = (namblock*) malloc(sizeof(namblock));
+            if (next == NULL) {
+                return NULL;
+            }
+            next->next = NULL;
+            if (b != NULL) {
+                b->next = next;
+            } else {
+                state.locnamfirst = next;
+            }
+        }
+        state.locnames = next;
+        state.locnames_used = 0;
+        b = next;
+    }
+    char* at = &b->buf[state.locnames_used];
+    state.locnames_used += len;
 
     return at;
 }
@@ -634,7 +675,7 @@ bool patch_fixup(const fixup* f) {
         }
         *at = (uint8_t) d16;
 
-        return true;
+        return inwin || out_late(f->off, 1, buf);
     }
 
     if (w > 4) {
@@ -854,14 +895,11 @@ sym* loc_intern(const char* name, int len) {
         return NULL;
     }
 
-    char* text = nam_take(&state.locnames, &state.locnames_used, len);
+    char* text = locnam_take(len);
     if (text == NULL) {
         state.err = ZAP_E_OUT_MEMORY_LABELS;
 
         return NULL;
-    }
-    if (state.locnamfirst == NULL) {
-        state.locnamfirst = state.locnames;
     }
     for (int i = 0; i < len; i++) {
         text[i] = name[i];

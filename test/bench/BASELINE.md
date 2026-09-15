@@ -51,6 +51,31 @@ Lower is better. **The goal was 0.50x and it is met with room to spare** --
 between four and six times faster than the reference rather than the two the
 target asked for.
 
+## Re-measured after the output window, 2026-09-15
+
+Two changes have landed since the table above that touch every assembly: the
+output goes out through a window as it is written rather than being held whole
+in memory, and the fixup list is swept when it will not grow. Both add work to
+paths that were not there before, so the set was run again on the same rig --
+fab-agon-emulator 1.2.4, the same vendored ez80asm, the same sources.
+
+| source | zap | ez80asm | ratio | |
+|---|---|---|---|---|
+| bbcbasic | 3.92s | 22.44s | **0.17x** | ez80asm `-m` |
+| rokky | 0.52s | 2.50s | **0.21x** | |
+| synth | 7.18s | 45.64s | **0.16x** | ez80asm `-m` |
+| isa_even | 5.68s | 33.54s | **0.17x** | |
+| isa_real | 5.56s | 33.14s | **0.17x** | |
+| isa_include | 5.74s | 36.02s | **0.16x** | ez80asm `-m` |
+
+Nothing moved: 3.86 to 3.92, 0.54 to 0.52 and 7.16 to 7.18 are the same
+run-to-run drift the rounds below are quoted against, and ez80asm's three
+figures are 22.44, 2.50 and 45.64 against 22.42, 2.50 and 45.64 -- the check
+that it is the rig and not the assembler. The streaming output costs nothing
+measurable on a program whose output fits in one window, which is every source
+in this set; what it costs on one that does not is a hardware question, and
+`test/hwkit.sh` is what answers it.
+
 ## The whole corpus, source by source
 
 `test/bench/corpus-target.sh` assembles every source both assemblers accept
@@ -132,9 +157,19 @@ all, because that is what drives the memory it needs. The size of the file
 named on the command line would get it exactly backwards: bbcbasic's top-level
 source is 554 bytes and its include tree is 386 KB.
 
-    bbcbasic  386,345 bytes  -m
-    rokky      25,171 bytes  no -m
-    synth     471,286 bytes  -m
+    bbcbasic     386,345 bytes  -m
+    rokky         25,171 bytes  no -m
+    synth        471,286 bytes  -m
+    isa_even     262,113 bytes  no -m
+    isa_real     262,114 bytes  no -m
+    isa_include  265,849 bytes  -m   (the tree, not the root file)
+
+The two isa files land thirty bytes under the threshold, which is luck rather
+than design: `gen_isa.sh` is asked for 256 KB and stops at the line that would
+cross it. A generator change that pushed them over would put them on the other
+side of a flag that costs ez80asm real time, and the two halves of this file
+would stop being comparable -- so if that ever happens, say so in the row
+rather than letting the number move quietly.
 
 The runner prints `ez80asm -m` beside the sources that got it, so a reader
 cannot mistake which comparison a row is.
@@ -142,7 +177,7 @@ cannot mistake which comparison a row is.
 ## Regenerating
 
     make                      # zap.bin for the Agon
-    test/bench/bench.sh       # all three
+    test/bench/bench.sh       # all six
     test/bench/bench.sh rokky # just one
 
 Both binaries are snapshotted when the run starts, so a `make` while a run is

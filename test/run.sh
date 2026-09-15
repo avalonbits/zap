@@ -718,6 +718,25 @@ cli_check "a truncated forward reference names its own line" \
     "$("$OUT/zap" -c -w "$OUT/warnf.s" "$OUT/warnf.bin" 2>&1 | tr -d '\r' \
        | grep -c 'line 2 - Value truncated to 8 bit')" 1
 
+# The evaluator is int32_t and the reference wraps, so an expression that
+# leaves the type has to wrap to the same thing rather than be undefined. The
+# assertion is on the sanitizer as much as on the bytes: $OUT/zap is built with
+# -fsanitize=undefined, and `*total *= t` on a product that does not fit prints
+# a runtime error from here and lets the compiler do as it likes with the
+# result. 0x40005 * 0x40004 is two Agon addresses multiplied.
+{
+    printf '    .assume adl=1\n    .org 0x40000\n'
+    printf 'a: equ 0x40005\nb: equ 0x40004\n'
+    printf '    dw32 a * b\n    dw32 a * a\n'
+    printf '    dw32 0x7FFFFFFF + 1\n    dw32 -2147483647 - 2\n'
+} > "$OUT/wrap.s"
+wrap=$("$OUT/zap" -c -ez80 "$OUT/wrap.s" "$OUT/wrap.bin" 2>&1 | tr -d '\r' || true)
+cli_check "an expression that overflows is not undefined" \
+    "$(printf '%s' "$wrap" | grep -c 'runtime error')" 0
+cli_check "and wraps to what the reference wraps to" \
+    "$(od -An -tx1 < "$OUT/wrap.bin" | tr -s ' ' | tr -d '\n' | sed 's/^ //;s/ $//')" \
+    "14 00 24 00 19 00 28 00 00 00 00 80 ff ff ff 7f"
+
 # The three that write something extra. None of them may fail an assembly:
 # the bytes are written first and a sidecar that cannot be saved is a line of
 # complaint, not an exit code.

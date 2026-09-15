@@ -1592,12 +1592,22 @@ int main(void) {
         } else {
             close(fd);
             const bool ok = run(path);
+            /* Every block that was allocated has to still be on the chain
+             * `locnamfirst` heads, because that chain is what the rewind
+             * fills again and what the free at the end of the run walks. Two
+             * blocks hold three scopes of 300 names here; a list linked the
+             * other way round reads as one, having left the rest of them
+             * unreachable and unfreed -- which is what this counts. */
+            int blocks = 0;
+            for (const namblock* b = state.locnamfirst; b != NULL; b = b->next) {
+                blocks++;
+            }
             char got[64];
-            snprintf(got, sizeof(got), "%d %d %d", ok ? 1 : 0,
+            snprintf(got, sizeof(got), "%d %d %d %d", ok ? 1 : 0,
                      state.locnames == state.locnamfirst ? 1 : 0,
-                     state.locnamfirst != NULL ? 1 : 0);
+                     state.locnamfirst != NULL ? 1 : 0, blocks);
             check("a scope rewinds its local names to the first block",
-                  got, "1 1 1");
+                  got, "1 1 1 2");
             dz_free();
         }
         unlink(path);

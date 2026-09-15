@@ -553,7 +553,7 @@ static bool fill_put(int n) {
      * reference fills a run written out this early with the file's *final*
      * value, because its `fillbyte` survives into the second pass. Remember
      * the range, and write the current value meanwhile so that nothing is ever
-     * undefined. resolve_early_fills comes back for it. */
+     * undefined. The sweep in resolve_late comes back for it. */
     if (!state.fill_seen && !earlyf_add(out_here(), n)) {
         return false;
     }

@@ -17,9 +17,11 @@
 #     patched -- every global fixup is settled at the end of the source, so its
 #     site is behind the window whenever the output is larger than one;
 #   * every fixup width is represented: three-byte absolute (`ld hl, label`),
-#     the four-byte data form (`dl`), and the three folds that go into the
-#     opcode byte rather than after it -- `bit`, `rst` and `im` against an EQU
-#     defined at the very end;
+#     the four-byte data form (`dl`), the three folds that go into the opcode
+#     byte rather than after it -- `bit`, `rst` and `im` against an EQU defined
+#     at the very end -- and the index displacement, which is a byte inside the
+#     instruction and has a second width of its own for the sign written
+#     outside the brackets;
 #   * one scope is deliberately longer than a window, with a local forward
 #     reference across it. Locals are drained at every global label, so they
 #     are normally near the cursor; this is the one shape where a local fixup
@@ -71,6 +73,9 @@ BEGIN {
     print "    bit  FAR_BIT, a"
     print "    rst  FAR_RST"
     print "    im   FAR_IM"
+    print "    ld   a, (ix+FAR_DISP)"
+    print "    ld   b, (iy-FAR_DISP)"
+    print "    bit  3, (ix+FAR_DISP)"
     print ""
 
     for (i = 0; i < n; i++) {
@@ -87,6 +92,7 @@ BEGIN {
     print "FAR_BIT: EQU 5"
     print "FAR_RST: EQU 0x18"
     print "FAR_IM:  EQU 1"
+    print "FAR_DISP: EQU 5"
     print "tail_data:"
     print "    db 0xDE, 0xAD, 0xBE, 0xEF"
     print "tail_end:"

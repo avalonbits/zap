@@ -492,10 +492,19 @@ bool expr_climb(evalue* total, const char** pp, const char* e,
                 expr_fwd_bad = true;
             }
         }
+        /* The three that can leave the type go through the unsigned one and
+         * come back. `evalue` is `int32_t`, the reference evaluates in 32 bits
+         * and wraps, and the cast pair reproduces that exactly -- while
+         * `*total *= t` on a product that does not fit is undefined behaviour
+         * the compiler is entitled to act on. It is not an exotic input:
+         * `0x40005 * 0x40004` is two ordinary Agon addresses multiplied, and
+         * it is what the host build traps on under -fsanitize=undefined. */
+        const uint32_t ua = (uint32_t) *total;
+        const uint32_t ub = (uint32_t) t;
         switch (c) {
-            case '+': *total += t; break;
-            case '-': *total -= t; break;
-            case '*': *total *= t; break;
+            case '+': *total = (evalue) (ua + ub); break;
+            case '-': *total = (evalue) (ua - ub); break;
+            case '*': *total = (evalue) (ua * ub); break;
             case '/':
                 /* The reference divides without looking, which on the Agon is
                  * whatever the runtime does with it. Refusing is the one place

@@ -54,7 +54,7 @@ flowchart TD
 [`parse_args()`](../src/zap.c#L902) ·
 [`run()`](../src/zap.c#L605) ·
 [`run_lines()`](../src/zap.c#L463) ·
-[`scope_end()`](../src/symtab.c#L785) ·
+[`scope_end()`](../src/symtab.c#L786) ·
 [`resolve_fixups()`](../src/zap.c#L436) ·
 [`out_flush()`](../src/directive.c#L61) ·
 [`resolve_late()`](../src/zap.c#L398)
@@ -90,7 +90,7 @@ sequenceDiagram
 
 Nothing leaves the fixup list on its own, so on a long source it only grows.
 When it will not grow any further — the allocation refused, on a machine with
-no more to give — [`fix_sweep()`](../src/symtab.c#L1003) settles everything in
+no more to give — [`fix_sweep()`](../src/symtab.c#L1004) settles everything in
 it whose labels have since been read and closes the gaps, and the assembly
 carries on with what is left. §7 is what may be settled there and what may not.
 
@@ -105,23 +105,31 @@ buffer is a **window** onto a file written as it fills, `OUT_WINDOW` wide, and
 what an assembly costs in memory no longer depends on how much it emits. §2a
 is how a patch reaches output the window has already passed.
 
+What bounds the output now is the card, and the addressing: every position in
+it is an `int`, and `int` is three bytes on the eZ80, so past `OUT_TOTAL_MAX`
+— 0x7FFFFF — the position would wrap negative and the file would corrupt in
+silence. Every writer asks `out_reserve` or `out_reserve_n` first, and those
+refuse the byte that would cross the ceiling; `DS`, `BLK`, `ORG` padding and
+`INCBIN` check their whole amount up front, since each can ask for more than a
+window at once. §13 has what this refuses that the reference would assemble.
+
 Four kinds of thing wait for the end of the run:
 
 | | resolved by | holds |
 |---|---|---|
-| fixup | [`patch_fixup()`](../src/symtab.c#L615) | one or two symbols, an addend, a width, an offset |
+| fixup | [`patch_fixup()`](../src/symtab.c#L616) | one or two symbols, an addend, a width, an offset |
 | deferred expression | [`resolve_deferred()`](../src/zap.c#L262) | expression text a fixup cannot represent |
 | deferred fill | [`resolve_fills()`](../src/zap.c#L290) | a `BLK` whose fill value was not known yet |
 | reserved run | [`resolve_late()`](../src/zap.c#L398) | space reserved before the file's first `FILLBYTE`, which takes its *last* |
 
-A [`fixup`](../src/zap.h#L695)'s width is normally a byte count, 1 to 4, or 0
+A [`fixup`](../src/zap.h#L696)'s width is normally a byte count, 1 to 4, or 0
 for a relative displacement. Five values above those are operands that are not
 whole fields after the opcode:
 
 * three **folds**, where the operand belongs in the **opcode byte itself** — a
   bit number, an interrupt mode, a restart address — so `bit n, a` with `n`
   defined later still assembles correctly. The value is turned into a mask by
-  [`fold_mask()`](../src/symtab.c#L576), checked there, and OR'd in;
+  [`fold_mask()`](../src/symtab.c#L577), checked there, and OR'd in;
 * two for an **index displacement**, the signed byte of `(ix+d)`. It has widths
   of its own rather than being a one-byte fixup because what goes in that byte
   is not the low eight bits of the value: the reference truncates to sixteen
@@ -137,7 +145,7 @@ last 64 KB of the output is still there. The rest is on the card.
 So a patch whose site is behind the window is *worked out* where it always was
 — which keeps every diagnostic where it was, reported against the line that
 used the label — and only the finished bytes are recorded, in a
-[`latepatch`](../src/zap.h#L591). Only the bytes: a local symbol's node is
+[`latepatch`](../src/zap.h#L592). Only the bytes: a local symbol's node is
 handed back when its scope ends, so a record that kept the symbol would name a
 different label by the time it was applied. The three folds become a checked
 mask for the same reason, checked here and OR'd into the opcode byte later.
@@ -170,8 +178,8 @@ whose every fixup is settled long after its site was written.
 ## 3. The state
 
 Everything the assembler knows lives in one object,
-[`state`](../src/symtab.c#L230), of type
-[`zap_state`](../src/zap.h#L1156). It is defined in `symtab.c` and declared in
+[`state`](../src/symtab.c#L231), of type
+[`zap_state`](../src/zap.h#L1164). It is defined in `symtab.c` and declared in
 `zap.h`, so every part reaches the same one.
 
 ```mermaid
@@ -222,7 +230,7 @@ Two consequences the rest of the assembler relies on:
 * there is always a newline one byte past the content — the **sentinel** — so
   every scan terminates on it without testing the end.
 
-[`include_file()`](../src/directive.c#L801) opens a second reader and re-enters the same
+[`include_file()`](../src/directive.c#L861) opens a second reader and re-enters the same
 line loop; the parent's reader is saved in the include's own stack frame. The
 parent's file handle is closed while the child runs and reopened afterwards,
 seeking back to where the parent had reached, because MOS has few handles.
@@ -259,7 +267,7 @@ flowchart TD
 [`parse_operand()`](../src/expr.h#L90) ·
 [`match_row()`](../src/insn.h#L150) ·
 [`emit_row()`](../src/insn.h#L327) ·
-[`directive_line()`](../src/directive.c#L1003) ·
+[`directive_line()`](../src/directive.c#L1063) ·
 [`suffixed_mnemonic()`](../src/insn.c#L569) ·
 [`third_operand()`](../src/insn.c#L660)
 
@@ -351,17 +359,17 @@ flowchart TD
 ```
 
 **Global labels and EQU values** ([`sym`](../src/zap.h#L211),
-[`sym_intern()`](../src/symtab.c#L450)) are **interned on first sight**, defined
+[`sym_intern()`](../src/symtab.c#L451)) are **interned on first sight**, defined
 or not, so a reference to a label that has not appeared yet gets an entry and a
 fixup points at it. Nodes and names come from arenas of blocks that never move:
 a growing array would have to be reallocated, and a realloc that moves holds
 both copies at once.
 
-**Local labels** (`@name`, [`loc_intern()`](../src/symtab.c#L848)) belong to the
+**Local labels** (`@name`, [`loc_intern()`](../src/symtab.c#L849)) belong to the
 global label above them. A scope ends at the next global label — thousands of
 times in a real source — so it must empty in constant time. Each slot carries
 the generation it belongs to: advancing the counter in
-[`scope_end()`](../src/symtab.c#L785) makes every bucket read as empty, whatever
+[`scope_end()`](../src/symtab.c#L786) makes every bucket read as empty, whatever
 chain it still holds.
 
 **Anonymous labels** (`@@`, referred to as `@f` and `@b`) are not table entries
@@ -376,21 +384,21 @@ local's node is about to be recycled.
 ### 7a. The fixup list, and when it is swept
 
 Sixteen bytes a record, grown `FIX_STEP` at a time by
-[`fix_add()`](../src/symtab.c#L1040), and nothing ever leaves it during an
+[`fix_add()`](../src/symtab.c#L1041), and nothing ever leaves it during an
 ordinary assembly: what a source costs here is one record per forward
 reference, however early the label it names turns up. `-x` prints both the
 total and the high-water mark, which are the same number for a file that never
 filled the list.
 
 They stop being the same number when the allocation is refused. Rather than
-give up, [`fix_sweep()`](../src/symtab.c#L1003) settles what it can and closes
+give up, [`fix_sweep()`](../src/symtab.c#L1004) settles what it can and closes
 the gaps. Real programs have much to settle: measured by span, BBC BASIC for
 Agon would hold 490 of its 2,209 records at once and a CP/M implementation 950
 of 1,859, the rest being references whose labels had long since been read.
 
 Four things must be true of a record before it may be settled early, and each
 is a correctness requirement rather than a refinement
-([`fix_ready()`](../src/symtab.c#L970)):
+([`fix_ready()`](../src/symtab.c#L971)):
 
 * its target — and its second symbol, if it has one — is **defined**. The
   nameless stand-ins `resolve_deferred()` fills in stay undefined until the end
@@ -406,7 +414,7 @@ is a correctness requirement rather than a refinement
 * it is **not named by `subfix`**, whose entries are waiting for a local that
   the scope has not folded yet.
 
-`subfix` holds *indices* into the list, and [`fold_subs()`](../src/symtab.c#L751)
+`subfix` holds *indices* into the list, and [`fold_subs()`](../src/symtab.c#L752)
 walks them at every scope end, so compacting under it would corrupt them
 silently. Both lists ascend, so one pass rewrites each index as its entry moves.
 
@@ -469,9 +477,9 @@ flowchart TD
 ## 9. Directives
 
 Reached only after the mnemonic lookup has failed, and dispatched by
-[`directive_of()`](../src/directive.c#L213) — a switch on the token's length and
+[`directive_of()`](../src/directive.c#L238) — a switch on the token's length and
 characters rather than a table — then handled in
-[`directive_line()`](../src/directive.c#L1003).
+[`directive_line()`](../src/directive.c#L1063).
 
 | group | directives |
 |---|---|
@@ -486,20 +494,20 @@ characters rather than a table — then handled in
 
 Two distinctions in this group are easy to get wrong and worth stating:
 
-* **`DS` reserves ([`fill_take()`](../src/directive.c#L590)), `BLK` emits
-  ([`emit_block()`](../src/directive.c#L629)).** A reservation is a count, not
+* **`DS` reserves ([`fill_take()`](../src/directive.c#L624)), `BLK` emits
+  ([`emit_block()`](../src/directive.c#L671)).** A reservation is a count, not
   bytes: nothing is written until something is written *after* it, which is
   what `out_settle()` does from `out_reserve()`. So space that reaches the end
   of the file with nothing after it is never written at all, and a `FILLBYTE`
   while a run is still pending simply changes what it will be written with.
   A block always is written.
 * **`ORG` padding is not a reservation.** It goes through
-  [`fill_put()`](../src/directive.c#L548) and is written where it stands, as
+  [`fill_put()`](../src/directive.c#L573) and is written where it stands, as
   the reference writes it: it survives at the end of a file where a `DS` is
   dropped, and a later `FILLBYTE` does not reach back to it. `fillbyte 0x11 /
   org $+4 / fillbyte 0xAA` is four `0x11`; the same shape with `DS` is `0xAA`.
 * For the reservations written out before the file's *first* `FILLBYTE`, that
-  byte reaches backwards, which [`earlyf`](../src/zap.h#L1113) explains. Those
+  byte reaches backwards, which [`earlyf`](../src/zap.h#L1121) explains. Those
   runs are settled by the same sweep as everything else the window left behind,
   in [`resolve_late()`](../src/zap.c#L398), because by then they may be
   anywhere in a file most of which is on the card.
@@ -557,7 +565,7 @@ rather than allocated per expansion.
 ## 11. Diagnostics
 
 Errors are **codes**, not strings: `state.err` is a
-[`zap_err`](../src/zap.h#L487), and the message text lives in
+[`zap_err`](../src/zap.h#L488), and the message text lives in
 [one table](../src/symtab.c#L24) beside the enum. A caller other than `main` can
 branch on the code, which is what makes the assembler usable as a library.
 
@@ -573,7 +581,7 @@ flowchart LR
     E4 --> RP["report — prints all of it"]
 ```
 
-[`err_line()`](../src/symtab.c#L240) ·
+[`err_line()`](../src/symtab.c#L241) ·
 [`err_tok()`](../src/symtab.h#L47) ·
 [`report()`](../src/zap.c#L1640)
 
@@ -644,6 +652,15 @@ Two differences are deliberate and permanent:
   treats as unsigned, so it writes about four gigabytes; zap says so and stops.
   This is the one place zap refuses something the reference accepts, and it is
   refused rather than reproduced because reproducing it means filling the card.
+* **An output past the 24-bit range is refused.** On a desktop the reference
+  assembles an eight-megabyte file happily; on the Agon it has nowhere to put
+  it, and zap's positions are `int`, which is three bytes there — past
+  0x7FFFFF the arithmetic wraps and the file corrupts rather than failing. So
+  the ceiling is checked, and the byte that would cross it is refused. The
+  last thirteen bytes under the ceiling go with it, because an instruction is
+  granted room for the largest one there is — the same headroom the window's
+  own limit carries. On the host the check reads the same constant, which is
+  what lets the tests write past the ceiling and watch the refusal.
 * **A macro parameter is substituted as a whole identifier.** The reference
   substitutes any occurrence that *ends* an identifier, so with a parameter `x`
   bound to `1`, a body line `db max` becomes `db ma1` and the expansion fails
@@ -720,10 +737,10 @@ to do.
 * **An instruction form** belongs in the generator,
   [`tools/gen_isa.py`](../tools/gen_isa.py), not in the generated table.
 * **A directive** needs a `DIR_` constant, a spelling in
-  [`directive_of()`](../src/directive.c#L213), a case in
-  [`directive_line()`](../src/directive.c#L1003), a case file under `test/cases`
+  [`directive_of()`](../src/directive.c#L238), a case in
+  [`directive_line()`](../src/directive.c#L1063), a case file under `test/cases`
   compared against the reference, and a row in the README's directive table.
-* **A diagnostic** needs a [`zap_err`](../src/zap.h#L487) code and one line in
+* **A diagnostic** needs a [`zap_err`](../src/zap.h#L488) code and one line in
   the message table. The static assert on the table size catches a code with no
   text.
 * Anything that touches the hot path should be measured on the Agon before and

@@ -163,6 +163,21 @@ bool out_reserve(void) {
     if (state.pend != 0 && !out_settle()) {
         return false;
     }
+    /* The output as a whole is bounded by the width of int, which on the eZ80
+     * is three bytes: past OUT_TOTAL_MAX the position wraps negative and the
+     * file corrupts without a word -- labels land on the wrong bytes, patches
+     * reach backwards. The ceiling is on the right of the comparison, less
+     * the room this call grants, rather than added to the position: position
+     * plus 13 wraps negative in int when the position is within 13 of the
+     * ceiling, and a negative compares less than the ceiling and slips
+     * through. Subtracted from the constant there is no addition to wrap, and
+     * out_here() itself never wraps -- this check is what keeps it under the
+     * ceiling, so it holds at every entry here. */
+    if (out_here() > (int) (OUT_TOTAL_MAX - OUT_MAX_INSN)) {
+        state.err = ZAP_E_OUTPUT_PAST_24_BIT_RANGE;
+
+        return false;
+    }
     if (state.o <= state.lim) {
         return true;
     }
@@ -178,6 +193,16 @@ bool out_reserve(void) {
  * there is no longer anywhere for a larger request to go. */
 static bool out_reserve_n(int n) {
     if (state.pend != 0 && !out_settle()) {
+        return false;
+    }
+    /* The whole-output bound, in the same subtract-from-the-constant form
+     * out_reserve uses: `n` here is at most a window, so ceiling minus n
+     * cannot wrap, and the position is already under the ceiling. The cold
+     * callers below keep the evalue form, because their `n` is an expression
+     * value that can be wider than int itself. */
+    if (out_here() > (int) OUT_TOTAL_MAX - n) {
+        state.err = ZAP_E_OUTPUT_PAST_24_BIT_RANGE;
+
         return false;
     }
     if (state.o + n <= state.lim) {
@@ -545,16 +570,25 @@ static bool earlyf_add(int off, int n) {
  *
  * Not what `DS` and `ALIGN` do -- those reserve, and reserving is `fill_take`.
  */
-static bool fill_put(int n) {
-    if (n <= 0) {
+static bool fill_put(evalue n) {
+    if (n == 0) {
         return true;
+    }
+    /* The bound before the first byte, in evalue for the reason out_reserve
+     * gives: an ORG can ask for millions at once, which is the largest single
+     * jump the position ever takes. What passes is small enough for int, and
+     * the loop below counts in int. */
+    if ((evalue) out_here() + n > OUT_TOTAL_MAX) {
+        state.err = ZAP_E_OUTPUT_PAST_24_BIT_RANGE;
+
+        return false;
     }
     /* Before the first FILLBYTE, what goes here is still not settled: the
      * reference fills a run written out this early with the file's *final*
      * value, because its `fillbyte` survives into the second pass. Remember
      * the range, and write the current value meanwhile so that nothing is ever
      * undefined. The sweep in resolve_late comes back for it. */
-    if (!state.fill_seen && !earlyf_add(out_here(), n)) {
+    if (!state.fill_seen && !earlyf_add(out_here(), (int) n)) {
         return false;
     }
     /* In pieces, because an ORG can skip further than the window is wide and
@@ -572,14 +606,14 @@ static bool fill_put(int n) {
             return false;
         }
         const int room = (int) (state.lim - state.o);
-        const int take = n < room ? n : room;
+        const int take = n < (evalue) room ? (int) n : room;
         /* memset rather than a loop: on the eZ80 it is `lddr`, and the runs
          * here are not small. An ORG that skips 96 KB spends all of its time
          * in this one line, and a character loop makes that a second and a
          * half. */
         memset(state.o, state.fill, (size_t) take);
         state.o += take;
-        n -= take;
+        n -= (evalue) take;
     }
 
     return true;
@@ -587,14 +621,19 @@ static bool fill_put(int n) {
 
 /* Reserves `n` bytes without writing them, which is what `DS` and `ALIGN` do.
  * Nothing decides what they hold until something is written after them. */
-static bool fill_take(int n) {
+static bool fill_take(evalue n) {
     if (n > 0) {
-        if ((evalue) state.pend > PEND_MAX - (evalue) n) {
-            state.err = ZAP_E_OUT_MEMORY_OUTPUT;
+        /* The position the reservation would end at. This is the check
+         * PEND_MAX used to make -- a reservation is the largest single jump
+         * the position can take -- widened to the position as a whole, which
+         * is what the ceiling bounds. In evalue for the reason out_reserve
+         * gives. */
+        if ((evalue) out_here() + n > OUT_TOTAL_MAX) {
+            state.err = ZAP_E_OUTPUT_PAST_24_BIT_RANGE;
 
             return false;
         }
-        state.pend += n;
+        state.pend += (int) n;
     }
 
     return true;
@@ -613,7 +652,7 @@ static bool out_settle(void) {
     }
     state.pend = 0;
 
-    return fill_put(n);
+    return fill_put((evalue) n);
 }
 
 /* `BLKB n, fill` and its wider relatives: n units of `fill`, written out.
@@ -625,10 +664,22 @@ static bool out_settle(void) {
  *
  * Little-endian at the unit width, and the default fill is the value 0xFF
  * written at that width rather than all ones: `blkw 1` is FF 00. */
-/* n and width are both positive here; the caller has checked the count. */
-static bool emit_block(int n, int width, evalue fill) {
-    if (n <= 0) {
+/* n and width are both positive here; the caller has checked the count. The
+ * count arrives in evalue because it is an expression value: into an int it
+ * would wrap on the eZ80, and a `blkb 0x800000` past eight million would
+ * arrive negative and write nothing at all. */
+static bool emit_block(evalue n, int width, evalue fill) {
+    if (n == 0) {
         return true;
+    }
+    /* n times width is what the block weighs, and either is large enough to
+     * take the position past the ceiling on its own. In evalue for the reason
+     * out_reserve gives; what passes is small enough for int, and the loop
+     * counts in int. */
+    if ((evalue) out_here() + n * (evalue) width > OUT_TOTAL_MAX) {
+        state.err = ZAP_E_OUTPUT_PAST_24_BIT_RANGE;
+
+        return false;
     }
     if (want_warn && !fits_width(fill, width)) {
         warn_trunc(fill, width);
@@ -639,15 +690,16 @@ static bool emit_block(int n, int width, evalue fill) {
      * for, then flush and carry on. `width` is at most four, so the room is
      * never short of a single unit after a flush. */
     const int f = (int) fill;
-    while (n > 0) {
+    int left = (int) n;
+    while (left > 0) {
         if (!out_reserve_n(width)) {
             return false;
         }
         int fit = (int) (state.lim - state.o) / width;
-        if (fit > n) {
-            fit = n;
+        if (fit > left) {
+            fit = left;
         }
-        n -= fit;
+        left -= fit;
 
         /* Narrowed once, outside the loop, for the reason emit_data splits its
          * write: three of the four widths fit the machine and only BLKL does
@@ -751,13 +803,21 @@ static bool incbin_file(const char* name) {
 
         return false;
     }
-    int n = (int) fil->obj.objsize;
-    if (n < 0) {
+    /* The size in evalue, not int: objsize is a 32-bit DWORD, and into an int
+     * on the eZ80 a file past eight megabytes arrived as zero or negative --
+     * skipped in silence, or refused as out of memory. The bound before the
+     * first byte, because the whole file has to fit under the ceiling and
+     * because the chunks below are written straight to the cursor: the
+     * per-chunk room check sees a window, not the file. In evalue for the
+     * reason out_reserve gives. */
+    const evalue size = fil->obj.objsize;
+    if ((evalue) out_here() + size > OUT_TOTAL_MAX) {
         mos_fclose(fh);
-        state.err = ZAP_E_OUT_MEMORY;
+        state.err = ZAP_E_OUTPUT_PAST_24_BIT_RANGE;
 
         return false;
     }
+    int n = (int) size;
     /* Through the window rather than into it. The file may be larger than the
      * window is wide -- the corpus has a 150 KB one -- and the read still goes
      * straight to the cursor rather than through a staging buffer. */
@@ -1297,7 +1357,7 @@ bool directive_line(const char* s, int n, const char* p,
 
             return false;
         }
-        if (!fill_take((int) value)) {
+        if (!fill_take(value)) {
             return false;
         }
         /* `DS 3,1,2` is three bytes in the reference: the arguments after the

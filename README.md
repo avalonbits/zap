@@ -23,7 +23,9 @@ reference assembler's own test corpus it is **3.2x faster** per source and
 
 The output is written as it is assembled rather than held in memory, so what
 zap can assemble is bounded by the card and not by the machine: a 172 KB
-binary takes 4.4 seconds where the reference takes 23.7.
+binary takes 4.4 seconds where the reference takes 23.7. The ceiling on size
+is the eZ80's own 24-bit addressing — 8 MB of output — reached only by files
+no other Agon assembler can produce at all.
 
 ## Getting it
 

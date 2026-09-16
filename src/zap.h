@@ -481,6 +481,7 @@ typedef enum {
     ZAP_E_UNKNOWN_LABEL,
     ZAP_E_UNSUPPORTED_CPU_TYPE,
     ZAP_E_WRONG_NUMBER_MACRO_ARGUMENTS,
+    ZAP_E_OUTPUT_PAST_24_BIT_RANGE,
 
     /* Not a code: the number of them, so the table below cannot be short. */
     ZAP_E_COUNT
@@ -734,15 +735,22 @@ typedef struct {
 
 #define ADDEND_MAX ((evalue)  0x7FFFFFL)
 
-/* The most that may be reserved and not yet written.
+/* The most output there can ever be, in bytes.
  *
- * Reserving stopped allocating when it became a count, so nothing else refuses
- * a `DS` of millions any more -- it used to fail asking malloc for it. `int` is
- * three bytes on the eZ80, so without this two large reservations wrap to a
- * negative and the output quietly comes out short. Typed and written out for
- * the reason ADDEND_MAX is: derived from `int` it would be a different number
- * on the host, and the two builds would disagree about what they refuse. */
-#define PEND_MAX ((evalue) 0x7FFFFFL)
+ * Every position in the output is an `int`, and `int` is three bytes on the
+ * eZ80: past this the position wraps negative, and a file that crossed it
+ * corrupts in silence -- labels land on the wrong bytes, patches go backwards.
+ * The host's int is wider and no host test could see the wrap, so the bound is
+ * a written-out constant checked on both sides: the tests assemble past it and
+ * expect the refusal, which is the only way the target's arithmetic can be
+ * exercised from a desktop.
+ *
+ * It was PEND_MAX, which gave the same ceiling to a single reservation; the
+ * check now covers the whole position, which subsumes that one. Typed and
+ * written out for the reason ADDEND_MAX is: derived from `int` it would be a
+ * different number on the host, and the two builds would disagree about what
+ * they refuse. */
+#define OUT_TOTAL_MAX ((evalue) 0x7FFFFFL)
 
 /* Sixteen bytes, and the size is the point: `&list[i]` on a record whose size
  * is not a power of two is a call to __imulu, because the eZ80's multiply is

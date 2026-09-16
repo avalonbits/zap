@@ -288,6 +288,40 @@ cli_check "a negative BLK is refused" \
     "$("$OUT/zap" -c "$OUT/neg.s" "$OUT/neg.bin" 2>&1 | tr -d '\r' \
        | grep -c 'blk needs a positive number')" 1
 
+# The output as a whole is bounded by the width of int, which on the eZ80 is
+# three bytes: past 0x7fffff the position wraps negative and the file corrupts
+# in silence -- labels on the wrong bytes, patches reaching backwards. The
+# bound is a written-out constant, so the host writes past it and is refused,
+# which is the only way the target's arithmetic can be exercised from a
+# desktop. On a desktop the reference assembles the reservation and the block
+# here; on the Agon it has nowhere to put the bytes either.
+printf '  ds 0x7fffff\n  ds 1\n' > "$OUT/big.s"
+cli_check "a reservation past the bound is refused" \
+    "$("$OUT/zap" -c "$OUT/big.s" "$OUT/big.bin" 2>&1 | tr -d '\r' \
+       | grep -c 'output past the 24-bit range')" 1
+cli_check "and leaves no output behind" \
+    "$(test -f "$OUT/big.bin" && echo yes || echo no)" "no"
+printf '  blkb 0x800000, 0\n' > "$OUT/big.s"
+cli_check "a block past the bound is refused outright" \
+    "$("$OUT/zap" -c "$OUT/big.s" "$OUT/big.bin" 2>&1 | tr -d '\r' \
+       | grep -c 'output past the 24-bit range')" 1
+printf '  incbin "big.inc"\n' > "$OUT/big.s"
+truncate -s 9437184 "$OUT/big.inc"
+cli_check "an incbin past the bound is refused before it is read" \
+    "$(cd "$OUT" && "$OUT/zap" -c big.s big.bin 2>&1 | tr -d '\r' \
+       | grep -c 'output past the 24-bit range')" 1
+
+# One under the ceiling still assembles, to the reference's own bytes: the
+# bound refuses what cannot be addressed, not what merely looks large.
+printf '  ds 0x7ffffe\n  db 0\n' > "$OUT/big.s"
+if [ -x "$OPTREF" ]; then
+    "$OUT/zap" -c "$OUT/big.s" "$OUT/big.bin" > /dev/null 2>&1
+    "$OPTREF" -c "$OUT/big.s" "$OUT/bigr.bin" > /dev/null 2>&1
+    cli_check "an output at the ceiling is the reference's bytes" \
+        "$(cmp -s "$OUT/big.bin" "$OUT/bigr.bin" && echo same || echo differs)" \
+        "same"
+fi
+
 # A macro name gets the sixty-four characters a label gets, and the reference
 # refuses the sixty-fifth. zap had no limit here.
 macname_same() {
@@ -546,16 +580,16 @@ cli_check "and lists them from where they actually are" \
     "$(head -2 "$OUT/grow.lst" 2>/dev/null | tail -1 | tr -d '\r' | cut -c1-18)" \
     "040000 AA AA AA AA"
 
-# A reservation too large to count.
+# A reservation too large to fit under the output's ceiling.
 #
 # Reserving stopped allocating when it became a count, so nothing else refuses
-# this any more -- it used to fail asking malloc for the bytes. `int` is three
-# bytes on the eZ80, so two of these wrap to a negative and the file comes out
-# short with nothing said.
+# this any more -- it used to fail asking malloc for the bytes. The first of
+# these alone would fit exactly; the second starts where the ceiling is, and
+# the position it would end at is refused rather than wrapped.
 printf '  ds 8000000\n  ds 8000000\n  nop\n' > "$OUT/dsbig.s"
 dsbig=$("$OUT/zap" -c "$OUT/dsbig.s" "$OUT/dsbig.bin" 2>&1 | tr -d '\r' || true)
 cli_check "a reservation larger than the machine can count is refused" \
-    "$(printf '%s' "$dsbig" | grep -c 'out of memory for the output')" 1
+    "$(printf '%s' "$dsbig" | grep -c 'output past the 24-bit range')" 1
 
 # What a reservation looks like in a listing, now that reserving does not
 # write anything.

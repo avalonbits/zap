@@ -100,6 +100,7 @@ const char* const zap_err_text[] = {
     [ZAP_E_UNKNOWN_LABEL] = "unknown label",
     [ZAP_E_UNSUPPORTED_CPU_TYPE] = "unsupported CPU type",
     [ZAP_E_WRONG_NUMBER_MACRO_ARGUMENTS] = "wrong number of macro arguments",
+    [ZAP_E_OUTPUT_PAST_24_BIT_RANGE] = "output past the 24-bit range",
 };
 
 /* A code with no text prints nothing and looks like a message somebody forgot

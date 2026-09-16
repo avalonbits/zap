@@ -50,7 +50,7 @@ flowchart TD
     late --> side["listing, symbol file, statistics<br/>(optional; none can fail the run)"]
 ```
 
-[`main()`](../src/zap.c#L1679) ·
+[`main()`](../src/zap.c#L1697) ·
 [`parse_args()`](../src/zap.c#L902) ·
 [`run()`](../src/zap.c#L605) ·
 [`run_lines()`](../src/zap.c#L463) ·

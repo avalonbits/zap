@@ -186,6 +186,19 @@ cli_check "-h lists the options" \
 cli_check "-h lists -w, which is zap's own" \
     "$("$OUT/zap" -h 2>&1 | tr -d '\r' | grep -c '^  -w\b')" 1
 
+# zap with nothing, which is how a first-time user meets it. The usage is the
+# answer, and the exit code matters as much as the text: on the Agon MOS takes
+# main's return as one of its own error codes and prints the message that goes
+# with the number, so a failure reported as 1 comes back as "Error accessing
+# SD card" under the help. The reference exits zero there -- EXIT_ERROR is 0
+# in its non-UNIX build -- and the host keeps 1, which is what the static
+# asserts beside EXIT_ERROR pin on both platforms.
+cli_check "bare zap prints the usage" \
+    "$("$OUT/zap" 2>&1 | tr -d '\r' | grep -c '^Usage: zap <filename>')" 1
+noargs=$("$OUT/zap" > /dev/null 2>&1; echo $?)
+cli_check "bare zap reports failure through the exit code on the host" \
+    "$noargs" 1
+
 # One filename: the output is named after the source, which is what the
 # reference derives and what the usage line has always advertised. The name
 # takes the same walk the sidecar names take -- extension replaced where
@@ -213,7 +226,6 @@ if [ -x "$OPTREF" ]; then
     cli_check "a derived name lands beside the source, as the reference's does" \
         "$(cmp -s "$OUT/derive_sub/deep.bin" "$OUT/deep_ref.bin" && echo same || echo differs)" \
         "same"
-fi
 # Accepted and doing nothing: `-m` because zap has one memory configuration
 # and it is the small one, `-i` because truncation warnings are already off
 # unless `-w` asks for them. Silently, because a script written for the

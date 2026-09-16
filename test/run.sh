@@ -226,6 +226,8 @@ if [ -x "$OPTREF" ]; then
     cli_check "a derived name lands beside the source, as the reference's does" \
         "$(cmp -s "$OUT/derive_sub/deep.bin" "$OUT/deep_ref.bin" && echo same || echo differs)" \
         "same"
+fi
+
 # Accepted and doing nothing: `-m` because zap has one memory configuration
 # and it is the small one, `-i` because truncation warnings are already off
 # unless `-w` asks for them. Silently, because a script written for the

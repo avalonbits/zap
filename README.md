@@ -56,9 +56,10 @@ Copy `bin/zap.bin` to `/bin` on the Agon's SD card and run it as `zap`.
 
 ## Usage
 
-    zap <source> <output> [options]
+    zap <source> [<output>] [options]
 
     zap game.s game.bin                 # assemble
+    zap game.s                          # ... naming game.bin after the source
     zap game.s game.bin -l -s           # ... with a listing and a symbol file
     zap game.s game.bin -o 40000 -b 00  # origin 0x40000, fill byte 0x00
     zap game.s game.bin -w              # warn about truncated values

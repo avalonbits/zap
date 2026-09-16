@@ -185,6 +185,35 @@ cli_check "-h lists the options" \
     "$("$OUT/zap" -h 2>&1 | tr -d '\r' | grep -c '^  -o\b')" 1
 cli_check "-h lists -w, which is zap's own" \
     "$("$OUT/zap" -h 2>&1 | tr -d '\r' | grep -c '^  -w\b')" 1
+
+# One filename: the output is named after the source, which is what the
+# reference derives and what the usage line has always advertised. The name
+# takes the same walk the sidecar names take -- extension replaced where
+# there is one, .bin appended where there is not, directory kept.
+printf '  nop\n  ret\n' > "$OUT/derive.s"
+"$OUT/zap" -c "$OUT/derive.s" "$OUT/derive_named.bin" > /dev/null 2>&1
+"$OUT/zap" -c "$OUT/derive.s" > /dev/null 2>&1
+cli_check "one filename names the output after the source" \
+    "$(cmp -s "$OUT/derive.bin" "$OUT/derive_named.bin" && echo same || echo differs)" \
+    "same"
+printf '  nop\n  ret\n' > "$OUT/noext"
+"$OUT/zap" -c "$OUT/noext" > /dev/null 2>&1
+cli_check "a source with no extension still gains .bin" \
+    "$(cmp -s "$OUT/noext.bin" "$OUT/derive_named.bin" && echo same || echo differs)" \
+    "same"
+if [ -x "$OPTREF" ]; then
+    mkdir -p "$OUT/derive_sub"
+    printf '  nop\n  ret\n' > "$OUT/derive_sub/deep.s"
+    "$OPTREF" -c "$OUT/derive_sub/deep.s" > /dev/null 2>&1
+    cli_check "the reference derives the name beside the source" \
+        "$(test -f "$OUT/derive_sub/deep.bin" && echo yes || echo no)" "yes"
+    cp "$OUT/derive_sub/deep.bin" "$OUT/deep_ref.bin"
+    rm "$OUT/derive_sub/deep.bin"
+    "$OUT/zap" -c "$OUT/derive_sub/deep.s" > /dev/null 2>&1
+    cli_check "a derived name lands beside the source, as the reference's does" \
+        "$(cmp -s "$OUT/derive_sub/deep.bin" "$OUT/deep_ref.bin" && echo same || echo differs)" \
+        "same"
+fi
 # Accepted and doing nothing: `-m` because zap has one memory configuration
 # and it is the small one, `-i` because truncation warnings are already off
 # unless `-w` asks for them. Silently, because a script written for the

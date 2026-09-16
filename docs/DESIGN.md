@@ -50,8 +50,8 @@ flowchart TD
     late --> side["listing, symbol file, statistics<br/>(optional; none can fail the run)"]
 ```
 
-[`main()`](../src/zap.c#L1667) ·
-[`parse_args()`](../src/zap.c#L893) ·
+[`main()`](../src/zap.c#L1697) ·
+[`parse_args()`](../src/zap.c#L902) ·
 [`run()`](../src/zap.c#L605) ·
 [`run_lines()`](../src/zap.c#L463) ·
 [`scope_end()`](../src/symtab.c#L785) ·
@@ -575,7 +575,7 @@ flowchart LR
 
 [`err_line()`](../src/symtab.c#L240) ·
 [`err_tok()`](../src/symtab.h#L47) ·
-[`report()`](../src/zap.c#L1628)
+[`report()`](../src/zap.c#L1640)
 
 ```
 Macro [mos_call] in "kernel.s" line 12 - unknown label 'MOS_SYSVARS'
@@ -584,7 +584,7 @@ Invoked from "main.s" line 84 as
   mos_call MOS_SYSVARS
 ```
 
-There is one warning, [`warn_trunc()`](../src/zap.c#L1552), for a value too
+There is one warning, [`warn_trunc()`](../src/zap.c#L1564), for a value too
 large for the space it is written into. It is the only diagnostic that asks a
 question of every value in every source rather than doing work after something
 has gone wrong, so it is behind `-w`.
@@ -595,14 +595,14 @@ has gone wrong, so it is behind `-w`.
 
 `-l` and `-d` write a listing in the reference's columns — address, up to four
 bytes per row, line number, and the source line as written — through
-[`list_line()`](../src/zap.c#L1121) and [`list_out()`](../src/zap.c#L1099). A
+[`list_line()`](../src/zap.c#L1133) and [`list_out()`](../src/zap.c#L1111). A
 macro expansion is listed as the reference lists it: the invocation with no
 bytes, the arguments, then a row per body line tagged with its depth.
 
 A line holding a forward reference is listed before that reference is patched,
-so those lines are remembered by [`lstfix_add()`](../src/zap.c#L1205) and their
+so those lines are remembered by [`lstfix_add()`](../src/zap.c#L1217) and their
 byte columns written again from the finished output by
-[`lstfix_apply()`](../src/zap.c#L1238) before the file is closed. The console
+[`lstfix_apply()`](../src/zap.c#L1250) before the file is closed. The console
 listing cannot be given that treatment and shows the bytes as they were
 emitted.
 
@@ -624,8 +624,8 @@ A fourth used to belong on that list and no longer does: a line holding a
 forward reference showed the bytes as they were emitted rather than as they
 were patched, which is what `lstfix_add` and `lstfix_apply` above are for.
 
-[`write_symbols()`](../src/zap.c#L1417) writes the global symbols sorted, in
-the reference's format. [`write_stats()`](../src/zap.c#L1483) prints what the
+[`write_symbols()`](../src/zap.c#L1429) writes the global symbols sorted, in
+the reference's format. [`write_stats()`](../src/zap.c#L1495) prints what the
 run used. None of the three can fail an assembly: the output file is already
 written when they run.
 

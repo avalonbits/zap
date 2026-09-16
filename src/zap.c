@@ -890,6 +890,15 @@ static void usage(void) {
  * `-w` is not the reference's, which is the one thing this file otherwise
  * never does. It is a flag the reference has no spelling for at all: there is
  * no way to ask ez80asm for the check, because it never turns it off. */
+/* `zap prog.s`, with no output named: the output is `prog.bin`.
+ *
+ * The same walk the sidecar names take, and the same name the reference
+ * derives -- an extension replaced where there is one, `.bin` appended where
+ * there is not, and any directory kept. Static because the name outlives
+ * parse_args and has to last as long as the run does. */
+static char derived_output[INCLUDE_NAME_MAX];
+static bool sidecar_name(const char* src, const char* ext, char* out, int cap);
+
 __attribute__((noinline)) static bool parse_args(int argc, char* argv[],
                                                  const char** in,
                                                  const char** out,
@@ -971,10 +980,13 @@ __attribute__((noinline)) static bool parse_args(int argc, char* argv[],
         return false;
     }
     if (*out == NULL) {
-        printf("No output filename\r\n");
-        usage();
+        if (!sidecar_name(*in, ".bin", derived_output,
+                          (int) sizeof(derived_output))) {
+            printf("Filename too long\r\n");
 
-        return false;
+            return false;
+        }
+        *out = derived_output;
     }
 
     return true;

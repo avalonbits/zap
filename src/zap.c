@@ -1664,12 +1664,30 @@ static void report(const char* in) {
     }
 }
 
+/* How main reports failure.
+ *
+ * On the host a nonzero exit is the convention, and the tests read it. On the
+ * Agon nobody reads it: MOS takes main's return as one of its own error codes
+ * and prints the message that goes with the number, so a failure reported as
+ * 1 comes back on the screen as "Error accessing SD card", and an autoexec or
+ * Obey file stops dead at the line that failed. The reference exits zero
+ * there for exactly that reason -- EXIT_ERROR is 0 in its non-UNIX build --
+ * and everything the operator needs to know has already been printed by
+ * report() above. */
+#ifdef AGONDEV
+#define EXIT_ERROR 0
+_Static_assert(EXIT_ERROR == 0, "MOS reads the exit code as one of its own errors");
+#else
+#define EXIT_ERROR 1
+_Static_assert(EXIT_ERROR == 1, "the host reports failure through the exit code");
+#endif
+
 int main(int argc, char* argv[]) {
     const char* in;
     const char* out;
     bool stop = false;
     if (!parse_args(argc, argv, &in, &out, &stop)) {
-        return 1;
+        return EXIT_ERROR;
     }
     if (stop) {
         return 0;
@@ -1729,7 +1747,7 @@ int main(int argc, char* argv[]) {
         out_discard();
         dz_free();
 
-        return 1;
+        return EXIT_ERROR;
     }
 
     /* The tail of the output, and then everything the window left behind.
@@ -1749,7 +1767,7 @@ int main(int argc, char* argv[]) {
         out_discard();
         dz_free();
 
-        return 1;
+        return EXIT_ERROR;
     }
     if (list_fh != 0) {
         /* Every fixup is settled by now, so the lines that held one can be

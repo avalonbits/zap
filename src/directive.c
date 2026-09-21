@@ -127,10 +127,46 @@ bool out_peek(int off, uint8_t* dst, int n) {
     return true;
 }
 
-/* Remembers a patch to output the window has passed. Ascending by construction
- * -- fixups are recorded in the order they are applied, and that order follows
- * the order they were emitted in. resolve_late relies on it. */
+/* Remembers a patch to output the window has passed.
+ *
+ * Ascending while one settling pass is running -- fixups are settled in the
+ * order they were created, which is the order they were emitted in -- and a
+ * step backwards where a new pass begins: a scope ending, a sweep, the
+ * globals at the end of the source. The step is where a run starts, and
+ * noticing it here is the whole of what keeps resolve_late's cursors honest.
+ * A record appended below the one before it with no run opened for it would
+ * be walked past in silence and its bytes never written. */
+static bool late_run_open(int off) {
+    /* The first record opens the first run, so that every run is in the array
+     * and resolve_late has one place to look rather than a special case for
+     * the one that starts at zero. */
+    if (state.late_used != 0 && off >= state.late[state.late_used - 1].off) {
+        return true;
+    }
+    if (state.late_runs == state.late_runcap) {
+        Z_SITE("late patches");
+        const int want = state.late_runcap == 0 ? 8 : state.late_runcap + state.late_runcap;
+        laterun* grown =
+            (laterun*) realloc(state.late_run, (size_t) want * sizeof(laterun));
+        if (grown == NULL) {
+            state.err = ZAP_E_OUT_MEMORY_LABELS;
+
+            return false;
+        }
+        state.late_run = grown;
+        state.late_runcap = want;
+    }
+    state.late_run[state.late_runs].start = state.late_used;
+    state.late_run[state.late_runs].cur = state.late_used;
+    state.late_runs++;
+
+    return true;
+}
+
 bool out_late(int off, uint8_t kind, const uint8_t* b) {
+    if (!late_run_open(off)) {
+        return false;
+    }
     if (state.late_used == state.late_cap) {
         Z_SITE("late patches");
         const int want = state.late_cap == 0 ? 64 : state.late_cap + state.late_cap;

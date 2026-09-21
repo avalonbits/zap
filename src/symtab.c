@@ -950,32 +950,33 @@ sym* anon_next(void) {
  * hand over something wider is emit_data, and it checks before it calls. */
 /* Whether this fixup can be settled now rather than at the end of the source.
  *
- * Four conditions, and the last three are correctness and not thrift:
+ * Three conditions, and the last is correctness and not thrift:
  *
  *   * the labels it names are known. The nameless stand-ins resolve_deferred
  *     fills in stay undefined until the end, so they fall out here with no
  *     special case;
- *   * its site is still in the window. state.late is two ascending runs with
- *     late_split between them, and apply_late walks each with a cursor that
- *     only moves forward -- a record out of order is skipped in silence. A
- *     fixup settled here is patched in place and appends nothing, which is
- *     what keeps that true. No fixup in rokky, BBC BASIC or CP/M has a span
- *     anywhere near a window, so this costs nothing real;
  *   * a relative displacement is measured from `state.org`, which RELOCATE
  *     moves. Outside a relocate the origin is the file's own and is what it
  *     will still be at the end -- ENDRELOCATE restores it exactly and
  *     RELOCATE does not nest -- so `!state.reloc` is the whole test. Without
  *     it these would have to be excluded outright, and they are 641 of BBC
  *     BASIC's 2,209.
- */
+ *
+ * There was a fourth, and it was the one that decided how much this could
+ * assemble: the site had to be still inside the window, because a patch to
+ * output already written has to be recorded rather than applied, and the late
+ * list was two ascending runs that could not take a third. Every flush
+ * therefore stranded whatever the last sweep had not reached, and the
+ * strandings accumulated until nothing could be freed -- a ceiling on the
+ * output size, at about four windows' worth of a reference-dense source,
+ * however short its references reached. The list holds any number of runs
+ * now, so a settled patch can go behind the window like any other and the
+ * condition is gone. */
 static bool fix_ready(const fixup* f) {
     if (!f->target->defined) {
         return false;
     }
     if (f->sub != NULL && !f->sub->defined) {
-        return false;
-    }
-    if (f->off < state.wbase) {
         return false;
     }
 

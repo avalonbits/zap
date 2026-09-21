@@ -692,6 +692,68 @@ if [ -x "$OPTREF" ]; then
         "same"
 fi
 
+# Both limits at once, which is where the late list has to hold more than the
+# two ascending runs it was built for.
+#
+# A sweep settles fixups whose sites the window has already written out, and
+# records the bytes for them like any other patch behind the window. Each
+# sweep's records ascend among themselves and start below the ones before
+# them, so each opens a run -- and a run the sweep forgot to open would be
+# walked past in silence, which is a wrong byte and no diagnostic. That is why
+# the check below is against the reference's bytes and not merely against
+# "it assembled".
+#
+# It is also the ceiling this moved. With the sweep refusing a flushed site,
+# every flush stranded whatever it had not reached yet and the strandings
+# accumulated: this source was refused with "out of memory for labels" however
+# short its references reached.
+cc "${CFLAGS[@]}" -DOUT_WINDOW=512 -DFIX_CAP_MAX=512 -o "$OUT/zapws" "${ZAPSRCS[@]}" "${SRCS[@]}"
+test/gen_worst.sh 32768 4 > "$OUT/strand.s"
+rm -f "$OUT/strand.bin"
+strand=$("$OUT/zapws" -c -ez80 -x "$OUT/strand.s" "$OUT/strand.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a flushed site is settled by the sweep rather than stranded" \
+    "$(printf '%s' "$strand" | grep -c 'out of memory')" 0
+if [ -x "$OPTREF" ]; then
+    (cd "$OUT" && "$OPTREF" strand.s strandref.bin > /dev/null 2>&1) || true
+    cli_check "and every one of those patches reached the output" \
+        "$(cmp -s "$OUT/strand.bin" "$OUT/strandref.bin" && echo same || echo differs)" \
+        "same"
+fi
+
+# And the shape that needs more than two runs, which is a reference that
+# outlives a sweep.
+#
+# Every block here points at the next one, and every sixteenth also points 700
+# blocks ahead -- further than the list goes between sweeps. So a sweep skips
+# that one, settles the short references above it, and the *next* sweep
+# settles it: its patch is recorded below patches already in the list, and the
+# run it opens is the only thing that stops apply_late walking straight past
+# it. A wrong byte, and nothing said, which is why the check is the
+# reference's bytes and not a count on its own.
+{
+    printf '    .assume adl=1\n    .org 0x40000\n'
+    i=0
+    while [ "$i" -lt 1200 ]; do
+        printf 'b%d:\n    ld hl, b%d\n' "$i" "$((i + 1))"
+        if [ "$((i % 16))" -eq 0 ] && [ "$((i + 700))" -lt 1200 ]; then
+            printf '    ld de, b%d\n' "$((i + 700))"
+        fi
+        printf '    nop\n'
+        i=$((i + 1))
+    done
+    printf 'b1200:\n    ret\n'
+} > "$OUT/runs.s"
+rm -f "$OUT/runs.bin"
+runs=$("$OUT/zapws" -c -ez80 -x "$OUT/runs.s" "$OUT/runs.bin" 2>&1 | tr -d '\r' || true)
+cli_check "a reference that outlives a sweep opens a run of its own" \
+    "$(printf '%s' "$runs" | awk '/^Late runs/ { print ($4 > 2) ? "yes" : $4 }')" "yes"
+if [ -x "$OPTREF" ]; then
+    (cd "$OUT" && "$OPTREF" runs.s runsref.bin > /dev/null 2>&1) || true
+    cli_check "and its patch is applied, not walked past" \
+        "$(cmp -s "$OUT/runs.bin" "$OUT/runsref.bin" && echo same || echo differs)" \
+        "same"
+fi
+
 # The output window, forced small enough that these little sources fill it.
 #
 # A second binary, because the window is a build-time size: at 64 KB nothing

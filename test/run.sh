@@ -397,8 +397,11 @@ cli_check "-a 0 puts ORG under the same rule" \
 # zap used to mask it: `bit 8, a` assembled as `bit 0, a` and `rst 0x09` as
 # `rst 0x08` -- wrong bytes with nothing said, which is the one failure an
 # assembler must not have. Every case here is checked against the reference,
-# refusals and bytes both, because the reference's own rules are odd: it
-# refuses a bit number above 7 and masks one below 0.
+# refusals and bytes both, because the reference's own rules are odd, and odd
+# in two different ways depending on where the value came from: it refuses a
+# bit number above 7 wherever it is written, and masks one below 0 only where
+# the value was already known -- `bit -1, a` is cb ff and `bit n, a` with n an
+# EQU of -1 further down is refused.
 fold_same() {
     local text="$1"
     printf '%b' "$text" > "$OUT/fold.s"

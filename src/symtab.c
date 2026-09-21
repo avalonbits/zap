@@ -577,7 +577,13 @@ static bool loc_room(void) {
 static bool fold_mask(const fixup* f, evalue val, uint8_t w, uint8_t* mask) {
     const int v = (int) val;
     if (w == FIX_FOLD_BIT) {
-        if (v > 7) {
+        /* Below zero as well as above seven, and only here. 2.3 checks both
+         * ends when it settles a fixup and only the upper one where the value
+         * was written out, so `bit -1, a` is cb ff and `bit n, a` with n an
+         * EQU of -1 further down is refused. An odd pair, and reproduced
+         * rather than tidied: the emitter's half is in the ISA table's
+         * transform and this is the other. */
+        if (v < 0 || v > 7) {
             state.line = f->line;
             state.err = ZAP_E_INVALID_BIT_NUMBER;
 
@@ -599,7 +605,7 @@ static bool fold_mask(const fixup* f, evalue val, uint8_t w, uint8_t* mask) {
         return true;
     }
 
-    if (v > 2) {
+    if (v < 0 || v > 2) {
         state.line = f->line;
         state.err = ZAP_E_INTERRUPT_MODE;
 

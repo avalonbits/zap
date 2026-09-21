@@ -315,9 +315,10 @@ static bool early_fills_pending(void) {
  * whose fill was a forward reference, and the runs waiting on the last
  * FILLBYTE. Each is clipped to the range, because a patch or a run may straddle
  * the edge of it. */
-/* One ascending run of late patches, over [from, to). */
-static void apply_late(uint8_t* buf, int lo, int hi, int from, int to, int* cur) {
-    for (int i = *cur < from ? from : *cur; i < to; i++) {
+/* One ascending run of late patches, over [run->start, to). */
+static void apply_late(uint8_t* buf, int lo, int hi, laterun* run, int to) {
+    int* cur = &run->cur;
+    for (int i = *cur; i < to; i++) {
         const latepatch* lp = &state.late[i];
         if (lp->off >= hi) {
             break;
@@ -343,17 +344,23 @@ static void apply_late(uint8_t* buf, int lo, int hi, int from, int to, int* cur)
 }
 
 static void apply_range(uint8_t* buf, int lo, int hi, int* cur) {
-    apply_late(buf, lo, hi, 0, state.late_split, &cur[0]);
-    apply_late(buf, lo, hi, state.late_split, state.late_used, &cur[3]);
+    /* Every run, because they are sorted only within themselves: a chunk may
+     * be owed a patch by the first run and by the last. Each carries its own
+     * cursor, so a run with nothing left in it costs one comparison. */
+    for (int r = 0; r < state.late_runs; r++) {
+        const int to = (r + 1 < state.late_runs) ? state.late_run[r + 1].start
+                                                 : state.late_used;
+        apply_late(buf, lo, hi, &state.late_run[r], to);
+    }
 
-    for (int i = cur[1]; i < state.fillp_used; i++) {
+    for (int i = cur[0]; i < state.fillp_used; i++) {
         const fillpatch* fp = &state.fillp[i];
         const int n = fp->count * fp->width;
         if (fp->off >= hi) {
             break;
         }
         if (fp->off + n <= lo) {
-            cur[1] = i + 1;
+            cur[0] = i + 1;
             continue;
         }
         const evalue v = fp->sp->addr;
@@ -366,13 +373,13 @@ static void apply_range(uint8_t* buf, int lo, int hi, int* cur) {
     }
 
     if (early_fills_pending()) {
-        for (int i = cur[2]; i < state.earlyf_used; i++) {
+        for (int i = cur[1]; i < state.earlyf_used; i++) {
             const fillrun* r = &state.earlyf[i];
             if (r->off >= hi) {
                 break;
             }
             if (r->off + r->count <= lo) {
-                cur[2] = i + 1;
+                cur[1] = i + 1;
                 continue;
             }
             int from = r->off < lo ? lo : r->off;
@@ -400,11 +407,15 @@ static bool resolve_late(void) {
         return true;
     }
     const int total = out_here();
-    /* Where each list has got to. The lists ascend and so do the chunks, so a
-     * patch is looked at once rather than once per chunk -- which matters at a
-     * small window, where there are many chunks and the same thousands of
-     * patches. */
-    int cur[4] = {0, 0, 0, state.late_split};
+    /* Where each list has got to. Every list ascends and so do the chunks, so
+     * a patch is looked at once rather than once per chunk -- which matters at
+     * a small window, where there are many chunks and the same thousands of
+     * patches. The fills keep their cursors here; a late run carries its own,
+     * rewound in case anything has walked it already. */
+    int cur[2] = {0, 0};
+    for (int r = 0; r < state.late_runs; r++) {
+        state.late_run[r].cur = state.late_run[r].start;
+    }
     if (state.out_fh == 0) {
         apply_range(state.win, 0, total, cur);
 
@@ -437,9 +448,6 @@ static bool resolve_fixups(void) {
     if (!resolve_deferred() || !resolve_fills()) {
         return false;
     }
-    /* Everything recorded from here is a global fixup, and the globals start
-     * again at the top of the file. See late_split. */
-    state.late_split = state.late_used;
     for (int i = 0; i < state.fix_used; i++) {
         if (!patch_fixup(&state.fixups[i])) {
             return false;
@@ -664,7 +672,9 @@ __attribute__((noinline)) static bool run(const char* path) {
     state.late = NULL;
     state.late_used = 0;
     state.late_cap = 0;
-    state.late_split = 0;
+    state.late_run = NULL;
+    state.late_runs = 0;
+    state.late_runcap = 0;
     state.out_fh = 0;
     for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
         state.expbuf[i] = NULL;
@@ -748,6 +758,7 @@ static void dz_free(void) {
     free(state.fillp);
     free(state.earlyf);
     free(state.late);
+    free(state.late_run);
     free(state.lstfix);
     for (int i = 0; i < INCLUDE_MAXDEPTH; i++) {
         free(state.expbuf[i]);
@@ -1519,6 +1530,11 @@ static void write_stats(void) {
      * to be patched behind it, which is what the sweep at the end costs. */
     printf("Output window        : %6d\r\n", state.cap);
     printf("Late patches         : %6d\r\n", state.late_used);
+    /* How many ascending runs those patches came in, which is one per moment
+     * the assembler settled a batch of them: a scope ending, a sweep, the
+     * globals at the end. Two was the most the sweep could produce while it
+     * refused to settle a site the window had passed. */
+    printf("Late runs            : %6d\r\n", state.late_runs);
     if (state.fix_used > state.fix_peak) {
         state.fix_peak = state.fix_used;
     }

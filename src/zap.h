@@ -596,6 +596,24 @@ typedef struct {
  * value has been checked and turned into a mask. */
 #define LATE_OR 5
 
+/* One ascending stretch of the late list.
+ *
+ * The list as a whole is not sorted and cannot be. Patches are recorded when
+ * their fixups are settled, and settling happens at three sorts of moment: a
+ * scope ending, a sweep of the fixup list, and the end of the source, where
+ * the globals start again at the top of the file. Each of those walks its own
+ * records in output order, so the list is a sequence of ascending runs with a
+ * step backwards between them. `start` is where one begins; `cur` is how far
+ * resolve_late has walked it, kept here so that the sweep at the end looks at
+ * each patch once rather than once per chunk.
+ *
+ * A run is added where a record is appended below the one before it, which is
+ * the only place a step backwards can appear. */
+typedef struct {
+    int start;
+    int cur;
+} laterun;
+
 /* A reserved run still waiting on the file's final FILLBYTE. See `earlyf`. */
 typedef struct {
     int off;
@@ -1139,16 +1157,18 @@ typedef struct _zap_state {
     latepatch* late;
     int late_used;
     int late_cap;
-    /* Where the second ascending run starts.
+    /* Where each ascending run of `late` begins. See `laterun`.
      *
-     * The list is not one ascending sequence but two. Local fixups are settled
-     * at every global label, while the assembly is still going, so they are
-     * recorded as the output passes them; the global ones are all settled at
-     * the end, and start again from the top of the file. Treating that as one
-     * sorted list silently drops every global patch below the last local one,
-     * which is most of the file. Sorting ten thousand records on this machine
-     * to avoid holding one integer would be a poor trade. */
-    int late_split;
+     * This was one integer while there were exactly two runs -- the locals
+     * settled as the output passed them, then the globals from the top of the
+     * file at the end. A sweep of the fixup list settles a third sort of
+     * record at a third sort of moment, and there is one such moment per
+     * sweep, so the count is not fixed any more. Sorting the records instead
+     * would want a second copy of the list on a machine that has no room for
+     * one; this is one small array beside it. */
+    laterun* late_run;
+    int late_runs;
+    int late_runcap;
     /* One expansion buffer per level of nesting, kept and grown rather than
      * allocated per invocation, because a malloc and a free are a large part
      * of what an expansion costs. There is one per level because an outer

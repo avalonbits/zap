@@ -15,17 +15,36 @@ the same syntax, and the same output bytes.
 
 ## Why
 
-Assembling on the Agon itself is slow enough that most people cross-assemble on
-a PC instead. zap is built to make on-machine assembly practical: on the
-reference assembler's own test corpus it is **3.2x faster** per source and
-**5.8x faster** on a real program (BBC BASIC for Agon: 3.9 seconds against
-22.4). It produces byte-identical output, so switching costs nothing.
+Assembling on the Agon itself used to be slow enough that most people
+cross-assembled on a PC instead: ez80asm 2.2 took 22 seconds over BBC BASIC for
+Agon, and zap was written to find out how much of that was the machine and how
+much was the design. It turned out to be mostly the design — one pass instead
+of two, fixups patched into the output, and C written for a chip with no cache
+and a three-byte word — and zap came out four to six times faster.
 
-The output is written as it is assembled rather than held in memory, so what
-zap can assemble is bounded by the card and not by the machine: a 172 KB
-binary takes 4.4 seconds where the reference takes 23.7. The ceiling on size
-is the eZ80's own 24-bit addressing — 8 MB of output — reached only by files
-no other Agon assembler can produce at all.
+**That gap has closed, and closing it was the point.** ez80asm 2.3 converted to
+a one-pass design with fixups and a memory/file window of its own, and took
+several of zap's optimizations with it. Measured on the same emulated Agon,
+each assembler's own `Done in` line:
+
+| source | zap | ez80asm 2.3 | |
+|---|---|---|---|
+| BBC BASIC for Agon, 386 KB of source | **3.98s** | 5.86s | 1.5x |
+| Rokky | **0.54s** | 0.84s | 1.6x |
+| 471 KB of straight instructions | **7.32s** | 13.00s | 1.8x |
+| 256 KB of output | **0.72s** | 6.36s | 8.8x |
+| 1 MiB of output | **2.86s** | 25.32s | 8.9x |
+
+Byte-identical output in all five. The last two rows are where the designs
+still differ: zap writes the output through a 64 KB window as it assembles, so
+what it can produce is bounded by the card rather than by the machine, and the
+only ceiling left is the eZ80's own 24-bit addressing at 8 MB. Read those two
+rows as a ratio and not as a clock — the emulator charges nothing for writing
+to the card, and a real Agon does; the same 1 MiB takes 15.2s on hardware.
+
+Two assemblers that agree byte for byte are worth more than one. Each is a
+check on the other, which is worth more to anyone writing eZ80 than either of
+them being alone and unverifiable.
 
 ## Getting it
 
@@ -40,7 +59,7 @@ the Agon; there is nothing to compile, install or configure.
 3. Run it: `zap hello.s hello.bin`.
 
 `zap -v` prints the version, so you can check which one you have. The current
-release is [v1.0.3](https://github.com/avalonbits/zap/releases/tag/v1.0.3).
+release is [v1.1.0](https://github.com/avalonbits/zap/releases/tag/v1.1.0).
 
 ## Building it yourself
 
@@ -125,9 +144,27 @@ mode or a mode suffix.
 
 ## Compatibility
 
-zap is checked against ez80asm 2.2 on every source in the reference's own test
-corpus. All 507 either assemble to identical bytes or are rejected by both
+zap is checked against **ez80asm 2.2** on every source in the reference's own
+test corpus. All 507 either assemble to identical bytes or are rejected by both
 assemblers, as do BBC BASIC for Agon and Rokky with their whole include trees.
+That is the binary vendored under `test/ref`, and it is the definition zap is
+written to.
+
+**ez80asm 2.3 changed three of those behaviours**, and zap still follows 2.2.
+All three are places where 2.2 reproduced something accidental and 2.3, being
+one-pass now, does not:
+
+* a **bit number defined later** and out of range — `bit n, a` with `n: EQU -1`
+  — is masked to `bit 7, a` by 2.2 and refused by 2.3;
+* an **index displacement defined later** is held in sixteen bits by 2.2, so
+  `(ix+0x40018)` is offset 0x18; 2.3 refuses it as out of range;
+* **space reserved before the file's first `FILLBYTE`** takes the file's *last*
+  fill byte in 2.2 and 0xFF in 2.3.
+
+Everything else in the corpus still agrees byte for byte with 2.3, including
+every instruction form and both real programs. Which of the two to follow is a
+decision, not an oversight; the differences are listed here so that anyone
+comparing output against 2.3 knows where to look.
 
 **`-ez80` reproduces three surprising behaviours of the reference**, which is
 what the tests and benchmarks use:

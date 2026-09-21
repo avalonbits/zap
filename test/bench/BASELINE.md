@@ -76,6 +76,44 @@ measurable on a program whose output fits in one window, which is every source
 in this set; what it costs on one that does not is a hardware question, and
 `test/hwkit.sh` is what answers it.
 
+## Against ez80asm 2.3, 2026-09-21
+
+**2.3 is the vendored reference now**, so this is the current comparison and
+everything above it is history taken against 2.2. 2.3 was released on
+2026-09-13, converted to a one-pass design with fixups and a memory/file
+window, and took several of zap's optimizations with it; its own release notes
+say so. zap follows it on the four behaviours it changed -- see the README.
+
+Same rig, same sources, each assembler's own `Done in` line, the v2.3 release
+binary for the Agon (sha256 c3aeba4c...):
+
+| source | zap | ez80asm 2.3 | ratio | |
+|---|---|---|---|---|
+| bbcbasic | 3.98s | 5.86s | **0.68x** | 2.3 with `-m` |
+| rokky | 0.54s | 0.84s | **0.64x** | |
+| synth | 7.32s | 13.00s | **0.56x** | 2.3 with `-m` |
+| 256 KB of output (p2-256k) | 0.72s | 6.36s | **0.11x** | |
+| 1 MiB of output (p2-1m) | 2.86s | 25.32s | **0.11x** | |
+
+Byte-identical output in all five. Against v2.2's 0.17x / 0.21x / 0.16x, the
+gap on ordinary source has gone from four-to-six times to about one and a
+half.
+
+Re-measured after zap was moved onto 2.3's behaviour: bbcbasic 3.98s and rokky
+0.54s unchanged, synth 7.32s -> 7.26s. The one that moved is the FILLBYTE
+machinery coming out, and 0.8% is inside the run-to-run spread anyway.
+
+**2.3 still needs `-m`.** Checked rather than assumed, because timing an
+assembler with a flag it no longer needs is the mistake this file already
+records once: with `MEM_THRESHOLD` turned off, 2.3 wrote no output at all on
+bbcbasic or synth. rokky is under the threshold and got no flag either way.
+
+**The output-size rows are a ratio and not a clock.** The emulator charges
+nothing for writing to the card; a real Agon charges about 68 KB/s once the
+output stops fitting one window, where the same 1 MiB takes 15.2s. Both
+assemblers now write through a window, so what this pair of rows measures on
+the emulator is the CPU side of it and nothing about the card.
+
 ## The whole corpus, source by source
 
 `test/bench/corpus-target.sh` assembles every source both assemblers accept

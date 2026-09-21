@@ -33,7 +33,11 @@ ROOT=$(pwd)
 
 EMU="${AGON_EMU:-$HOME/fab-agon-emulator-1.2.4}"
 ZAP_BIN="${ZAP_BIN:-bin/zap.bin}"
-EZ_BIN="test/ref/agon/ez80asm.bin"
+# The vendored reference by default. Overridable for the one question this
+# cannot answer with a pinned binary: what a *new* release of ez80asm does.
+# Whatever is measured with it is not comparable with BASELINE, which is the
+# vendored v2.2 throughout, so the table prints which one it used.
+EZ_BIN="${EZ_BIN:-test/ref/agon/ez80asm.bin}"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
@@ -59,7 +63,10 @@ snapshot_binaries() {
 }
 
 # Above this much source, ez80asm is run with -m. See where it is used.
-MEM_THRESHOLD=$((256 * 1024))
+# Overridable for one question only: whether a *new* ez80asm still needs it.
+# v2.2 hangs on bbcbasic without it, which is why the threshold exists; a
+# release that no longer does should not be timed with a flag that costs it.
+MEM_THRESHOLD="${MEM_THRESHOLD:-$((256 * 1024))}"
 
 # How much source a staged sdcard holds: everything except the machine's own
 # files and the ones the runner puts there itself.
@@ -250,6 +257,10 @@ snapshot_binaries
 
 want="${*:-$SETS}"
 
+# Which reference this run used, said out loud, because a figure taken against
+# a different release of ez80asm cannot be compared with one taken against the
+# vendored binary and there is no way to tell from the numbers.
+echo "reference: $EZ_BIN"
 printf '%-12s %12s %12s %8s   %s\n' SOURCE ZAP EZ80ASM RATIO OUTPUT
 for name in $want; do
     case " $SETS " in *" $name "*) ;; *) echo "unknown source: $name" >&2; continue ;; esac

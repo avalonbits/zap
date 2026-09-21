@@ -577,7 +577,13 @@ static bool loc_room(void) {
 static bool fold_mask(const fixup* f, evalue val, uint8_t w, uint8_t* mask) {
     const int v = (int) val;
     if (w == FIX_FOLD_BIT) {
-        if (v > 7) {
+        /* Below zero as well as above seven, and only here. 2.3 checks both
+         * ends when it settles a fixup and only the upper one where the value
+         * was written out, so `bit -1, a` is cb ff and `bit n, a` with n an
+         * EQU of -1 further down is refused. An odd pair, and reproduced
+         * rather than tidied: the emitter's half is in the ISA table's
+         * transform and this is the other. */
+        if (v < 0 || v > 7) {
             state.line = f->line;
             state.err = ZAP_E_INVALID_BIT_NUMBER;
 
@@ -599,7 +605,7 @@ static bool fold_mask(const fixup* f, evalue val, uint8_t w, uint8_t* mask) {
         return true;
     }
 
-    if (v > 2) {
+    if (v < 0 || v > 2) {
         state.line = f->line;
         state.err = ZAP_E_INTERRUPT_MODE;
 
@@ -640,6 +646,19 @@ bool patch_fixup(const fixup* f) {
 
     const uint8_t w = (uint8_t) (f->width & FIX_WIDTH);
 
+    if (w == FIX_DSINIT) {
+        /* Nothing to write: this fixup exists so that an initializer naming a
+         * label gets the same two answers the reference gives it. Undefined is
+         * the error above; defined and unlike the fill byte is a word about a
+         * value that was dropped. `off` is that byte, not a site. */
+        if (val != (evalue) f->off) {
+            state.line = f->line;
+            warn_initializer(sp->name, sp->len);
+        }
+
+        return true;
+    }
+
     /* Where the bytes go. If the window has passed this offset they go into a
      * staging buffer and are recorded, to be applied in one sweep at the end;
      * the code below cannot tell the difference. What it must not do is hold
@@ -666,7 +685,7 @@ bool patch_fixup(const fixup* f) {
     if (w == FIX_DISP || w == FIX_DISP_NEG) {
         /* The sign outside the brackets negates the whole expression and not
          * its first term: `(ix-v+1)` with v five is -6 in the reference, not
-         * -4. Sixteen bits first, then a signed byte -- see disp_fit. */
+         * -4. The machine word first, then a signed byte -- see disp_fit. */
         const int d16 = disp_fit((int) (w == FIX_DISP_NEG ? -val : val));
         if (d16 < -128 || d16 > 127) {
             state.line = f->line;

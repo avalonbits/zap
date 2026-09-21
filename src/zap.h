@@ -614,11 +614,6 @@ typedef struct {
     int cur;
 } laterun;
 
-/* A reserved run still waiting on the file's final FILLBYTE. See `earlyf`. */
-typedef struct {
-    int off;
-    int count;
-} fillrun;
 
 /* A saved bucket, so an expansion can take the table over and give it back.
  * See scope_push. */
@@ -740,6 +735,19 @@ typedef struct {
 #define FIX_DISP     8
 
 #define FIX_DISP_NEG 9
+
+/* A `DS`'s initializer, which writes nothing at all.
+ *
+ * `ds 4, v` reserves four bytes and does not fill them with v: the reservation
+ * takes the FILLBYTE and the initializer is dropped. The reference says so,
+ * and 2.3 says it from a fixup -- so an initializer naming a label that is
+ * never defined is an *error* there, and one naming a label defined further
+ * down is evaluated and then dropped with a word about it.
+ *
+ * `off` carries the FILLBYTE in force where the DS stood rather than an
+ * offset, because this kind has no site: the reference only says anything
+ * when the two differ. Nothing is written, so nothing needs a place to go. */
+#define FIX_DSINIT   10
 
 /* The range an addend has to fit, written out rather than derived from `int`,
  * which is three bytes on the Agon and four on the host. Deriving it would
@@ -1122,24 +1130,6 @@ typedef struct _zap_state {
     fillpatch* fillp;
     int fillp_used;
     int fillp_cap;
-    /* Reserved runs whose fill the reference has not decided yet.
-     *
-     * There it is decided twice over. A reservation is a gap filled when the
-     * next byte is written, with the FILLBYTE in force at that moment -- and
-     * `fillbyte` survives the pass boundary, so pass two begins with the value
-     * the *last* FILLBYTE in the file left behind. A run written before any
-     * FILLBYTE has been reached therefore takes the file's final value, and
-     * one written after takes the latest value before it.
-     *
-     * The second half needs nothing: zap writes the bytes as it meets them,
-     * with the value in force, which is the same answer. The first half is the
-     * one pass cannot answer at the time, so those runs are remembered here
-     * and filled in at the end of the source. `fill_seen` says which half a
-     * run falls in. */
-    fillrun* earlyf;
-    int earlyf_used;
-    int earlyf_cap;
-    bool fill_seen;
 
     /* The output file, and where the window sits in it.
      *
@@ -1417,7 +1407,7 @@ _Static_assert(sizeof(bucketslot) > sizeof(const insninfo*),
  * flag rather than a field on zap_state, because zap_state is reached through a pointer on
  * every line and this is read only where an expression has an operator in it. */
 /* Printed by -v. One place, so a release cannot say two things. */
-#define ZAP_VERSION "1.0.3"
+#define ZAP_VERSION "1.1.0"
 
 /* ======================================================================
  * REGISTERS AND CONDITION CODES

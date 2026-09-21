@@ -245,6 +245,11 @@ cli_check "an option that is not the reference's is still refused" \
 # count, and the reference says so. zap said nothing. Not behind -w: the check
 # is a comma on a line already parsed, not a question asked of every value --
 # and -i does not silence it in the reference either.
+#
+# 2.3 evaluates the initializer before dropping it, which makes two more
+# answers: one equal to the fill byte in force is dropped in silence, and one
+# naming a label that is never defined is an *error* rather than a word --
+# there it is a fixup, and an unresolved fixup fails the assembly.
 init_same() {
     local text="$1" want="$2"
     printf '%b' "$text" > "$OUT/init.s"
@@ -262,9 +267,24 @@ init_same() {
 }
 init_same '  ds 4, 0xAA\n' 1
 init_same '  ds 3,1,2\n' 1
-init_same '  ds 4, nope\n' 1
 init_same '  ds 4\n' 0
 init_same '  blkb 2, 0xAA\n' 0
+init_same '  ds 4, 0xFF\n' 0
+init_same '  ds 4, ahead\nahead: EQU 7\n' 1
+init_same '  ds 4, ahead\nahead: EQU 0xFF\n' 0
+
+# The one that is not a warning at all. Both refuse it, and both refuse it
+# because the initializer is a fixup that never resolves.
+printf '  ds 4, nope\n' > "$OUT/init.s"
+cli_check "an initializer naming a label that never appears is refused" \
+    "$("$OUT/zap" -c "$OUT/init.s" "$OUT/init.bin" 2>&1 | tr -d '\r' \
+       | grep -c "unknown label 'nope'")" 1
+if [ -x "$OPTREF" ]; then
+    rm -f "$OUT/initr.bin"
+    "$OPTREF" "$OUT/init.s" "$OUT/initr.bin" > /dev/null 2>&1 || true
+    cli_check "... and the reference writes no output for it either" \
+        "$([ -f "$OUT/initr.bin" ] && echo wrote || echo refused)" "refused"
+fi
 printf '  ds 4, 0xAA\n' > "$OUT/init.s"
 cli_check "-i does not silence it, as it does not there" \
     "$("$OUT/zap" -c -i "$OUT/init.s" "$OUT/init.bin" 2>&1 | tr -d '\r' \
@@ -397,8 +417,11 @@ cli_check "-a 0 puts ORG under the same rule" \
 # zap used to mask it: `bit 8, a` assembled as `bit 0, a` and `rst 0x09` as
 # `rst 0x08` -- wrong bytes with nothing said, which is the one failure an
 # assembler must not have. Every case here is checked against the reference,
-# refusals and bytes both, because the reference's own rules are odd: it
-# refuses a bit number above 7 and masks one below 0.
+# refusals and bytes both, because the reference's own rules are odd, and odd
+# in two different ways depending on where the value came from: it refuses a
+# bit number above 7 wherever it is written, and masks one below 0 only where
+# the value was already known -- `bit -1, a` is cb ff and `bit n, a` with n an
+# EQU of -1 further down is refused.
 fold_same() {
     local text="$1"
     printf '%b' "$text" > "$OUT/fold.s"
@@ -514,7 +537,7 @@ rm -f "$OUT/lstf.lst"
 "$OUT/zap" -c -l "$OUT/lstf.s" "$OUT/lstf.bin" > /dev/null 2>&1
 lstf=$(tr -d '\r' < "$OUT/lstf.lst")
 cli_check "a forward reference is listed patched, not as emitted" \
-    "$(printf '%s' "$lstf" | grep -c '^040000 21 0C 00 04 0002   ld hl, ahead$')" 1
+    "$(printf '%s' "$lstf" | grep -c '^040000 21 0C 00 04 0002            ld hl, ahead$')" 1
 cli_check "and on a continuation row too" \
     "$(printf '%s' "$lstf" | grep -c '^       05 0C       $')" 1
 cli_check "nothing is left showing the placeholder" \
@@ -545,11 +568,11 @@ rm -f "$OUT/lst2.lst"
 "$OUT/zap" -c -l "$OUT/lst2.s" "$OUT/lst2.bin" > /dev/null 2>&1
 lst2=$(tr -d '\r' < "$OUT/lst2.lst")
 cli_check "the invocation carries no bytes" \
-    "$(printf '%s' "$lst2" | grep -c '^040001             0005   m 7$')" 1
+    "$(printf '%s' "$lst2" | grep -c '^040001             0005            m 7$')" 1
 cli_check "the arguments are listed under the tag" \
     "$(printf '%s' "$lst2" | grep -c '^                       M1 Args: x=7 $')" 1
 cli_check "the body line carries the bytes and the depth" \
-    "$(printf '%s' "$lst2" | grep -c '^040001 07          0001M1 db x$')" 1
+    "$(printf '%s' "$lst2" | grep -c '^040001 07          0001M1        db x$')" 1
 cli_check "the body is listed as written, not as substituted" \
     "$(printf '%s' "$lst2" | grep -c 'db 7')" 0
 # A macro that takes nothing says so, and a nested one counts its depth.
@@ -562,7 +585,7 @@ cli_check "a macro with no parameters says none" \
 cli_check "the inner expansion is one deeper" \
     "$(printf '%s' "$lst3" | grep -c 'M2 Args: none$')" 1
 cli_check "and its body line is tagged M2" \
-    "$(printf '%s' "$lst3" | grep -c '0001M2 nop$')" 1
+    "$(printf '%s' "$lst3" | grep -c '0001M2        nop$')" 1
 # A listed line that grows the output buffer while it is being assembled.
 #
 # The listing holds where the line started so it can print the bytes it wrote.
@@ -925,18 +948,21 @@ fi
 
 # -l writes a listing beside the source, with the reference's columns: six
 # hex digits of address, four bytes to a row in a twelve-character field, the
-# line number in four digits, then the line as it was written.
+# line number in four digits, then a ten-character depth column -- a `*` per
+# INCLUDE level, `M<n> ` for a macro body -- then the line as it was written.
+# 2.2 wrote that column only one character wide unless the file expanded a
+# macro somewhere, which it decided before writing line 1.
 rm -f "$OUT/side.lst"
 "$OUT/zap" -c "$OUT/side.s" "$OUT/side.bin" -l > /dev/null 2>&1 || true
 lst=$(tr -d '\r' < "$OUT/side.lst" 2>/dev/null || true)
 cli_check "-l writes a listing with the reference's header" \
     "$(printf '%s' "$lst" | grep -c '^PC     Output      Line$')" 1
 cli_check "-l lists an address, its bytes and its line" \
-    "$(printf '%s' "$lst" | grep -c '^040000 21 00 00 04 0003   ld hl, lab$')" 1
+    "$(printf '%s' "$lst" | grep -c '^040000 21 00 00 04 0003            ld hl, lab$')" 1
 cli_check "-l wraps after four bytes, under a blank address" \
     "$(printf '%s' "$lst" | grep -c '^       05 06       $')" 1
 cli_check "-l lists a line that emits nothing" \
-    "$(printf '%s' "$lst" | grep -c '^040000             0001 val: EQU 9$')" 1
+    "$(printf '%s' "$lst" | grep -c '^040000             0001          val: EQU 9$')" 1
 
 # -d is the same listing on the console, and does not write the file.
 rm -f "$OUT/side.lst"
@@ -1086,48 +1112,60 @@ anon=$("$OUT/zap" -c "$OUT/anon.s" "$OUT/anon.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an anonymous label in a macro is refused" \
     "$(printf '%s' "$anon" | grep -c 'no anonymous labels allowed in a macro')" 1
 
-# FILLBYTE reaching backwards, which in the reference it does.
+# FILLBYTE, which decides a reservation where the reservation is written and
+# nowhere else.
 #
-# A reservation there is a gap filled when the next byte is written, with the
-# FILLBYTE in force at that moment -- and the reference's `fillbyte` survives
-# the pass boundary, so pass two starts with the value the *last* FILLBYTE in
-# the file left behind. A run reserved before the first FILLBYTE is reached
-# therefore takes the file's final value, and one reserved after takes the
-# value in force where it stands. Each case below is the reference's own
-# output, taken from it.
+# A reservation is a gap filled when the next byte is written, with the value
+# in force at that moment. Nothing reaches backwards: a run already written
+# keeps what it was written with, however many FILLBYTEs come after it.
+#
+# 2.2 did reach backwards, because its `fillbyte` survived the pass boundary
+# and the gaps were filled in pass two, so the runs above a file's first
+# FILLBYTE took its *last* value. zap reproduced that. 2.3 has no second pass,
+# and the cases below are its output rather than 2.2's.
+#
+# Each expectation is checked against the vendored reference as well as against
+# zap, so a literal here cannot quietly stop being what the reference says --
+# which is how this block came to describe an assembler that had moved.
 fb() {
     printf '%b' "$2" > "$OUT/fb.s"
     "$OUT/zap" -c -ez80 "$OUT/fb.s" "$OUT/fb.bin" > /dev/null 2>&1 || true
     cli_check "$1" "$(od -An -tx1 "$OUT/fb.bin" 2>/dev/null | tr -s ' ')" " $3"
-    rm -f "$OUT/fb.s" "$OUT/fb.bin"
+    if [ -x "$OPTREF" ]; then
+        rm -f "$OUT/fbr.bin"
+        "$OPTREF" "$OUT/fb.s" "$OUT/fbr.bin" > /dev/null 2>&1 || true
+        cli_check "... and that is what the reference writes" \
+            "$(od -An -tx1 "$OUT/fbr.bin" 2>/dev/null | tr -s ' ')" " $3"
+    fi
+    rm -f "$OUT/fb.s" "$OUT/fb.bin" "$OUT/fbr.bin"
 }
 
 fb "a FILLBYTE fills the reservation the output still ends with" \
     '  ds 2\n  fillbyte 0xAA\n  nop\n' "aa aa 00"
-fb "and one reaches back over a reservation already written out" \
-    '  nop\n  ds 2\n  nop\n  fillbyte 0xAA\n  nop\n' "00 aa aa 00 00"
-fb "with 0xFF still the answer where the file has no FILLBYTE at all" \
+fb "and does not reach back over one already written out" \
+    '  nop\n  ds 2\n  nop\n  fillbyte 0xAA\n  nop\n' "00 ff ff 00 00"
+fb "with 0xFF the answer where the file has no FILLBYTE at all" \
     '  nop\n  ds 2\n  nop\n' "00 ff ff 00"
-fb "a run written out before the first one takes the file's last value" \
-    '  nop\n  ds 2\n  nop\n  fillbyte 0xAA\n  fillbyte 0xBB\n  nop\n' "00 bb bb 00 00"
+fb "a run written out before the first one keeps the default" \
+    '  nop\n  ds 2\n  nop\n  fillbyte 0xAA\n  fillbyte 0xBB\n  nop\n' "00 ff ff 00 00"
 fb "and a run after it takes the value in force where it stands" \
     '  nop\n  fillbyte 0xAA\n  ds 2\n  nop\n  fillbyte 0xBB\n  nop\n' "00 aa aa 00 00"
 fb "so the two halves of one file can differ" \
     '  nop\n  ds 2\n  nop\n  fillbyte 0xAA\n  nop\n  ds 2\n  nop\n  fillbyte 0xBB\n  nop\n' \
-    "00 bb bb 00 00 aa aa 00 00"
+    "00 ff ff 00 00 aa aa 00 00"
 fb "a run a FILLBYTE decided is not decided again by a later one" \
     '  ds 2\n  fillbyte 0xAA\n  nop\n  fillbyte 0xBB\n' "aa aa 00"
-fb "ORG padding is a reservation like the others" \
-    '  nop\n  org $+4\n  fillbyte 0xAA\n  nop\n' "00 aa aa aa aa 00"
+fb "ORG padding is written where it stands, like the others" \
+    '  nop\n  org $+4\n  fillbyte 0xAA\n  nop\n' "00 ff ff ff ff 00"
 fb "and so is ALIGN padding" \
-    '  nop\n  align 4\n  nop\n  fillbyte 0xAA\n  nop\n' "00 aa aa aa 00 00"
+    '  nop\n  align 4\n  nop\n  fillbyte 0xAA\n  nop\n' "00 ff ff ff 00 00"
 fb "two reservations with output between them are two runs" \
     '  nop\n  ds 2\n  nop\n  ds 3\n  nop\n  fillbyte 0xAA\n  nop\n' \
-    "00 aa aa 00 aa aa aa 00 00"
+    "00 ff ff 00 ff ff ff 00 00"
 fb "two with nothing between them are one" \
-    '  nop\n  ds 2\n  ds 3\n  nop\n  fillbyte 0x5A\n  nop\n' "00 5a 5a 5a 5a 5a 00 00"
+    '  nop\n  ds 2\n  ds 3\n  nop\n  fillbyte 0x5A\n  nop\n' "00 ff ff ff ff ff 00 00"
 fb "a BLK keeps its own value through all of it" \
-    '  nop\n  blkb 2,0x11\n  ds 2\n  nop\n  fillbyte 0xAA\n  nop\n' "00 11 11 aa aa 00 00"
+    '  nop\n  blkb 2,0x11\n  ds 2\n  nop\n  fillbyte 0xAA\n  nop\n' "00 11 11 ff ff 00 00"
 fb "and a reservation still reaching the end of the file is dropped" \
     '  nop\n  ds 2\n  fillbyte 0xAA\n' "00"
 
@@ -1170,27 +1208,53 @@ cli_check "a forward index displacement that does not fit is refused" \
 cli_check "and against the line that used it" \
     "$(printf '%s' "$ixb" | grep -c 'line 1')" 1
 
-# Sixteen bits, then a signed byte -- the reference keeps this field in two
-# bytes, so a value above them is truncated rather than refused. Backwards as
-# well as forwards, and for a literal: this was wrong for all three.
+# The machine word, then a signed byte. 2.3 keeps this field in an int24_t and
+# refuses anything outside a byte; 2.2 kept it in two bytes, which made
+# `(ix+0x40018)` offset 0x18 and legal. Backwards as well as forwards, and for
+# a literal -- the rule is the same wherever the value comes from, and the
+# refusal happens where the value exists.
+#
+# An empty expectation means no output file: refused. Each case is checked
+# against the vendored reference too, for the reason the FILLBYTE block gives.
 ixv() {
     printf '%b' "$2" > "$OUT/ixv.s"
     "$OUT/zap" -c -ez80 "$OUT/ixv.s" "$OUT/ixv.bin" > /dev/null 2>&1 || true
-    cli_check "$1" "$(od -An -tx1 "$OUT/ixv.bin" 2>/dev/null | tr -s ' ')" " $3"
-    rm -f "$OUT/ixv.s" "$OUT/ixv.bin"
+    cli_check "$1" "$(od -An -tx1 "$OUT/ixv.bin" 2>/dev/null | tr -s ' ')" "${3:+ }$3"
+    if [ -x "$OPTREF" ]; then
+        rm -f "$OUT/ixvr.bin"
+        "$OPTREF" "$OUT/ixv.s" "$OUT/ixvr.bin" > /dev/null 2>&1 || true
+        cli_check "... and that is what the reference writes" \
+            "$(od -An -tx1 "$OUT/ixvr.bin" 2>/dev/null | tr -s ' ')" "${3:+ }$3"
+    fi
+    rm -f "$OUT/ixv.s" "$OUT/ixv.bin" "$OUT/ixvr.bin"
 }
-ixv "a displacement is sixteen bits before it is a byte" \
-    '  ld a, (ix+0x40018)\n' "dd 7e 18"
+ixv "a displacement above a byte is refused, not truncated" \
+    '  ld a, (ix+0x40018)\n' ""
 ixv "the same for one that is still ahead" \
-    '  ld a, (ix+v)\nv: equ 0x40018\n' "dd 7e 18"
+    '  ld a, (ix+v)\nv: equ 0x40018\n' ""
 ixv "and for one already behind" \
-    'v: equ 0x40018\n  ld a, (ix+v)\n' "dd 7e 18"
-ixv "the sixteenth bit is the sign" \
-    'v: equ 0x4FFFB\n  ld a, (ix+v)\n' "dd 7e fb"
+    'v: equ 0x40018\n  ld a, (ix+v)\n' ""
 ixv "the sign outside the brackets negates the whole expression" \
     '  ld a, (ix-v+1)\nv: equ 5\n' "dd 7e fa"
 ixv "and the displacement of a CB form sits before its opcode" \
     '  bit 3, (ix+v)\nv: equ 5\n' "dd cb 05 5e"
+
+# The one case where the two builds of the reference disagree with each other,
+# so it cannot be cross-checked against the vendored host binary.
+#
+# ez80asm holds this field in an `int24_t`, and `int24_t` is `int32_t` unless
+# AGONDEV is defined (src/defines.h). So `(ix+0xFFFFFB)` is 16,777,211 on a
+# desktop and refused, and -5 on the Agon and assembled. Checked on the
+# machine rather than reasoned about: the vendored Agon binary writes dd 7e fb
+# for it, md5 99165757.
+#
+# zap follows the Agon, which is the machine it is for, and is therefore
+# deliberately unlike the *host* build of the reference here. Anything in the
+# band 0xFFFF80..0xFFFFFF is in it; nothing else is.
+printf '%b' 'v: equ 0xFFFFFB\n  ld a, (ix+v)\n' > "$OUT/ix24.s"
+"$OUT/zap" -c -ez80 "$OUT/ix24.s" "$OUT/ix24.bin" > /dev/null 2>&1 || true
+cli_check "a displacement is the machine word, as it is on the Agon" \
+    "$(od -An -tx1 "$OUT/ix24.bin" 2>/dev/null | tr -s ' ')" " dd 7e fb"
 
 # RELOCATE, whose three refusals the reference also makes.
 #

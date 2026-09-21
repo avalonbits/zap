@@ -144,27 +144,29 @@ mode or a mode suffix.
 
 ## Compatibility
 
-zap is checked against **ez80asm 2.2** on every source in the reference's own
+zap is checked against **ez80asm 2.3** on every source in the reference's own
 test corpus. All 507 either assemble to identical bytes or are rejected by both
-assemblers, as do BBC BASIC for Agon and Rokky with their whole include trees.
-That is the binary vendored under `test/ref`, and it is the definition zap is
-written to.
+assemblers, as do BBC BASIC for Agon and Rokky with their whole include trees,
+and zap's own 56 regression sources on top of them. That is the binary
+vendored under `test/ref`, and it is the definition zap is written to.
 
-**ez80asm 2.3 changed three of those behaviours**, and zap still follows 2.2.
-All three are places where 2.2 reproduced something accidental and 2.3, being
-one-pass now, does not:
+2.3 changed four things 2.2 did, and zap follows 2.3 on all four. Each is a
+place where 2.2's answer came from having a second pass:
 
 * a **bit number defined later** and out of range — `bit n, a` with `n: EQU -1`
-  — is masked to `bit 7, a` by 2.2 and refused by 2.3;
-* an **index displacement defined later** is held in sixteen bits by 2.2, so
-  `(ix+0x40018)` is offset 0x18; 2.3 refuses it as out of range;
-* **space reserved before the file's first `FILLBYTE`** takes the file's *last*
-  fill byte in 2.2 and 0xFF in 2.3.
+  — was masked to `bit 7, a` and is refused. Written out, `bit -1, a` is still
+  `cb ff`: the reference checks the two cases differently and so does zap;
+* an **index displacement** was held in sixteen bits, so `(ix+0x40018)` was
+  offset 0x18; it is the machine word now and out of range;
+* **space reserved before the file's first `FILLBYTE`** took the file's *last*
+  fill byte, because `fillbyte` survived the pass boundary. It takes the value
+  in force where it stands;
+* a **`DS` initializer** is evaluated before being dropped, so `ds 4, 0xFF` is
+  silent where it used to be remarked on, and `ds 4, nope` with `nope` never
+  defined is an error rather than a warning.
 
-Everything else in the corpus still agrees byte for byte with 2.3, including
-every instruction form and both real programs. Which of the two to follow is a
-decision, not an oversight; the differences are listed here so that anyone
-comparing output against 2.3 knows where to look.
+The listing gained a fixed-width depth column in 2.3, which is the first time
+a one-pass assembler could write it, so zap writes it.
 
 **`-ez80` reproduces three surprising behaviours of the reference**, which is
 what the tests and benchmarks use:

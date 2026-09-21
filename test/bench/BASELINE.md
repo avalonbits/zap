@@ -78,11 +78,11 @@ in this set; what it costs on one that does not is a hardware question, and
 
 ## Against ez80asm 2.3, 2026-09-21
 
-Everything else in this file is the vendored v2.2, which is what zap is
-written to match and what every figure above was taken against. This section
-is the other question: 2.3 was released on 2026-09-13, converted to a one-pass
-design with fixups and a memory/file window, and took several of zap's
-optimizations with it. Its own release notes say so.
+**2.3 is the vendored reference now**, so this is the current comparison and
+everything above it is history taken against 2.2. 2.3 was released on
+2026-09-13, converted to a one-pass design with fixups and a memory/file
+window, and took several of zap's optimizations with it; its own release notes
+say so. zap follows it on the four behaviours it changed -- see the README.
 
 Same rig, same sources, each assembler's own `Done in` line, the v2.3 release
 binary for the Agon (sha256 c3aeba4c...):
@@ -98,6 +98,10 @@ binary for the Agon (sha256 c3aeba4c...):
 Byte-identical output in all five. Against v2.2's 0.17x / 0.21x / 0.16x, the
 gap on ordinary source has gone from four-to-six times to about one and a
 half.
+
+Re-measured after zap was moved onto 2.3's behaviour: bbcbasic 3.98s and rokky
+0.54s unchanged, synth 7.32s -> 7.26s. The one that moved is the FILLBYTE
+machinery coming out, and 0.8% is inside the run-to-run spread anyway.
 
 **2.3 still needs `-m`.** Checked rather than assumed, because timing an
 assembler with a flag it no longer needs is the mistake this file already

@@ -36,11 +36,12 @@ That is the only thing the runner can check, and it is the thing that matters.
 
 ## What is deliberately not here
 
-**The two differences zap keeps on purpose.** They are argued in
-docs/DESIGN.md section 13 and a file for either of them would fail by design:
-a negative reservation (4 GB in the reference), and the reference substituting
-a macro parameter inside a longer identifier -- any occurrence that ends one,
-so `db max` becomes `db ma1`.
+**The three differences zap keeps on purpose.** They are argued in
+docs/DESIGN.md section 13 and a file for any of them would fail by design: a
+negative reservation (4 GB in the reference), an output past the eZ80's 24-bit
+range, and the reference substituting a macro parameter inside a longer
+identifier -- any occurrence that ends one, so `db max` becomes `db ma1`. All
+three were re-checked against 2.3 rather than carried forward.
 
 A third was listed here until it stopped being a difference: `@local - global`
 with both labels still ahead now agrees, and `scopes/local_minus_global.s` is

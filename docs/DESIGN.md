@@ -672,7 +672,7 @@ the reference does something surprising, `-ez80` reproduces it rather than
 being right and incompatible: no operator precedence, `IF a == b` discarding
 the comparison, `0bh` read as hex.
 
-Two differences are deliberate and permanent:
+Three differences are deliberate and permanent:
 
 * **A negative reservation is refused.** `DS -1` is a count the reference
   treats as unsigned, so it writes about four gigabytes; zap says so and stops.
@@ -693,8 +693,11 @@ Two differences are deliberate and permanent:
   on an unknown identifier. Matching that would make a macro body's meaning
   depend on the spelling of its parameters against every name it mentions.
 
-Both are files that would fail by design, which is why neither is in
-`test/regress`; its README says the same from the other side.
+All three are files that would fail by design, which is why none of them is
+in `test/regress`; its README says the same from the other side. Checked
+against 2.3 rather than carried forward: a negative reservation still writes
+four gigabytes there, and `db max` inside a macro with a parameter `x` still
+becomes `db ma1`.
 
 A third used to be listed here — `@local - global` with both labels still
 ahead — and is not a difference any more. The local half of such a fixup is

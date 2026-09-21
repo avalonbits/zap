@@ -50,15 +50,19 @@
 # and its peak live is 490 records, which is a span of about 12; a CP/M
 # implementation reaches 4,513 bytes with 950 live, a span of about 90.
 #
-# WHAT IT FOUND, so that the next reader does not re-find it. There are two
-# ceilings here and they are different things. The span decides how many
+# WHAT IT FOUND, so that the next reader does not re-find it. There were two
+# ceilings here and they were different things. The span decides how many
 # records are live at once -- about five times it -- and a span whose five
-# times does not fit the list is refused at any size at all. But a record can
-# only be settled early while its site is still in the window, so every flush
-# strands the records it writes out: they wait for the end of the run whatever
-# their span. That second bound is on the *size* and lands at about four times
-# the window at this density, however short the reach. The measurements are in
-# the internal cost log under "Where the fixup ceiling actually is".
+# times does not fit the list is refused at any size at all. That one is real
+# and belongs to a one-pass assembler.
+#
+# The second was an accident of the late list's shape: a record could only be
+# settled early while its site was still in the window, so every flush
+# stranded what the last sweep had not reached, and a source was refused at
+# about four windows' worth of output however short its references reached.
+# The late list holds any number of ascending runs now and that bound is gone
+# -- 256 KB at a 200-byte reach was refused and is not. Both measurements are
+# in the internal cost log under "Where the fixup ceiling actually is".
 #
 # One thing the span changes that is not the point: a group's five targets are
 # five bytes of output, so a very short span inflates the file. Span 1 on a

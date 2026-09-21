@@ -301,20 +301,10 @@ static bool resolve_fills(void) {
     return true;
 }
 
-/* Whether the runs reserved before the file's first FILLBYTE need anything.
- *
- * They were written with 0xFF, and the reference gives them the file's *last*
- * FILLBYTE. If there was none, or it was 0xFF anyway, what is already there is
- * right -- which is the case for every source that never says FILLBYTE. */
-static bool early_fills_pending(void) {
-    return state.fill_seen && state.fill != 0xFF && state.earlyf_used > 0;
-}
-
 /* Writes into `buf`, which holds the output over [lo, hi), everything still
- * owed to that range: the point patches left behind by the window, the blocks
- * whose fill was a forward reference, and the runs waiting on the last
- * FILLBYTE. Each is clipped to the range, because a patch or a run may straddle
- * the edge of it. */
+ * owed to that range: the point patches left behind by the window and the
+ * blocks whose fill was a forward reference. Each is clipped to the range,
+ * because a patch may straddle the edge of it. */
 /* One ascending run of late patches, over [run->start, to). */
 static void apply_late(uint8_t* buf, int lo, int hi, laterun* run, int to) {
     int* cur = &run->cur;
@@ -371,22 +361,6 @@ static void apply_range(uint8_t* buf, int lo, int hi, int* cur) {
             }
         }
     }
-
-    if (early_fills_pending()) {
-        for (int i = cur[1]; i < state.earlyf_used; i++) {
-            const fillrun* r = &state.earlyf[i];
-            if (r->off >= hi) {
-                break;
-            }
-            if (r->off + r->count <= lo) {
-                cur[1] = i + 1;
-                continue;
-            }
-            int from = r->off < lo ? lo : r->off;
-            int to = r->off + r->count > hi ? hi : r->off + r->count;
-            memset(buf + (from - lo), state.fill, (size_t) (to - from));
-        }
-    }
 }
 
 /* Applies everything the window left behind, in one pass up the file.
@@ -403,7 +377,7 @@ static void apply_range(uint8_t* buf, int lo, int hi, int* cur) {
  * When the output never outgrew the window there is no file, and the whole of
  * it is one chunk that is already in memory. */
 static bool resolve_late(void) {
-    if (state.late_used == 0 && state.fillp_used == 0 && !early_fills_pending()) {
+    if (state.late_used == 0 && state.fillp_used == 0) {
         return true;
     }
     const int total = out_here();
@@ -412,7 +386,7 @@ static bool resolve_late(void) {
      * a small window, where there are many chunks and the same thousands of
      * patches. The fills keep their cursors here; a late run carries its own,
      * rewound in case anything has walked it already. */
-    int cur[2] = {0, 0};
+    int cur[1] = {0};
     for (int r = 0; r < state.late_runs; r++) {
         state.late_run[r].cur = state.late_run[r].start;
     }
@@ -664,10 +638,6 @@ __attribute__((noinline)) static bool run(const char* path) {
     state.fillp = NULL;
     state.fillp_used = 0;
     state.fillp_cap = 0;
-    state.earlyf = NULL;
-    state.earlyf_used = 0;
-    state.earlyf_cap = 0;
-    state.fill_seen = false;
     state.pend = 0;
     state.late = NULL;
     state.late_used = 0;
@@ -756,7 +726,6 @@ static void dz_free(void) {
     free(state.subfix);
     free(state.defer);
     free(state.fillp);
-    free(state.earlyf);
     free(state.late);
     free(state.late_run);
     free(state.lstfix);

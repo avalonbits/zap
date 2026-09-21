@@ -568,37 +568,6 @@ static bool emit_data(uint8_t width, const char** pp, const char* e) {
     return true;
 }
 
-/* Remembers a run at `off`, or extends the last one if it carries straight on
- * from it -- `DS 2` twice is one run of four, and coalescing keeps the list to
- * one entry per gap rather than one per directive. */
-static bool earlyf_add(int off, int n) {
-    if (state.earlyf_used > 0) {
-        fillrun* last = &state.earlyf[state.earlyf_used - 1];
-        if (last->off + last->count == off) {
-            last->count += n;
-
-            return true;
-        }
-    }
-    if (state.earlyf_used == state.earlyf_cap) {
-        Z_SITE("early fills");
-        const int want = state.earlyf_cap == 0 ? 4 : state.earlyf_cap + state.earlyf_cap;
-        fillrun* grown =
-            (fillrun*) realloc(state.earlyf, (size_t) want * sizeof(fillrun));
-        if (grown == NULL) {
-            state.err = ZAP_E_OUT_MEMORY_LABELS;
-
-            return false;
-        }
-        state.earlyf = grown;
-        state.earlyf_cap = want;
-    }
-    fillrun* r = &state.earlyf[state.earlyf_used++];
-    r->off = off;
-    r->count = n;
-
-    return true;
-}
 
 /* Writes `n` bytes of the FILLBYTE here and now, which is what `ORG` padding
  * is: the reference puts it down where it stands, so the value in force at
@@ -617,14 +586,6 @@ static bool fill_put(evalue n) {
     if ((evalue) out_here() + n > OUT_TOTAL_MAX) {
         state.err = ZAP_E_OUTPUT_PAST_24_BIT_RANGE;
 
-        return false;
-    }
-    /* Before the first FILLBYTE, what goes here is still not settled: the
-     * reference fills a run written out this early with the file's *final*
-     * value, because its `fillbyte` survives into the second pass. Remember
-     * the range, and write the current value meanwhile so that nothing is ever
-     * undefined. The sweep in resolve_late comes back for it. */
-    if (!state.fill_seen && !earlyf_add(out_here(), (int) n)) {
         return false;
     }
     /* In pieces, because an ORG can skip further than the window is wide and
@@ -1435,14 +1396,15 @@ bool directive_line(const char* s, int n, const char* p,
     }
 
     if (kind == DIR_FILLBYTE) {
-        /* One byte, and it stands for the rest of the assembly -- and, for
-         * the reservations before the first one of these, backwards over the
-         * whole of it. `earlyf` in zap.h has why.
+        /* One byte, and it stands for the rest of the assembly and no part of
+         * what is behind it. A run already written keeps what it was written
+         * with; anything still reserved has not been written yet, so it will
+         * take this when it is, and needs nothing done to it here.
          *
-         * Anything still reserved is decided by this and needs nothing done
-         * to it: it has not been written, so it will be written with whatever
-         * is in force when it finally is, which is this. */
-        state.fill_seen = true;
+         * 2.2 reached backwards -- the runs above a file's first FILLBYTE took
+         * its *last* value, because `fillbyte` survived into the second pass
+         * and the gaps were filled there. 2.3 has no second pass and neither
+         * has zap; the machinery that reproduced it is gone. */
         state.fill = (uint8_t) value;
         *stop = p;
 

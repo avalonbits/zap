@@ -614,11 +614,6 @@ typedef struct {
     int cur;
 } laterun;
 
-/* A reserved run still waiting on the file's final FILLBYTE. See `earlyf`. */
-typedef struct {
-    int off;
-    int count;
-} fillrun;
 
 /* A saved bucket, so an expansion can take the table over and give it back.
  * See scope_push. */
@@ -1122,24 +1117,6 @@ typedef struct _zap_state {
     fillpatch* fillp;
     int fillp_used;
     int fillp_cap;
-    /* Reserved runs whose fill the reference has not decided yet.
-     *
-     * There it is decided twice over. A reservation is a gap filled when the
-     * next byte is written, with the FILLBYTE in force at that moment -- and
-     * `fillbyte` survives the pass boundary, so pass two begins with the value
-     * the *last* FILLBYTE in the file left behind. A run written before any
-     * FILLBYTE has been reached therefore takes the file's final value, and
-     * one written after takes the latest value before it.
-     *
-     * The second half needs nothing: zap writes the bytes as it meets them,
-     * with the value in force, which is the same answer. The first half is the
-     * one pass cannot answer at the time, so those runs are remembered here
-     * and filled in at the end of the source. `fill_seen` says which half a
-     * run falls in. */
-    fillrun* earlyf;
-    int earlyf_used;
-    int earlyf_cap;
-    bool fill_seen;
 
     /* The output file, and where the window sits in it.
      *

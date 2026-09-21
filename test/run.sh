@@ -1086,48 +1086,60 @@ anon=$("$OUT/zap" -c "$OUT/anon.s" "$OUT/anon.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an anonymous label in a macro is refused" \
     "$(printf '%s' "$anon" | grep -c 'no anonymous labels allowed in a macro')" 1
 
-# FILLBYTE reaching backwards, which in the reference it does.
+# FILLBYTE, which decides a reservation where the reservation is written and
+# nowhere else.
 #
-# A reservation there is a gap filled when the next byte is written, with the
-# FILLBYTE in force at that moment -- and the reference's `fillbyte` survives
-# the pass boundary, so pass two starts with the value the *last* FILLBYTE in
-# the file left behind. A run reserved before the first FILLBYTE is reached
-# therefore takes the file's final value, and one reserved after takes the
-# value in force where it stands. Each case below is the reference's own
-# output, taken from it.
+# A reservation is a gap filled when the next byte is written, with the value
+# in force at that moment. Nothing reaches backwards: a run already written
+# keeps what it was written with, however many FILLBYTEs come after it.
+#
+# 2.2 did reach backwards, because its `fillbyte` survived the pass boundary
+# and the gaps were filled in pass two, so the runs above a file's first
+# FILLBYTE took its *last* value. zap reproduced that. 2.3 has no second pass,
+# and the cases below are its output rather than 2.2's.
+#
+# Each expectation is checked against the vendored reference as well as against
+# zap, so a literal here cannot quietly stop being what the reference says --
+# which is how this block came to describe an assembler that had moved.
 fb() {
     printf '%b' "$2" > "$OUT/fb.s"
     "$OUT/zap" -c -ez80 "$OUT/fb.s" "$OUT/fb.bin" > /dev/null 2>&1 || true
     cli_check "$1" "$(od -An -tx1 "$OUT/fb.bin" 2>/dev/null | tr -s ' ')" " $3"
-    rm -f "$OUT/fb.s" "$OUT/fb.bin"
+    if [ -x "$OPTREF" ]; then
+        rm -f "$OUT/fbr.bin"
+        "$OPTREF" "$OUT/fb.s" "$OUT/fbr.bin" > /dev/null 2>&1 || true
+        cli_check "... and that is what the reference writes" \
+            "$(od -An -tx1 "$OUT/fbr.bin" 2>/dev/null | tr -s ' ')" " $3"
+    fi
+    rm -f "$OUT/fb.s" "$OUT/fb.bin" "$OUT/fbr.bin"
 }
 
 fb "a FILLBYTE fills the reservation the output still ends with" \
     '  ds 2\n  fillbyte 0xAA\n  nop\n' "aa aa 00"
-fb "and one reaches back over a reservation already written out" \
-    '  nop\n  ds 2\n  nop\n  fillbyte 0xAA\n  nop\n' "00 aa aa 00 00"
-fb "with 0xFF still the answer where the file has no FILLBYTE at all" \
+fb "and does not reach back over one already written out" \
+    '  nop\n  ds 2\n  nop\n  fillbyte 0xAA\n  nop\n' "00 ff ff 00 00"
+fb "with 0xFF the answer where the file has no FILLBYTE at all" \
     '  nop\n  ds 2\n  nop\n' "00 ff ff 00"
-fb "a run written out before the first one takes the file's last value" \
-    '  nop\n  ds 2\n  nop\n  fillbyte 0xAA\n  fillbyte 0xBB\n  nop\n' "00 bb bb 00 00"
+fb "a run written out before the first one keeps the default" \
+    '  nop\n  ds 2\n  nop\n  fillbyte 0xAA\n  fillbyte 0xBB\n  nop\n' "00 ff ff 00 00"
 fb "and a run after it takes the value in force where it stands" \
     '  nop\n  fillbyte 0xAA\n  ds 2\n  nop\n  fillbyte 0xBB\n  nop\n' "00 aa aa 00 00"
 fb "so the two halves of one file can differ" \
     '  nop\n  ds 2\n  nop\n  fillbyte 0xAA\n  nop\n  ds 2\n  nop\n  fillbyte 0xBB\n  nop\n' \
-    "00 bb bb 00 00 aa aa 00 00"
+    "00 ff ff 00 00 aa aa 00 00"
 fb "a run a FILLBYTE decided is not decided again by a later one" \
     '  ds 2\n  fillbyte 0xAA\n  nop\n  fillbyte 0xBB\n' "aa aa 00"
-fb "ORG padding is a reservation like the others" \
-    '  nop\n  org $+4\n  fillbyte 0xAA\n  nop\n' "00 aa aa aa aa 00"
+fb "ORG padding is written where it stands, like the others" \
+    '  nop\n  org $+4\n  fillbyte 0xAA\n  nop\n' "00 ff ff ff ff 00"
 fb "and so is ALIGN padding" \
-    '  nop\n  align 4\n  nop\n  fillbyte 0xAA\n  nop\n' "00 aa aa aa 00 00"
+    '  nop\n  align 4\n  nop\n  fillbyte 0xAA\n  nop\n' "00 ff ff ff 00 00"
 fb "two reservations with output between them are two runs" \
     '  nop\n  ds 2\n  nop\n  ds 3\n  nop\n  fillbyte 0xAA\n  nop\n' \
-    "00 aa aa 00 aa aa aa 00 00"
+    "00 ff ff 00 ff ff ff 00 00"
 fb "two with nothing between them are one" \
-    '  nop\n  ds 2\n  ds 3\n  nop\n  fillbyte 0x5A\n  nop\n' "00 5a 5a 5a 5a 5a 00 00"
+    '  nop\n  ds 2\n  ds 3\n  nop\n  fillbyte 0x5A\n  nop\n' "00 ff ff ff ff ff 00 00"
 fb "a BLK keeps its own value through all of it" \
-    '  nop\n  blkb 2,0x11\n  ds 2\n  nop\n  fillbyte 0xAA\n  nop\n' "00 11 11 aa aa 00 00"
+    '  nop\n  blkb 2,0x11\n  ds 2\n  nop\n  fillbyte 0xAA\n  nop\n' "00 11 11 ff ff 00 00"
 fb "and a reservation still reaching the end of the file is dropped" \
     '  nop\n  ds 2\n  fillbyte 0xAA\n' "00"
 

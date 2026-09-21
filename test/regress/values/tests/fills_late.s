@@ -1,13 +1,15 @@
-; A FILLBYTE that comes after the reservations it decides, which in the
-; reference it may.
+; A FILLBYTE that comes after the reservations it does *not* decide.
 ;
-; A reservation there is a gap filled when the next byte is written, with the
-; FILLBYTE in force at that moment -- and the reference's `fillbyte` survives
-; the pass boundary, so pass two starts with the value the *last* FILLBYTE in
-; the file left behind. So the first three runs below take 0xBB, the file's
-; last value, however far above it they are; the fourth takes 0xAA, in force
-; where it stands; and the ALIGN at the end takes 0xBB again. zap remembers
-; the runs of the first kind and fills them at the end of the source.
+; A reservation is a gap filled when the next byte is written, with the value
+; in force at that moment, and nothing reaches backwards. So the first three
+; runs below take 0xFF, the default, because no FILLBYTE has been reached when
+; they are written; the fourth takes 0xAA, in force where it stands; and the
+; ALIGN at the end takes 0xBB.
+;
+; 2.2 answered the first three differently -- 0xBB, the file's last value --
+; because its `fillbyte` survived the pass boundary and the gaps were filled
+; in pass two. There is no pass two in 2.3 and none here, so the rule is the
+; one a single pass can state: the value in force, where the run stands.
     .assume adl=1
     .org $40000
     ds 2

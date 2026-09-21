@@ -59,20 +59,22 @@ and are compared against the reference in test/run.sh.
 
 ## The listing group, and why it is only some of the sources
 
-Three things a one-pass assembler cannot put in a listing the way a two-pass
-one does, all written up in docs/DESIGN.md section 12:
+Two things a one-pass assembler cannot put in a listing the way a two-pass one
+does, both written up in docs/DESIGN.md section 12:
 
-* the reference widens the line-number column for the whole file when it
-  lists a macro expansion, which it decides before it writes line 1;
 * a macro body loses the indentation it was written with, because the body is
   stored from its first token;
 * a reservation's fill is listed on a continuation row with the first row
   left empty, and an ALIGN's too. zap leaves the first row empty as the
-  reference does, and writes no continuation row, because the bytes are not
-  written until something follows them. An ORG's pad the reference lists
-  inline, and so does zap -- that one now agrees byte for byte.
+  reference does, and writes no continuation row. An ORG's pad the reference
+  lists inline, and so does zap -- that one now agrees byte for byte.
 
-Sources in `listing/` avoid all three, so their `.lst` can be compared byte
+There were three. The line-number column's width was the other: 2.2 widened it
+for the whole file when the file listed a macro expansion, which it decided
+before writing line 1, and 2.3 made it a constant ten characters that a single
+pass can write. zap writes it.
+
+Sources in `listing/` avoid both, so their `.lst` can be compared byte
 for byte -- which is how it was found that zap wrote CRLF where the reference
 writes LF, and how the fourth difference was found and then closed: a forward
 reference was listed with the bytes as emitted rather than as patched, and

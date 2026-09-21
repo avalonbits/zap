@@ -1159,7 +1159,18 @@ void list_line(int pc, int from, int to, int line,
             put++;
         }
         if (row == 0) {
-            /* Four digits, and the depth after them for a macro body. */
+            /* Four digits, then the depth column, which is a fixed width.
+             *
+             * One `*` per level of INCLUDE below the top, then `M<n> ` for a
+             * macro body or three spaces for anything else, then padding to
+             * MAXPROCESSDEPTH. The reference builds it exactly that way, so
+             * the whole field is ten characters at the top level and ten
+             * characters at every level below it -- which is why a one-pass
+             * assembler can write it. 2.2 decided the width from whether the
+             * *file* contained an expansion, before it had read the file.
+             *
+             * The include depth is `state.depth` less the expansions in it:
+             * one counter there covers both, and the reference keeps two. */
             const int d0 = (line / 1000) % 10;
             const int d1 = (line / 100) % 10;
             const int d2 = (line / 10) % 10;
@@ -1167,11 +1178,22 @@ void list_line(int pc, int from, int to, int line,
             buf[w++] = (char) ('0' + d1);
             buf[w++] = (char) ('0' + d2);
             buf[w++] = (char) ('0' + line % 10);
+            const int lvl = state.depth - state.expanding + 1;
+            for (int i = 1; i < lvl; i++) {
+                buf[w++] = '*';
+            }
             if (depth > 0) {
                 buf[w++] = 'M';
                 buf[w++] = (char) ('0' + (depth % 10));
+                buf[w++] = ' ';
+            } else {
+                buf[w++] = ' ';
+                buf[w++] = ' ';
+                buf[w++] = ' ';
             }
-            buf[w++] = ' ';
+            for (int i = INCLUDE_MAXDEPTH - lvl; i > 0; i--) {
+                buf[w++] = ' ';
+            }
             for (const char* q = text; q < tend && *q != '\n'
                                        && w < (int) sizeof(buf) - 3; q++) {
                 buf[w++] = *q;

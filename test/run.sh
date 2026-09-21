@@ -537,7 +537,7 @@ rm -f "$OUT/lstf.lst"
 "$OUT/zap" -c -l "$OUT/lstf.s" "$OUT/lstf.bin" > /dev/null 2>&1
 lstf=$(tr -d '\r' < "$OUT/lstf.lst")
 cli_check "a forward reference is listed patched, not as emitted" \
-    "$(printf '%s' "$lstf" | grep -c '^040000 21 0C 00 04 0002   ld hl, ahead$')" 1
+    "$(printf '%s' "$lstf" | grep -c '^040000 21 0C 00 04 0002            ld hl, ahead$')" 1
 cli_check "and on a continuation row too" \
     "$(printf '%s' "$lstf" | grep -c '^       05 0C       $')" 1
 cli_check "nothing is left showing the placeholder" \
@@ -568,11 +568,11 @@ rm -f "$OUT/lst2.lst"
 "$OUT/zap" -c -l "$OUT/lst2.s" "$OUT/lst2.bin" > /dev/null 2>&1
 lst2=$(tr -d '\r' < "$OUT/lst2.lst")
 cli_check "the invocation carries no bytes" \
-    "$(printf '%s' "$lst2" | grep -c '^040001             0005   m 7$')" 1
+    "$(printf '%s' "$lst2" | grep -c '^040001             0005            m 7$')" 1
 cli_check "the arguments are listed under the tag" \
     "$(printf '%s' "$lst2" | grep -c '^                       M1 Args: x=7 $')" 1
 cli_check "the body line carries the bytes and the depth" \
-    "$(printf '%s' "$lst2" | grep -c '^040001 07          0001M1 db x$')" 1
+    "$(printf '%s' "$lst2" | grep -c '^040001 07          0001M1        db x$')" 1
 cli_check "the body is listed as written, not as substituted" \
     "$(printf '%s' "$lst2" | grep -c 'db 7')" 0
 # A macro that takes nothing says so, and a nested one counts its depth.
@@ -585,7 +585,7 @@ cli_check "a macro with no parameters says none" \
 cli_check "the inner expansion is one deeper" \
     "$(printf '%s' "$lst3" | grep -c 'M2 Args: none$')" 1
 cli_check "and its body line is tagged M2" \
-    "$(printf '%s' "$lst3" | grep -c '0001M2 nop$')" 1
+    "$(printf '%s' "$lst3" | grep -c '0001M2        nop$')" 1
 # A listed line that grows the output buffer while it is being assembled.
 #
 # The listing holds where the line started so it can print the bytes it wrote.
@@ -948,18 +948,21 @@ fi
 
 # -l writes a listing beside the source, with the reference's columns: six
 # hex digits of address, four bytes to a row in a twelve-character field, the
-# line number in four digits, then the line as it was written.
+# line number in four digits, then a ten-character depth column -- a `*` per
+# INCLUDE level, `M<n> ` for a macro body -- then the line as it was written.
+# 2.2 wrote that column only one character wide unless the file expanded a
+# macro somewhere, which it decided before writing line 1.
 rm -f "$OUT/side.lst"
 "$OUT/zap" -c "$OUT/side.s" "$OUT/side.bin" -l > /dev/null 2>&1 || true
 lst=$(tr -d '\r' < "$OUT/side.lst" 2>/dev/null || true)
 cli_check "-l writes a listing with the reference's header" \
     "$(printf '%s' "$lst" | grep -c '^PC     Output      Line$')" 1
 cli_check "-l lists an address, its bytes and its line" \
-    "$(printf '%s' "$lst" | grep -c '^040000 21 00 00 04 0003   ld hl, lab$')" 1
+    "$(printf '%s' "$lst" | grep -c '^040000 21 00 00 04 0003            ld hl, lab$')" 1
 cli_check "-l wraps after four bytes, under a blank address" \
     "$(printf '%s' "$lst" | grep -c '^       05 06       $')" 1
 cli_check "-l lists a line that emits nothing" \
-    "$(printf '%s' "$lst" | grep -c '^040000             0001 val: EQU 9$')" 1
+    "$(printf '%s' "$lst" | grep -c '^040000             0001          val: EQU 9$')" 1
 
 # -d is the same listing on the console, and does not write the file.
 rm -f "$OUT/side.lst"

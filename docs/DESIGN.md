@@ -50,14 +50,14 @@ flowchart TD
     late --> side["listing, symbol file, statistics<br/>(optional; none can fail the run)"]
 ```
 
-[`main()`](../src/zap.c#L1713) ·
-[`parse_args()`](../src/zap.c#L913) ·
-[`run()`](../src/zap.c#L613) ·
-[`run_lines()`](../src/zap.c#L471) ·
-[`scope_end()`](../src/symtab.c#L786) ·
-[`resolve_fixups()`](../src/zap.c#L447) ·
+[`main()`](../src/zap.c#L1704) ·
+[`parse_args()`](../src/zap.c#L882) ·
+[`run()`](../src/zap.c#L587) ·
+[`run_lines()`](../src/zap.c#L445) ·
+[`scope_end()`](../src/symtab.c#L805) ·
+[`resolve_fixups()`](../src/zap.c#L421) ·
 [`out_flush()`](../src/directive.c#L61) ·
-[`resolve_late()`](../src/zap.c#L405)
+[`resolve_late()`](../src/zap.c#L379)
 
 There is no intermediate representation and no syntax tree. A line is read,
 turned into bytes, and forgotten. What survives a line is only what a later
@@ -90,7 +90,7 @@ sequenceDiagram
 
 Nothing leaves the fixup list on its own, so on a long source it only grows.
 When it will not grow any further — the allocation refused, on a machine with
-no more to give — [`fix_sweep()`](../src/symtab.c#L1005) settles everything in
+no more to give — [`fix_sweep()`](../src/symtab.c#L1024) settles everything in
 it whose labels have since been read and closes the gaps, and the assembly
 carries on with what is left. §7 is what may be settled there and what may not.
 
@@ -117,12 +117,11 @@ Four kinds of thing wait for the end of the run:
 
 | | resolved by | holds |
 |---|---|---|
-| fixup | [`patch_fixup()`](../src/symtab.c#L616) | one or two symbols, an addend, a width, an offset |
+| fixup | [`patch_fixup()`](../src/symtab.c#L622) | one or two symbols, an addend, a width, an offset |
 | deferred expression | [`resolve_deferred()`](../src/zap.c#L262) | expression text a fixup cannot represent |
 | deferred fill | [`resolve_fills()`](../src/zap.c#L290) | a `BLK` whose fill value was not known yet |
-| reserved run | [`resolve_late()`](../src/zap.c#L405) | space reserved before the file's first `FILLBYTE`, which takes its *last* |
 
-A [`fixup`](../src/zap.h#L695)'s width is normally a byte count, 1 to 4, or 0
+A [`fixup`](../src/zap.h#L690)'s width is normally a byte count, 1 to 4, or 0
 for a relative displacement. Five values above those are operands that are not
 whole fields after the opcode:
 
@@ -150,9 +149,9 @@ handed back when its scope ends, so a record that kept the symbol would name a
 different label by the time it was applied. The three folds become a checked
 mask for the same reason, checked here and OR'd into the opcode byte later.
 
-[`resolve_late()`](../src/zap.c#L405) then sweeps the file once, ascending, in
-window-sized chunks, applying the late patches, the deferred fills and the
-reserved runs together, and skipping chunks none of them touch. Ascending and
+[`resolve_late()`](../src/zap.c#L379) then sweeps the file once, ascending, in
+window-sized chunks, applying the late patches and the deferred fills
+together, and skipping chunks none of them touch. Ascending and
 chunked because of the filesystem: `FF_FS_TINY` means a `FIL` has no sector
 buffer of its own and every partial write is a read-modify-write through the
 one the FAT is also using, and `FF_USE_FASTSEEK` is off, so a seek walks the
@@ -187,7 +186,7 @@ whose every fixup is settled long after its site was written.
 
 Everything the assembler knows lives in one object,
 [`state`](../src/symtab.c#L231), of type
-[`zap_state`](../src/zap.h#L1184). It is defined in `symtab.c` and declared in
+[`zap_state`](../src/zap.h#L1187). It is defined in `symtab.c` and declared in
 `zap.h`, so every part reaches the same one.
 
 ```mermaid
@@ -238,7 +237,7 @@ Two consequences the rest of the assembler relies on:
 * there is always a newline one byte past the content — the **sentinel** — so
   every scan terminates on it without testing the end.
 
-[`include_file()`](../src/directive.c#L897) opens a second reader and re-enters the same
+[`include_file()`](../src/directive.c#L858) opens a second reader and re-enters the same
 line loop; the parent's reader is saved in the include's own stack frame. The
 parent's file handle is closed while the child runs and reopened afterwards,
 seeking back to where the parent had reached, because MOS has few handles.
@@ -272,10 +271,10 @@ flowchart TD
 
 [`equ_line()`](../src/expr.c#L592) ·
 [`mnemonic_of()`](../src/insn.h#L87) ·
-[`parse_operand()`](../src/expr.h#L90) ·
+[`parse_operand()`](../src/expr.h#L94) ·
 [`match_row()`](../src/insn.h#L150) ·
 [`emit_row()`](../src/insn.h#L327) ·
-[`directive_line()`](../src/directive.c#L1099) ·
+[`directive_line()`](../src/directive.c#L1060) ·
 [`suffixed_mnemonic()`](../src/insn.c#L569) ·
 [`third_operand()`](../src/insn.c#L660)
 
@@ -373,11 +372,11 @@ fixup points at it. Nodes and names come from arenas of blocks that never move:
 a growing array would have to be reallocated, and a realloc that moves holds
 both copies at once.
 
-**Local labels** (`@name`, [`loc_intern()`](../src/symtab.c#L849)) belong to the
+**Local labels** (`@name`, [`loc_intern()`](../src/symtab.c#L868)) belong to the
 global label above them. A scope ends at the next global label — thousands of
 times in a real source — so it must empty in constant time. Each slot carries
 the generation it belongs to: advancing the counter in
-[`scope_end()`](../src/symtab.c#L786) makes every bucket read as empty, whatever
+[`scope_end()`](../src/symtab.c#L805) makes every bucket read as empty, whatever
 chain it still holds.
 
 **Anonymous labels** (`@@`, referred to as `@f` and `@b`) are not table entries
@@ -392,21 +391,21 @@ local's node is about to be recycled.
 ### 7a. The fixup list, and when it is swept
 
 Sixteen bytes a record, grown `FIX_STEP` at a time by
-[`fix_add()`](../src/symtab.c#L1042), and nothing ever leaves it during an
+[`fix_add()`](../src/symtab.c#L1061), and nothing ever leaves it during an
 ordinary assembly: what a source costs here is one record per forward
 reference, however early the label it names turns up. `-x` prints both the
 total and the high-water mark, which are the same number for a file that never
 filled the list.
 
 They stop being the same number when the allocation is refused. Rather than
-give up, [`fix_sweep()`](../src/symtab.c#L1005) settles what it can and closes
+give up, [`fix_sweep()`](../src/symtab.c#L1024) settles what it can and closes
 the gaps. Real programs have much to settle: measured by span, BBC BASIC for
 Agon would hold 490 of its 2,209 records at once and a CP/M implementation 950
 of 1,859, the rest being references whose labels had long since been read.
 
 Four things must be true of a record before it may be settled early, and each
 is a correctness requirement rather than a refinement
-([`fix_ready()`](../src/symtab.c#L975)):
+([`fix_ready()`](../src/symtab.c#L994)):
 
 * its target — and its second symbol, if it has one — is **defined**. The
   nameless stand-ins `resolve_deferred()` fills in stay undefined until the end
@@ -418,7 +417,7 @@ is a correctness requirement rather than a refinement
 * it is **not named by `subfix`**, whose entries are waiting for a local that
   the scope has not folded yet.
 
-`subfix` holds *indices* into the list, and [`fold_subs()`](../src/symtab.c#L752)
+`subfix` holds *indices* into the list, and [`fold_subs()`](../src/symtab.c#L771)
 walks them at every scope end, so compacting under it would corrupt them
 silently. Both lists ascend, so one pass rewrites each index as its entry moves.
 
@@ -495,7 +494,7 @@ flowchart TD
 Reached only after the mnemonic lookup has failed, and dispatched by
 [`directive_of()`](../src/directive.c#L274) — a switch on the token's length and
 characters rather than a table — then handled in
-[`directive_line()`](../src/directive.c#L1099).
+[`directive_line()`](../src/directive.c#L1060).
 
 | group | directives |
 |---|---|
@@ -510,23 +509,30 @@ characters rather than a table — then handled in
 
 Two distinctions in this group are easy to get wrong and worth stating:
 
-* **`DS` reserves ([`fill_take()`](../src/directive.c#L660)), `BLK` emits
-  ([`emit_block()`](../src/directive.c#L707)).** A reservation is a count, not
+* **`DS` reserves ([`fill_take()`](../src/directive.c#L621)), `BLK` emits
+  ([`emit_block()`](../src/directive.c#L668)).** A reservation is a count, not
   bytes: nothing is written until something is written *after* it, which is
   what `out_settle()` does from `out_reserve()`. So space that reaches the end
   of the file with nothing after it is never written at all, and a `FILLBYTE`
   while a run is still pending simply changes what it will be written with.
   A block always is written.
 * **`ORG` padding is not a reservation.** It goes through
-  [`fill_put()`](../src/directive.c#L609) and is written where it stands, as
+  [`fill_put()`](../src/directive.c#L578) and is written where it stands, as
   the reference writes it: it survives at the end of a file where a `DS` is
   dropped, and a later `FILLBYTE` does not reach back to it. `fillbyte 0x11 /
   org $+4 / fillbyte 0xAA` is four `0x11`; the same shape with `DS` is `0xAA`.
-* For the reservations written out before the file's *first* `FILLBYTE`, that
-  byte reaches backwards, which [`earlyf`](../src/zap.h#L1139) explains. Those
-  runs are settled by the same sweep as everything else the window left behind,
-  in [`resolve_late()`](../src/zap.c#L405), because by then they may be
-  anywhere in a file most of which is on the card.
+* **A `FILLBYTE` decides the reservations below it and none above.** A run
+  already written keeps the byte it was written with, so `fillbyte` never
+  reaches backwards. 2.2 did reach backwards -- it filled the gaps in its
+  second pass, with a `fillbyte` that survived the pass boundary, so a run
+  above the file's first one took the file's *last* value -- and zap kept a
+  list of those runs to reproduce it. There is no second pass in 2.3 and the
+  list is gone.
+* **The initializer after the count is evaluated and then dropped.** `ds 4, v`
+  is four fill bytes, not four `v`. It is said when `v` differs from the fill
+  byte and it is an *error* when `v` names a label the file never defines,
+  because the reference does both from a fixup -- `FIX_DSINIT` is the one that
+  writes nothing.
 * **`ORG` is two directives sharing a name.** The first in a file moves the
   origin; every later one pads out to its address.
 
@@ -599,7 +605,7 @@ flowchart LR
 
 [`err_line()`](../src/symtab.c#L241) ·
 [`err_tok()`](../src/symtab.h#L47) ·
-[`report()`](../src/zap.c#L1656)
+[`report()`](../src/zap.c#L1647)
 
 ```
 Macro [mos_call] in "kernel.s" line 12 - unknown label 'MOS_SYSVARS'
@@ -608,7 +614,7 @@ Invoked from "main.s" line 84 as
   mos_call MOS_SYSVARS
 ```
 
-There is one warning, [`warn_trunc()`](../src/zap.c#L1580), for a value too
+There is one warning, [`warn_trunc()`](../src/zap.c#L1571), for a value too
 large for the space it is written into. It is the only diagnostic that asks a
 question of every value in every source rather than doing work after something
 has gone wrong, so it is behind `-w`.
@@ -619,37 +625,41 @@ has gone wrong, so it is behind `-w`.
 
 `-l` and `-d` write a listing in the reference's columns — address, up to four
 bytes per row, line number, and the source line as written — through
-[`list_line()`](../src/zap.c#L1144) and [`list_out()`](../src/zap.c#L1122). A
+[`list_line()`](../src/zap.c#L1113) and [`list_out()`](../src/zap.c#L1091). A
 macro expansion is listed as the reference lists it: the invocation with no
 bytes, the arguments, then a row per body line tagged with its depth.
 
 A line holding a forward reference is listed before that reference is patched,
-so those lines are remembered by [`lstfix_add()`](../src/zap.c#L1228) and their
+so those lines are remembered by [`lstfix_add()`](../src/zap.c#L1219) and their
 byte columns written again from the finished output by
-[`lstfix_apply()`](../src/zap.c#L1261) before the file is closed. The console
+[`lstfix_apply()`](../src/zap.c#L1252) before the file is closed. The console
 listing cannot be given that treatment and shows the bytes as they were
 emitted.
 
-Three things a one-pass assembler cannot list the way a two-pass one does, and
-`test/regress/listing` holds only sources that avoid all three:
+After the line number comes a **depth column of a fixed ten characters**: one
+`*` per level of `INCLUDE` below the top, then `M<n> ` for a macro body or
+three spaces for anything else, then padding. Fixed width is what lets a
+single pass write it. 2.2 widened that column for the whole file when the file
+listed an expansion — a decision taken before line 1, with the whole source
+already read, and one of the things this could not do.
 
-* **the line-number column's width.** The reference widens it for the whole
-  file when the file lists a macro expansion, which it decides before it writes
-  line 1 — a two-pass decision, taken with the whole source already read;
+Two differences are left, and `test/regress/listing` holds only sources that
+avoid both:
+
 * **a macro body's indentation.** The body is stored from its first token, so
   the spaces it was written with are not there to list;
 * **a reservation's fill.** The reference lists it on a continuation row with
   the first row left empty. zap leaves the first row empty as the reference
-  does and writes no continuation row, because those bytes are not written
-  until something follows them. An `ORG`'s padding is written where it stands
-  and is listed inline by both.
+  does and writes no continuation row. An `ORG`'s padding is written where it
+  stands and is listed inline by both.
 
-A fourth used to belong on that list and no longer does: a line holding a
-forward reference showed the bytes as they were emitted rather than as they
-were patched, which is what `lstfix_add` and `lstfix_apply` above are for.
+Two others used to belong on that list. A line holding a forward reference
+showed the bytes as they were emitted rather than as they were patched, which
+is what `lstfix_add` and `lstfix_apply` above are for; and the column width
+above, which 2.3 made a constant.
 
-[`write_symbols()`](../src/zap.c#L1440) writes the global symbols sorted, in
-the reference's format. [`write_stats()`](../src/zap.c#L1506) prints what the
+[`write_symbols()`](../src/zap.c#L1431) writes the global symbols sorted, in
+the reference's format. [`write_stats()`](../src/zap.c#L1497) prints what the
 run used. None of the three can fail an assembly: the output file is already
 written when they run.
 
@@ -754,7 +764,7 @@ to do.
   [`tools/gen_isa.py`](../tools/gen_isa.py), not in the generated table.
 * **A directive** needs a `DIR_` constant, a spelling in
   [`directive_of()`](../src/directive.c#L274), a case in
-  [`directive_line()`](../src/directive.c#L1099), a case file under `test/cases`
+  [`directive_line()`](../src/directive.c#L1060), a case file under `test/cases`
   compared against the reference, and a row in the README's directive table.
 * **A diagnostic** needs a [`zap_err`](../src/zap.h#L488) code and one line in
   the message table. The static assert on the table size catches a code with no

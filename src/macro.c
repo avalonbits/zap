@@ -541,7 +541,12 @@ bool macro_expand(const macro* m, const char* p, const char* e,
      * invocation with no bytes and hangs the bytes on the body lines, which is
      * what tells a reader which line of the macro wrote what. */
     if (listing) {
-        list_invocation(m, base, saved_line, slot, e);
+        /* The invocation is listed at the *caller's* macro level, and the
+         * body and the arguments one below it. `state.expanding` has already
+         * counted this expansion, so the caller's level is one less. It is
+         * the macro depth and not `slot`, which counts includes too: the
+         * reference keeps the two apart and the listing shows only this one. */
+        list_invocation(m, base, saved_line, state.expanding - 1, e);
     }
 
     bool ok = true;
@@ -658,7 +663,7 @@ bool macro_expand(const macro* m, const char* p, const char* e,
                 /* The body **as written**, parameters and all, which is what
                  * the reference shows: `db x`, not `db 7`. What x was is on
                  * the Args line above it. */
-                list_line(bpc, bo, out_written(), state.line, state.depth,
+                list_line(bpc, bo, out_written(), state.line, state.expanding,
                           m->body + b, m->body + le + 1);
                 if (state.fix_touched) {
                     lstfix_add(bo, out_written());

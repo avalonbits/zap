@@ -736,6 +736,19 @@ typedef struct {
 
 #define FIX_DISP_NEG 9
 
+/* A `DS`'s initializer, which writes nothing at all.
+ *
+ * `ds 4, v` reserves four bytes and does not fill them with v: the reservation
+ * takes the FILLBYTE and the initializer is dropped. The reference says so,
+ * and 2.3 says it from a fixup -- so an initializer naming a label that is
+ * never defined is an *error* there, and one naming a label defined further
+ * down is evaluated and then dropped with a word about it.
+ *
+ * `off` carries the FILLBYTE in force where the DS stood rather than an
+ * offset, because this kind has no site: the reference only says anything
+ * when the two differ. Nothing is written, so nothing needs a place to go. */
+#define FIX_DSINIT   10
+
 /* The range an addend has to fit, written out rather than derived from `int`,
  * which is three bytes on the Agon and four on the host. Deriving it would
  * make this refuse on one machine and accept on the other.

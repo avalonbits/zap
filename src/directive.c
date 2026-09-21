@@ -1358,15 +1358,14 @@ bool directive_line(const char* s, int n, const char* p,
             return false;
         }
         /* `DS 3,1,2` is three bytes in the reference: the arguments after the
-         * count are taken and ignored. Skipped rather than parsed, since
-         * nothing reads them -- but the first of them is said, which is what
-         * the reference does and what tells a reader that `ds 4, 0xAA` is not
-         * four bytes of 0xAA.
+         * count are taken and ignored. The first of them is *evaluated* and
+         * then dropped, which is two visible things -- a value unlike the fill
+         * byte is said, and a name that is never defined is an error, because
+         * 2.3 does this from a fixup and an unresolved fixup is a failure.
          *
-         * The text is printed rather than the value, which is the reference's
-         * own message exactly, and means nothing has to be evaluated to say
-         * it -- an initializer that names an unknown label is still reported
-         * rather than turning into a second failure. */
+         * So an initializer naming a label ahead becomes a fixup of its own,
+         * which writes nothing: see FIX_DSINIT. One that evaluates here is
+         * answered here. */
         while (p < e && is_space_ch(*p)) {
             p++;
         }
@@ -1384,7 +1383,28 @@ bool directive_line(const char* s, int n, const char* p,
                 ie--;
             }
             if (ie > is) {
-                warn_initializer(is, (int) (ie - is));
+                evalue iv = 0;
+                uint8_t imask = 0;
+                const char* ip = is;
+                fwd_reset(NULL);
+                if (!expr_value(&iv, &ip, ie, &imask)) {
+                    return false;
+                }
+                if (expr_fwd != NULL) {
+                    const sym* tgt;
+                    const sym* isub;
+                    bool ineg;
+                    if (!fwd_result(&tgt, &isub, &ineg)) {
+                        return false;
+                    }
+                    /* The fill byte rides in `off`, which this kind does not
+                     * use for a site. */
+                    if (!fix_add(tgt, isub, 0, FIX_DSINIT, (int) state.fill)) {
+                        return false;
+                    }
+                } else if (iv != (evalue) state.fill) {
+                    warn_initializer(is, (int) (ie - is));
+                }
             }
         }
         while (p < e && *p != '\n' && *p != ';') {

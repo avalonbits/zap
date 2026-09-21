@@ -646,6 +646,19 @@ bool patch_fixup(const fixup* f) {
 
     const uint8_t w = (uint8_t) (f->width & FIX_WIDTH);
 
+    if (w == FIX_DSINIT) {
+        /* Nothing to write: this fixup exists so that an initializer naming a
+         * label gets the same two answers the reference gives it. Undefined is
+         * the error above; defined and unlike the fill byte is a word about a
+         * value that was dropped. `off` is that byte, not a site. */
+        if (val != (evalue) f->off) {
+            state.line = f->line;
+            warn_initializer(sp->name, sp->len);
+        }
+
+        return true;
+    }
+
     /* Where the bytes go. If the window has passed this offset they go into a
      * staging buffer and are recorded, to be applied in one sweep at the end;
      * the code below cannot tell the difference. What it must not do is hold

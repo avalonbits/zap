@@ -245,6 +245,11 @@ cli_check "an option that is not the reference's is still refused" \
 # count, and the reference says so. zap said nothing. Not behind -w: the check
 # is a comma on a line already parsed, not a question asked of every value --
 # and -i does not silence it in the reference either.
+#
+# 2.3 evaluates the initializer before dropping it, which makes two more
+# answers: one equal to the fill byte in force is dropped in silence, and one
+# naming a label that is never defined is an *error* rather than a word --
+# there it is a fixup, and an unresolved fixup fails the assembly.
 init_same() {
     local text="$1" want="$2"
     printf '%b' "$text" > "$OUT/init.s"
@@ -262,9 +267,24 @@ init_same() {
 }
 init_same '  ds 4, 0xAA\n' 1
 init_same '  ds 3,1,2\n' 1
-init_same '  ds 4, nope\n' 1
 init_same '  ds 4\n' 0
 init_same '  blkb 2, 0xAA\n' 0
+init_same '  ds 4, 0xFF\n' 0
+init_same '  ds 4, ahead\nahead: EQU 7\n' 1
+init_same '  ds 4, ahead\nahead: EQU 0xFF\n' 0
+
+# The one that is not a warning at all. Both refuse it, and both refuse it
+# because the initializer is a fixup that never resolves.
+printf '  ds 4, nope\n' > "$OUT/init.s"
+cli_check "an initializer naming a label that never appears is refused" \
+    "$("$OUT/zap" -c "$OUT/init.s" "$OUT/init.bin" 2>&1 | tr -d '\r' \
+       | grep -c "unknown label 'nope'")" 1
+if [ -x "$OPTREF" ]; then
+    rm -f "$OUT/initr.bin"
+    "$OPTREF" "$OUT/init.s" "$OUT/initr.bin" > /dev/null 2>&1 || true
+    cli_check "... and the reference writes no output for it either" \
+        "$([ -f "$OUT/initr.bin" ] && echo wrote || echo refused)" "refused"
+fi
 printf '  ds 4, 0xAA\n' > "$OUT/init.s"
 cli_check "-i does not silence it, as it does not there" \
     "$("$OUT/zap" -c -i "$OUT/init.s" "$OUT/init.bin" 2>&1 | tr -d '\r' \

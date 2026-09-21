@@ -418,6 +418,17 @@ is a correctness requirement rather than a refinement
 walks them at every scope end, so compacting under it would corrupt them
 silently. Both lists ascend, so one pass rewrites each index as its entry moves.
 
+The second of those conditions is what bounds this in practice, and it is
+worth knowing which way round it works. How far a reference reaches decides
+how many records are live at once -- a shape whose live set does not fit the
+list is refused whatever the file's size -- but every flush **strands** the
+records whose sites it writes out, because from then on they can be settled
+nowhere but at the end of the run. Measured against `test/gen_worst.sh`'s span
+argument, that second bound is on the output size and lands at a few windows'
+worth of it however short the reach. Lifting it means letting the sweep record
+a late patch, which needs a third ascending run in `state.late` or an
+insertion that keeps the runs sorted; the numbers are in the internal cost log.
+
 **The trigger is growth and not a label being defined**, and that is not a
 performance choice. `X: EQU v` is defined twice — the label path stores the
 line's program counter and `equ_line` overwrites it with the real value a

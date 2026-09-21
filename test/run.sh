@@ -669,6 +669,29 @@ cli_check "a fixup settled early reports against the line that used it" \
 cli_check "and quotes that line, not the one being assembled" \
     "$(printf '%s' "$two" | grep -c '^    jr toofar$')" 1
 
+# What the sweep is worth, on the axis it is worth anything on: how far a
+# reference reaches. test/gen_worst.sh's second argument is that distance --
+# the targets are redefined every N blocks -- and the same output size is
+# refused or assembled depending on it alone. Both sources are the same shape
+# and the same size; the only difference is whether the labels turn up 400
+# bytes further on or at the end of the file.
+test/gen_worst.sh 8192 0 > "$OUT/span0.s"
+test/gen_worst.sh 8192 8 > "$OUT/span8.s"
+cli_check "every reference outstanding at once does not fit a capped list" \
+    "$("$OUT/zapcap" -c -ez80 "$OUT/span0.s" "$OUT/span0.bin" 2>&1 | tr -d '\r' \
+       | grep -c 'out of memory for labels')" 1
+cli_check "the same size with a short reach assembles" \
+    "$("$OUT/zapcap" -c -ez80 "$OUT/span8.s" "$OUT/span8.bin" 2>&1 | tr -d '\r' \
+       | grep -c 'out of memory')" 0
+# And it is the reference's bytes, not merely bytes: a generator that stopped
+# emitting the references would pass both checks above.
+if [ -x "$OPTREF" ]; then
+    (cd "$OUT" && "$OPTREF" span8.s span8ref.bin > /dev/null 2>&1) || true
+    cli_check "and assembles to what the reference assembles it to" \
+        "$(cmp -s "$OUT/span8.bin" "$OUT/span8ref.bin" && echo same || echo differs)" \
+        "same"
+fi
+
 # The output window, forced small enough that these little sources fill it.
 #
 # A second binary, because the window is a build-time size: at 64 KB nothing

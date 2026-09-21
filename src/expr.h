@@ -31,20 +31,24 @@ static inline void fwd_reset(const sym* seed) {
     expr_fwd_bad = false;
 }
 
-/* A displacement as the reference keeps it: sixteen bits, signed.
+/* A displacement as the reference keeps it: the machine word, signed.
  *
- * Not a detail of the evaluator but of the reference's operand, which holds
- * this field in two bytes -- so `(ix+0x40018)` is 0x18 there and not out of
- * range, while `(ix+0x1008)` is 4104 and is. The signed-byte test the caller
- * makes afterwards is a separate thing and happens on what this returns.
+ * Not a detail of the evaluator but of the reference's operand. 2.3 holds this
+ * in an `int24_t` and then asks for a signed byte, so `(ix+0x40018)` is
+ * 262168 and out of range; 2.2 held it in two bytes, which made the same
+ * expression offset 0x18 and legal. The signed-byte test the caller makes
+ * afterwards is a separate thing and happens on what this returns.
  *
- * Written as arithmetic rather than a cast to int16_t because `int` is three
- * bytes on the eZ80 and four on the host, and this has to be the same number
- * on both. */
+ * On the eZ80 `int` is those three bytes already, so the caller's cast has
+ * done this and both lines below fold away: the mask is the full width and
+ * the comparison cannot be true. On a host with a wider int they are the
+ * truncation. Written as arithmetic rather than a cast to a sized type for
+ * that reason, and `- 0x800000 - 0x800000` rather than `- 0x1000000` because
+ * that constant does not fit the target's int. */
 static inline int disp_fit(int v) {
-    v &= 0xFFFF;
+    v = (int) ((unsigned int) v & 0xFFFFFFu);
 
-    return v >= 0x8000 ? v - 0x10000 : v;
+    return v >= 0x800000 ? v - 0x800000 - 0x800000 : v;
 }
 
 /* Inlined into callers in other files, so the bodies live here. */

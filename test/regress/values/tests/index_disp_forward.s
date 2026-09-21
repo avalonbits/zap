@@ -8,9 +8,12 @@
 ; The sign outside the brackets negates the whole expression and not its first
 ; term: `(ix-v+1)` with v five is -6 here, as in the reference, not -4.
 ;
-; And the value is sixteen bits before it is a signed byte. The reference
-; holds this field in two bytes, so 0x40018 is 0x18 and in range; 0x1008 is
-; 4104 and is not, which index_disp_toobig.s covers.
+; And the value is the machine word before it is a signed byte: 2.3 keeps the
+; field in an int24_t and refuses anything outside a byte, where 2.2 kept it in
+; two bytes and made 0x40018 offset 0x18. index_disp_toobig.s is the refusal.
+;
+; The values above a byte are not here for that reason: they are in the other
+; file now.
     .assume adl=1
     .org $40000
     ld   a, (ix+field)
@@ -21,12 +24,8 @@
     ld   (ix+field), 0x11
     ld   a, (iy+field)
     bit  3, (ix+field)
-    ld   a, (ix+wide)
-    ld   a, (ix+low)
     ld   a, (ix+edge)
     ld   a, (ix+medge)
 field: EQU 5
-wide:  EQU 0x40018
-low:   EQU 0x4FFFB
 edge:  EQU 127
 medge: EQU -128

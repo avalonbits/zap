@@ -666,7 +666,7 @@ bool patch_fixup(const fixup* f) {
     if (w == FIX_DISP || w == FIX_DISP_NEG) {
         /* The sign outside the brackets negates the whole expression and not
          * its first term: `(ix-v+1)` with v five is -6 in the reference, not
-         * -4. Sixteen bits first, then a signed byte -- see disp_fit. */
+         * -4. The machine word first, then a signed byte -- see disp_fit. */
         const int d16 = disp_fit((int) (w == FIX_DISP_NEG ? -val : val));
         if (d16 < -128 || d16 > 127) {
             state.line = f->line;

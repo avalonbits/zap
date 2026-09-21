@@ -1182,27 +1182,53 @@ cli_check "a forward index displacement that does not fit is refused" \
 cli_check "and against the line that used it" \
     "$(printf '%s' "$ixb" | grep -c 'line 1')" 1
 
-# Sixteen bits, then a signed byte -- the reference keeps this field in two
-# bytes, so a value above them is truncated rather than refused. Backwards as
-# well as forwards, and for a literal: this was wrong for all three.
+# The machine word, then a signed byte. 2.3 keeps this field in an int24_t and
+# refuses anything outside a byte; 2.2 kept it in two bytes, which made
+# `(ix+0x40018)` offset 0x18 and legal. Backwards as well as forwards, and for
+# a literal -- the rule is the same wherever the value comes from, and the
+# refusal happens where the value exists.
+#
+# An empty expectation means no output file: refused. Each case is checked
+# against the vendored reference too, for the reason the FILLBYTE block gives.
 ixv() {
     printf '%b' "$2" > "$OUT/ixv.s"
     "$OUT/zap" -c -ez80 "$OUT/ixv.s" "$OUT/ixv.bin" > /dev/null 2>&1 || true
-    cli_check "$1" "$(od -An -tx1 "$OUT/ixv.bin" 2>/dev/null | tr -s ' ')" " $3"
-    rm -f "$OUT/ixv.s" "$OUT/ixv.bin"
+    cli_check "$1" "$(od -An -tx1 "$OUT/ixv.bin" 2>/dev/null | tr -s ' ')" "${3:+ }$3"
+    if [ -x "$OPTREF" ]; then
+        rm -f "$OUT/ixvr.bin"
+        "$OPTREF" "$OUT/ixv.s" "$OUT/ixvr.bin" > /dev/null 2>&1 || true
+        cli_check "... and that is what the reference writes" \
+            "$(od -An -tx1 "$OUT/ixvr.bin" 2>/dev/null | tr -s ' ')" "${3:+ }$3"
+    fi
+    rm -f "$OUT/ixv.s" "$OUT/ixv.bin" "$OUT/ixvr.bin"
 }
-ixv "a displacement is sixteen bits before it is a byte" \
-    '  ld a, (ix+0x40018)\n' "dd 7e 18"
+ixv "a displacement above a byte is refused, not truncated" \
+    '  ld a, (ix+0x40018)\n' ""
 ixv "the same for one that is still ahead" \
-    '  ld a, (ix+v)\nv: equ 0x40018\n' "dd 7e 18"
+    '  ld a, (ix+v)\nv: equ 0x40018\n' ""
 ixv "and for one already behind" \
-    'v: equ 0x40018\n  ld a, (ix+v)\n' "dd 7e 18"
-ixv "the sixteenth bit is the sign" \
-    'v: equ 0x4FFFB\n  ld a, (ix+v)\n' "dd 7e fb"
+    'v: equ 0x40018\n  ld a, (ix+v)\n' ""
 ixv "the sign outside the brackets negates the whole expression" \
     '  ld a, (ix-v+1)\nv: equ 5\n' "dd 7e fa"
 ixv "and the displacement of a CB form sits before its opcode" \
     '  bit 3, (ix+v)\nv: equ 5\n' "dd cb 05 5e"
+
+# The one case where the two builds of the reference disagree with each other,
+# so it cannot be cross-checked against the vendored host binary.
+#
+# ez80asm holds this field in an `int24_t`, and `int24_t` is `int32_t` unless
+# AGONDEV is defined (src/defines.h). So `(ix+0xFFFFFB)` is 16,777,211 on a
+# desktop and refused, and -5 on the Agon and assembled. Checked on the
+# machine rather than reasoned about: the vendored Agon binary writes dd 7e fb
+# for it, md5 99165757.
+#
+# zap follows the Agon, which is the machine it is for, and is therefore
+# deliberately unlike the *host* build of the reference here. Anything in the
+# band 0xFFFF80..0xFFFFFF is in it; nothing else is.
+printf '%b' 'v: equ 0xFFFFFB\n  ld a, (ix+v)\n' > "$OUT/ix24.s"
+"$OUT/zap" -c -ez80 "$OUT/ix24.s" "$OUT/ix24.bin" > /dev/null 2>&1 || true
+cli_check "a displacement is the machine word, as it is on the Agon" \
+    "$(od -An -tx1 "$OUT/ix24.bin" 2>/dev/null | tr -s ' ')" " dd 7e fb"
 
 # RELOCATE, whose three refusals the reference also makes.
 #

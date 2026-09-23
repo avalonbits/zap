@@ -2,11 +2,11 @@
 
 [![latest release](https://img.shields.io/github/v/release/avalonbits/zap?label=download&color=blue)](https://github.com/avalonbits/zap/releases/latest)
 
-A fast, single-pass assembler for the [Agon Light](https://www.thebyteattic.com/p/agon.html)
-and other eZ80 machines. It runs **on** the Agon as well as on a desktop, and
-it is a drop-in replacement for
-[ez80asm](https://github.com/AgonPlatform/agon-ez80asm): the same command line,
-the same syntax, and the same output bytes.
+zap is a fast, single-pass assembler for the [Agon Light](https://www.thebyteattic.com/p/agon.html)
+and other eZ80 machines. It runs on the Agon itself as well as on a desktop,
+and it's a drop-in replacement for
+[ez80asm](https://github.com/AgonPlatform/agon-ez80asm): same command line,
+same syntax, same output bytes.
 
     $ zap hello.s hello.bin
     Assembling hello.s
@@ -15,62 +15,54 @@ the same syntax, and the same output bytes.
 
 ## Why
 
-Assembling on the Agon itself used to be slow enough that most people
-cross-assembled on a PC instead: ez80asm 2.2 took 22 seconds over BBC BASIC for
-Agon, and zap was written to find out how much of that was the machine and how
-much was the design. It turned out to be mostly the design — one pass instead
-of two, fixups patched into the output, and C written for a chip with no cache
-and a three-byte word — and zap came out four to six times faster.
+Assembling on the Agon used to be slow enough that most people cross-assembled
+on a PC. ez80asm 2.2 took 22 seconds to build BBC BASIC for Agon, and I wanted
+to know how much of that was the machine and how much was the design. Mostly
+the design, it turned out: one pass instead of two, fixups patched into the
+output, and C written for a chip with no cache and a three-byte word. zap came
+out four to six times faster.
 
-**That gap has closed, and closing it was the point.** ez80asm 2.3 converted to
-a one-pass design with fixups and a memory/file window of its own, and took
-several of zap's optimizations with it. Measured on the same emulated Agon,
-each assembler's own `Done in` line:
+Since then ez80asm 2.3 switched to a one-pass design as well and picked up
+several of zap's optimizations, so the gap is much smaller now. Timed on the
+same emulated Agon:
 
 | source | zap | ez80asm 2.3 | |
 |---|---|---|---|
 | BBC BASIC for Agon, 386 KB of source | **3.98s** | 5.86s | 1.5x |
 | Rokky | **0.54s** | 0.84s | 1.6x |
-| 471 KB of straight instructions | **7.32s** | 13.00s | 1.8x |
+| 471 KB of straight instructions | **7.26s** | 13.00s | 1.8x |
 | 256 KB of output | **0.72s** | 6.36s | 8.8x |
 | 1 MiB of output | **2.86s** | 25.32s | 8.9x |
 
-Byte-identical output in all five. The last two rows are where the designs
-still differ: zap writes the output through a 64 KB window as it assembles, so
-what it can produce is bounded by the card rather than by the machine, and the
-only ceiling left is the eZ80's own 24-bit addressing at 8 MB. Read those two
-rows as a ratio and not as a clock — the emulator charges nothing for writing
-to the card, and a real Agon does; the same 1 MiB takes 15.2s on hardware.
+The output was byte-identical in every case. The last two rows are where the
+designs still differ: zap streams its output through a 64 KB window, so the
+size of what it can produce is limited by the SD card rather than by RAM (up to
+the eZ80's 8 MB address space). Treat those two as ratios, though. The emulator
+doesn't charge for writing to the card; on a real Agon that 1 MiB takes 15.2s.
 
-Two assemblers that agree byte for byte are worth more than one. Each is a
-check on the other, which is worth more to anyone writing eZ80 than either of
-them being alone and unverifiable.
+I'm glad the gap closed. Two independent assemblers that agree byte for byte
+are more useful than one, because each keeps the other honest.
 
 ## Getting it
 
-**From the [releases page](https://github.com/avalonbits/zap/releases) --
-this is the way to get zap.** Every release has `zap.bin`, already built for
-the Agon; there is nothing to compile, install or configure.
+Grab `zap.bin` from the [latest release](https://github.com/avalonbits/zap/releases/latest).
+It's already built for the Agon, so there's nothing to compile.
 
-1. Download
-   [`zap.bin`](https://github.com/avalonbits/zap/releases/latest/download/zap.bin)
-   from the [latest release](https://github.com/avalonbits/zap/releases/latest).
+1. Download [`zap.bin`](https://github.com/avalonbits/zap/releases/latest/download/zap.bin).
 2. Copy it into `/bin` on the Agon's SD card.
-3. Run it: `zap hello.s hello.bin`.
+3. Run `zap hello.s hello.bin`.
 
-`zap -v` prints the version, so you can check which one you have. The current
-release is [v1.1.0](https://github.com/avalonbits/zap/releases/tag/v1.1.0).
+`zap -v` prints the version. The current release is
+[v1.1.0](https://github.com/avalonbits/zap/releases/tag/v1.1.0).
 
 ## Building it yourself
 
-**For the Agon**, with the [agondev](https://github.com/AgonPlatform/agondev)
+For the Agon, with the [agondev](https://github.com/AgonPlatform/agondev)
 toolchain on your `PATH`:
 
     make                    # produces bin/zap.bin
 
-Copy `bin/zap.bin` to `/bin` on the Agon's SD card and run it as `zap`.
-
-**For the host**, to try it out or to run the test suite:
+For the host, to try it out or run the tests:
 
     cc -std=gnu11 -O2 -fsigned-char -include test/stubs/host_types.h \
        -Isrc -Itest/stubs -o zap src/*.c test/stubs/agon_stubs.c
@@ -80,50 +72,45 @@ Copy `bin/zap.bin` to `/bin` on the Agon's SD card and run it as `zap`.
     zap <source> [<output>] [options]
 
     zap game.s game.bin                 # assemble
-    zap game.s                          # ... naming game.bin after the source
-    zap game.s game.bin -l -s           # ... with a listing and a symbol file
+    zap game.s                          # output named game.bin
+    zap game.s game.bin -l -s           # with a listing and a symbol file
     zap game.s game.bin -o 40000 -b 00  # origin 0x40000, fill byte 0x00
     zap game.s game.bin -w              # warn about truncated values
 
-Options may be written with or without a space before their argument -- `-o
-50000` and `-o50000` are the same thing -- and may appear before or after the
-file names.
-
-## Options
+Options can go before or after the file names, and `-o 50000` and `-o50000`
+mean the same thing.
 
 | Option | Meaning |
 | --- | --- |
-| `-v` | Print the version and assemble nothing |
+| `-v` | Print the version and exit |
 | `-h` | List the options |
-| `-o <hex>` | Origin address, in hex. Default `040000` |
-| `-b <hex>` | Fill byte for reserved space, in hex. Default `FF` |
+| `-o <hex>` | Origin address in hex. Default `040000` |
+| `-b <hex>` | Fill byte for reserved space in hex. Default `FF` |
 | `-a <0\|1>` | ADL mode. Default `1` |
 | `-l` | Write a listing to `<source>.lst` |
-| `-d` | Write the listing to the console instead |
+| `-d` | Print the listing to the console instead |
 | `-s` | Write the global symbols to `<source>.symbols` |
-| `-x` | Print assembly statistics when finished |
+| `-x` | Print assembly statistics at the end |
 | `-c` | No colour in messages |
-| `-w` | Warn when a value does not fit where it is written |
-| `-i` | Accepted for compatibility; the default already ignores those warnings |
-| `-m` | Accepted for compatibility; zap has one memory configuration, and it does not depend on the size of the output |
-| `-ez80` | Use the reference assembler's expression rules (see below) |
+| `-w` | Warn when a value doesn't fit where it's written |
+| `-i` | Accepted for compatibility (truncation warnings are already off) |
+| `-m` | Accepted for compatibility (zap has only one memory mode) |
+| `-ez80` | Use ez80asm's expression rules (see below) |
 
 ## What it assembles
 
-**Instructions.** The full eZ80 instruction set, including the `.SIS` `.LIS`
-`.SIL` `.LIL` mode suffixes and their short spellings (`.S`, `.L`, `.IS`, and
-so on).
+**Instructions:** the full eZ80 set, including the `.SIS` `.LIS` `.SIL` `.LIL`
+mode suffixes and their short forms (`.S`, `.L`, `.IS` and so on).
 
-**Labels.** Global labels, local labels scoped to the preceding global one
-(`@name`), and anonymous labels (`@@` to define, `@f` and `@b` to refer
-forwards and backwards).
+**Labels:** global labels, local labels scoped to the previous global
+(`@name`), and anonymous labels (`@@`, referred to as `@f` and `@b`).
 
-**Expressions.** `+` `-` `*` `/` `<<` `>>` `&` `|` `^`, unary `-` and `~`,
-parentheses, `$` for the current address, character literals with escapes, and
-numbers written as `1234`, `0x1234`, `$1234`, `1234h`, `0b1010`, `%1010` or
-`1010b`. `IF` takes an expression and treats a non-zero value as true.
+**Expressions:** `+` `-` `*` `/` `<<` `>>` `&` `|` `^`, unary `-` and `~`,
+parentheses, `$` for the current address, character literals with escapes,
+and numbers written as `1234`, `0x1234`, `$1234`, `1234h`, `0b1010`, `%1010` or
+`1010b`.
 
-**Directives.**
+**Directives:**
 
 | | |
 | --- | --- |
@@ -136,114 +123,90 @@ numbers written as `1234`, `0x1234`, `$1234`, `1234h`, `0b1010`, `%1010` or
 | Macros | `MACRO` / `ENDMACRO`, up to 8 parameters |
 | Target | `.CPU EZ80`, `.CPU Z80`, `.CPU Z180` |
 
-A leading `.` is optional on every directive, and they are case-insensitive.
+Directives are case-insensitive and the leading `.` is optional. `.CPU` picks
+an instruction set: the Z80 set includes the undocumented instructions, and
+neither Z80 nor Z180 allows ADL mode or mode suffixes.
 
-`.CPU` selects an instruction set rather than a machine: the Z80 set includes
-the undocumented instructions, and neither the Z80 nor the Z180 accepts ADL
-mode or a mode suffix.
+## Compatibility with ez80asm
 
-## Compatibility
+zap is tested against ez80asm 2.3, the version vendored under `test/ref`. All
+507 sources in ez80asm's own test suite either produce identical bytes or are
+rejected by both, and the same goes for BBC BASIC for Agon, Rokky, and zap's
+own 56 regression sources.
 
-zap is checked against **ez80asm 2.3** on every source in the reference's own
-test corpus. All 507 either assemble to identical bytes or are rejected by both
-assemblers, as do BBC BASIC for Agon and Rokky with their whole include trees,
-and zap's own 56 regression sources on top of them. That is the binary
-vendored under `test/ref`, and it is the definition zap is written to.
+Version 2.3 changed a few things compared to 2.2, and zap follows 2.3:
 
-2.3 changed four things 2.2 did, and zap follows 2.3 on all four. Each is a
-place where 2.2's answer came from having a second pass:
+- A forward-referenced bit number that's out of range (`bit n, a` with
+  `n: EQU -1`) is now an error. Written directly, `bit -1, a` still assembles
+  to `cb ff`, because ez80asm checks the two cases differently.
+- Index displacements are checked as 24-bit values, so `(ix+0x40018)` is out
+  of range instead of wrapping to offset `0x18`.
+- `FILLBYTE` only affects space reserved after it. In 2.2, space reserved
+  before the first `FILLBYTE` picked up the file's last one.
+- `DS` evaluates its (ignored) initializer: `ds 4, 0xFF` no longer warns, and
+  `ds 4, nope` with `nope` undefined is an error.
+- Listings have a fixed-width depth column after the line number.
 
-* a **bit number defined later** and out of range — `bit n, a` with `n: EQU -1`
-  — was masked to `bit 7, a` and is refused. Written out, `bit -1, a` is still
-  `cb ff`: the reference checks the two cases differently and so does zap;
-* an **index displacement** was held in sixteen bits, so `(ix+0x40018)` was
-  offset 0x18; it is the machine word now and out of range;
-* **space reserved before the file's first `FILLBYTE`** took the file's *last*
-  fill byte, because `fillbyte` survived the pass boundary. It takes the value
-  in force where it stands;
-* a **`DS` initializer** is evaluated before being dropped, so `ds 4, 0xFF` is
-  silent where it used to be remarked on, and `ds 4, nope` with `nope` never
-  defined is an error rather than a warning.
+### The `-ez80` flag
 
-The listing gained a fixed-width depth column in 2.3, which is the first time
-a one-pass assembler could write it, so zap writes it.
+By default zap evaluates expressions the way a C programmer would expect.
+`-ez80` reproduces three quirks of ez80asm instead, and the tests and
+benchmarks use it:
 
-**`-ez80` reproduces three surprising behaviours of the reference**, which is
-what the tests and benchmarks use:
+- No operator precedence: `1+2*3` is 9, evaluated left to right.
+- `IF a == b` evaluates `a` and ignores the rest, so `IF 0 == 0` is false.
+- `0bh` is hex, not binary: the `h` suffix wins over the `0b` prefix.
 
-* **No operator precedence.** `1+2*3` is 9, not 7 -- the expression is
-  evaluated strictly left to right.
-* **`IF` does not compare.** `IF a == b` evaluates `a` and discards the rest,
-  so `IF 0 == 0` is false.
-* **`0bh` is hexadecimal**, not binary: the `h` suffix is claimed before the
-  `0b` prefix is considered.
-
-Without `-ez80`, expressions behave the way a C programmer expects. Everything
-else is the same in both modes.
+Everything else behaves the same in both modes.
 
 ## Diagnostics
 
-An error names the file, the line and what went wrong, echoes the line, and for
-a failure inside a macro also says where the macro was invoked:
+Errors give the file, line and message, echo the line, and for errors inside
+a macro, say where it was invoked:
 
     Macro [mos_call] in "kernel.s" line 12 - unknown label 'MOS_SYSVARS'
       ld a, MOS_SYSVARS
     Invoked from "main.s" line 84 as
       mos_call MOS_SYSVARS
 
-With `-w`, a value too large for the space it is written into is reported and
-the assembly continues:
+With `-w`, values that don't fit their field are reported and assembly
+continues:
 
     File "game.s" line 31 - Value truncated to 8 bit '0x100'
 
-A value fits if the bytes that come out mean the same number read as signed or
-as unsigned, so `ld a, -1` and `ld a, 255` are both fine while `ld a, 256` and
-`ld a, -129` are not. The check is off by default because it costs about 2% of
-a run; the reference has it on and cannot turn it off.
-
-zap reports errors as codes internally, so it can be used as a library: the
-message text lives in a table beside the enum rather than in the code that
-detects the fault.
+A value fits if its bytes mean the same number whether read as signed or
+unsigned, so `ld a, -1` and `ld a, 255` are fine but `ld a, 256` isn't. The
+check is off by default because it costs about 2% of the run time.
 
 ## Testing
 
-    test/run.sh                 unit and CLI tests, plus every source in
-                                test/cases assembled with both zap and the
-                                reference and compared byte for byte
-    test/corpus.sh              the reference's whole corpus and zap's own
-                                regression sources, the same way
-    test/corpus.sh --regress    just zap's own, in about two seconds
-    ZAP_WINDOW=512 test/corpus.sh
-                                the same, with the output window forced small
-                                enough that every source is written out in
-                                pieces and patched behind
-    FIX_CAP=1024 test/corpus.sh
-                                and again with the fixup list capped, so that
-                                the sweep which settles what it can when the
-                                list will not grow runs on every source
-    test/window.sh              a generated source several windows wide, with
-                                every kind of fixup settled long after the
-                                bytes holding it were written
-    test/bench/bench.sh         throughput against ez80asm on the emulator
+    test/run.sh                    unit and CLI tests, plus test/cases compared
+                                   byte for byte against ez80asm
+    test/corpus.sh                 ez80asm's test suite plus zap's regression
+                                   sources, compared the same way
+    test/corpus.sh --regress       just zap's own sources (a couple of seconds)
+    ZAP_WINDOW=512 test/corpus.sh  the same with a tiny output window, so
+                                   everything goes through the streaming path
+    FIX_CAP=1024 test/corpus.sh    the same with a capped fixup list
+    test/window.sh                 a large generated source with every kind of
+                                   fixup patched long after it was written
+    test/bench/bench.sh            timings against ez80asm on the emulator
 
-The reference assembler and its corpus are vendored under `test/ref` and
-`test/corpus`, so none of this needs a network. Benchmarks need
+The reference assembler and its test suite are vendored, so none of this needs
+network access. The benchmarks need
 [fab-agon-emulator](https://github.com/tomm/fab-agon-emulator); everything else
 runs on the host.
 
 ## Documentation
 
-* [`docs/DESIGN.md`](docs/DESIGN.md) -- how the assembler works: the shape of a
-  run, the one-pass design and what it costs, the symbol tables, the
-  instruction table, macros, diagnostics, and what the eZ80 imposes on all of
-  it.
-* [`ez80_advanced_optimization_guide.md`](ez80_advanced_optimization_guide.md)
-  -- writing fast C for the eZ80: the ordinary C that becomes library calls,
-  what inlining actually does, two compiler bugs to know about, and how to
-  measure any of it. Most of why zap is quick.
+- [`docs/DESIGN.md`](docs/DESIGN.md) explains how the assembler works.
+- [`ez80_advanced_optimization_guide.md`](ez80_advanced_optimization_guide.md)
+  covers writing fast C for the eZ80: which ordinary C turns into library
+  calls, what inlining really does, a couple of compiler bugs, and how to
+  measure. It's most of the reason zap is fast.
 
 ## License
 
-GPL-3.0. The vendored reference assembler and its corpus under `test/` are MIT
-licensed and belong to the [agon-ez80asm](https://github.com/AgonPlatform/agon-ez80asm)
-project.
+GPL-3.0. The vendored ez80asm binaries and test suite under `test/` are MIT
+licensed and belong to the
+[agon-ez80asm](https://github.com/AgonPlatform/agon-ez80asm) project.

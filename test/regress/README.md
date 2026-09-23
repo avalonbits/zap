@@ -1,83 +1,59 @@
 # zap's own differential sources
 
-The same shape as `test/corpus` and run in the same pass by `test/corpus.sh`,
-but not the same provenance: `test/corpus` is the reference's test suite,
-vendored, MIT licensed, and somebody else's. Nothing zap writes goes in there.
+These work like `test/corpus` and `test/corpus.sh` runs them in the same pass,
+but they're ours. `test/corpus` is ez80asm's own test suite, vendored under
+its MIT licence, and nothing zap adds goes in there.
 
-**What these are for.** A vendored corpus can only find a divergence somebody
-else already wrote down. Every source in it was written to test ez80asm, so
-the cases it covers are the cases its authors thought of -- and when zap
-started reading the reference's *diagnostic table* instead, eight divergences
-turned up that 507 sources had never touched. Three of them were wrong bytes
-with nothing said. Those are here, so that a regression shows up in the runner
-that has to stay green rather than in a survey somebody has to think to do
-again.
+A borrowed test suite only covers the cases its authors thought of. When I
+went through ez80asm's table of error messages instead, I found eight
+differences that none of its 507 sources exercised, three of them silently
+wrong bytes. They live here now, along with later finds, so a regression shows
+up in the normal test run.
 
-Every file must either assemble identically in both or be refused by both.
-That is the only thing the runner can check, and it is the thing that matters.
+Each file must either assemble to identical bytes in both assemblers or be
+rejected by both. That's all the runner checks.
 
-    folds/      operands that go into the opcode: bit numbers, interrupt
-                modes, restart addresses -- valid, out of range, negative,
-                and each of them again with the value still ahead of the
-                instruction, which is where the fixup has to land on the
-                opcode byte rather than after it
+    folds/      operands encoded into the opcode (bit numbers, interrupt
+                modes, restart addresses): valid, out of range, negative,
+                and forward-referenced
     addresses/  ORG and RELOCATE against 16 and 24 bits, in and out of ADL
-                mode, including the two the reference does *not* check
-    limits/     the longest line and the longest macro name, at both sides
-                of the boundary, LF and CRLF
-    values/     bytes that are warned about but still written -- truncation,
-                a reservation's dropped initializer, an immediate wider than
-                the machine -- and what DS, ALIGN and BLK each emit, with the
-                FILLBYTE before and after the runs it decides
-    scopes/     label arithmetic that crosses a scope, where the local half
-                has to be folded in when the scope ends and the global half
-                left for the end of the source
+                mode, including two cases ez80asm doesn't check
+    limits/     the longest line and longest macro name, either side of the
+                limit, with LF and CRLF
+    values/     values that warn but still assemble (truncation, a DS
+                initializer, an immediate too wide), and what DS, ALIGN and
+                BLK emit around FILLBYTE
+    scopes/     label arithmetic that mixes local and global labels across
+                a scope boundary
     listing/    sources whose `.lst` is compared as well as their bytes
 
-## What is deliberately not here
+## What isn't here
 
-**The three differences zap keeps on purpose.** They are argued in
-docs/DESIGN.md section 13 and a file for any of them would fail by design: a
-negative reservation (4 GB in the reference), an output past the eZ80's 24-bit
-range, and the reference substituting a macro parameter inside a longer
-identifier -- any occurrence that ends one, so `db max` becomes `db ma1`. All
-three were re-checked against 2.3 rather than carried forward.
+**The three intentional differences.** They're explained in section 13 of
+docs/DESIGN.md, and a test for any of them would fail by design: a negative
+`DS` (ez80asm writes 4 GB), output past the 24-bit address range, and ez80asm
+substituting a macro parameter inside a longer name (`db max` with a
+parameter `x` becomes `db ma1`). All three still hold in 2.3.
 
-A third was listed here until it stopped being a difference: `@local - global`
-with both labels still ahead now agrees, and `scopes/local_minus_global.s` is
-the source that keeps it agreeing.
+**Differences in messages only.** The runner compares bytes and refusals, not
+text. Warnings are compared against ez80asm in test/run.sh instead.
 
-**Anything that only differs in a message.** The runner compares bytes and
-refusals. zap's diagnostics are its own words and always have been, so a
-warning that zap prints and the reference does not -- or the other way round
--- cannot be seen here. test/run.sh compares those against the reference
-directly, and that is where a warning's boundaries are pinned.
+**Anything that depends on command-line options.** Every file here is
+assembled with `-ez80` for zap (so operator precedence matches) and nothing
+else. `-o`, `-b` and `-a` are tested in test/run.sh.
 
-**Anything that depends on a command-line option.** Every source here is
-assembled with the same flags: `-ez80` for zap, so that the two agree about
-operator precedence, and nothing else. `-o`, `-b` and `-a` change the bytes
-and are compared against the reference in test/run.sh.
+## Why only some sources compare listings
 
-## The listing group, and why it is only some of the sources
+A single-pass assembler can't reproduce two things in ez80asm's listings (see
+section 12 of docs/DESIGN.md):
 
-Two things a one-pass assembler cannot put in a listing the way a two-pass one
-does, both written up in docs/DESIGN.md section 12:
+- a macro body loses its original indentation, because zap stores the body
+  from its first token;
+- ez80asm lists a reservation's fill bytes on an extra row, and zap doesn't.
+  `ORG` padding is listed inline by both and matches.
 
-* a macro body loses the indentation it was written with, because the body is
-  stored from its first token;
-* a reservation's fill is listed on a continuation row with the first row
-  left empty, and an ALIGN's too. zap leaves the first row empty as the
-  reference does, and writes no continuation row. An ORG's pad the reference
-  lists inline, and so does zap -- that one now agrees byte for byte.
-
-There were three. The line-number column's width was the other: 2.2 widened it
-for the whole file when the file listed a macro expansion, which it decided
-before writing line 1, and 2.3 made it a constant ten characters that a single
-pass can write. zap writes it.
-
-Sources in `listing/` avoid both, so their `.lst` can be compared byte
-for byte -- which is how it was found that zap wrote CRLF where the reference
-writes LF, and how the fourth difference was found and then closed: a forward
-reference was listed with the bytes as emitted rather than as patched, and
-`list_forward.s` and `list_forward_local.s` are here to keep it closed.
-Sources anywhere else in this tree are compared on bytes alone.
+The files in `listing/` avoid both, so their listings can be compared byte for
+byte. That's how we caught zap writing CRLF where ez80asm writes LF, and how we
+found that forward references were listed with their placeholder bytes;
+`list_forward.s` and `list_forward_local.s` keep that fixed. Everywhere else
+only the binary output is compared.

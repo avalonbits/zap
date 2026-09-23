@@ -1,250 +1,241 @@
 # Advanced eZ80 C Optimization Guide
 
-A reference for writing fast C on the Zilog eZ80, in **ADL (24-bit) mode**.
+Notes on writing fast C for the Zilog eZ80 in ADL (24-bit) mode, using
+agondev's clang at `-Oz`.
 
-Almost everything here was learned by building [zap](README.md), a one-pass
-assembler that runs on an Agon Light and is about three times faster than the
-assembler it replaces; [docs/DESIGN.md](docs/DESIGN.md) describes what that
-program does with the advice below. Each claim is marked with where it comes from: the Zilog
-instruction tables, a measurement on an emulated Agon at its real clock, or
-reasoning that has not been checked. Section 4 sorts them; section 5 is the method.
+Almost all of this came from building [zap](README.md), an assembler that runs
+on the Agon Light; [docs/DESIGN.md](docs/DESIGN.md) shows how zap puts it to
+use. Each claim comes from one of three places: Zilog's instruction tables, a
+measurement on an emulated Agon running at its real clock speed, or reasoning
+that hasn't been checked. Section 4 sorts them, and section 5 describes how
+the measurements were taken.
 
-**If you read one section, read 1a** -- ordinary C that has no instruction to
-compile to is where the large wins are, and it is invisible in the source.
+If you only read one section, read 1a. Ordinary-looking C that compiles to
+library calls is where the big wins are, and you can't see it in the source.
 
 ## Contents
 
+**[0. Terms used here](#0-terms-used-here)**
 
-**[0. The Words This Guide Uses](#0-the-words-this-guide-uses)**
+- [Registers and the index registers](#registers-and-the-index-registers)
+- [The stack frame and frame pointer](#the-stack-frame-and-frame-pointer)
+- [Prologue and epilogue](#prologue-and-epilogue)
+- [Why 128 bytes matters](#why-128-bytes-matters)
+- [Spilling](#spilling)
+- [Register allocation](#register-allocation)
+- [Helper calls](#helper-calls)
+- [Inlining and outlining](#inlining-and-outlining)
+- [Tail calls](#tail-calls)
+- [`-Oz` and `-S`](#-oz-and--s)
 
-* [Registers, and the two index registers](#registers-and-the-two-index-registers)
-* [The stack frame, and the frame pointer](#the-stack-frame-and-the-frame-pointer)
-* [The frame prologue and epilogue](#the-frame-prologue-and-epilogue)
-* [Why 128 bytes matters](#why-128-bytes-matters)
-* [Spilling](#spilling)
-* [Register allocation](#register-allocation)
-* [Helper calls: `__imulu`, `__ishl`, `__setflag`](#helper-calls-imulu-ishl-setflag)
-* [Inlining and outlining](#inlining-and-outlining)
-* [Tail call](#tail-call)
-* [The `-Oz` and `-S` flags](#the--oz-and--s-flags)
+**[1. Choosing integer widths](#1-choosing-integer-widths)**
 
-**[1. Choosing the Right Data Sizes (8 vs. 16 vs. 24-bit)](#1-choosing-the-right-data-sizes-8-vs-16-vs-24-bit)**
+- [Narrowing only pays if everything stays narrow](#narrowing-only-pays-if-everything-stays-narrow)
 
-* [24-Bit Integers (`int` or `int24_t`) -- *Fastest for Pointers & Math*](#24-bit-integers-int-or-int24t----fastest-for-pointers--math)
-* [8-Bit Integers (`char` or `uint8_t`) -- *Fastest for Counters & Flags*](#8-bit-integers-char-or-uint8t----fastest-for-counters--flags)
-* [16-Bit Integers (`short` or `int16_t`) -- *The Worst Performer in ADL Mode*](#16-bit-integers-short-or-int16t----the-worst-performer-in-adl-mode)
-* [Narrowing pays only if the operations stay narrow](#narrowing-pays-only-if-the-operations-stay-narrow----measured)
+**[1a. C that compiles to calls instead of instructions](#1a-c-that-compiles-to-calls-instead-of-instructions)**
 
-**[1a. The Main Hazard: C That Compiles to Calls, Not Instructions](#1a-the-main-hazard-c-that-compiles-to-calls-not-instructions)**
+- [The usual suspects](#the-usual-suspects)
+- [Fixes, most common first](#fixes-most-common-first)
+- [The catch with fix 4](#the-catch-with-fix-4)
+- [Finding them](#finding-them)
 
-* [The offenders](#the-offenders)
-* [The fixes, in order of how often they apply](#the-fixes-in-order-of-how-often-they-apply)
-* [The trap in fix 4](#the-trap-in-fix-4)
-* [How to find them](#how-to-find-them)
+**[2. Architecture rules](#2-architecture-rules)**
 
-**[2. Core Architecture Rules](#2-core-architecture-rules)**
+- [Stack locals are faster than globals](#stack-locals-are-faster-than-globals)
+- [Count loops down to zero](#count-loops-down-to-zero)
+- [Use the 8-bit multiplier](#use-the-8-bit-multiplier)
+- [Keep hot functions to a few arguments](#keep-hot-functions-to-a-few-arguments)
+- [Pass structs by pointer](#pass-structs-by-pointer)
+- [Branchless isn't always better](#branchless-isnt-always-better)
+- [One index register per loop](#one-index-register-per-loop)
 
-* [Do NOT Prefer Global/Static Over Stack Locals -- Stack Access Is Faster](#do-not-prefer-globalstatic-over-stack-locals----stack-access-is-faster)
-* [Structure Loops to Count Down to Zero](#structure-loops-to-count-down-to-zero)
-* [Leverage the 8-bit Hardware Multiplier (`MLT`)](#leverage-the-8-bit-hardware-multiplier-mlt)
-* [Pass Arguments via Registers](#pass-arguments-via-registers)
-* [Avoid Passing Structures by Value](#avoid-passing-structures-by-value)
-* [Branchless is not unconditional](#branchless-is-not-unconditional----measured)
-* [One index register is the budget inside a loop](#one-index-register-is-the-budget-inside-a-loop----measured)
+**[2a. Inlining is only a request](#2a-inlining-is-only-a-request)**
 
-**[2a. Inlining Is a Request, and Function Shape Is a Cost](#2a-inlining-is-a-request-and-function-shape-is-a-cost)**
+- [One cold caller can de-inline a hot helper everywhere](#one-cold-caller-can-de-inline-a-hot-helper-everywhere)
+- [Don't inline a cold function with a big buffer into a hot one](#dont-inline-a-cold-function-with-a-big-buffer-into-a-hot-one)
+- [Tail calls keep a frame off the common path](#tail-calls-keep-a-frame-off-the-common-path)
+- [Code that's merely present still costs](#code-thats-merely-present-still-costs)
+- [Sometimes a call is cheaper than a bigger frame](#sometimes-a-call-is-cheaper-than-a-bigger-frame)
 
-* [One cold caller de-inlines a hot helper for everybody](#one-cold-caller-de-inlines-a-hot-helper-for-everybody)
-* [A cold function with a big buffer must not be inlined into a hot one](#a-cold-function-with-a-big-buffer-must-not-be-inlined-into-a-hot-one)
-* [Tail calls keep a frame off the common path](#tail-calls-keep-a-frame-off-the-common-path)
-* [Code that is merely *there* costs](#code-that-is-merely-there-costs)
-* [Calls versus frames: sometimes the call is cheaper](#calls-versus-frames-sometimes-the-call-is-cheaper)
+**[3. Memory and arithmetic](#3-memory-and-arithmetic)**
 
-**[3. Advanced Memory & Mathematical Optimizations](#3-advanced-memory--mathematical-optimizations)**
+- [Mark constant data `const`](#mark-constant-data-const)
+- [Shifts: prefer bytes and tables](#shifts-prefer-bytes-and-tables)
+- [Even a constant shift by two costs a call](#even-a-constant-shift-by-two-costs-a-call)
+- [Use `memcpy`, `memmove` and `memset`](#use-memcpy-memmove-and-memset)
+- [Use power-of-two sizes to avoid division](#use-power-of-two-sizes-to-avoid-division)
+- [Inline small hot functions](#inline-small-hot-functions)
+- [Keep every stack frame under 128 bytes](#keep-every-stack-frame-under-128-bytes)
+- [Buffer file writes](#buffer-file-writes)
 
-* [Master `const` and Memory Segments (RAM vs. Flash)](#master-const-and-memory-segments-ram-vs-flash)
-* [Replace Bit-Shifting with Byte-Swapping](#replace-bit-shifting-with-byte-swapping)
-* [Exploit Block Memory Instructions (`LDIR` / `CPIR`)](#exploit-block-memory-instructions-ldir--cpir)
-* [Use Power-of-Two Array Sizes to Avoid Division](#use-power-of-two-array-sizes-to-avoid-division)
-* [Inline Small, Critical Functions](#inline-small-critical-functions)
-* [Keep Every Stack Frame Under 128 Bytes](#keep-every-stack-frame-under-128-bytes)
+**[3a. Memory without virtual memory](#3a-memory-without-virtual-memory)**
 
-**[3a. Memory on a Machine With No Virtual Memory](#3a-memory-on-a-machine-with-no-virtual-memory)**
+- [A `realloc` that moves needs both copies](#a-realloc-that-moves-needs-both-copies)
+- [Allocating is cheap; touching memory isn't](#allocating-is-cheap-touching-memory-isnt)
+- [Measure memory like you measure time](#measure-memory-like-you-measure-time)
 
-* [A realloc that moves holds both copies](#a-realloc-that-moves-holds-both-copies)
-* [Allocation is cheap; touching memory is not](#allocation-is-cheap-touching-memory-is-not)
-* [Measure memory the way you measure time](#measure-memory-the-way-you-measure-time)
+**[3b. Two miscompiles to know about](#3b-two-miscompiles-to-know-about)**
 
-**[3b. Two Miscompiles to Know About](#3b-two-miscompiles-to-know-about)**
+- [Unbounded character scans can be compiled rotated](#unbounded-character-scans-can-be-compiled-rotated)
+- [A backwards trim reads one byte too far](#a-backwards-trim-reads-one-byte-too-far)
+- [What they have in common](#what-they-have-in-common)
 
-* [An unbounded character scan can be compiled rotated](#an-unbounded-character-scan-can-be-compiled-rotated)
-* [A backwards trim reads one byte too far](#a-backwards-trim-reads-one-byte-too-far)
-* [What both have in common](#what-both-have-in-common)
+**[3c. Width and sign](#3c-width-and-sign)**
 
-**[3c. Width and Sign](#3c-width-and-sign)**
+- [Comparing different widths tests the wrong bytes](#comparing-different-widths-tests-the-wrong-bytes)
+- [Signed comparisons are calls](#signed-comparisons-are-calls)
+- [Out-parameters force values into memory](#out-parameters-force-values-into-memory)
 
-* [A comparison between different widths tests the wrong bytes](#a-comparison-between-different-widths-tests-the-wrong-bytes)
-* [A signed compare is a call](#a-signed-compare-is-a-call)
-* [An out-parameter puts a value in memory](#an-out-parameter-puts-a-value-in-memory)
+**[4. What's verified](#4-whats-verified)**
 
-**[4. Provenance -- What Here Is Verified](#4-provenance----what-here-is-verified)**
+- [Checked against Zilog UM0077](#checked-against-zilog-um0077)
+- [Measured on an emulated Agon](#measured-on-an-emulated-agon)
+- [Contradicted by measurement](#contradicted-by-measurement)
+- [Plausible but unverified](#plausible-but-unverified)
 
-* [Verified against Zilog UM0077 (the instruction Attributes tables, from p. 79)](#verified-against-zilog-um0077-the-instruction-attributes-tables-from-p-79)
-* [Verified by measurement on an emulated Agon](#verified-by-measurement-on-an-emulated-agon)
-* [Contradicted by measurement](#contradicted-by-measurement)
-* [Plausible but unverified](#plausible-but-unverified)
-* [A note on measuring at all](#a-note-on-measuring-at-all)
-* [A constant shift is a call, and you cannot write your way out](#a-constant-shift-is-a-call-and-you-cannot-write-your-way-out----measured)
+**[5. How to measure on this target](#5-how-to-measure-on-this-target)**
 
-**[5. How to Measure on This Target](#5-how-to-measure-on-this-target)**
-
-* [The host is not a proxy, and it is biased rather than noisy](#the-host-is-not-a-proxy-and-it-is-biased-rather-than-noisy)
-* [Read the program's own clock, and do not unthrottle the emulator](#read-the-programs-own-clock-and-do-not-unthrottle-the-emulator)
-* [The clock counts hundredths, so repeat and sum](#the-clock-counts-hundredths-so-repeat-and-sum)
-* [One change, one measurement, nothing else running](#one-change-one-measurement-nothing-else-running)
-* [Pricing a piece of code without instrumenting it](#pricing-a-piece-of-code-without-instrumenting-it)
-* [Read the generated assembly](#read-the-generated-assembly)
+- [The host isn't a stand-in](#the-host-isnt-a-stand-in)
+- [Use the program's own clock, and don't unthrottle](#use-the-programs-own-clock-and-dont-unthrottle)
+- [Repeat short runs and add them up](#repeat-short-runs-and-add-them-up)
+- [One change at a time, nothing else running](#one-change-at-a-time-nothing-else-running)
+- [Measuring a piece of code without changing it](#measuring-a-piece-of-code-without-changing-it)
+- [Read the generated assembly](#read-the-generated-assembly)
 
 ## Index by symptom
 
-| what you are seeing | where to look |
+| what you're seeing | where to look |
 |---|---|
-| `call __imulu` / `__ishl` / `__iand` in the assembly | [The offenders](#the-offenders) |
-| an array subscript or `p += n` is slow | [The offenders](#the-offenders), [A constant shift is a call](#a-constant-shift-is-a-call-and-you-cannot-write-your-way-out----measured) |
-| a shift by a constant is not free | [Replace Bit-Shifting with Byte-Swapping](#replace-bit-shifting-with-byte-swapping) |
-| `call pe, __setflag` appears in a loop | [A signed compare is a call](#a-signed-compare-is-a-call) |
-| a function got slower when an unrelated one was added | [One cold caller de-inlines a hot helper](#one-cold-caller-de-inlines-a-hot-helper-for-everybody), [Register allocation](#register-allocation) |
-| a loop got slower and its source did not change | [Code that is merely *there* costs](#code-that-is-merely-there-costs), [One index register is the budget](#one-index-register-is-the-budget-inside-a-loop----measured) |
-| `lea hl, ix + 0` sequences everywhere | [Why 128 bytes matters](#why-128-bytes-matters), [Keep Every Stack Frame Under 128 Bytes](#keep-every-stack-frame-under-128-bytes) |
-| a helper you marked `static inline` is being called | [Inlining and outlining](#inlining-and-outlining), [One cold caller de-inlines a hot helper](#one-cold-caller-de-inlines-a-hot-helper-for-everybody) |
-| a cold feature costs time even when it is switched off | [A cold function with a big buffer](#a-cold-function-with-a-big-buffer-must-not-be-inlined-into-a-hot-one), [Code that is merely *there* costs](#code-that-is-merely-there-costs) |
-| a value keeps being written to the frame and read back | [Spilling](#spilling), [An out-parameter puts a value in memory](#an-out-parameter-puts-a-value-in-memory) |
-| wrong bytes on the target, right bytes on the host | [Two Miscompiles to Know About](#3b-two-miscompiles-to-know-about), [A comparison between different widths](#a-comparison-between-different-widths-tests-the-wrong-bytes) |
-| a scan skips its first character | [An unbounded character scan can be compiled rotated](#an-unbounded-character-scan-can-be-compiled-rotated) |
-| out of memory while growing a buffer | [A realloc that moves holds both copies](#a-realloc-that-moves-holds-both-copies) |
-| which integer width should this be | [Choosing the Right Data Sizes](#1-choosing-the-right-data-sizes-8-vs-16-vs-24-bit), [Narrowing pays only if the operations stay narrow](#narrowing-pays-only-if-the-operations-stay-narrow----measured) |
-| should this branch be replaced by a table | [Branchless is not unconditional](#branchless-is-not-unconditional----measured) |
-| how do I measure any of this | [How to Measure on This Target](#5-how-to-measure-on-this-target), [Read the generated assembly](#read-the-generated-assembly) |
-| is this claim actually verified | [Provenance](#4-provenance----what-here-is-verified) |
+| `call __imulu` / `__ishl` / `__iand` in the assembly | [The usual suspects](#the-usual-suspects) |
+| an array subscript or `p += n` is slow | [The usual suspects](#the-usual-suspects), [Even a constant shift by two costs a call](#even-a-constant-shift-by-two-costs-a-call) |
+| a shift by a constant isn't free | [Shifts: prefer bytes and tables](#shifts-prefer-bytes-and-tables) |
+| `call pe, __setflag` in a loop | [Signed comparisons are calls](#signed-comparisons-are-calls) |
+| a function got slower when an unrelated one was added | [One cold caller can de-inline a hot helper](#one-cold-caller-can-de-inline-a-hot-helper-everywhere), [Register allocation](#register-allocation) |
+| a loop got slower and its source didn't change | [Code that's merely present still costs](#code-thats-merely-present-still-costs), [One index register per loop](#one-index-register-per-loop) |
+| `lea hl, ix + 0` sequences everywhere | [Why 128 bytes matters](#why-128-bytes-matters), [Keep every stack frame under 128 bytes](#keep-every-stack-frame-under-128-bytes) |
+| a helper marked `static inline` is being called | [Inlining and outlining](#inlining-and-outlining), [One cold caller can de-inline a hot helper](#one-cold-caller-can-de-inline-a-hot-helper-everywhere) |
+| a disabled feature still costs time | [Don't inline a cold function with a big buffer](#dont-inline-a-cold-function-with-a-big-buffer-into-a-hot-one), [Code that's merely present still costs](#code-thats-merely-present-still-costs) |
+| a value keeps being written to the frame and read back | [Spilling](#spilling), [Out-parameters force values into memory](#out-parameters-force-values-into-memory) |
+| wrong bytes on the target, right bytes on the host | [Two miscompiles to know about](#3b-two-miscompiles-to-know-about), [Comparing different widths](#comparing-different-widths-tests-the-wrong-bytes) |
+| a scan skips its first character | [Unbounded character scans can be compiled rotated](#unbounded-character-scans-can-be-compiled-rotated) |
+| out of memory while growing a buffer | [A `realloc` that moves needs both copies](#a-realloc-that-moves-needs-both-copies) |
+| which integer width to use | [Choosing integer widths](#1-choosing-integer-widths), [Narrowing only pays if everything stays narrow](#narrowing-only-pays-if-everything-stays-narrow) |
+| should this branch become a table | [Branchless isn't always better](#branchless-isnt-always-better) |
+| how to measure any of this | [How to measure on this target](#5-how-to-measure-on-this-target), [Read the generated assembly](#read-the-generated-assembly) |
+| is this claim actually verified | [What's verified](#4-whats-verified) |
 
 ---
 
-## 0. The Words This Guide Uses
+## 0. Terms used here
 
-Most of the advice below is about what the compiler emits, so it uses terms
-from the machine rather than from C. If any of these are unfamiliar, read this
-section first; nothing else here depends on knowing assembly beyond it.
+Most of the advice is about what the compiler emits, so it uses machine terms
+rather than C terms. Skim this section if any are unfamiliar; nothing later
+needs more assembly than this.
 
-### Registers, and the two index registers
+### Registers and the index registers
 
-The eZ80 has a handful of 24-bit registers -- `HL`, `DE`, `BC`, `IX`, `IY` --
-and an 8-bit accumulator `A`. A value in a register is free to use; a value in
+The eZ80 has a handful of 24-bit registers (`HL`, `DE`, `BC`, `IX`, `IY`) and
+an 8-bit accumulator, `A`. A value in a register is free to use; a value in
 memory costs a load.
 
-`IX` and `IY` are the **index registers**. They are the only ones that can be
-used as `(IX + d)`: a base address plus a small constant offset, in one
-instruction. Everything the compiler does with structs, arrays and local
-variables leans on that.
+`IX` and `IY` are the index registers, the only ones that support `(IX + d)`
+addressing: a base address plus a small constant offset in a single
+instruction. The compiler relies on this for structs, arrays and local
+variables.
 
-### The stack frame, and the frame pointer
+### The stack frame and frame pointer
 
-When a function runs, its local variables live in a block of memory on the
-stack. That block is the function's **stack frame**, and the compiler keeps a
-register pointing at it -- the **frame pointer**, which on this target is `IX`.
-
-A local variable is then an offset from that pointer:
+A function's local variables live in a block of stack memory called its stack
+frame. The compiler keeps `IX` pointing at it (the frame pointer), so a local
+is just an offset:
 
 ```
     ld   hl, (ix - 9)      ; read a local 9 bytes into the frame
 ```
 
-### The frame prologue and epilogue
+### Prologue and epilogue
 
-The instructions at the top of a function that set the frame up, and the ones
-at the bottom that take it down. On this compiler the prologue is a call:
+The code at the start of a function that sets up its frame, and at the end
+that tears it down. With this compiler the prologue is a call:
 
 ```
 _my_function:
-    ld   hl, -24           ; this function's frame is 24 bytes
-    call __frameset        ; set IX to point at it, reserve the space
+    ld   hl, -24           ; a 24-byte frame
+    call __frameset        ; point IX at it and reserve the space
     ...
 ```
 
-That is why "the frame grew" is a real cost and not bookkeeping: everything the
-function does afterwards is measured from `IX`, and the *size* of the frame
+Every local access afterwards is relative to `IX`, so the size of the frame
 decides whether those accesses are cheap.
 
 ### Why 128 bytes matters
 
-The `d` in `(IX + d)` is a **signed byte**: −128 to +127. A local more than 128
-bytes into the frame cannot be reached that way, so the compiler computes its
+The `d` in `(IX + d)` is a signed byte, −128 to +127. A local further into the
+frame than that can't be reached directly, so the compiler computes its
 address instead:
 
 ```
-    ld   bc, -139          ; five instructions, and a register clobbered,
+    ld   bc, -139          ; four instructions and a clobbered register
     lea  hl, ix + 0        ; where there was one
     add  hl, bc
     ld   hl, (hl)
 ```
 
-This is paid on **every access** to every local past the boundary. It is the
-single easiest large regression to introduce by accident, because nothing in
-the C says a frame got bigger.
+You pay that on every access to every local past the boundary. It's the
+easiest large regression to introduce by accident, because nothing in the C
+tells you a frame got bigger.
 
 ### Spilling
 
-A value the compiler wanted to keep in a register, but could not, gets written
-to the frame and read back -- it is **spilled**. Taking the address of a local
-(`&x`, or passing `&x` to a function) forces a spill, because a register has no
-address. So does needing more live values at once than there are registers.
-
-Inside a loop, a spill is paid every iteration.
+When the compiler wants a value in a register but can't keep it there, it
+writes it to the frame and reads it back later. That's a spill. Taking a
+local's address (`&x`, including passing `&x` to a function) forces one, since
+registers don't have addresses. So does needing more live values than there
+are registers. Inside a loop, a spill costs you on every iteration.
 
 ### Register allocation
 
-The compiler's decision about which values live in which registers, and which
-get spilled. It is made per function, over the whole function, which is why
-adding code that never runs -- a branch that is not taken, an inlined helper
-that is never reached -- can slow down a loop somewhere else in the same
-function. This guide has several examples.
+The compiler's choice of which values live in registers and which get
+spilled. It's made for a whole function at once, so adding code that never
+runs (an untaken branch, an inlined helper that's never reached) can slow down
+a loop somewhere else in the same function. There are several examples below.
 
-### Helper calls: `__imulu`, `__ishl`, `__setflag`
+### Helper calls
 
-The eZ80 has no multiply wider than 8 bits, no divide, no barrel shifter, and
-an 8-bit ALU. When C asks for something the chip cannot do in one instruction,
-the compiler emits a **call to a library helper** whose name starts with `__`:
+The eZ80 has no multiply wider than 8 bits, no divide, no barrel shifter and
+an 8-bit ALU. When C asks for something the chip can't do in one instruction,
+the compiler calls a library helper whose name starts with `__`:
 
 | in the assembly | what the C looked like |
 |---|---|
-| `call __imulu` | a multiply -- including an array subscript |
+| `call __imulu` | a multiply, including an array subscript |
 | `call __ishl`, `call __bshl` | a shift |
 | `call __iand`, `call __ior` | a bitwise operation on a 24-bit value |
 | `call __idivu`, `call __irems` | `/` or `%` |
-| `call pe, __setflag` | repairing the flags after a signed comparison |
+| `call pe, __setflag` | fixing the flags after a signed comparison |
 | `call __l...` | anything on a 32-bit type |
 
-Section 1a is about finding and removing these. `__frameset` is the exception:
-it is the frame prologue, not an arithmetic operation.
+Section 1a is about finding and removing these. `__frameset` is the
+exception: it's the frame prologue, not arithmetic.
 
 ### Inlining and outlining
 
-**Inlining** is the compiler copying a function's body into its caller instead
-of calling it. **Outlining** is the opposite: deciding to emit the function
-once and call it. `static inline` is a *request*; the compiler decides, and
-section 2a is about what it decides and when that hurts.
+Inlining copies a function's body into its caller; outlining emits the
+function once and calls it. `static inline` is only a request, and section 2a
+covers when the compiler ignores it and what that costs.
 
-### Tail call
+### Tail calls
 
-A call whose result is returned immediately -- `return f(x);` -- so nothing in
-the caller has to survive it. The caller's registers do not need saving and its
-frame can be reused, which makes a tail call much cheaper than a call whose
-result is used afterwards.
+A call whose result is returned straight away (`return f(x);`), so nothing in
+the caller needs to survive it. The caller doesn't have to save registers and
+its frame can be reused, which makes a tail call much cheaper than an ordinary
+one.
 
-### The `-Oz` and `-S` flags
+### `-Oz` and `-S`
 
-`-Oz` is "optimise for size", which is the level agondev builds at and the one
-every measurement here was taken at. `-S` makes the compiler write assembly
-instead of an object file, which is how you look at any of the above:
+`-Oz` optimizes for size. It's what agondev builds with and what every
+measurement here used. `-S` writes assembly instead of an object file, which
+is how you see any of the above:
 
 ```
     ez80-none-elf-clang -mllvm -z80-gas-style -Oz -S file.c -o file.s
@@ -252,198 +243,210 @@ instead of an object file, which is how you look at any of the above:
 
 ---
 
-## 1. Choosing the Right Data Sizes (8 vs. 16 vs. 24-bit)
+## 1. Choosing integer widths
 
-Data size selection is the single most critical factor when writing efficient C for the eZ80. Choosing the wrong width introduces massive instruction bloat.
+The width of your integers matters more than almost anything else.
 
-### 24-Bit Integers (`int` or `int24_t`) -- *Fastest for Pointers & Math*
-* **The Architecture:** In ADL mode, native registers (`HL`, `DE`, `BC`) expand to 24 bits. 
-* **Optimization Benefit:** Operations on 24-bit integers map natively to CPU instructions. Always use 24-bit types for pointers, array indexing, and general math. 
-* **The Danger of 16-Bit:** Using a 16-bit integer for array indexing forces the compiler to generate extra instructions to sign-extend or zero-extend the variable to 24 bits before it can compute a memory address.
+**24-bit (`int`, `int24_t`) is the native size.** In ADL mode `HL`, `DE` and
+`BC` are 24 bits wide, so 24-bit arithmetic maps straight onto instructions.
+Use it for pointers, array indexes and general arithmetic. A 16-bit index has
+to be extended to 24 bits before it can be used in an address.
 
-### 8-Bit Integers (`char` or `uint8_t`) -- *Fastest for Counters & Flags*
-* **The Architecture:** The eZ80 remains an 8-bit chip at its core.
-* **Optimization Benefit:** Operations on `uint8_t` variables are extremely fast because they directly map to 8-bit registers like `A`, `B`, or `C`. Use 8-bit integers for any local counter or loop variable that will never exceed 255.
+**8-bit (`char`, `uint8_t`) is fastest for small values.** Underneath, the eZ80
+is still an 8-bit chip, and 8-bit values sit directly in `A`, `B`, `C` and so
+on. Use them for counters and flags that stay under 256.
 
-### 16-Bit Integers (`short` or `int16_t`) -- *The Worst Performer in ADL Mode*
-* **The Architecture:** In 24-bit ADL mode, 16-bit arithmetic is awkward. The architecture lacks dedicated 16-bit truncation logic within its 24-bit mathematical paths.
-* **Optimization Penalty:** If you perform calculations using 16-bit types, the compiler must emit extra operations to mask out or handle overflows in the upper 8 bits of the 24-bit register (`HLU`, `DEU`, etc.). **Avoid 16-bit integers** unless absolutely required for an external file format or specific hardware register constraint.
+**16-bit (`short`, `int16_t`) is probably the slowest.** There's no cheap way to
+keep a 16-bit result tidy inside a 24-bit register, so the compiler is
+believed to add masking and extension around it. That isn't verified (see
+section 4), but there's rarely a reason to use 16-bit types except for file
+formats and hardware registers.
 
-| Data Type | Width (ADL Mode) | Performance Profile | Primary Use Case |
+| type | width | performance | use for |
 | :--- | :--- | :--- | :--- |
-| `int8_t` / `uint8_t` | 8-bit | **Excellent** | Loop counters, state flags, small buffers |
-| `int16_t` / `uint16_t` | 16-bit | **Poor** (unverified) | Avoid (believed to cause masking/extension overhead) |
-| `int24_t` / `uint24_t` / `int` | 24-bit | **Excellent** | Memory pointers, array indexing, general math |
+| `int8_t` / `uint8_t` | 8-bit | excellent | loop counters, flags, small buffers |
+| `int16_t` / `uint16_t` | 16-bit | poor (unverified) | avoid |
+| `int24_t` / `uint24_t` / `int` | 24-bit | excellent | pointers, indexes, general arithmetic |
 
-### Narrowing pays only if the operations stay narrow -- *measured*
+### Narrowing only pays if everything stays narrow
 
-Choosing a narrower type for a field is not on its own an optimisation. What
-decides it is the width of **everything that touches the field**: if a narrowed
-value is used in an expression with a wider one, C promotes it back, and the
-conversion is paid at every use. That can cost more than the wider field ever
-did.
+A narrower field isn't automatically faster. What matters is the width of
+everything that touches it: if a narrowed value meets a wider one in an
+expression, C widens it again, and you pay for that conversion at every use.
+That can cost more than the wider field ever did.
 
-Measured in zap, on an Agon, narrowing 32-bit fields to the native 24-bit word:
+Measured in zap on the Agon, narrowing 32-bit fields to 24 bits:
 
 | what was narrowed | what reads it | result |
 | :--- | :--- | :--- |
-| `operand.imm` | shifts and masks that stay 24-bit | **−0.8% synth** |
-| `operand.reg` alone | compared against a 32-bit table field, so widens back | **+2.4% synth** |
-| `operand.reg` and the table field together | nothing widens, but a shared struct is repacked | +1.0% synth |
+| `operand.imm` | shifts and masks that stay 24-bit | −0.8% on synth |
+| `operand.reg` alone | compared with a 32-bit table field, so widened again | +2.4% on synth |
+| `operand.reg` and the table field | nothing widens, but a shared struct is repacked | +1.0% on synth |
 
-The same idea, applied three ways, gains 0.8% or costs 2.4% depending only on
-what the field is used *with*. The middle row is the trap: it is the change that
-looks most obviously correct in isolation, and it is the worst of the three.
+The same idea, applied three ways, gained 0.8% or cost 2.4% depending only on
+what the field was used with. The middle row is the trap: it looks the most
+obviously correct and is the worst of the three.
 
-Two rules follow:
+So:
 
-* **Narrow a field only when every operation on it narrows with it.** Half a
-  conversion is worse than none.
-* **Beware narrowing a field in a struct other code shares.** Repacking moves
-  every field after it, and that cost lands on code that has nothing to do with
-  the change.
+- Only narrow a field if every operation on it narrows too. Half a conversion
+  is worse than none.
+- Be careful narrowing a field in a shared struct. Repacking moves every field
+  after it, and the cost lands on code that has nothing to do with the change.
 
 ---
 
-## 1a. The Main Hazard: C That Compiles to Calls, Not Instructions
+## 1a. C that compiles to calls instead of instructions
 
-**This is the single most useful thing in this document.** On a 24-bit machine
-with an 8-bit ALU, no barrel shifter and no multiplier wider than `MLT`, a
-great deal of ordinary C has no instruction to compile to. The compiler emits a
-call to a library helper instead. Nothing in the source suggests it happened,
-the code reads as arithmetic, and on the host it *is* arithmetic — so it is
-invisible to a host profile and to review.
+This is the most useful section in the guide. On a 24-bit machine with an
+8-bit ALU, no barrel shifter and only an 8-bit multiplier (`MLT`), a lot of
+ordinary C has no instruction to compile to, so the compiler calls a library
+helper instead. Nothing in the source hints at it. The code looks like
+arithmetic, and on the host it is arithmetic, so a host profiler won't show it
+and code review won't catch it.
 
-Every large win in this work was one of these, found by reading generated
-assembly rather than by thinking harder about the C.
+Every large speedup in zap was one of these, and every one was found by
+reading the generated assembly rather than staring at the C.
 
-### The offenders
+### The usual suspects
 
-| What you write | What you get | Why |
+| what you write | what you get | why |
 |---|---|---|
-| `x << 3`, `x << 4`, `x >> 4` | `call __bshl` / `__bshru` | No barrel shifter: a shift is a loop over the bits |
-| `x << 8`, `x << 16` | `call __ishl` | Even byte boundaries — the compiler does **not** turn a *left* shift into a byte move |
-| `(uint8_t)(v >> 16)` where `v` is in a register | `call __ishru` | Only `>> 8` gets the byte trick (`ld a, h`); HL's upper byte is not addressable |
+| `x << 3`, `x << 4`, `x >> 4` | `call __bshl` / `__bshru` | no barrel shifter, so a shift is a loop over bits |
+| `x << 8`, `x << 16` | `call __ishl` | even on byte boundaries, a left shift isn't turned into a byte move |
+| `(uint8_t)(v >> 16)` with `v` in a register | `call __ishru` | only `>> 8` gets the byte trick (`ld a, h`); `HL`'s top byte isn't addressable |
 | `a & b` on a 24-bit value | `call __iand` | `AND` is an 8-bit instruction |
-| `a \| b` on a 24-bit value | `call __ior` | Same |
-| `x != 0` on a 24-bit value | `call __lcmpzero` | Same |
-| `arr[i]` where `sizeof(*arr) != 1` | `call __imulu` | The subscript is `i * size`, and `MLT` is 8-bit |
-| `p += n` on a pointer to a struct | `call __imulu` | Same, and easy to miss — it looks like pointer arithmetic |
-| anything on `uint32_t`/`long` | `call __l*` | Twice the machine's width |
-| `x / y`, `x % y` | `call __idivu` / `__irems` | No divide instruction at all |
+| `a \| b` on a 24-bit value | `call __ior` | same |
+| `x != 0` on a 24-bit value | `call __lcmpzero` | same |
+| `arr[i]` where `sizeof(*arr) != 1` | `call __imulu` | the subscript is `i * size`, and `MLT` is 8-bit |
+| `p += n` on a pointer to a struct | `call __imulu` | same, and easy to miss because it looks like pointer arithmetic |
+| anything on `uint32_t` / `long` | `call __l*` | twice the machine's width |
+| `x / y`, `x % y` | `call __idivu` / `__irems` | no divide instruction at all |
 
-### The fixes, in order of how often they apply
+### Fixes, most common first
 
-1. **Precompute into a table.** `shl3[i & 7]` instead of `i << 3`: an indexed
-   load from ≤256 bytes is one instruction. Repeated addition does *not* work —
-   the compiler canonicalises `x+x+x+x` back into a shift.
-2. **Split wide values into bytes, at the point they are created.** A 24-bit
-   mask that is only ever masked or tested against zero should be three
-   `uint8_t`. Do the split where the value is born, not where it is used, or
-   every user pays it.
-3. **Keep constants constant.** A constant shift folds only while the value is
-   still a constant. After a `switch` joins, `bit >> 16` is a runtime shift and
-   therefore a call — sink the stores into the arms instead.
-4. **Hand out pointers that already exist.** Returning a pointer *from a data
-   structure* removes the subscript's multiply. But see the trap below.
-5. **Read bytes out of memory, not out of a local.** `(uint8_t)(op->imm >> 16)`
-   is an indexed load; hoist `op->imm` into a local first and it becomes a call.
+1. Precompute into a table. Write `shl3[i & 7]` instead of `i << 3`: an indexed
+   load from a table of 256 bytes or less is one instruction. Repeated
+   addition doesn't help, because the compiler turns `x+x+x+x` back into a
+   shift.
+2. Split wide values into bytes where they're created. A 24-bit mask that's
+   only ever masked or tested for zero should be three `uint8_t`s. Split it
+   where it's produced, not where it's used, or every user pays.
+3. Keep constants constant. A constant shift only folds while the value is
+   still known at compile time. After a `switch` merges, `bit >> 16` is a
+   runtime shift and therefore a call; move the stores into each case instead.
+4. Hand out pointers that already exist. Returning a pointer into a data
+   structure avoids the multiply a subscript needs. But see the next heading.
+5. Read bytes from memory, not from a local. `(uint8_t)(op->imm >> 16)` is an
+   indexed load; copy `op->imm` into a local first and it becomes a call.
 
-### The trap in fix 4
+### The catch with fix 4
 
-"Hand out a pointer" does not mean "invent objects to point at". Returning
-pointers to twenty-eight `static const` descriptors removed a `__ishru` and
-still lost 0.4%, because the compiler hoisted their addresses into the frame
-prologue — `ld de, _rd_a; ld (ix - 17), de` — paid on every call, and the frame
-grew past a size that mattered. The same call removed by sinking the stores
-into the switch arms, creating nothing new, won 4.9%. **Ask where the pointer
-comes from.**
+Handing out an existing pointer doesn't mean inventing objects to point at.
+Returning pointers to twenty-eight `static const` descriptors removed a
+`__ishru` call but still lost 0.4%, because the compiler hoisted their
+addresses into the prologue (`ld de, _rd_a; ld (ix - 17), de`), paid on every
+call, and the frame grew past a size that mattered. Removing the same call by
+moving stores into the switch cases, without creating anything new, won 4.9%.
+Ask where the pointer comes from.
 
-### How to find them
+### Finding them
 
+```
     ez80-none-elf-clang ... -S file.c -o file.s
     grep -o 'call[ \t]*__[a-z0-9_]*' file.s | sort | uniq -c
+```
 
-Anything other than `__frameset` is an operation the chip does not have. Do
-this before optimising anything, and again after — several of these appeared
-*because* of a change that looked like an improvement.
+Anything other than `__frameset` is an operation the chip doesn't have. Check
+before optimizing and again after: several of these appeared because of
+changes that looked like improvements.
 
 ---
 
-## 2. Core Architecture Rules
+## 2. Architecture rules
 
-### Do NOT Prefer Global/Static Over Stack Locals -- Stack Access Is Faster
-* **The half-truth:** It is true that the eZ80 has no `Stack Pointer + Offset` addressing mode for general registers. `ld hl, (sp+3)` is not a valid instruction; only `ld hl, (sp)` and `add hl, sp` exist, and `lea` works on `IX`/`IY` only. So a compiler does use an index register as a frame pointer for locals.
-* **Why that does not make statics faster:** the frame pointer is set up *once per function*, and every access after that is **cheaper** than direct addressing. From the Attributes tables in Zilog UM0077, in ADL mode:
+### Stack locals are faster than globals
 
-| Access | Instruction | Cycles | Bytes |
+A common piece of advice says to prefer statics, because the eZ80 has no
+stack-pointer-plus-offset addressing. That's half true. There's no
+`ld hl, (sp+3)`, only `ld hl, (sp)` and `add hl, sp`, and `lea` only works on
+`IX` and `IY`, which is exactly why the compiler uses `IX` as a frame pointer.
+But `IX` is set up once per function, and after that every access is cheaper
+than an absolute address. From the Attributes tables in Zilog UM0077, in ADL
+mode:
+
+| access | instruction | cycles | bytes |
 | :--- | :--- | ---: | ---: |
-| static / global | `LD HL, (Mmn)` | **7** | 4 |
-| stack local via IX | `LD HL, (IX+d)` | **6** | 3 |
-| stack local via IY | `LD HL, (IY+d)` | **5** | 3 |
-| static / global | `LD rr, (Mmn)` | **8** | 5 |
-| stack local via IX | `LD rr, (IX+d)` | **6** | 3 |
+| static / global | `LD HL, (Mmn)` | 7 | 4 |
+| stack local via IX | `LD HL, (IX+d)` | 6 | 3 |
+| stack local via IY | `LD HL, (IY+d)` | 5 | 3 |
+| static / global | `LD rr, (Mmn)` | 8 | 5 |
+| stack local via IX | `LD rr, (IX+d)` | 6 | 3 |
 
-* **Measured:** making a hot 2 KB parser struct `static` instead of a stack local in a real assembler changed its runtime by nothing at all -- 87.90 s in both cases on an emulated Agon, deterministic across three runs. It also costs re-entrancy, which matters if the code is a library.
-* **The real rule:** leave locals on the stack. What *does* matter is how *large* they are: a 41 KB struct on the stack is 41 KB the program touches. Shrinking that same struct to 2.2 KB was free and saved the memory.
+In practice, making a hot 2 KB parser struct `static` instead of a local
+changed its runtime by nothing (87.90s both ways, over three runs), and it
+costs re-entrancy. What matters is size: a 41 KB struct on the stack is 41 KB
+of memory touched, and shrinking it to 2.2 KB was free.
 
-**But a struct reached through a pointer parameter is a different question.**
-Passing `state*` to everything means every field access first loads that
-pointer out of the frame -- and ties up an index register that a loop wanted.
-Making the same object file-scope, so its fields are addressed absolutely, was
-worth **4.9%** in zap. The comparison that matters is not "local versus
-static"; it is "one absolute address versus a base register you have to fetch
-and keep".
+A struct reached through a pointer parameter is a different matter. Passing
+`state*` everywhere means every field access loads the pointer from the frame
+first, and it ties up an index register a loop could have used. Making the
+same object a file-scope global, so its fields have fixed addresses, was worth
+4.9% in zap. The real comparison isn't local versus static; it's a fixed
+address versus a base pointer you have to load and keep.
 
-### Structure Loops to Count Down to Zero
-* **The Problem:** Compiling a standard incrementing loop (e.g., `for (uint8_t i = 0; i < 10; i++)`) forces the compiler to run an explicit comparison instruction (`cp 10`) on every single iteration.
-* **The Fix:** Structure loops to count down to zero (e.g., `for (uint8_t i = 10; i > 0; i--)` or `while(--i)`). The eZ80 hardware natively tracks when a value decrements to zero via the CPU's Zero Flag, completely eliminating the comparison step.
+### Count loops down to zero
 
-### Leverage the 8-bit Hardware Multiplier (`MLT`)
-* **The Architecture:** Unlike the original Z80, the eZ80 features a built-in hardware multiplier instruction (`MLT`). It multiplies two 8-bit registers and returns a 16-bit result (e.g., `HL = H * L`).
-* **The Fix:** Keep your multiplication factors strictly to 8 bits (`uint8_t`). If you multiply two 24-bit variables, the compiler cannot use the `MLT` instruction directly and falls back to a slow, multi-step Software Math Library routine.
+An incrementing loop like `for (uint8_t i = 0; i < 10; i++)` needs a `cp 10`
+on every iteration. Counting down (`for (uint8_t i = 10; i > 0; i--)` or
+`while (--i)`) lets the zero flag from the decrement end the loop, with no
+comparison.
 
-### Pass Arguments via Registers
-* **The Strategy:** Stack access is slow. Keep performance-critical inner functions limited to 2 or 3 arguments so they stay entirely inside registers (`HL`, `DE`, `BC`) rather than spilling onto the stack. Check your specific compiler's calling conventions (e.g., CE Dev LLVM or Zilog ZCC) to optimize function signatures.
+### Use the 8-bit multiplier
 
-### Avoid Passing Structures by Value
-* **The Strategy:** Never pass structures to functions by value. Doing so triggers an expensive block memory copy (`LDIR`) onto the stack. Always pass structures via a pointer.
+The eZ80 has `MLT`, which multiplies two 8-bit registers into a 16-bit result
+(`HL = H * L`). Keep multiplication operands in `uint8_t` and the compiler can
+use it; multiply two 24-bit values and it falls back to a library routine.
 
----
+### Keep hot functions to a few arguments
 
-### Branchless is not unconditional -- *measured*
+Arguments in registers are the cheapest. Keep performance-critical inner
+functions to two or three arguments so they fit in `HL`, `DE` and `BC`, and
+check your compiler's calling convention for the details.
 
-The usual advice for a machine with no branch predictor is to prefer
-data-driven code -- a table lookup, arithmetic on a flag -- over a chain of
-`if`/`else`. That holds for a branch that **selects a value**, where both
-alternatives cost about the same and the branch buys nothing.
+### Pass structs by pointer
 
-It does not hold for a branch that **skips work**. zap's instruction-row
-selection evaluated every term of its test so the whole thing could be one
-branch. Rejecting a candidate on the cheapest term first, and only then paying
-for the expensive ones, was worth **6.4% on zap's instruction-dense
-benchmark**, and 23.2% on the stripped version it was first measured on -- on
-a chip with no branch predictor.
+Passing a struct by value copies it onto the stack with `LDIR`. Pass a pointer
+instead.
 
-The distinction is whether the branch avoids computation. If it does, take it.
+### Branchless isn't always better
 
-### One index register is the budget inside a loop -- *measured*
+On a chip with no branch predictor, the usual advice is to replace `if`/`else`
+chains with tables or flag arithmetic. That's right when a branch just picks
+between two values that cost about the same.
 
-`ix` is the frame pointer and `iy` is everything else, so a loop that walks a
-struct has exactly one register to hold the pointer it is walking. Any
-expression that needs a *second* computed address inside that loop evicts the
-first one to the frame and reloads it, once per use.
+It's wrong when the branch skips work. zap's instruction-row matcher used to
+compute every part of its test so the whole thing could be one branch.
+Rejecting candidates on the cheapest test first, and only then doing the
+expensive ones, was worth 6.4% on zap's instruction-heavy benchmark (and 23.2%
+on the stripped-down build where it was first measured).
 
-zap's row test reads three adjacent bytes of a row and ANDed each against the
-matching byte of the operand. The three bytes are the three planes of a
-register mask, only one of which can be set -- so an obvious improvement is to
-store which plane, and read just that one: `(&ri->a0)[plane]`. Three loads and
-three ANDs become one load and one AND.
+The question is whether the branch avoids computation. If it does, keep it.
 
-It cost **6.2%**. The variable index has to be added to the row pointer, which
-means the row pointer has to be in `hl` to take an `add`, which means it is not
-in `iy` any more, so every other field of the row -- and the row pointer itself
-on the way round the loop -- goes through the frame:
+### One index register per loop
+
+`IX` is the frame pointer, which leaves `IY` as the only register for walking
+a struct in a loop. Anything that needs a second computed address inside that
+loop evicts the pointer to the frame and reloads it on every use.
+
+zap's row test read three adjacent bytes of a row and ANDed each with the
+matching byte of the operand. Only one of the three can be non-zero, so the
+obvious improvement was to store which one and read just that byte:
+`(&ri->a0)[plane]`. Three loads and three ANDs become one of each.
+
+It cost 6.2%. The variable index has to be added to the row pointer, so the
+pointer has to be in `HL`, so it's no longer in `IY`, and every other field
+access (and the loop itself) goes through the frame:
 
 ```
 ld  iy, (ix - 42)     ; reload the row pointer
@@ -453,33 +456,32 @@ ld  a, (iy + 2)
 ld  iy, (ix - 42)     ; and put it back for the next field
 ```
 
-Three loads and three ANDs, each `ld a, (iy+n); and a, (ix+m)`, is two
-instructions per plane with no address arithmetic at all. Fewer operations lost
-to more addressing.
+The original version was two instructions per byte,
+`ld a, (iy+n); and a, (ix+m)`, with no address arithmetic at all. Fewer
+operations lost to more addressing.
 
-**The rule:** inside a loop over a structure, prefer constant offsets from one
-index register over any computed address, even when the computed address
-replaces several constant ones. Count the reloads, not the operations.
+Inside a loop over a struct, prefer constant offsets from one index register
+over any computed address, even one that replaces several constant offsets.
+Count the reloads, not the operations.
 
 ---
 
-## 2a. Inlining Is a Request, and Function Shape Is a Cost
+## 2a. Inlining is only a request
 
-`static inline` is advice to the compiler, not an instruction to it, and on a
-machine where a call is expensive the difference between advice taken and
-advice ignored is large. Four separate lessons here, all measured on a real
-assembler, all invisible in the C.
+`static inline` is advice, and on a machine where calls are expensive, whether
+the compiler takes it matters a lot. These lessons all come from zap, all were
+measured, and none of them is visible in the C.
 
-### One cold caller de-inlines a hot helper for everybody
+### One cold caller can de-inline a hot helper everywhere
 
-A `static inline` helper called from one hot place is inlined. Add a second
-caller anywhere -- a cold one, on the command-line path, that runs once per
-process -- and the compiler may decide to emit the function out of line and
-turn *every* call site into a real call, including the one on the hot path.
+A `static inline` helper with one hot caller gets inlined. Add a second caller
+anywhere, even a cold one that runs once at startup, and the compiler may emit
+the function out of line and turn every call into a real call, including the
+hot one.
 
-This happened five times in one program, each time to a different helper:
+This happened five times in zap, to five different helpers:
 
-| helper | the cold caller that did it | cost when outlined |
+| helper | the cold caller responsible | cost once outlined |
 |---|---|---|
 | case-insensitive compare | option parsing at startup | 5.5% of runtime |
 | mnemonic lookup | the mode-suffix reader | isa_degenerate 4.86s → 5.16s |
@@ -487,32 +489,34 @@ This happened five times in one program, each time to a different helper:
 | an argument parser | a second directive | measurable on every line |
 | the forward-reference result | one directive | a call with three out-parameters per reference |
 
-**The fix is `__attribute__((always_inline))`** on the helpers that must stay
-inlined, and a rule of thumb: whenever you add a caller to an existing
-`static inline`, check that it is still inlined at the sites that matter.
+The fix is `__attribute__((always_inline))` on helpers that must stay inlined.
+Whenever you add a caller to an existing `static inline`, check that it's
+still inlined where it matters:
 
+```
     grep -c '^_helper_name:' file.s     # 0 = inlined everywhere, 1 = outlined
+```
 
-### A cold function with a big buffer must not be inlined into a hot one
+### Don't inline a cold function with a big buffer into a hot one
 
-The reverse case. A function that is only reached when something unusual
-happens, but that declares a large local buffer, will contribute that buffer to
-the frame of whatever it is inlined into:
+The opposite problem. A function that only runs in unusual cases but has a
+large local buffer adds that buffer to the frame of whatever it's inlined
+into:
 
-    list_args()  -- 176-byte line buffer, runs only when a listing is on
-    inlined into macro_expand()  -- frame 73 bytes → 267 bytes
+```
+    list_args()  -- 176-byte line buffer, only used when listing
+    inlined into macro_expand()  -- frame grew from 73 to 267 bytes
+```
 
-Every macro expansion in every program then paid for a listing nobody asked
-for, because a 267-byte frame is well past the 128 bytes an `ix` displacement
-reaches. `noinline` on the cold function put the frame back to 79 bytes.
-
-**Ask what a cold function contributes to a hot frame**, not just how often it
-runs.
+Every macro expansion then paid for a listing nobody asked for, since 267
+bytes is well past what an `IX` offset can reach. Marking the cold function
+`noinline` brought the frame back to 79 bytes. Think about what a cold
+function adds to a hot frame, not just how often it runs.
 
 ### Tail calls keep a frame off the common path
 
-A function that falls through into more work has to keep everything alive
-across the call. A function that *returns* the call's result does not:
+A function that carries on after a call has to keep everything alive across
+it. One that returns the call's result doesn't:
 
 ```c
     /* costs the common path: everything live across the call */
@@ -523,53 +527,60 @@ across the call. A function that *returns* the call's result does not:
     return try_something(s, n, p, e, stop);
 ```
 
-In zap's line assembler, the directives, the mode suffixes and the
-three-operand forms are all reached by a tail call from the point where the
-mnemonic lookup failed. Written as a fall-through instead, the same code cost
-**6% on every benchmark, including the ones with no directive in them.**
+zap reaches directives, mode suffixes and three-operand forms by a tail call
+once the mnemonic lookup fails. Written as a fall-through instead, the same
+code cost 6% on every benchmark, even the ones with no directives.
 
-### Code that is merely *there* costs
+### Code that's merely present still costs
 
-Two hundred instructions of argument parsing sitting in front of the line loop
--- never executed on the benchmark, since the option was not given -- cost
-**5.3%**, by moving the loop's register allocation. `noinline` on the argument
-parser recovered it.
+Two hundred instructions of argument parsing in front of the line loop, never
+executed on the benchmark because the option wasn't used, cost 5.3% by
+disturbing the loop's register allocation. `noinline` on the parser fixed it.
 
-The rule this generalises to: on a machine with one usable index register
-inside a loop, anything that lengthens the function containing that loop can
-evict the pointer it walks. Measure the loop, not the feature.
+More generally: with only one usable index register in a loop, anything that
+makes the surrounding function longer can evict the pointer the loop walks.
+Measure the loop, not the feature.
 
-### Calls versus frames: sometimes the call is cheaper
+### Sometimes a call is cheaper than a bigger frame
 
-A range check on every immediate was written two ways. Inside a helper the
-compiler made a real function of, it cost a call per immediate. Hoisted to the
-call site as a macro so no call happens, it grew `assemble_line`'s frame from
-108 bytes to 111 -- and *that* was slower.
-
-**Near the 128-byte edge, three bytes of frame can cost more than a call per
-iteration.** Which way round it falls has to be measured; the point is that
-both directions are real.
+A range check on every immediate was tried two ways. In a helper the compiler
+kept as a real function, it cost a call per immediate. Moved to the call site
+so there was no call, it grew `assemble_line`'s frame from 108 to 111 bytes,
+and that was slower. Near the 128-byte limit, three bytes of frame can cost
+more than a call per iteration. You have to measure which way it goes.
 
 ---
 
-## 3. Advanced Memory & Mathematical Optimizations
+## 3. Memory and arithmetic
 
-### Master `const` and Memory Segments (RAM vs. Flash)
-* **The Strategy:** Mark all look-up tables, static strings, and fixed data arrays as `const`. 
-* **Why it matters:** If constant data is not explicitly declared as such, the compiler may copy it to RAM during startup, wasting fast scratchpad space and bloating your initialization routine. Ensure your linker script routes `.text` (code) and `.rodata` (constants) to your hardware's fastest zero-wait-state memory banks.
+### Mark constant data `const`
 
-### Replace Bit-Shifting with Byte-Swapping
-* **The Problem:** The eZ80 lacks a barrel shifter. Shifting a 24-bit integer by an arbitrary amount requires looping a 1-bit shift instruction multiple times. Writing `uint24_t x = y >> 8;` forces an explicit 8-iteration shift loop.
-* **The Fix:** Align your bitwise shifts to multiples of 8 bits whenever possible, and where you cannot, use a lookup table.
+Declare lookup tables, strings and fixed arrays `const`. Otherwise the compiler
+may copy them into RAM at startup, wasting memory and slowing initialization.
+Make sure the linker places code and read-only data in the fastest memory
+available.
 
-**Measured, on agondev's clang at `-Oz`.** Every shift by a constant that is not a byte boundary is a call -- `(v & 7) << 3` compiles to `ld b, 3; call __bshl`. Writing it as repeated addition does not help: `((x+x)+x)+x` is canonicalised straight back into a shift, and so is `* 8`. A lookup table is the way out, because an indexed load from 256 bytes or fewer is one instruction:
+### Shifts: prefer bytes and tables
+
+There's no barrel shifter, so shifting by an arbitrary amount is a loop of
+one-bit shifts. Line shifts up with byte boundaries where you can, and use a
+lookup table where you can't.
+
+With agondev's clang at `-Oz`, every constant shift that isn't a whole number
+of bytes is a call: `(v & 7) << 3` compiles to `ld b, 3; call __bshl`. Writing
+it as repeated addition doesn't help, because `((x+x)+x)+x` and `* 8` both
+turn back into a shift. A table works, since an indexed load from 256 bytes or
+less is one instruction:
 
 ```c
 static const uint8_t shl3[8] = { 0, 8, 16, 24, 32, 40, 48, 56 };
 opcode |= shl3[index & 7];          /* not opcode |= index << 3 */
 ```
 
-Byte boundaries are cheaper but not uniformly free, and the difference is *where the value lives*:
+Replacing zap's `<< 3` and `<< 4` with 8- and 16-entry tables was worth 1.6%.
+
+Shifts by whole bytes are cheaper but not always free. It depends on where the
+value is:
 
 | expression | value in a register | value still in memory |
 |---|---|---|
@@ -577,107 +588,183 @@ Byte boundaries are cheaper but not uniformly free, and the difference is *where
 | `(uint8_t)(v >> 8)` | `ld a, h` | `ld a, (iy+n+1)` |
 | `(uint8_t)(v >> 16)` | `ld c, 16; call __ishru` | `ld a, (iy+n+2)` |
 
-HL's upper byte is not directly addressable, so the compiler has the byte trick at `>> 8` and loses it at `>> 16`. The practical consequence is the opposite of the usual advice: **do not hoist a value into a local to take bytes out of it.** Reading the struct field afresh for each byte is what makes all three an indexed load. This was worth 1.5% of zap's whole run time on one function.
+`HL`'s top byte isn't directly addressable, so the compiler can do the byte
+trick for `>> 8` but not for `>> 16`. That turns the usual advice around here:
+don't copy a value into a local just to pull bytes out of it. Reading the
+struct field fresh for each byte keeps all three as indexed loads. That was
+worth 1.5% of zap's total runtime, from one function.
 
-### Exploit Block Memory Instructions (`LDIR` / `CPIR`)
-* **The Strategy:** Do not write manual `for` loops to copy arrays or clear memory buffers. Always rely on standard C library string and memory utilities: `memcpy()`, `memmove()`, and `memset()`.
-* **Why it works:** Modern eZ80 C compilers heavily optimize standard library memory operations directly into the CPU's hardware-accelerated block-transfer (`LDIR`, `LDDR`) or block-search (`CPIR`, `CPDR`) assembly loops.
+### Even a constant shift by two costs a call
 
-### Use Power-of-Two Array Sizes to Avoid Division
-* **The Problem:** The eZ80 completely lacks a hardware division instruction. Modulo (`%`) and division (`/`) operators trigger slow software math library subroutines.
-* **The Fix:** Keep your array dimensions, matrix widths, and circular buffer sizes strictly mapped to powers of two (e.g., 16, 64, 256). This enables the compiler to optimize the operation, swapping out division for an instantaneous bitwise AND operation (`index & 255`).
+`x * 4` on a 24-bit value compiles to `ld c, 2; call __ishl`, and so does
+`x << 2`. So does `x += x; x += x;`, because LLVM merges the two adds back into
+a shift before the backend sees them. There's no way of writing "double it
+twice" that survives.
 
-### Inline Small, Critical Functions
-* **The Problem:** Function calls introduce a heavy penalty because the CPU must push the 24-bit program counter onto the stack, jump, and pop it back off upon returning.
-* **The Fix:** Use the `inline` or `static inline` keyword for small, frequently called helper functions (such as pixel plotting, bit masking, or mathematical macros) inside inner loops. This eliminates the `CALL` and `RET` overhead entirely by embedding the code directly into the instruction flow.
-* **The limit:** only while the resulting frame stays under 128 bytes -- see
-  the next heading, and section 2a for the two ways inlining gets that wrong.
+In practice, turning an array index into an address always costs one helper
+call, and all you get to choose is which:
 
-### Keep Every Stack Frame Under 128 Bytes
-* **The Problem:** `ix` displacement is a **signed byte** (see section 0). A function whose frame exceeds 128 bytes cannot reach most of its own locals with `ld a, (ix-9)`, and the compiler falls back to computing the address:
+| element size | what you get |
+| :--- | :--- |
+| 3 bytes (a bare pointer) | `call __imulu` |
+| 4 bytes (a pointer plus padding) | `call __ishl` |
+| 1 byte (an index, not a pointer) | nothing, but turning the index back into a pointer costs a scale |
+
+Padding table entries to a power of two to get the cheaper helper was worth
+1.8% in zap's mnemonic lookup, which runs once per source line. You can't go
+further than that: storing byte indexes removes the scale from the table read
+but adds the same one to the array being indexed.
+
+Watch out for portability. `(uint8_t*) table + b + b + b` does avoid the call,
+but it's wrong anywhere pointers aren't three bytes, including the host where
+the unit tests run. Change the element size, not the arithmetic.
+
+### Use `memcpy`, `memmove` and `memset`
+
+Don't write loops to copy or clear memory. The compiler turns the library
+functions into the eZ80's block instructions (`LDIR`, `LDDR`, `CPIR`,
+`CPDR`). In zap, copying `INCBIN` data with `memcpy` instead of byte by byte
+was 22.8% faster, and filling an `ORG` gap with `memset` instead of a loop took
+a source with 96 KB of gap from 0.56s to 0.10s. That loop existed even though
+this advice was already written here: a four-line fill loop doesn't look hot
+until something asks it for 96 KB.
+
+### Use power-of-two sizes to avoid division
+
+There's no divide instruction, so `/` and `%` call library routines. Make array
+sizes, row widths and ring buffers powers of two so the compiler can use a
+mask (`index & 255`) instead.
+
+Don't assume it matters until you measure, though. zap's listing formatted
+each line number with `(line / 1000) % 10` and its neighbours, five library
+calls per line and 37,000 for one large source. Replacing them with a
+four-digit counter measured 10.80s before and 10.82s after, which is no
+difference at all, and the change was reverted.
+
+### Inline small hot functions
+
+A call pushes a 24-bit return address and jumps, and the return pops it. For
+small helpers called in inner loops, `static inline` removes that overhead;
+removing one call per token in zap was worth 2.9%. The limit is the frame:
+inlining only helps while the result stays under 128 bytes (see the next
+section, and section 2a for the ways inlining goes wrong).
+
+### Keep every stack frame under 128 bytes
+
+`IX` offsets are a signed byte (section 0). A function with a frame larger than
+128 bytes can't reach most of its locals with `ld a, (ix-9)`, so the compiler
+computes their addresses instead:
 
 ```
     ld   bc, -139
     lea  hl, ix + 0
     add  hl, bc
-    ld   hl, (hl)      ; five instructions where there was one
+    ld   hl, (hl)      ; four instructions where there was one
 ```
 
-  This is paid on **every access** to every local past the boundary, and nothing in the source suggests it is happening.
-* **The Fix:** Split the function, or move the locals an inner loop touches into a small helper. Counter-intuitively this can make the program *smaller*: splitting one 149-byte frame into four of 60, 62, 19 and 20 removed 23 escape sequences and cut 77 instructions from the binary, despite adding four call/return pairs. It was worth **7.8%** overall and **28.3%** on the hottest loop.
-* **How to check:** compile to assembly and count. `grep -c 'lea.*hl, ix + 0'` finds the escapes; `grep -o 'ld.*hl, -[0-9]*'` after each `__frameset` gives the frame sizes.
-* **Where this bites hardest:** aggressive inlining. The four functions above were not written large -- they were separate, and the compiler folded them all into `main`. `-Oz` will happily inline a whole program into one frame and then pay five instructions for every local in it.
+That happens on every access to every local past the limit, and nothing in
+the source hints at it.
+
+Fix it by splitting the function, or by moving the locals an inner loop uses
+into a small helper. This can even make the program smaller: splitting one
+149-byte frame into four of 60, 62, 19 and 20 bytes removed 23 of those
+sequences and 77 instructions from the binary, despite adding four calls and
+returns. It was worth 7.8% overall and 28.3% on the hottest loop.
+
+To check, compile to assembly. `grep -c 'lea.*hl, ix + 0'` counts the computed
+accesses, and `grep -A2 __frameset` shows each function's frame size.
+
+Inlining is where this bites hardest. Those four functions weren't written
+big; the compiler folded all four into `main`. At `-Oz` it will happily inline
+a whole program into one frame and then pay the penalty on every local.
+
+It can hide in code nobody measures, too. `list_line` built each listing row
+in a 176-byte local buffer, which gave it a 220-byte frame, so every one of its
+thirty-odd `buf[w++]` stores went through a computed address. Making the buffer
+`static` shrank the frame to 29 bytes and took `-l` from 12.22s to 10.80s
+(11.6%). Nothing caught it earlier because no test produced a large enough
+listing.
+
+### Buffer file writes
+
+Every write is a MOS call, whatever its size. zap's listing was written
+unbuffered, two calls per line (the text, then the newline), which for a
+7,509-line source is 21,630 MOS calls. A 1 KB buffer took `-l` from 13.10s to
+12.22s (6.7%).
 
 ---
 
-## 3a. Memory on a Machine With No Virtual Memory
+## 3a. Memory without virtual memory
 
-512 KB, no swap, no MMU. Two consequences that do not arise on a desktop.
+512 KB, no swap, no MMU. That causes problems a desktop never has.
 
-### A realloc that moves holds both copies
+### A `realloc` that moves needs both copies
 
-The transient peak decides whether a growth succeeds, not the final size. An
-arena of 110 KB growing by eight bytes needs 228 KB at the moment of the copy,
-and on a machine with 512 KB that is where an assembler runs out -- two thirds
-of the way through a symbol table it would otherwise have finished.
+Whether a growth succeeds depends on the peak during the copy, not the final
+size. A 110 KB arena growing by eight bytes needs 228 KB while it copies, and
+on a 512 KB machine that's where an assembler runs out, two thirds of the way
+through a symbol table it would otherwise have finished.
 
-Two fixes, both used in zap:
+zap uses two fixes:
 
-* **Grow by doubling, not by a fixed step.** Reaching a 197 KB output by 32 KB
-  steps takes five growths and the last asks for 192 + 224 = 416 KB. Doubling
-  reaches it in two and the last asks for 128 + 256 = 384 KB. The peak goes
-  from about twice the final size to about 1.5 times it.
-* **For anything that only ever appends, use an arena of blocks that never
-  move.** A block is allocated, filled and never resized, so the peak *is* the
-  total. Pointers into it stay valid, which is worth an add on every compare
-  compared with storing offsets and rebasing.
+- Grow by doubling instead of in fixed steps. Reaching 197 KB in 32 KB steps
+  takes five growths, and the last one needs 192 + 224 = 416 KB. Doubling gets
+  there in two, with a peak of 128 + 256 = 384 KB. The peak drops from about
+  twice the final size to about 1.5 times.
+- For anything that only grows, use a list of fixed blocks that never move.
+  Each block is allocated, filled and never resized, so the peak is just the
+  total. Pointers into it also stay valid, which saves an addition per
+  comparison compared with storing offsets.
 
-### Allocation is cheap; touching memory is not
+### Allocating is cheap; touching memory isn't
 
-Replacing a 39.7 KB fixed array with per-item allocation was free in time and
-saved 95% of the footprint. On this target, trading an allocation for a smaller
-resident size is nearly always a good trade -- there is no cache to lose and no
-pressure the allocator itself creates.
+Replacing a 39.7 KB fixed array with per-item allocation cost nothing in time
+and saved 95% of the memory. With no cache and no allocator pressure, trading
+an allocation for a smaller footprint is nearly always worth it here.
 
-The corollary is that a 41 KB struct on the stack is 41 KB the program touches.
-Shrinking one to 2.2 KB cost nothing and gave the memory back.
+Likewise, a 41 KB struct on the stack is 41 KB touched; shrinking one to
+2.2 KB was free. Smaller hot data can also be faster: cutting a token from 17
+bytes to 13 was worth 3.4%.
 
-### Measure memory the way you measure time
+### Measure memory like you measure time
 
-Speed gets measured every round and memory usually does not, which is the wrong
-way round here: an assembler that is 5% faster and does not fit is not faster.
-An allocation shim that reports the peak, switched on by renaming the
-allocators on the compile line, costs nothing when it is off:
+Speed gets measured constantly and memory rarely, which is backwards here: an
+assembler that's 5% faster but doesn't fit isn't faster. A small allocation
+shim that reports the peak costs nothing when it's off. Switch it on by
+renaming the allocators on the compile line:
 
+```
     -DZMALLOC -Dmalloc=z_malloc -Dcalloc=z_calloc \
               -Drealloc=z_realloc -Dfree=z_free
+```
 
 ---
 
-## 3b. Two Miscompiles to Know About
+## 3b. Two miscompiles to know about
 
-Both at `-Oz` with agondev's clang, both silent, both correct on the host.
+Both happen at `-Oz` with agondev's clang, both are silent, and both work
+correctly on the host.
 
-### An unbounded character scan can be compiled rotated
+### Unbounded character scans can be compiled rotated
 
 ```c
     while (cls(*p)) { p++; }              /* the mistake */
     while (p < e && cls(*p)) { p++; }     /* the fix */
 ```
 
-Given a sentinel that stops the scan, the first form is safe C. The compiler
-may nevertheless produce a loop with the pointer **pre-decremented**, each turn
-testing one character *past* it -- so the first character is never examined and
-the scan stops one short. `ld a, 0x42` parses as `0x4` and leaves `2` behind.
+With a sentinel to stop it, the first loop is valid C. But the compiler may
+produce a loop that pre-decrements the pointer and tests the character after
+it each time, so the first character is never checked and the scan stops one
+short: `ld a, 0x42` parses as `0x4` and leaves the `2` behind.
 
-It does not reduce: the same loop in isolation compiles correctly. Indexing
-from a base instead of advancing a pointer fails the same way. It has appeared
-five times on five different loops, and once on four loops in a function whose
-own source had not changed -- a function was added elsewhere and the register
-allocation moved.
+It doesn't reproduce in isolation. The same loop on its own compiles
+correctly, and indexing from a base instead of advancing a pointer fails the
+same way. It has happened on five different loops, and once on four loops in
+a function whose source hadn't changed at all: a function was added elsewhere
+and the register allocation shifted.
 
-**Every character scan carries its bound.** In zap that costs 0.06s of a 5.6s
-run, and a test reads the source to check no scan has lost one.
+So every character scan in zap checks its bound. That costs 0.06s out of 5.6s,
+and a test reads the source to make sure no scan is missing one.
 
 ### A backwards trim reads one byte too far
 
@@ -685,329 +772,241 @@ run, and a test reads the source to check no scan has lost one.
     while (ae > as && is_space_ch(ae[-1])) { ae--; }   /* miscompiled at -Oz */
 ```
 
-The decrement is committed before the test, so the byte examined is `ae[-2]`. A
-single-character macro argument sees the space in front of it, trims itself
-away and expands to nothing.
+The decrement happens before the test, so the byte examined is `ae[-2]`. A
+one-character macro argument sees the space in front of it, trims itself away
+and expands to nothing.
 
-The fix is not to trim backwards at all: track the last non-space *while
-scanning forward*, which needs no backward index and is one pass rather than
-two.
+The fix is not to trim backwards at all: track the last non-space character
+while scanning forwards, which needs no backward index and takes one pass
+instead of two.
 
-### What both have in common
+### What they have in common
 
-The host build is correct in both cases, under every sanitiser, at every
-buffer size. Nothing but reading the generated assembly or running on the
-target finds them.
+The host build is correct in both cases, under every sanitizer and at every
+buffer size. Only reading the generated assembly or running on the target will
+find them.
 
+```
     ez80-none-elf-clang ... -S file.c -o file.s
-    grep -B2 -A6 'dec iy' file.s      # a rotated scan's signature
+    grep -B2 -A6 'dec iy' file.s      # what a rotated scan looks like
+```
 
 ---
 
-## 3c. Width and Sign
+## 3c. Width and sign
 
-### A comparison between different widths tests the wrong bytes
+### Comparing different widths tests the wrong bytes
 
-An assembler that evaluates expressions in 32 bits on a machine whose `int` is
-24 has to be careful at every boundary. Comparing a 32-bit value against a bare
-`int` constant compiled to a test of the wrong part of the value -- and refused
-an addend of zero, on the target, while the host build was correct.
+zap evaluates expressions in 32 bits on a machine whose `int` is 24, so every
+boundary needs care. Comparing a 32-bit value with a bare `int` constant
+compiled into a test of the wrong part of the value, and rejected an addend of
+zero on the target while the host build was fine.
 
-**Both sides of every comparison must be the same width**, written with typed
-constants rather than bare literals:
+Make both sides of every comparison the same width, using typed constants
+rather than bare literals:
 
 ```c
     #define FIX_ADDEND_MIN ((evalue) -8388608)
     #define FIX_ADDEND_MAX ((evalue)  8388607)
 ```
 
-Deriving such a limit from `sizeof(int)` is worse than writing it out: it makes
-the program accept on one machine and refuse on the other.
+Don't derive limits like these from `sizeof(int)`. That makes the program
+accept a value on one machine and reject it on the other.
 
-### A signed compare is a call
+### Signed comparisons are calls
 
-Two signed `int`s compared with `<` cannot be done in one subtract, so the
-compiler emits `call pe, __setflag` to repair the flags on overflow. Inside a
-loop -- comparing a length, bounding a table walk, reserving output space --
-that is a helper call per iteration.
+Comparing two signed `int`s with `<` can't be done with one subtraction, so the
+compiler adds `call pe, __setflag` to fix up the flags on overflow. In a loop
+(comparing lengths, bounding a table walk, checking for output space) that's a
+call on every iteration.
 
-Making three loop counters unsigned was worth 1.4% of a whole run. Where a
-quantity cannot be negative, say so in the type.
+Making three loop counters unsigned was worth 1.4% of a whole run. If a value
+can't be negative, give it an unsigned type.
 
+```
     grep -c 'call[ \t]*pe, __setflag' file.s
+```
 
-### An out-parameter puts a value in memory
+### Out-parameters force values into memory
 
 A helper that advances the caller's cursor through `const char** pp` forces
-that cursor into the frame: its address has been taken, so it cannot live in a
-register. Returning the new position instead, and letting the caller assign it,
-was worth 2.4% on the data-directive path even with the helper inlined.
+that cursor into the frame, because its address has been taken. Returning the
+new position instead, and letting the caller assign it, was worth 2.4% on the
+data-directive path, even with the helper inlined.
 
-The same effect shows up wherever `&local` is passed anywhere -- including to a
-function that is inlined afterwards.
+The same thing happens wherever you pass `&local`, including to a function
+that ends up inlined.
 
 ---
 
-## 4. Provenance -- What Here Is Verified
+## 4. What's verified
 
-Not every claim in this document is equally supported. Treat them accordingly.
+Not every claim here is equally well supported.
 
-### Verified against Zilog UM0077 (the instruction Attributes tables, from p. 79)
-* Stack-local access is **faster** than static/global access (6 vs 7 cycles for `HL`, 6 vs 8 for `BC`/`DE`). The "prefer static" advice above was wrong and has been corrected.
-* There is **no division instruction** in the eZ80 instruction set, so `/` and `%` do call software routines. Power-of-two sizes are worth it.
-* `MLT` is an 8x8 multiply returning 16 bits "regardless of the ADL mode", so keeping multiplication factors in `uint8_t` is correct.
-* `LDIR` and `CPIR` exist, so `memcpy`/`memmove`/`memset` do map to block instructions.
+### Checked against Zilog UM0077
 
-### Verified by measurement on an emulated Agon
-Each figure below is that program's own reported time, with the emulator's CPU
-limited to the real 18.432 MHz clock (do **not** use `-u`: with the CPU
-unthrottled the guest's `clock()` measures how fast the *host* emulated the
-work). Readings are deterministic to the centisecond.
+From the instruction Attributes tables (page 79 onwards):
 
-* **Shrinking a hot struct pays.** A 17-byte token to 13 bytes: **-3.4%**.
-* **Inlining small hot functions pays.** Removing one call per token: **-2.9%**.
-* **`memcpy` over a hand-written byte loop pays, a lot.** Block-copying `.incbin` data instead of a byte at a time: **-22.8%**.
-* **`memset` over a hand-written byte loop, likewise.** The fill an `ORG`
-  writes when it skips forward, a byte at a time against one `memset`: a
-  source with 96 KB of gap went **0.56 s to 0.10 s**. Worth noting that this
-  rule was already written down here and the loop was there anyway -- a
-  four-line loop filling a buffer does not look like a hot path until
-  something asks it for 96 KB.
-* **A file write is a MOS call whatever its size, so buffer it.** The listing
-  went out unbuffered, two calls per line -- the text, then the newline on its
-  own. On a 7,509-line source that is 21,630 MOS calls, and a kilobyte of
-  buffer took `-l` from **13.10 s to 12.22 s**, -6.7%.
-* **The 128-byte frame rule again, in a function nobody had measured.**
-  `list_line` built each row in a 176-byte local, 220 bytes of frame with the
-  rest, so every one of its thirty-odd `buf[w++]` stores went through a
-  computed address. Making the buffer `static` took the frame to 29 bytes and
-  `-l` from **12.22 s to 10.80 s**, -11.6%. Nothing found it earlier because
-  no test produced a listing large enough to care.
-* **Divisions were the obvious suspect and cost nothing.** `(line / 1000) % 10`
-  and its three neighbours are five library calls per listed line, 37,000 of
-  them for that source. Replacing them with a four-digit counter that carries
-  -- verified to take the fast path 7,508 times out of 7,509 -- measured
-  **10.80 s to 10.82 s**, which is to say nothing at all, and was reverted.
-  "There is no division instruction" is true and says nothing about magnitude:
-  37,000 calls disappeared into the clock's resolution. Measure before
-  believing a rule applies here.
-* **Not passing structs by value pays** -- the token result above is exactly this effect.
-* **Allocation is cheap; touching memory is not.** Replacing a 39.7 KB fixed
-  array with per-item allocation was free, and cost 95% of the struct's size.
-  Trading an allocation for a smaller footprint is a good trade here.
-* **Constant shifts that are not byte boundaries are calls.** `<< 3` and `<< 4`
-  replaced by 8- and 16-entry lookup tables: **-1.6%**. Repeated addition is
-  not a workaround; the compiler canonicalises it back into a shift.
-* **Byte extraction is free from memory, not from a register.**
-  `(uint8_t)(v >> 16)` is one indexed load when `v` is a struct field and a
-  call to `__ishru` when it has been hoisted into a local: **-1.5%** for not
-  hoisting.
-* **Frames over 128 bytes cost five instructions per local access.** Splitting
-  one 149-byte frame into four small ones: **-7.8%** overall, **-28.3%** on
-  the loop that paid it most, and 77 fewer instructions in the binary.
-* **One record per row beats parallel arrays, for a loop that reads several
-  fields of the same row.** Eight `uint8_t` arrays indexed by `r` were
-  **+8.5%**; the same eight bytes in one struct walked by a pointer were
-  **-10.1%** overall and **-35.0%** on the row-heavy case. Indexed addressing
-  off `iy` amortises the base-pointer arithmetic that each separate array
-  repeats.
-* **24-bit AND is a call.** `AND` is an 8-bit instruction, so `regset & reg` on
-  a `uint24_t` compiles to `call __iand`, and indexing an array of them costs
-  `r * 3`, a `call __imulu`. Part of the row-record figure above.
-* **A stored pointer beats a computed one -- but not a materialised one.**
-  Handing out a pointer that already exists in a data structure removes the
-  multiply a subscript needs, and was worth 20.5% on one lookup. Returning
-  pointers to many *distinct compile-time* objects is the opposite: with
-  twenty-eight of them in switch arms the compiler hoisted their addresses into
-  the frame prologue, and the change lost 0.4% despite also removing a call to
-  `__ishru`. The question to ask is where the pointer comes from, not whether
-  it is a pointer.
-* **Removing a loop bound can change what the loop computes.** Rewriting
-  `while (p < e && cls(*p)) p++;` as `while (cls(*p)) p++;` -- safe C, given a
-  sentinel that stops the scan -- produced a loop with the pointer
-  pre-decremented and each iteration testing one character *past* it, so the
-  first character was never examined and the scan stopped one short. It does
-  not reduce: the same loop alone compiles correctly, and indexing from a base
-  instead of advancing a pointer fails the same way. The host is no help --
-  every host test passed, at four buffer sizes, under ASan. **Read the
-  generated assembly for any scan you unbound, and test it on hardware.**
-* **The emulator is deterministic to about 0.25%.** Three interleaved repeats
-  of two binaries gave 8.24/8.26/8.24 against 8.28/8.28/8.28. Do not claim a
-  change under half a percent from a single run, and do not dismiss a
-  consistent 0.4% as noise.
-* **A `static inline` helper stops being inlined when a second caller appears.**
-  Five helpers in one program, each de-inlined by one cold caller; the worst
-  was 5.5% of runtime, another took a benchmark from 4.86s to 5.80s.
-  `always_inline` on the ones that matter.
-* **A cold function's local buffer joins the frame it is inlined into.** A
-  176-byte listing buffer inlined into the macro expander took its frame from
-  73 bytes to 267 -- paid by every expansion in every program, listing or not.
-* **A tail call keeps a frame off the common path.** Reaching the directives,
-  the mode suffixes and the three-operand forms by tail call rather than
-  falling through was worth **6% on every benchmark**, including those with no
-  directive in them.
-* **A file-scope state object beats a pointer parameter: 4.9%.** Absolute
-  addressing, and one fewer index register tied up.
-* **Unsigned loop counters are worth real time.** Three of them, replacing
-  signed compares that each carried a `call pe, __setflag`: **1.4%**.
-* **An out-parameter costs even when the helper is inlined.** A helper that
-  advanced the caller's cursor through `const char**` forced that cursor into
-  memory: **2.4%** on the path that used it. Return the position instead.
-* **`-O2`, `-O3` and `-Ofast` were all slower than `-Oz`** on this program. On
-  a machine with no cache, the size of the code is part of its speed; do not
-  assume a higher optimisation level is an improvement without measuring it.
-* **A check asked of every input is the expensive kind of diagnostic.** A
-  truncation check on every value written cost **2.1% of a real program and
-  6.7% of a synthetic one**, where every other diagnostic in the same program
-  -- all of which do their work only after something has already failed --
-  measures at nothing. Work done on failure is free; questions asked of
-  everything are not.
-* **A backwards trim is miscompiled at -Oz.** `while (ae > as && sp(ae[-1])) ae--;`
-  reads `ae[-2]`. See section 3b.
-* **The host understates target gains by about 2.5x.** The same 135 sources
-  measured 1.36x on the host and 3.20x on the Agon.
+- Stack locals are faster than globals: 6 cycles against 7 for `HL`, and 6
+  against 8 for `BC`/`DE`. An earlier version of this guide said the opposite.
+- There's no divide instruction, so `/` and `%` call library code.
+- `MLT` is an 8×8 multiply giving 16 bits "regardless of the ADL mode", so
+  keeping factors in `uint8_t` is right.
+- `LDIR` and `CPIR` exist, so `memcpy`, `memmove` and `memset` can map onto
+  block instructions.
+
+### Measured on an emulated Agon
+
+Each figure is the program's own reported time, with the emulator running at
+the real 18.432 MHz (never `-u`; see section 5). Results repeat to within about
+0.25%.
+
+| finding | effect | section |
+|---|---|---|
+| token struct cut from 17 to 13 bytes | −3.4% | 3a |
+| one call per token removed by inlining | −2.9% | 3 |
+| `INCBIN` data copied with `memcpy` | −22.8% | 3 |
+| `ORG` gap filled with `memset` | 0.56s → 0.10s | 3 |
+| listing output buffered | −6.7% | 3 |
+| listing row buffer made `static` (frame 220 → 29 bytes) | −11.6% | 3 |
+| divisions removed from listing line numbers | no change | 3 |
+| constant shifts replaced by tables | −1.6% | 3 |
+| not copying a value to a local before extracting bytes | −1.5% | 3 |
+| table entries padded to a power of two | −1.8% | 3 |
+| a 149-byte frame split into four | −7.8%, −28.3% on the hottest loop | 3 |
+| a stored pointer instead of a subscript | −20.5% on one lookup | 1a |
+| pointers to 28 static descriptors | +0.4% | 1a |
+| a cold second caller de-inlining a helper | up to +5.5% | 2a |
+| a cold 176-byte buffer inlined into a hot function | frame 73 → 267 bytes | 2a |
+| tail calls instead of fall-through | −6% on every benchmark | 2a |
+| file-scope state instead of a pointer parameter | −4.9% | 2 |
+| cheapest rejection test first in row matching | −6.4% (−23.2% on the stripped build) | 2 |
+| a computed index replacing three constant offsets | +6.2% | 2 |
+| three signed loop counters made unsigned | −1.4% | 3c |
+| an out-parameter replaced with a return value | −2.4% | 3c |
+| host speedup compared with Agon speedup | 1.36x vs 3.20x | 5 |
+
+A few results don't appear elsewhere:
+
+- One struct per row, walked with a pointer, beat eight parallel `uint8_t`
+  arrays: 10.1% faster overall and 35% faster on the row-heavy benchmark,
+  where the parallel arrays had been 8.5% slower than the starting point.
+  Offsets from `IY` share one base address; separate arrays each repeat the
+  address arithmetic. (Part of that gain is also that `AND` on a `uint24_t`
+  is `call __iand`, and indexing an array of them is `call __imulu`.)
+- `-O2`, `-O3` and `-Ofast` were all slower than `-Oz`. With no cache, code
+  size is part of speed.
+- A check applied to every value costs real time (2.1% on a real program, 6.7%
+  on a synthetic one), while diagnostics that only run after something has
+  already failed cost nothing. That's why zap's truncation warning is behind
+  `-w`.
 
 ### Contradicted by measurement
-* **"Data-driven beats branching" is too simple**, taking that as the general
-  advice it usually is rather than as a claim made anywhere here. Replacing a
-  chain of ~8 failing character comparisons with two lookups in a 256-byte
-  table was **0.3% slower**. Replacing short-circuit `&&`/`||` with bitwise operators on
-  values already in registers was **0.8% faster**.
-* The rule that fits both: **not-taken branches are cheap, memory accesses are
-  not.** Replace a branch with register arithmetic and you win; replace it with
-  a table lookup and you lose.
+
+"Data-driven beats branching" is too simple. Replacing a chain of about eight
+failing character comparisons with two lookups in a 256-byte table was 0.3%
+slower. Replacing short-circuit `&&`/`||` with bitwise operators on values
+already in registers was 0.8% faster. The rule that fits both: branches that
+aren't taken are cheap, and memory accesses aren't. Replace a branch with
+register arithmetic and you win; replace it with a table lookup and you may
+lose.
 
 ### Plausible but unverified
-* The claim that 16-bit types are the *worst* performer. This is about
-  compiler-generated masking rather than instruction timing, so the ISA tables
-  cannot confirm it.
-* The three-stage pipeline and its 1-2 cycle taken-branch penalty. Not in the
-  instruction tables; the branching results above are consistent with it but do
-  not establish it.
 
-### A note on measuring at all
-The host is **not** a proxy for this target. It is biased, not merely noisy, and
-in the direction that flatters the work -- on a real assembler, host instruction
-counts overstated the gain from three lexer changes by about 3x, and called the
-token shrink a *regression* when it was the largest win of the set. Measure on
-the target: section 5 says how.
-
-### A constant shift is a call, and you cannot write your way out -- *measured*
-
-Section 1a lists `__ishl` among the offenders for variable shifts. It is worth
-saying plainly that a **constant** shift is one too, and that the obvious
-workarounds do not work.
-
-`x * 4` on a 24-bit value compiles to `ld c, 2; call __ishl`. So does `x << 2`.
-So does `x += x; x += x;` -- LLVM canonicalises the pair of adds back into a
-shift before the backend ever sees them, and the backend lowers the shift to a
-helper. There is no spelling of "double this twice" that survives.
-
-What this means in practice is that **turning an array index into an address
-always costs one helper call**, and the only choice is which one:
-
-| element size | what you get |
-| :--- | :--- |
-| 3 bytes (a bare pointer) | `call __imulu` |
-| 4 bytes (a pointer plus a pad) | `call __ishl` |
-| 1 byte (an index, not a pointer) | nothing -- but converting the index back to a pointer costs a scale |
-
-Padding a lookup table's entries to a power of two to buy the cheaper helper
-was worth **1.8%** in a real assembler's mnemonic lookup, once per line of
-source. Going further is not possible: storing byte indices removes the scale
-from the table read and puts an identical one on the array it indexes into.
-
-Note the portability trap. `(uint8_t*) table + b + b + b` does remove the call,
-and is wrong anywhere a pointer is not three bytes -- which includes the host
-the unit tests run on. Change the element size, not the arithmetic.
+- That 16-bit types are the slowest. That's about the masking the compiler
+  generates, which the instruction tables can't confirm.
+- The three-stage pipeline and its 1-2 cycle taken-branch penalty. It isn't in
+  the instruction tables; the branching results above fit it but don't prove
+  it.
 
 ---
 
-## 5. How to Measure on This Target
+## 5. How to measure on this target
 
-Every figure in this document came out of the method below. It is worth as much
-as the findings.
+Every number in this guide came from this method, and the method is worth as
+much as the findings.
 
-### The host is not a proxy, and it is biased rather than noisy
+### The host isn't a stand-in
 
-The same 135 corpus sources, assembled by the same two assemblers, measured
-both ways:
+The same 135 test sources and the same two assemblers, measured both ways:
 
 | | geometric mean speedup |
 |---|---|
-| on the host, x86-64 | **1.36x** |
-| on the Agon, 18.432 MHz | **3.20x** |
+| on the host, x86-64 | 1.36x |
+| on the Agon, 18.432 MHz | 3.20x |
 
-Two and a half times out, in the direction that would have made almost every
-eZ80-specific change look not worth doing. Host instruction counts have also
-overstated a lexer change by 3x and called the largest win of a set a
-regression.
+That's off by a factor of 2.5, in the direction that would have made almost
+every eZ80-specific change look not worth doing. Host instruction counts have
+also overstated a lexer change by 3x, and once called the biggest win of a set
+a regression.
 
-Use the host for correctness. Measure speed on the target.
+Use the host for correctness and the target for speed.
 
-### Read the program's own clock, and do not unthrottle the emulator
+### Use the program's own clock, and don't unthrottle
 
-fab-agon-emulator with `-u` runs the guest as fast as the host can emulate it,
-which decouples the guest's `clock()` from the work it does; the number stops
-meaning anything. Run it at the real 18.432 MHz and read the line the program
-prints for itself.
+With `-u`, fab-agon-emulator runs as fast as the host can manage, so the
+guest's `clock()` no longer reflects the work being done. Run at the real
+18.432 MHz and read the time the program prints.
 
-### The clock counts hundredths, so repeat and sum
+### Repeat short runs and add them up
 
-A twenty-line source assembles in 2 to 30 ms, which reads as `0.00` or `0.01`.
-Assemble it eight or twelve times and sum the reported times: the tick boundary
-falls in a different place on each run, so the quantisation averages out
-instead of accumulating. Eight runs of a 25 ms assembly sum to 0.20 give or
-take a hundredth -- 5% rather than 50%.
+The clock counts hundredths of a second, and a twenty-line source takes 2-30
+ms, so it reads as `0.00` or `0.01`. Run it eight or twelve times and add up
+the times: the tick falls in a different place each run, so the rounding
+averages out. Eight runs of a 25 ms job add up to about 0.20s, give or take a
+hundredth, which is a 5% error instead of 50%.
 
-### One change, one measurement, nothing else running
+### One change at a time, nothing else running
 
-* The emulator is deterministic to about 0.25%: three interleaved repeats of
-  two binaries gave 8.24/8.26/8.24 against 8.28/8.28/8.28. Do not claim a
-  change under half a percent from a single run, and do not dismiss a
-  consistent 0.4% as noise.
-* Two emulators on one host time each other's work. A stale benchmark left
-  running invalidated a whole afternoon's numbers in this project.
-* Do not edit the source while a benchmark is in flight. The binary that gets
-  timed is the one that was built, and it is easy to lose track of which.
+- The emulator repeats to within about 0.25%: three interleaved runs of two
+  binaries gave 8.24/8.26/8.24 and 8.28/8.28/8.28. Don't claim a change under
+  half a percent from one run, and don't dismiss a consistent 0.4% as noise.
+- Two emulators on one machine slow each other down. A forgotten benchmark
+  left running spoiled a whole afternoon of numbers.
+- Don't edit the source while a benchmark runs. It's easy to lose track of
+  which build is being timed.
 
-### Pricing a piece of code without instrumenting it
+### Measuring a piece of code without changing it
 
-Instrumentation changes what you are measuring: a second call to a function
+Instrumenting code changes it. Adding a second call to a function that was
 inlined into a 3,500-line hot function makes the compiler outline it, and the
-difference then includes the outlining.
+measurement then includes the outlining.
 
-Two techniques that do not have that problem:
+Two techniques avoid that.
 
-**Marginal pricing by duplication.** Build the table with every entry
-duplicated. The walk over it does twice the work, a match is still found at the
-first copy, and **the output is byte-identical** -- which is what says the
-measurement is valid. The extra time is that walk's cost:
+**Duplicate the work.** Build with every table entry duplicated. The walk does
+twice the work, the match is still found at the first copy, and the output is
+byte-identical, which confirms the measurement is valid. The extra time is the
+cost of the walk:
 
+```
     make EXTRA_CFLAGS=-DDUP_ROW      # the register test in the row matcher
     make EXTRA_CFLAGS=-DDUP_BUCKET   # the mnemonic bucket chain
+```
 
-**Input-differential attribution.** One binary, several inputs of identical
-size that differ in exactly one feature -- the same source with and without
-macros, with and without conditionals, with and without EQU. The difference in
-time is that feature's cost, and no build flag is involved.
+**Vary the input.** Use one binary and several inputs of the same size that
+differ in one feature: with and without macros, with and without
+conditionals, with and without EQU. The difference in time is that feature's
+cost, with no changes to the build.
 
-The technique to avoid is a *staged truncation build* -- `#ifdef` that stops
-the program part way through -- because each stage is a different program with
-a different register allocation, not the same program with a piece removed. Two
-changes made on that evidence in this project were both slower.
+Avoid building a series of truncated programs (`#ifdef`s that stop partway
+through). Each one is a different program with its own register allocation,
+not the same program with a piece removed. Two changes made on that kind of
+evidence both turned out slower.
 
 ### Read the generated assembly
 
-The single most useful habit. Before optimising, and again after:
+The single most useful habit. Before optimizing, and again after:
 
+```
     ez80-none-elf-clang -mllvm -z80-gas-style -Oz -S file.c -o file.s
 
     grep -o 'call[ \t]*__[a-z0-9_]*' file.s | sort | uniq -c   # helper calls
     grep -c 'call[ \t]*pe, __setflag' file.s                   # signed compares
     grep -A2 '__frameset' file.s                               # frame sizes
-    grep -c 'lea.*hl, ix + 0' file.s                           # frame escapes
+    grep -c 'lea.*hl, ix + 0' file.s                           # computed accesses
     grep -c '^_helper:' file.s                                 # inlined or not
+```
 
-Several of the regressions in this project appeared *because* of a change that
-looked like an improvement, and all of them were visible here first.
+Several regressions in zap came from changes that looked like improvements,
+and all of them showed up here first.

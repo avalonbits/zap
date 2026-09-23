@@ -1106,6 +1106,20 @@ int main(void) {
           emit("  ld hl, -f1-f2\nf1:\n  nop\nf2:\n  nop\n"),
           "21 F7 FF F7 00 00");
 
+    /* The text is read again at the end, but what it means depends on where
+     * it was written: `$` is the instruction it is in, and `@b` and `@f` the
+     * anonymous labels either side of it. Read with the end's values, the
+     * first was 21 FE FF FF, -2, with nothing said. */
+    check("$ in a deferred expression is where it was written",
+          emit("start:\n  nop\n  ld hl, (later-$)*2\n  nop\n  nop\nlater:\n  nop\n"),
+          "00 21 0C 00 00 00 00 00");
+    check("@b in a deferred expression is the @@ above it",
+          emit("@@:\n  nop\n  ld hl, (later-@b)*2\n@@:\n  nop\nlater:\n  nop\n"),
+          "00 21 0C 00 00 00 00");
+    check("@f in a deferred expression is the @@ below it",
+          emit("  ld hl, (@f-later)*2\nlater:\n  nop\n@@:\n  nop\n@@:\n  nop\n"),
+          "21 02 00 00 00 00 00");
+
     /* And one that stays an error, because nothing ever defines it: the text
      * is kept, and evaluating it at the end still finds no such label. */
     check("a name nothing defines, in an expression",

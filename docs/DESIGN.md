@@ -49,14 +49,14 @@ flowchart TD
     late --> side["listing, symbol file, statistics<br/>(optional; none can fail the run)"]
 ```
 
-[`main()`](../src/zap.c#L1776) ·
-[`parse_args()`](../src/zap.c#L904) ·
-[`run()`](../src/zap.c#L591) ·
-[`run_lines()`](../src/zap.c#L449) ·
+[`main()`](../src/zap.c#L1784) ·
+[`parse_args()`](../src/zap.c#L912) ·
+[`run()`](../src/zap.c#L599) ·
+[`run_lines()`](../src/zap.c#L457) ·
 [`scope_end()`](../src/symtab.c#L849) ·
-[`resolve_fixups()`](../src/zap.c#L425) ·
+[`resolve_fixups()`](../src/zap.c#L433) ·
 [`out_flush()`](../src/directive.c#L59) ·
-[`resolve_late()`](../src/zap.c#L383)
+[`resolve_late()`](../src/zap.c#L391)
 
 There's no intermediate representation or syntax tree. Each line is read,
 turned into bytes and forgotten. The only things that outlive a line are what
@@ -115,9 +115,9 @@ Three kinds of thing wait for the end of the run:
 |---|---|---|
 | fixup | [`patch_fixup()`](../src/symtab.c#L639) | one or two symbols, an addend, a width, an offset |
 | deferred expression | [`resolve_deferred()`](../src/zap.c#L262) | expression text a fixup can't represent |
-| deferred fill | [`resolve_fills()`](../src/zap.c#L294) | a `BLK` whose fill value wasn't known yet |
+| deferred fill | [`resolve_fills()`](../src/zap.c#L302) | a `BLK` whose fill value wasn't known yet |
 
-A [`fixup`](../src/zap.h#L696)'s width is usually a byte count (1 to 4) or 0 for
+A [`fixup`](../src/zap.h#L704)'s width is usually a byte count (1 to 4) or 0 for
 a relative jump. A few special widths cover operands that aren't simply bytes
 after the opcode:
 
@@ -139,12 +139,12 @@ window only the last 64 KB of output is still in memory.
 
 For a patch whose target is behind the window, zap still computes the bytes in
 the usual place, so all the diagnostics stay the same, and records just the
-finished bytes in a [`latepatch`](../src/zap.h#L618). It stores bytes rather
+finished bytes in a [`latepatch`](../src/zap.h#L626). It stores bytes rather
 than the symbol because a local label's node is reused once its scope ends, so
 by the time the patch was applied the symbol could name a different label. The
 folds are stored as a checked mask for the same reason.
 
-At the end, [`resolve_late()`](../src/zap.c#L383) makes one ascending pass over
+At the end, [`resolve_late()`](../src/zap.c#L391) makes one ascending pass over
 the file in window-sized chunks, applying late patches and deferred fills, and
 skipping chunks that need nothing. It's ascending and chunked because of the
 filesystem: MOS's FatFS is built with `FF_FS_TINY`, so a file has no sector
@@ -157,7 +157,7 @@ The late-patch list isn't sorted. It's a series of ascending runs, because
 patches are recorded at different moments: when a scope ends, when the fixup
 list is swept, and at the end of the source (where globals start again from
 the top). Each of those walks its fixups in output order, so the list climbs
-and then drops back. A [`laterun`](../src/zap.h#L641) marks one of those
+and then drops back. A [`laterun`](../src/zap.h#L649) marks one of those
 climbs and keeps its own cursor, so the final pass looks at each patch once.
 [`out_late()`](../src/directive.c#L168) starts a new run whenever a patch is
 lower than the previous one. If it didn't, that patch would be skipped
@@ -177,7 +177,7 @@ fixup is settled long after its bytes were written.
 ## 3. The state
 
 Everything the assembler knows is in one global object,
-[`state`](../src/symtab.c#L236), of type [`zap_state`](../src/zap.h#L1200),
+[`state`](../src/symtab.c#L236), of type [`zap_state`](../src/zap.h#L1208),
 defined in `symtab.c` and declared in `zap.h`.
 
 ```mermaid
@@ -257,7 +257,7 @@ flowchart TD
     J --> N["error: no such instruction"]
 ```
 
-[`equ_line()`](../src/expr.c#L608) ·
+[`equ_line()`](../src/expr.c#L624) ·
 [`mnemonic_of()`](../src/insn.h#L87) ·
 [`parse_operand()`](../src/expr.h#L108) ·
 [`match_row()`](../src/insn.h#L150) ·
@@ -439,7 +439,7 @@ restores the current line afterwards, except when it fails, where the line
 Most operands never reach the expression evaluator: registers, plain literals
 ([`lit_value()`](../src/directive.h#L27)) and bare names each have their own
 fast reader. What does reach it is a precedence-climbing parser
-([`expr_value()`](../src/expr.c#L549), [`expr_atom()`](../src/expr.c#L200))
+([`expr_value()`](../src/expr.c#L565), [`expr_atom()`](../src/expr.c#L209))
 over `+ - * / << >> & | ^`, unary `-` and `~`, with `[...]` for grouping since
 parentheses already mean indirection.
 
@@ -544,7 +544,7 @@ flowchart TD
 [`macro_expand()`](../src/macro.c#L507) ·
 [`macro_args()`](../src/macro.c#L358) ·
 [`macro_subst()`](../src/macro.c#L421) ·
-[`scope_push()`](../src/expr.c#L716)
+[`scope_push()`](../src/expr.c#L732)
 
 Expanding a macro doesn't need a reader or a nested line loop, because the body
 is already a sequence of lines. Substitution is plain text with no parentheses
@@ -579,7 +579,7 @@ flowchart LR
 
 [`err_line()`](../src/symtab.c#L256) ·
 [`err_tok()`](../src/symtab.h#L52) ·
-[`report()`](../src/zap.c#L1719)
+[`report()`](../src/zap.c#L1727)
 
 ```
 Macro [mos_call] in "kernel.s" line 12 - unknown label 'MOS_SYSVARS'
@@ -588,7 +588,7 @@ Invoked from "main.s" line 84 as
   mos_call MOS_SYSVARS
 ```
 
-The truncation warning, [`warn_trunc()`](../src/zap.c#L1643), is different
+The truncation warning, [`warn_trunc()`](../src/zap.c#L1651), is different
 from other diagnostics: it has to check every value in every source, rather
 than doing work only after something has gone wrong. That's why it's behind
 `-w`.
@@ -599,13 +599,13 @@ than doing work only after something has gone wrong. That's why it's behind
 
 `-l` and `-d` write a listing in ez80asm's format (address, up to four bytes
 per row, line number, then the source line as written) through
-[`list_line()`](../src/zap.c#L1185) and [`list_out()`](../src/zap.c#L1163). A
+[`list_line()`](../src/zap.c#L1193) and [`list_out()`](../src/zap.c#L1171). A
 macro expansion is listed the way ez80asm lists it: the invocation with no
 bytes, the arguments, then one row per body line tagged with its depth.
 
 A line containing a forward reference is listed before the reference is
-patched. [`lstfix_add()`](../src/zap.c#L1291) remembers those lines, and
-[`lstfix_apply()`](../src/zap.c#L1324) rewrites their byte columns from the
+patched. [`lstfix_add()`](../src/zap.c#L1299) remembers those lines, and
+[`lstfix_apply()`](../src/zap.c#L1332) rewrites their byte columns from the
 finished output before the file is closed. The console listing (`-d`) can't be
 rewritten, so it shows the bytes as first emitted.
 
@@ -624,8 +624,8 @@ Two differences remain, and the sources in `test/regress/listing` avoid both:
   zap leaves the first row empty the same way but doesn't write the extra row.
   `ORG` padding is listed inline by both.
 
-[`write_symbols()`](../src/zap.c#L1503) writes the sorted global symbols in
-ez80asm's format, and [`write_stats()`](../src/zap.c#L1569) prints resource
+[`write_symbols()`](../src/zap.c#L1511) writes the sorted global symbols in
+ez80asm's format, and [`write_stats()`](../src/zap.c#L1577) prints resource
 usage. None of these can fail an assembly, since the output file is already
 written by the time they run.
 

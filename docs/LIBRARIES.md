@@ -3,9 +3,8 @@
 This is the design for letting zap produce relocatable objects, so functions
 written in assembly can be linked into C programs built with agondev on a PC
 or with acc on the Agon itself. It's being built in the steps listed under
-[Plan](#plan). Steps 1 and 2 are in: `-f elf` writes an object with
-segments, exports and imports, and 24-bit relocations. The other relocation
-types are still refused.
+[Plan](#plan). Steps 1 to 3 are in: `-f elf` writes an object with segments,
+exports and imports, and every relocation type below.
 
 ## Why objects
 
@@ -114,7 +113,7 @@ label, or `$`, plus a constant.
 |---|---|
 | absolute op absolute | absolute, as today |
 | relocatable ± absolute | relocatable |
-| relocatable − relocatable, same segment, both defined here | absolute (sizes and distances) |
+| relocatable − relocatable, same segment, both defined here | absolute (sizes and distances), usable wherever a number is: `len: equ $ - msg`, `IF`, `DS`, `(end - start) / 2` |
 | `rel & 0xFF`, `rel >> 8`, `rel >> 16` in a byte-wide field | relocatable byte |
 | anything else involving a relocatable value | an error |
 
@@ -124,14 +123,24 @@ address:
 | written as | ELF | ACC v6 |
 |---|---|---|
 | a 24-bit field: `call`, `ld hl, label`, `dl label` | `R_Z80_24` | `ABS24` |
-| `dw label` | `R_Z80_16` | `ABS16` |
+| a 16-bit field: `dw label`, `ld.sis hl, label` | `R_Z80_WORD0` | `ABS16` |
 | `label & 0xFF`, or a label in a byte field | `R_Z80_BYTE0` | `LOW8` |
 | `label >> 8` in a byte field | `R_Z80_BYTE1` | `HIGH8` |
 | `label >> 16` in a byte field | `R_Z80_BYTE2` | `UPPER8` |
-| `jr` / `djnz` to a label in another object | `R_Z80_8_PCREL` | `PCREL8` |
+| `jr` / `djnz` to a label in another object or segment | `R_Z80_8_PCREL` | `PCREL8` |
 
 A `jr` or `djnz` within the same segment is resolved by zap and needs no
-relocation.
+relocation. For a 16-bit or 8-bit field zap writes `WORD0` and `BYTE0`, not
+the `R_Z80_16` and `R_Z80_8` GNU `as` writes for `.dw` and `.db`: `ld`
+refuses those when the address doesn't fit, where zap truncates it, as a
+flat assembly does. A linked object is always the bytes a flat assembly
+would have been.
+
+Where the labels in an expression are still ahead, zap keeps it as text and
+works it out once the source has been read, as it does in a flat binary; `$`
+and the anonymous labels keep the meaning they had where it was written. An
+expression whose labels are all known already is settled on its own line,
+which is what lets `ld a, @table >> 8` name a local label.
 
 ### What's refused in an object
 
@@ -142,7 +151,8 @@ relocation.
 | `ALIGN` above 32768 | ACC records alignment as 4 bits of log2 |
 | an instruction or `DB` in `BSS` | the bss holds no bytes |
 | `IF`, `ALIGN`, `DS` or `BLK` with a relocatable value | these need a number while assembling |
-| `EQU` of a relocatable value | not supported yet |
+| `EQU` of a relocatable value | an `EQU` is a number; a distance works |
+| a byte of an address in a wider field, or anything more done to it | a relocation takes the byte of the address plus a constant, and nothing else |
 | `XDEF` of an absolute `EQU` | allowed for ELF (an absolute symbol); refused for ACC, which has no absolute symbols |
 | `bit`, `rst` or `im` with a relocatable operand | these go into the opcode, where no relocation can reach |
 | `dw32` of a label | neither format has a 32-bit relocation zap uses |
@@ -203,7 +213,7 @@ the same format independently.
    refusals, and an ELF writer for code with no relocations yet. **Done.**
 2. Relocatable labels: `XDEF`, `XREF`, 24-bit relocations, the symbol table,
    the two-address test and the corpus. **Done.**
-3. The other relocation types, label differences, and `$`.
+3. The other relocation types, label differences, and `$`. **Done.**
 4. Calling-convention tests with agondev on the emulator.
 5. The ACC v6 writer, tested against `objv6.py` and with acc on the emulator.
 

@@ -244,6 +244,12 @@ for f in "acc" "coff" ""; do
     m=$("$ZAP" -c "$OUT/opt.s" "$OUT/opt.o" -f $f 2>&1 | tr -d '\r' || true)
     check "-f '$f' is refused" "$(printf '%s' "$m" | grep -c '^Option -f')" 1
 done
+m=$("$ZAP" -c "$OUT/opt.s" "$OUT/opt.o" -f coff 2>&1 | tr -d '\r' || true)
+check "-f with an unknown format names it" \
+    "$(printf '%s' "$m" | grep -c 'unknown format "coff"')" 1
+m=$("$ZAP" -c "$OUT/opt.s" "$OUT/opt.o" -f 2>&1 | tr -d '\r' || true)
+check "-f with no format says one is needed" \
+    "$(printf '%s' "$m" | grep -c 'needs a format')" 1
 check "-felf attached is taken" \
     "$("$ZAP" -c -felf "$OUT/opt.s" "$OUT/opt.o" 2>&1 | tr -d '\r' | grep -c '^Wrote ')" 1
 check "-x counts the object file's bytes" \

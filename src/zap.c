@@ -982,7 +982,7 @@ __attribute__((noinline)) static bool parse_args(int argc, char* argv[],
 
                     return false;
                 } else {
-                    printf("Option -f needs a format: elf\r\n");
+                    printf("Option -f: unknown format \"%s\"; only elf is supported\r\n", f);
 
                     return false;
                 }

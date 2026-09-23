@@ -30,8 +30,6 @@
  * `DS` and `ALIGN` leave in it.
  * ====================================================================== */
 
-static bool out_settle(void);
-
 /* Writes the window out and starts it again at the beginning.
  *
  * The whole window, never part of it. Nothing reads backwards in it -- a
@@ -59,6 +57,10 @@ bool out_create(void) {
 }
 
 bool out_flush(void) {
+    /* An object is held in memory until it is written whole. */
+    if (obj_format != OBJ_NONE) {
+        return obj_grow();
+    }
     const int n = (int) (state.o - state.win);
     if (n == 0) {
         return true;
@@ -642,7 +644,7 @@ static bool fill_take(evalue n) {
  * out_reserve_n inside fill_put comes back here, finds nothing pending and
  * stops -- which is what keeps this from calling itself.
  */
-static bool out_settle(void) {
+bool out_settle(void) {
     const int n = state.pend;
     if (n == 0) {
         return true;
@@ -968,7 +970,7 @@ static bool cond_value(evalue* out, const char** pp, const char* e) {
         return false;
     }
     if (expr_fwd != NULL) {
-        state.err = ZAP_E_LABEL_DEFINED_ALREADY;
+        state.err = fwd_refusal();
 
         return false;
     }
@@ -996,7 +998,7 @@ static bool cond_value(evalue* out, const char** pp, const char* e) {
                 return false;
             }
             if (expr_fwd != NULL) {
-                state.err = ZAP_E_LABEL_DEFINED_ALREADY;
+                state.err = fwd_refusal();
 
                 return false;
             }
@@ -1065,6 +1067,16 @@ bool directive_line(const char* s, int n, const char* p,
          * of the directive dispatch: assemble_line ends at
          * `return directive_line(...)` when the mnemonic table says no, and a
          * directive still reaches its own dispatch in one call. */
+        if (obj_format != OBJ_NONE) {
+            /* SEGMENT and its GNU spellings, which exist only in an object:
+             * in a flat assembly they are ordinary words, as they are to the
+             * reference, and a macro may be called by one of them. */
+            bool mine = false;
+            const bool ok = obj_directive(s, n, p, e, stop, &mine);
+            if (mine) {
+                return ok;
+            }
+        }
         uint8_t suffix = 0;
         const insninfo* const insn = suffixed_mnemonic(s, n, &suffix);
         if (insn != NULL) {
@@ -1179,6 +1191,13 @@ bool directive_line(const char* s, int n, const char* p,
         if (cn == 4 && same_ci_full("ez80", cs, 4)) {
             cpu_mask = CPU_EZ80;
             state.adl = ZAP_ADL;
+        } else if (obj_format != OBJ_NONE
+                   && ((cn == 3 && same_ci_full("z80", cs, 3))
+                       || (cn == 4 && same_ci_full("z180", cs, 4)))) {
+            /* Neither has ADL, and an object holds ADL code only. */
+            state.err = ZAP_E_OBJ_ADL_ONLY;
+
+            return false;
         } else if (cn == 3 && same_ci_full("z80", cs, 3)) {
             cpu_mask = CPU_Z80;
             state.adl = false;
@@ -1263,13 +1282,20 @@ bool directive_line(const char* s, int n, const char* p,
                 return false;
             }
             if (expr_fwd != NULL) {
-                state.err = ZAP_E_LABEL_DEFINED_ALREADY;
+                state.err = fwd_refusal();
 
                 return false;
             }
         }
         if (mode != 0 && mode != 1) {
             state.err = ZAP_E_ADL_0_OR_1;
+
+            return false;
+        }
+        if (mode == 0 && obj_format != OBJ_NONE) {
+            /* Z80-mode addresses are 16 bits, and neither format zap writes
+             * has been given relocations for them yet. */
+            state.err = ZAP_E_OBJ_ADL_ONLY;
 
             return false;
         }
@@ -1329,7 +1355,7 @@ bool directive_line(const char* s, int n, const char* p,
             return false;
         }
         if (expr_fwd != NULL) {
-            state.err = ZAP_E_LABEL_DEFINED_ALREADY;
+            state.err = fwd_refusal();
 
             return false;
         }
@@ -1429,6 +1455,13 @@ bool directive_line(const char* s, int n, const char* p,
         *stop = p;
 
         return true;
+    }
+
+    if ((kind == DIR_RELOCATE || kind == DIR_ORG) && obj_format != OBJ_NONE) {
+        /* An object's addresses are decided when it is linked. */
+        state.err = ZAP_E_OBJ_NO_ADDRESS;
+
+        return false;
     }
 
     if (kind == DIR_RELOCATE) {
@@ -1603,6 +1636,9 @@ bool directive_line(const char* s, int n, const char* p,
     if ((value & (value - 1)) != 0) {
         state.err = ZAP_E_ALIGN_POWER_TWO;
 
+        return false;
+    }
+    if (obj_format != OBJ_NONE && !obj_align(value)) {
         return false;
     }
     /* Pad to the next multiple. `-addr & (n - 1)` is the distance to it, and

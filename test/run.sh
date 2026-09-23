@@ -33,8 +33,8 @@ SRCS=(src/buf_reader.c src/value.c src/conv.c src/isa_table.c
 # The assembler itself, and the subset test_encode.c links rather than
 # including: it brings zap.c and symtab.c in by hand.
 ZAPSRCS=(src/zap.c src/symtab.c src/scan.c src/expr.c src/macro.c
-         src/directive.c src/insn.c)
-ENCODE_LINK=(src/scan.c src/expr.c src/macro.c src/directive.c src/insn.c)
+         src/directive.c src/insn.c src/object.c)
+ENCODE_LINK=(src/scan.c src/expr.c src/macro.c src/directive.c src/insn.c src/object.c)
 
 status=0
 for t in test/test_*.c; do
@@ -1833,6 +1833,11 @@ for flag in DUP_ROW DUP_GROUP DUP_BUCKET DUP_HASH DUP_SYMCHAIN DUP_INTERN DUP_LO
         status=1
     fi
 done
+
+# Relocatable objects, checked against agondev's binutils. Their own script,
+# because what they are compared with is a linker rather than ez80asm.
+echo "=== test_object ==="
+test/object.sh "$OUT/zap" || status=1
 
 # The guide's index links to its own headings, and a renamed heading breaks a
 # link silently. Every anchor in it has to resolve to a heading in it.

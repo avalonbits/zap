@@ -271,7 +271,11 @@ static bool resolve_deferred(void) {
             return false;
         }
         if (expr_fwd != NULL || expr_fwd_bad) {
-            state.err = ZAP_E_UNKNOWN_LABEL;
+            /* Every name in it is known, and some are placed in an object's
+             * segments: the value exists, but only as a relocation. */
+            const bool placed = expr_fwd != NULL && expr_fwd->reloc
+                                && (expr_fwd2 == NULL || expr_fwd2->reloc);
+            state.err = placed ? ZAP_E_OBJ_NO_RELOCATIONS_YET : ZAP_E_UNKNOWN_LABEL;
 
             return false;
         }
@@ -594,18 +598,30 @@ __attribute__((noinline)) static bool run(const char* path) {
 
     /* One window, allocated once and never grown. What the source is worth in
      * output no longer decides anything: the buffer is a view on a file that
-     * is written as it fills. */
-    state.cap = OUT_WINDOW;
-    Z_SITE("output buffer");
-    state.win = (uint8_t*) malloc((size_t) state.cap);
-    if (state.win == NULL) {
-        state.err = ZAP_E_OUT_MEMORY;
+     * is written as it fills.
+     *
+     * An object is the exception: its segments are held whole, and the
+     * window is whichever one is being assembled into. */
+    if (obj_format != OBJ_NONE) {
+        if (!obj_start()) {
+            return false;
+        }
+    } else {
+        state.cap = OUT_WINDOW;
+        Z_SITE("output buffer");
+        state.win = (uint8_t*) malloc((size_t) state.cap);
+        if (state.win == NULL) {
+            state.err = ZAP_E_OUT_MEMORY;
 
-        return false;
+            return false;
+        }
+        state.o = state.win;
+        /* The buffer holds the whole output, so its first byte is the
+         * output's. */
+        state.wbase = 0;
+        state.pend = 0;
+        state.lim = state.win + state.cap - OUT_MAX_INSN;
     }
-    state.o = state.win;
-    /* The buffer holds the whole output, so its first byte is the output's. */
-    state.wbase = 0;
     state.org = opt_org;
     state.org_set = false;
     state.fill = opt_fill;
@@ -638,7 +654,6 @@ __attribute__((noinline)) static bool run(const char* path) {
     state.fillp = NULL;
     state.fillp_used = 0;
     state.fillp_cap = 0;
-    state.pend = 0;
     state.late = NULL;
     state.late_used = 0;
     state.late_cap = 0;
@@ -650,7 +665,6 @@ __attribute__((noinline)) static bool run(const char* path) {
         state.expbuf[i] = NULL;
         state.expcap[i] = 0;
     }
-    state.lim = state.win + state.cap - OUT_MAX_INSN;
     Z_SITE("symbol buckets");
     state.syms = (symslot*) calloc(NSYMB, sizeof(symslot));
     if (state.syms == NULL) {
@@ -701,6 +715,10 @@ __attribute__((noinline)) static bool run(const char* path) {
         return false;
     }
 
+    if (obj_format != OBJ_NONE && !obj_finish()) {
+        return false;
+    }
+
     if (!resolve_fixups()) {
         return false;
     }
@@ -718,6 +736,9 @@ __attribute__((noinline)) static bool run(const char* path) {
 /* Everything run() may have allocated, freed in one place so that the two
  * error paths and the success path cannot drift apart. */
 static void dz_free(void) {
+    if (obj_format != OBJ_NONE) {
+        obj_free();
+    }
     free(state.win);
     free(state.syms);
     free(state.fixups);
@@ -844,6 +865,7 @@ static void usage(void) {
     printf("  -c\tNo color codes in output\r\n");
     printf("  -x\tDisplay assembly statistics\r\n");
     printf("  -ez80\tThe reference assembler's expression rules\r\n");
+    printf("  -f\tWrite a relocatable object: -f elf\r\n");
 }
 
 /* The reference's options, taken by the same letters and in the same forms.
@@ -886,6 +908,7 @@ __attribute__((noinline)) static bool parse_args(int argc, char* argv[],
     *in = NULL;
     *out = NULL;
     *stop = false;
+    bool org_given = false;
     for (int i = 1; i < argc; i++) {
         const char* a = argv[i];
         if (a[0] != '-') {
@@ -921,6 +944,7 @@ __attribute__((noinline)) static bool parse_args(int argc, char* argv[],
                     return false;
                 }
                 opt_org = v;
+                org_given = true;
                 break;
             case 'b':
                 if (!opt_hex(a + 2, next, &used, &v)) {
@@ -938,6 +962,32 @@ __attribute__((noinline)) static bool parse_args(int argc, char* argv[],
                 }
                 opt_adl = v != 0;
                 break;
+            case 'f': {
+                /* The object format, attached or in the next argument, like
+                 * the values above. */
+                const char* f = a + 2;
+                if (*f == 0) {
+                    f = next;
+                    used = 1;
+                }
+                if (f == NULL) {
+                    printf("Option -f needs a format: elf\r\n");
+
+                    return false;
+                }
+                if (strcmp(f, "elf") == 0) {
+                    obj_format = OBJ_ELF;
+                } else if (strcmp(f, "acc") == 0) {
+                    printf("Option -f acc is not supported yet\r\n");
+
+                    return false;
+                } else {
+                    printf("Option -f: unknown format \"%s\"; only elf is supported\r\n", f);
+
+                    return false;
+                }
+                break;
+            }
             case 'c': use_color = false; break;
             case 'l': want_list = true; break;
             case 'd': want_console_list = true; break;
@@ -959,8 +1009,30 @@ __attribute__((noinline)) static bool parse_args(int argc, char* argv[],
 
         return false;
     }
+    if (obj_format != OBJ_NONE) {
+        /* What has no meaning in an object, or is not written for one yet. */
+        const char* no = NULL;
+        if (org_given) {
+            no = "-o";
+        } else if (!opt_adl) {
+            no = "-a 0";
+        } else if (want_list) {
+            no = "-l";
+        } else if (want_console_list) {
+            no = "-d";
+        } else if (want_symbols) {
+            no = "-s";
+        }
+        if (no != NULL) {
+            printf("Option %s cannot be used with -f\r\n", no);
+
+            return false;
+        }
+        /* Addresses in an object are offsets in its segments. */
+        opt_org = 0;
+    }
     if (*out == NULL) {
-        if (!sidecar_name(*in, ".bin", derived_output,
+        if (!sidecar_name(*in, obj_format != OBJ_NONE ? ".o" : ".bin", derived_output,
                           (int) sizeof(derived_output))) {
             printf("Filename too long\r\n");
 
@@ -1494,7 +1566,7 @@ static void write_symbols(const char* src) {
 
 /* What the assembly used, for -x: the counters zap already keeps, rather than
  * anything measured by instrumenting the run. */
-static void write_stats(void) {
+static void write_stats(int written) {
     int syms = 0;
     for (const symblock* b = state.blocks; b != NULL; b = b->next) {
         syms += (b == state.blocks) ? state.syms_used : SYMS_STEP;
@@ -1515,7 +1587,7 @@ static void write_stats(void) {
     printf("Labels               : %6d\r\n", syms);
     printf("\r\nMacro memory         : %6d\r\n", macbytes);
     printf("Macros               : %6d\r\n", macros);
-    printf("\r\nOutput               : %6d\r\n", out_here());
+    printf("\r\nOutput               : %6d\r\n", written);
     /* The window is a constant, so on its own it says nothing. What is worth
      * knowing is whether the output outgrew it -- and if it did, how much had
      * to be patched behind it, which is what the sweep at the end costs. */
@@ -1775,13 +1847,18 @@ int main(int argc, char* argv[]) {
      * be on the card before a chunk covering it can be read back. For an
      * output that never filled the window this opens the file here, writes it
      * once and sweeps in memory, which is what it always did. */
-    const int written = out_here();
+    int written = out_here();
     /* Created even when there is nothing to put in it. A source that emits no
      * bytes still produces an empty file, as it did when the whole output was
      * written in one call here -- and test/corpus.sh reads the absence of the
      * file as "zap refused this", so not creating it would turn every such
-     * source into a disagreement. */
-    if (!out_create() || !out_flush() || !resolve_late()) {
+     * source into a disagreement.
+     *
+     * An object is written whole here, from the segments held in memory. */
+    const bool wrote = obj_format != OBJ_NONE
+                           ? obj_write(&written)
+                           : out_create() && out_flush() && resolve_late();
+    if (!wrote) {
         report(in);
         out_discard();
         dz_free();
@@ -1816,7 +1893,7 @@ int main(int argc, char* argv[]) {
         write_symbols(in);
     }
     if (want_stats) {
-        write_stats();
+        write_stats(written);
     }
 
 #ifdef ZMALLOC

@@ -47,7 +47,7 @@ if [ -n "${ZAP_WINDOW:-}" ]; then
 fi
 SRCS=(src/buf_reader.c src/value.c src/conv.c src/isa_table.c
       src/zap.c src/symtab.c src/scan.c src/expr.c src/macro.c
-      src/directive.c src/insn.c "$ROOT/test/stubs/agon_stubs.c")
+      src/directive.c src/insn.c src/object.c "$ROOT/test/stubs/agon_stubs.c")
 
 cc "${CFLAGS[@]}" -o "$OUT/zap" "${SRCS[@]}" || exit 1
 

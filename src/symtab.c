@@ -101,6 +101,15 @@ const char* const zap_err_text[] = {
     [ZAP_E_UNSUPPORTED_CPU_TYPE] = "unsupported CPU type",
     [ZAP_E_WRONG_NUMBER_MACRO_ARGUMENTS] = "wrong number of macro arguments",
     [ZAP_E_OUTPUT_PAST_24_BIT_RANGE] = "output past the 24-bit range",
+    [ZAP_E_OBJ_NO_ADDRESS] = "an object has no address until it is linked",
+    [ZAP_E_OBJ_ADL_ONLY] = "an object holds ADL code only",
+    [ZAP_E_OBJ_BSS_HOLDS_NO_BYTES] = "the bss holds no bytes",
+    [ZAP_E_OBJ_UNKNOWN_SEGMENT] = "unknown segment",
+    [ZAP_E_OBJ_NEEDS_NUMBER] = "an address in an object is not known until it is linked",
+    [ZAP_E_OBJ_NO_RELOCATIONS_YET] = "that needs a relocation, which zap cannot write yet",
+    [ZAP_E_OBJ_NOT_RELOCATABLE] = "an address in an object cannot be used this way",
+    [ZAP_E_OBJ_SEGMENT_TOO_LARGE] = "segment larger than 1 MB",
+    [ZAP_E_OBJ_ALIGN_TOO_LARGE] = "alignment too large for an object",
 };
 
 /* A code with no text prints nothing and looks like a message somebody forgot
@@ -472,6 +481,7 @@ sym* sym_intern(const char* name, int len) {
         dec->len = (uint8_t) len;
         dec->defined = false;
         dec->islocal = false;
+        dec->reloc = false;
         dec->addr = 0;
         dec->next = state.syms[b].head;
         state.syms[b].head = dec;
@@ -506,6 +516,7 @@ sym* sym_intern(const char* name, int len) {
      * referenced before it is defined has to answer this the moment the
      * reference records a fixup against it. */
     sp->islocal = false;
+    sp->reloc = false;
     sp->addr = 0;
 
     sp->next = state.syms[b].head;
@@ -621,6 +632,15 @@ static bool fold_mask(const fixup* f, evalue val, uint8_t w, uint8_t* mask) {
  * of the source, which settles every global one. */
 bool patch_fixup(const fixup* f) {
     const sym* sp = f->target;
+    evalue val;
+    if (obj_format != OBJ_NONE) {
+        /* In an object a label may be placed rather than defined, and what
+         * that allows depends on where the value goes. */
+        if (!obj_value(f, &val)) {
+            return false;
+        }
+        goto have_value;
+    }
     if (!sp->defined) {
         /* Reported against the line that used it, which is long gone; the
          * fixup carries the number for exactly this. The name is still on the
@@ -632,7 +652,7 @@ bool patch_fixup(const fixup* f) {
         return false;
     }
 
-    evalue val = sp->addr + f->addend;
+    val = sp->addr + f->addend;
     if (f->sub != NULL) {
         if (!f->sub->defined) {
             state.line = f->line;
@@ -644,6 +664,7 @@ bool patch_fixup(const fixup* f) {
         val += (f->width & FIX_SUB2) ? -f->sub->addr : f->sub->addr;
     }
 
+have_value:;
     const uint8_t w = (uint8_t) (f->width & FIX_WIDTH);
 
     if (w == FIX_DSINIT) {
@@ -664,9 +685,16 @@ bool patch_fixup(const fixup* f) {
      * the code below cannot tell the difference. What it must not do is hold
      * on to anything of the symbol's -- a local's node is handed back when its
      * scope ends -- so the record carries the finished bytes and nothing else. */
-    const bool inwin = f->off >= state.wbase;
+    const bool inwin = obj_format != OBJ_NONE || f->off >= state.wbase;
     uint8_t buf[4] = {0, 0, 0, 0};
-    uint8_t* at = inwin ? out_ptr(f->off) : buf;
+    uint8_t* at = buf;
+    if (obj_format != OBJ_NONE) {
+        /* An object's segments are all in memory, and the site may be in any
+         * of them. */
+        at = obj_ptr(f->off);
+    } else if (inwin) {
+        at = out_ptr(f->off);
+    }
     if (w == 0) {
         /* The byte after the displacement byte, which is where a relative
          * jump is measured from. */
@@ -772,6 +800,16 @@ bool fold_subs(int from) {
     for (int i = from; i < state.subfix_used; i++) {
         fixup* f = &state.fixups[state.subfix[i]];
         if (f->sub == NULL) {
+            continue;
+        }
+        if (f->sub->reloc) {
+            /* A local placed in an object segment, whose address is not a
+             * number to fold. It becomes its segment plus an offset, and the
+             * segment's symbol outlives the scope. */
+            const int sa = (int) f->sub->addr;
+            const int so = sa & SEG_MAX;
+            f->addend += (f->width & FIX_SUB2) ? -so : so;
+            f->sub = obj_section(sa);
             continue;
         }
         if (!f->sub->defined) {
@@ -930,6 +968,7 @@ sym* loc_intern(const char* name, int len) {
     sp->len = (uint8_t) len;
     sp->defined = false;
     sp->islocal = true;
+    sp->reloc = false;
     sp->addr = 0;
     sp->next = state.locs[b].head;
     state.locs[b].head = sp;
@@ -953,6 +992,7 @@ sym* anon_next(void) {
         sp->len = 0;
         sp->defined = false;
         sp->islocal = false;
+        sp->reloc = false;
         sp->addr = 0;
         state.anon_fwd = sp;
     }

@@ -70,6 +70,32 @@ static uint8_t bss_window[2];
 
 #define OBJ_SEG_START 4096
 
+/* A relocation: the linker adds the address of `base` and `addend` into the
+ * field at `off`, a position with its segment in the upper bits. */
+typedef struct {
+    int off;
+    const sym* base;
+    evalue addend;
+    uint8_t type;
+} objreloc;
+
+static objreloc* relocs;
+static int reloc_used;
+static int reloc_cap;
+
+/* The labels XDEF and XREF named, in the order they were named, and the line
+ * each was named on, to report an export that was never defined against. */
+typedef struct {
+    sym* sp;
+    int line;
+} objlink;
+
+static objlink* links;
+static int link_used;
+static int link_cap;
+
+#define R_Z80_24 5
+
 static void seg_enter(uint8_t k) {
     cur = k;
     state.pend = segs[k].pend;
@@ -139,10 +165,12 @@ bool obj_start(void) {
         sp->len = 0;
         sp->defined = false;
         sp->islocal = false;
-        sp->reloc = k != 0;
+        sp->reloc = k != 0 ? SYM_PLACED : 0;
         sp->addr = k << SEG_SHIFT;
     }
     cur = 0;
+    reloc_used = 0;
+    link_used = 0;
     if (!seg_alloc(SEG_CODE)) {
         return false;
     }
@@ -222,6 +250,18 @@ bool obj_finish(void) {
     if (cur != SEG_BSS && state.pend != 0 && !out_settle()) {
         return false;
     }
+    /* Every export has to be something: a label placed here, or a number. */
+    for (int i = 0; i < link_used; i++) {
+        const sym* sp = links[i].sp;
+        if ((sp->reloc & SYM_XDEF) != 0 && !sp->defined
+            && (sp->reloc & SYM_PLACED) == 0) {
+            state.line = links[i].line;
+            err_tok(sp->name, sp->len);
+            state.err = ZAP_E_OBJ_XDEF_UNDEFINED;
+
+            return false;
+        }
+    }
     if (!seg_save()) {
         return false;
     }
@@ -241,6 +281,14 @@ void obj_free(void) {
         free(segs[k].buf);
         segs[k].buf = NULL;
     }
+    free(relocs);
+    relocs = NULL;
+    reloc_used = 0;
+    reloc_cap = 0;
+    free(links);
+    links = NULL;
+    link_used = 0;
+    link_cap = 0;
     cur = 0;
     state.win = NULL;
 }
@@ -259,25 +307,64 @@ const sym* obj_section(int addr) {
     return &secsym[addr >> SEG_SHIFT];
 }
 
+
+static bool reloc_add(int off, const sym* base, evalue addend, uint8_t type) {
+    if (reloc_used == reloc_cap) {
+        Z_SITE("relocations");
+        const int want = reloc_cap == 0 ? 64 : reloc_cap + reloc_cap;
+        objreloc* grown = (objreloc*) realloc(relocs, (size_t) want * sizeof(objreloc));
+        if (grown == NULL) {
+            state.err = ZAP_E_OUT_MEMORY_LABELS;
+
+            return false;
+        }
+        relocs = grown;
+        reloc_cap = want;
+    }
+    objreloc* r = &relocs[reloc_used++];
+    r->off = off;
+    r->base = base;
+    r->addend = addend;
+    r->type = type;
+
+    return true;
+}
+
+/* What an address is relative to: its segment for a label placed here, the
+ * label itself for one imported, and nothing for a number. */
+static const sym* base_of(const sym* sp) {
+    if ((sp->reloc & SYM_PLACED) != 0) {
+        return obj_section((int) sp->addr);
+    }
+    if ((sp->reloc & SYM_XREF) != 0) {
+        return sp;
+    }
+
+    return NULL;
+}
+
 /* A fixup's value in an object, and whether it can be written as a number.
  *
- * A label placed in a segment counts once, and one subtracted counts minus
- * once. Where the count comes to nothing the value is a plain number -- a
- * constant, or the distance between two labels in the same segment, where
- * the segments cancel. A relative jump to a label in its own segment is a
- * distance too. Anything else needs a relocation, which zap does not write
- * yet, or is not something an object can express at all. */
+ * An address counts once, and one subtracted counts minus once. Where the
+ * count comes to nothing the value is a plain number -- a constant, or the
+ * distance between two labels in the same segment, where the segments cancel.
+ * A relative jump to a label in its own segment is a distance too.
+ *
+ * An address counted once in a 24-bit field becomes a relocation, and the
+ * field is written as zeros: the linker adds the addend it carries. Anything
+ * else needs a relocation zap does not write yet, or is not something an
+ * object can express at all. */
 bool obj_value(const fixup* f, evalue* val) {
     const sym* t = f->target;
     const sym* s = f->sub;
-    if (!t->defined && !t->reloc) {
+    if (!t->defined && (t->reloc & SYM_LINKED) == 0) {
         state.line = f->line;
         err_tok(t->name, t->len);
         state.err = ZAP_E_UNKNOWN_LABEL;
 
         return false;
     }
-    if (s != NULL && !s->defined && !s->reloc) {
+    if (s != NULL && !s->defined && (s->reloc & SYM_LINKED) == 0) {
         state.line = f->line;
         err_tok(s->name, s->len);
         state.err = ZAP_E_UNKNOWN_LABEL;
@@ -286,22 +373,19 @@ bool obj_value(const fixup* f, evalue* val) {
     }
 
     evalue v = t->addr + f->addend;
-    int net = 0;
-    int seg = 0;
-    if (t->reloc) {
-        net = 1;
-        seg = (int) (t->addr >> SEG_SHIFT);
-    }
+    const sym* base = base_of(t);
+    int net = base != NULL;
     if (s != NULL) {
         const bool minus = (f->width & FIX_SUB2) != 0;
         v += minus ? -s->addr : s->addr;
-        if (s->reloc) {
-            const int ss = (int) (s->addr >> SEG_SHIFT);
-            if (minus && net == 1 && ss == seg) {
+        const sym* sb = base_of(s);
+        if (sb != NULL) {
+            if (minus && base == sb) {
                 net = 0;
-            } else if (!minus && net == 0) {
+                base = NULL;
+            } else if (!minus && base == NULL) {
                 net = 1;
-                seg = ss;
+                base = sb;
             } else {
                 net = 2;
             }
@@ -314,7 +398,7 @@ bool obj_value(const fixup* f, evalue* val) {
         return true;
     }
     if (w == 0) {
-        if (net == 1 && seg == (f->off >> SEG_SHIFT)) {
+        if (net == 1 && base == obj_section(f->off)) {
             return true;
         }
         state.line = f->line;
@@ -325,11 +409,105 @@ bool obj_value(const fixup* f, evalue* val) {
     if (net == 0) {
         return true;
     }
+    if (net == 1 && w == 3) {
+        /* The addend is what is left once the base's own address is taken
+         * out: a segment's offset, or whatever was added to an import. */
+        if ((base->reloc & SYM_XREF) != 0) {
+            ((sym*) base)->reloc |= SYM_USED;
+        }
+        *val = 0;
+
+        return reloc_add(f->off, base, v - base->addr, R_Z80_24);
+    }
     state.line = f->line;
-    state.err = (net == 1 && w <= 4) ? ZAP_E_OBJ_NO_RELOCATIONS_YET
+    state.err = (net == 1 && w <= 2) ? ZAP_E_OBJ_NO_RELOCATIONS_YET
                                      : ZAP_E_OBJ_NOT_RELOCATABLE;
 
     return false;
+}
+
+/* XDEF and XREF, with the GNU spellings: a list of names, each exported or
+ * imported. ZDS writes `XREF name:ROM` to say where an import lives, which
+ * means nothing here, so the suffix is read and dropped. */
+static bool link_names(const char* p, const char* e, const char** stop,
+                       uint8_t flag) {
+    while (true) {
+        while (p < e && is_space_ch(*p)) {
+            p++;
+        }
+        const char* name = p;
+        while (p < e && name_ch(*p)) {
+            p++;
+        }
+        const int n = (int) (p - name);
+        if (n == 0) {
+            state.err = ZAP_E_EXPECTED_LABEL_NAME;
+
+            return false;
+        }
+        if (*name == '@') {
+            err_tok(name, n);
+            state.err = ZAP_E_OBJ_LOCAL_LINKED;
+
+            return false;
+        }
+        if ((unsigned) n > LABEL_MAX) {
+            state.err = ZAP_E_LABEL_TOO_LONG;
+
+            return false;
+        }
+        if (flag == SYM_XREF && p < e && *p == ':') {
+            p++;
+            while (p < e && name_ch(*p)) {
+                p++;
+            }
+        }
+        sym* sp = sym_intern(name, n);
+        if (sp == NULL) {
+            return false;
+        }
+        const uint8_t other = flag == SYM_XREF ? SYM_XDEF : SYM_XREF;
+        if ((sp->reloc & other) != 0) {
+            err_tok(name, n);
+            state.err = ZAP_E_OBJ_XDEF_AND_XREF;
+
+            return false;
+        }
+        if (flag == SYM_XREF && (sp->defined || (sp->reloc & SYM_PLACED) != 0)) {
+            err_tok(name, n);
+            state.err = ZAP_E_OBJ_XREF_DEFINED;
+
+            return false;
+        }
+        if ((sp->reloc & flag) == 0) {
+            sp->reloc |= flag;
+            if (link_used == link_cap) {
+                Z_SITE("exports");
+                const int want = link_cap == 0 ? 16 : link_cap + link_cap;
+                objlink* grown = (objlink*) realloc(links, (size_t) want * sizeof(objlink));
+                if (grown == NULL) {
+                    state.err = ZAP_E_OUT_MEMORY_LABELS;
+
+                    return false;
+                }
+                links = grown;
+                link_cap = want;
+            }
+            links[link_used].sp = sp;
+            links[link_used].line = state.line;
+            link_used++;
+        }
+        while (p < e && is_space_ch(*p)) {
+            p++;
+        }
+        if (p >= e || *p != ',') {
+            break;
+        }
+        p++;
+    }
+    *stop = p;
+
+    return true;
 }
 
 /* SEGMENT and the GNU spellings of it, which exist only in an object.
@@ -385,6 +563,18 @@ static uint8_t seg_of(const char* s, int n) {
 bool obj_directive(const char* s, int n, const char* p, const char* e,
                    const char** stop, bool* mine) {
     *mine = false;
+    if (same_word(s, n, "xdef") || same_word(s, n, ".xdef")
+        || same_word(s, n, ".global") || same_word(s, n, ".globl")) {
+        *mine = true;
+
+        return link_names(p, e, stop, SYM_XDEF);
+    }
+    if (same_word(s, n, "xref") || same_word(s, n, ".xref")
+        || same_word(s, n, ".extern")) {
+        *mine = true;
+
+        return link_names(p, e, stop, SYM_XREF);
+    }
     uint8_t k;
     if (same_word(s, n, "segment") || same_word(s, n, ".segment")
         || same_word(s, n, ".section")) {
@@ -415,10 +605,17 @@ bool obj_directive(const char* s, int n, const char* p, const char* e,
  * ELF
  *
  * An ELF32 relocatable file, as agondev's `ld` reads it: the four segments as
- * `.text`, `.data`, `.bss` and `.rodata`, a symbol table holding one section
- * symbol for each, and the two string tables. Every number in it fits in 24
- * bits, so the 32-bit fields are written as three bytes and a zero, which on
- * the eZ80 keeps this off the 32-bit helper calls.
+ * `.text`, `.data`, `.bss` and `.rodata`, a `.rela` section beside each one
+ * that has relocations, a symbol table, and the two string tables.
+ *
+ * The symbol table is the null symbol and a section symbol for each segment,
+ * which are local, then the exports and the imports a relocation uses, sorted
+ * by name. A relocation against a label defined here is against its section
+ * symbol, as GNU `as` writes one; only an import is named.
+ *
+ * Every number in the file fits in 24 bits except an addend, so the 32-bit
+ * fields are written as three bytes and a zero, which on the eZ80 keeps this
+ * off the 32-bit helper calls.
  * ---------------------------------------------------------------------- */
 
 #define ELF_EHSIZE    52
@@ -427,24 +624,36 @@ bool obj_directive(const char* s, int n, const char* p, const char* e,
 
 #define ELF_SYMSIZE   16
 
-#define ELF_SHNUM     8
-
-#define ELF_SYMTAB    5
-
-#define ELF_STRTAB    6
-
-#define ELF_SHSTRTAB  7
+#define ELF_RELASIZE  12
 
 #define EM_Z80        220
 
 /* EF_Z80_EZ80 | EF_Z80_ADL, as agondev's compiler marks its own objects. */
 #define ELF_FLAGS     0x84
 
-static const char shstrtab[] =
-    "\0.text\0.data\0.bss\0.rodata\0.symtab\0.strtab\0.shstrtab";
+#define SHN_ABS       0xFFF1
 
-/* Where each section's name starts in shstrtab, by section index. */
-static const uint8_t shname[ELF_SHNUM] = {0, 1, 7, 13, 18, 26, 34, 42};
+/* A symbol index shares a 24-bit field with the relocation type's byte. */
+#define ELF_SYM_MAX   0x7FFF
+
+static const char shstrtab[] =
+    "\0.text\0.data\0.bss\0.rodata\0.symtab\0.strtab\0.shstrtab"
+    "\0.rela.text\0.rela.data\0.rela.rodata";
+
+/* Where each name starts in shstrtab. */
+#define SHN_TEXT      1
+
+#define SHN_SYMTAB    26
+
+#define SHN_STRTAB    34
+
+#define SHN_SHSTRTAB  42
+
+#define SHN_RELA      52    /* ".rela.text"; the other two follow */
+
+static const uint8_t seg_shname[SEG_COUNT] = {0, 1, 7, 13, 18};
+
+static const uint8_t rela_shname[SEG_COUNT] = {0, 52, 63, 0, 74};
 
 static void le16(uint8_t* p, int v) {
     p[0] = (uint8_t) v;
@@ -456,6 +665,15 @@ static void le32(uint8_t* p, int v) {
     p[1] = (uint8_t) (v >> 8);
     p[2] = (uint8_t) (v >> 16);
     p[3] = 0;
+}
+
+/* All four bytes, for the two numbers that can be negative or wide: an
+ * addend, and the value of an exported EQU. */
+static void le32v(uint8_t* p, evalue v) {
+    p[0] = (uint8_t) v;
+    p[1] = (uint8_t) (v >> 8);
+    p[2] = (uint8_t) (v >> 16);
+    p[3] = (uint8_t) (v >> 24);
 }
 
 static bool put(const void* p, int n, int* pos) {
@@ -478,10 +696,10 @@ static bool pad4(int* pos) {
     return put(zero, (-*pos) & 3, pos);
 }
 
-static void shdr(uint8_t* h, int idx, int type, int flags, int off, int size,
+static void shdr(uint8_t* h, int name, int type, int flags, int off, int size,
                  int link, int info, int align, int entsize) {
     memset(h, 0, ELF_SHENTSIZE);
-    le32(h + 0, shname[idx]);
+    le32(h + 0, name);
     le32(h + 4, type);
     le32(h + 8, flags);
     le32(h + 16, off);
@@ -506,41 +724,124 @@ static void obj_fills(void) {
     }
 }
 
+/* By name, byte for byte, the shorter first where one is the start of the
+ * other. */
+static int name_cmp(const void* a, const void* b) {
+    const sym* x = *(const sym* const*) a;
+    const sym* y = *(const sym* const*) b;
+    const int n = x->len < y->len ? x->len : y->len;
+    for (int i = 0; i < n; i++) {
+        if (x->name[i] != y->name[i]) {
+            return (uint8_t) x->name[i] - (uint8_t) y->name[i];
+        }
+    }
+
+    return x->len - y->len;
+}
+
+static int reloc_cmp(const void* a, const void* b) {
+    const int x = ((const objreloc*) a)->off;
+    const int y = ((const objreloc*) b)->off;
+
+    return x < y ? -1 : x > y;
+}
+
+/* The symbols past the section symbols, in the order they are written. */
+static const sym** globals;
+
 static bool elf_write(int* written) {
     static const uint8_t ident[16] = {0x7F, 'E', 'L', 'F', 1, 1, 1};
     static const uint8_t sflags[SEG_COUNT] = {0, 6, 3, 3, 2};
-    /* Static: at 320 bytes it would take the frame far past what an `ix`
+    /* Static: at this size it would take the frame far past what an `ix`
      * displacement reaches. */
-    static uint8_t buf[ELF_SHNUM * ELF_SHENTSIZE];
+    static uint8_t buf[ELF_SHENTSIZE];
     int pos = 0;
 
-    /* Where everything goes, worked out before a byte is written. */
+    /* The globals: every export, and every import a relocation names. */
+    int nglob = 0;
+    Z_SITE("object symbols");
+    globals = (const sym**) malloc((size_t) (link_used + 1) * sizeof(sym*));
+    if (globals == NULL) {
+        state.err = ZAP_E_OUT_MEMORY_LABELS;
+
+        return false;
+    }
+    int strsize = 1;
+    for (int i = 0; i < link_used; i++) {
+        const sym* sp = links[i].sp;
+        if ((sp->reloc & SYM_XDEF) != 0 || (sp->reloc & SYM_USED) != 0) {
+            globals[nglob++] = sp;
+            strsize += sp->len + 1;
+        }
+    }
+    if (nglob + SEG_COUNT > ELF_SYM_MAX) {
+        state.err = ZAP_E_OBJ_TOO_MANY_SYMBOLS;
+
+        return false;
+    }
+    qsort(globals, (size_t) nglob, sizeof(sym*), name_cmp);
+    /* An import's address is 0, and nothing reads it now that every fixup
+     * is settled, so it holds the symbol's index for its relocations. */
+    for (int i = 0; i < nglob; i++) {
+        if ((globals[i]->reloc & SYM_XREF) != 0) {
+            ((sym*) globals[i])->addr = SEG_COUNT + i;
+        }
+    }
+    qsort(relocs, (size_t) reloc_used, sizeof(objreloc), reloc_cmp);
+
+    /* Where everything goes, worked out before a byte is written: the
+     * header, the segments' bytes, the symbol table and the strings, then
+     * the relocations, then the section headers. */
     int off[SEG_COUNT];
+    int rfirst[SEG_COUNT];
+    int rcount[SEG_COUNT];
     int at = ELF_EHSIZE;
     for (int k = 1; k < SEG_COUNT; k++) {
         off[k] = at;
         if (k != SEG_BSS) {
             at += segs[k].len;
         }
+        rfirst[k] = 0;
+        rcount[k] = 0;
+    }
+    for (int i = reloc_used - 1; i >= 0; i--) {
+        const int k = relocs[i].off >> SEG_SHIFT;
+        rfirst[k] = i;
+        rcount[k]++;
     }
     const int symoff = (at + 3) & ~3;
-    const int symsize = SEG_COUNT * ELF_SYMSIZE;
+    const int symsize = (SEG_COUNT + nglob) * ELF_SYMSIZE;
     const int stroff = symoff + symsize;
-    const int shstroff = stroff + 1;
-    const int shoff = (shstroff + (int) sizeof(shstrtab) + 3) & ~3;
+    const int shstroff = stroff + strsize;
+    int relaoff = (shstroff + (int) sizeof(shstrtab) + 3) & ~3;
+    int nrela = 0;
+    for (int k = 1; k < SEG_COUNT; k++) {
+        if (rcount[k] != 0) {
+            nrela++;
+        }
+    }
+    const int shoff = relaoff + reloc_used * ELF_RELASIZE;
+    const int shnum = SEG_COUNT + nrela + 3;
+    const int symtab = SEG_COUNT + nrela;
 
-    memset(buf, 0, ELF_EHSIZE);
-    memcpy(buf, ident, sizeof(ident));
-    le16(buf + 16, 1);          /* ET_REL */
-    le16(buf + 18, EM_Z80);
-    le32(buf + 20, 1);          /* EV_CURRENT */
-    le32(buf + 32, shoff);
-    le32(buf + 36, ELF_FLAGS);
-    le16(buf + 40, ELF_EHSIZE);
-    le16(buf + 46, ELF_SHENTSIZE);
-    le16(buf + 48, ELF_SHNUM);
-    le16(buf + 50, ELF_SHSTRTAB);
-    if (!put(buf, ELF_EHSIZE, &pos)) {
+    memset(buf, 0, ELF_SHENTSIZE);
+    uint8_t* h = buf;
+    memset(h, 0, 16);
+    memcpy(h, ident, sizeof(ident));
+    if (!put(h, 16, &pos)) {
+        return false;
+    }
+    memset(h, 0, ELF_EHSIZE - 16);
+    le16(h + 0, 1);             /* ET_REL */
+    le16(h + 2, EM_Z80);
+    le32(h + 4, 1);             /* EV_CURRENT */
+    le32(h + 16, shoff);
+    le32(h + 20, ELF_FLAGS);
+    le16(h + 24, ELF_EHSIZE);
+    le16(h + 30, ELF_SHENTSIZE);
+    le16(h + 32, shnum);
+    le16(h + 34, symtab + 2);
+    if (!put(h, ELF_EHSIZE - 16, &pos)) {
         return false;
     }
     for (int k = 1; k < SEG_COUNT; k++) {
@@ -549,35 +850,105 @@ static bool elf_write(int* written) {
         }
     }
 
-    /* The symbol table: the null symbol, and a section symbol for each
-     * segment -- all local, so the first global is one past them. */
+    /* The symbol table. */
     if (!pad4(&pos)) {
         return false;
     }
-    memset(buf, 0, (size_t) symsize);
-    for (int k = 1; k < SEG_COUNT; k++) {
-        uint8_t* e = buf + k * ELF_SYMSIZE;
-        e[12] = 3;              /* STB_LOCAL, STT_SECTION */
-        le16(e + 14, k);
+    for (int k = 0; k < SEG_COUNT; k++) {
+        memset(h, 0, ELF_SYMSIZE);
+        if (k != 0) {
+            h[12] = 3;          /* STB_LOCAL, STT_SECTION */
+            le16(h + 14, k);
+        }
+        if (!put(h, ELF_SYMSIZE, &pos)) {
+            return false;
+        }
     }
-    buf[symsize] = 0;           /* .strtab: the empty name, and nothing else */
-    if (!put(buf, symsize + 1, &pos) || !put(shstrtab, (int) sizeof(shstrtab), &pos)
-        || !pad4(&pos)) {
+    int name = 1;
+    for (int i = 0; i < nglob; i++) {
+        const sym* sp = globals[i];
+        memset(h, 0, ELF_SYMSIZE);
+        le32(h + 0, name);
+        name += sp->len + 1;
+        h[12] = 0x10;           /* STB_GLOBAL, STT_NOTYPE */
+        if ((sp->reloc & SYM_PLACED) != 0) {
+            le32(h + 4, (int) sp->addr & SEG_MAX);
+            le16(h + 14, (int) (sp->addr >> SEG_SHIFT));
+        } else if (sp->defined) {
+            le32v(h + 4, sp->addr);
+            le16(h + 14, SHN_ABS);
+        }
+        if (!put(h, ELF_SYMSIZE, &pos)) {
+            return false;
+        }
+    }
+
+    /* The names, then the section names. */
+    h[0] = 0;
+    if (!put(h, 1, &pos)) {
+        return false;
+    }
+    for (int i = 0; i < nglob; i++) {
+        if (!put(globals[i]->name, globals[i]->len, &pos) || !put(h, 1, &pos)) {
+            return false;
+        }
+    }
+    if (!put(shstrtab, (int) sizeof(shstrtab), &pos) || !pad4(&pos)) {
         return false;
     }
 
-    shdr(buf, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    /* The relocations, grouped by segment because they were sorted by
+     * position and a position starts with its segment. */
+    for (int i = 0; i < reloc_used; i++) {
+        const objreloc* r = &relocs[i];
+        const int sidx = (r->base->reloc & SYM_XREF) != 0
+                             ? (int) r->base->addr
+                             : (int) (r->base->addr >> SEG_SHIFT);
+        memset(h, 0, ELF_RELASIZE);
+        le32(h + 0, r->off & SEG_MAX);
+        le32(h + 4, (sidx << 8) | r->type);
+        le32v(h + 8, r->addend);
+        if (!put(h, ELF_RELASIZE, &pos)) {
+            return false;
+        }
+    }
+
+    /* The section headers: the null one, the segments, their relocations,
+     * and the three tables. */
+    shdr(h, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    if (!put(h, ELF_SHENTSIZE, &pos)) {
+        return false;
+    }
     for (int k = 1; k < SEG_COUNT; k++) {
         const int size = k == SEG_BSS ? segs[k].pend : segs[k].len;
-        shdr(buf + k * ELF_SHENTSIZE, k, k == SEG_BSS ? 8 : 1, sflags[k], off[k],
-             size, 0, 0, segs[k].align, 0);
+        shdr(h, seg_shname[k], k == SEG_BSS ? 8 : 1, sflags[k], off[k], size,
+             0, 0, segs[k].align, 0);
+        if (!put(h, ELF_SHENTSIZE, &pos)) {
+            return false;
+        }
     }
-    shdr(buf + ELF_SYMTAB * ELF_SHENTSIZE, ELF_SYMTAB, 2, 0, symoff, symsize,
-         ELF_STRTAB, SEG_COUNT, 4, ELF_SYMSIZE);
-    shdr(buf + ELF_STRTAB * ELF_SHENTSIZE, ELF_STRTAB, 3, 0, stroff, 1, 0, 0, 1, 0);
-    shdr(buf + ELF_SHSTRTAB * ELF_SHENTSIZE, ELF_SHSTRTAB, 3, 0, shstroff,
-         (int) sizeof(shstrtab), 0, 0, 1, 0);
-    if (!put(buf, ELF_SHNUM * ELF_SHENTSIZE, &pos)) {
+    for (int k = 1; k < SEG_COUNT; k++) {
+        if (rcount[k] == 0) {
+            continue;
+        }
+        /* SHT_RELA, and SHF_INFO_LINK: sh_info names the section it
+         * applies to. */
+        shdr(h, rela_shname[k], 4, 0x40, relaoff + rfirst[k] * ELF_RELASIZE,
+             rcount[k] * ELF_RELASIZE, symtab, k, 4, ELF_RELASIZE);
+        if (!put(h, ELF_SHENTSIZE, &pos)) {
+            return false;
+        }
+    }
+    shdr(h, SHN_SYMTAB, 2, 0, symoff, symsize, symtab + 1, SEG_COUNT, 4, ELF_SYMSIZE);
+    if (!put(h, ELF_SHENTSIZE, &pos)) {
+        return false;
+    }
+    shdr(h, SHN_STRTAB, 3, 0, stroff, strsize, 0, 0, 1, 0);
+    if (!put(h, ELF_SHENTSIZE, &pos)) {
+        return false;
+    }
+    shdr(h, SHN_SHSTRTAB, 3, 0, shstroff, (int) sizeof(shstrtab), 0, 0, 1, 0);
+    if (!put(h, ELF_SHENTSIZE, &pos)) {
         return false;
     }
     *written = pos;
@@ -591,6 +962,9 @@ bool obj_write(int* written) {
     if (!out_create()) {
         return false;
     }
+    const bool ok = elf_write(written);
+    free(globals);
+    globals = NULL;
 
-    return elf_write(written);
+    return ok;
 }

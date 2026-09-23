@@ -273,8 +273,8 @@ static bool resolve_deferred(void) {
         if (expr_fwd != NULL || expr_fwd_bad) {
             /* Every name in it is known, and some are placed in an object's
              * segments: the value exists, but only as a relocation. */
-            const bool placed = expr_fwd != NULL && expr_fwd->reloc
-                                && (expr_fwd2 == NULL || expr_fwd2->reloc);
+            const bool placed = expr_fwd != NULL && (expr_fwd->reloc & SYM_LINKED) != 0
+                                && (expr_fwd2 == NULL || (expr_fwd2->reloc & SYM_LINKED) != 0);
             state.err = placed ? ZAP_E_OBJ_NO_RELOCATIONS_YET : ZAP_E_UNKNOWN_LABEL;
 
             return false;

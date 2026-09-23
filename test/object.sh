@@ -181,6 +181,176 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# Relocations: what is written for each kind of reference, and the symbols.
+# A label defined here is relocated against its section, as GNU as does it;
+# only an import is named. An import nothing uses is left out.
+# ----------------------------------------------------------------------
+cat > "$OUT/rel.s" <<'EOF'
+        XREF    ext, unused:ROM
+        XDEF    g, tbl, absv
+g:      call ext
+        ld hl, ext+5
+        ld hl, tbl+2
+@l:     jp @l
+        ld hl, $
+        SEGMENT DATA
+tbl:    dl g, fwd, -1
+        .text
+fwd:    ret
+absv:   equ 5
+EOF
+if obj rel; then
+    readelf_quiet rel
+    got=$("$BIN-readelf" -r -W "$OUT/rel.o" | awk '/R_Z80/ { print $1, $3, $5, $6, $7 }' | tr '\n' ';')
+    check "each reference is a 24-bit relocation against the right base" "$got" \
+"00000001 R_Z80_24 ext + 0;00000005 R_Z80_24 ext + 5;00000009 R_Z80_24 .data + 2;0000000d R_Z80_24 .text + c;00000011 R_Z80_24 .text + 10;00000000 R_Z80_24 .text + 0;00000003 R_Z80_24 .text + 14;"
+    got=$("$BIN-readelf" -s -W "$OUT/rel.o" | awk '$5 == "GLOBAL" { print $2, $7, $8 }' | tr '\n' ';')
+    check "exports and used imports are global, sorted by name" "$got" \
+        "00000005 ABS absv;00000000 UND ext;00000000 1 g;00000000 2 tbl;"
+    check "every relocated field holds zeros" "$(section rel .text)" \
+        "cd0000002100000021000000c300000021000000c9"
+else
+    echo "FAIL  rel: $(tr -d '\r' < "$OUT/rel.log")"
+    status=1
+fi
+
+# Two objects, one calling into the other, linked at two addresses: the
+# result is exactly the flat assembly of the two sources one after the other.
+cat > "$OUT/main.s" <<'EOF'
+        XREF    lib_add, lib_tbl
+        XDEF    main
+main:   ld hl, lib_tbl + 3
+        call lib_add
+        jp main
+        dl lib_tbl, lib_add - 1
+EOF
+cat > "$OUT/lib.s" <<'EOF'
+        XDEF    lib_add, lib_tbl
+lib_add: add hl, de
+        ret
+lib_tbl: dl lib_add, lib_tbl, 7
+EOF
+grep -v 'XREF\|XDEF' "$OUT/main.s" > "$OUT/both.s"
+grep -v 'XREF\|XDEF' "$OUT/lib.s" >> "$OUT/both.s"
+if obj main && obj lib; then
+    for at in 050000 7A0000; do
+        "$ZAP" -c "$OUT/both.s" "$OUT/both.flat" -o "$at" > /dev/null 2>&1
+        "$BIN-ld" -e 0 -Ttext="0x$at" --oformat binary -o "$OUT/both.lnk" \
+            "$OUT/main.o" "$OUT/lib.o" > /dev/null 2>&1
+        check "two objects linked at $at are their flat assembly" \
+            "$(cmp -s "$OUT/both.lnk" "$OUT/both.flat" && echo same)" same
+    done
+else
+    echo "FAIL  main/lib: $(tr -d '\r' < "$OUT/main.log") $(tr -d '\r' < "$OUT/lib.log")"
+    status=1
+fi
+
+# Segments that refer to each other, placed by a linker script in the order
+# text, rodata, data: the flat assembly of the same lines in that order.
+cat > "$OUT/xseg.s" <<'EOF'
+start:  ld hl, tbl
+        ld de, msg + 1
+        SEGMENT DATA
+tbl:    dl start, fin, msg
+        SEGMENT RODATA
+msg:    db "ab"
+        SEGMENT CODE
+fin:    ret
+EOF
+cat > "$OUT/xseg_flat.s" <<'EOF'
+start:  ld hl, tbl
+        ld de, msg + 1
+fin:    ret
+msg:    db "ab"
+tbl:    dl start, fin, msg
+EOF
+if obj xseg; then
+    for at in 050000 7A0000; do
+        printf 'SECTIONS { . = 0x%s; .text : { *(.text) } .rodata : { *(.rodata) } .data : { *(.data) } }\n' \
+            "$at" > "$OUT/xseg.ld"
+        "$ZAP" -c "$OUT/xseg_flat.s" "$OUT/xseg.flat" -o "$at" > /dev/null 2>&1
+        "$BIN-ld" -e 0 -T "$OUT/xseg.ld" --oformat binary -o "$OUT/xseg.lnk" \
+            "$OUT/xseg.o" > /dev/null 2>&1
+        check "segments referring to each other, linked at $at" \
+            "$(cmp -s "$OUT/xseg.lnk" "$OUT/xseg.flat" && echo same)" same
+    done
+else
+    echo "FAIL  xseg: $(tr -d '\r' < "$OUT/xseg.log")"
+    status=1
+fi
+
+# ----------------------------------------------------------------------
+# The corpus. Every source zap assembles flat is assembled again as an
+# object, and one that is accepted is linked at two addresses and has to be
+# exactly its flat assembly at each: every call, jump and address in it is a
+# relocation, and a wrong one moves bytes at one address or the other.
+#
+# A source whose directory holds a single ORG has it removed first, since an
+# object has no address of its own; Rokky is one of these. A source refused
+# as an object is counted and not failed -- a Z80-mode program, a relocation
+# kind not written yet -- but the accepted count has a floor, so this cannot
+# quietly stop checking anything. A flat file ends where its last byte is
+# written and an object keeps a trailing reservation, so only the flat
+# file's length is compared.
+# ----------------------------------------------------------------------
+corpus_ok=0
+corpus_bad=0
+corpus_refused=0
+corpus_relocs=0
+rokky=no
+W="$OUT/cw"
+for dir in test/corpus/*/ test/regress/*/; do
+    [ -d "$dir/tests" ] || continue
+    for src in "$dir"/tests/*.s; do
+        [ -f "$src" ] || continue
+        base=$(basename "$src" .s)
+        rm -rf "$W"
+        mkdir -p "$W"
+        cp -r "$dir"/tests/* "$W/"
+        (cd "$W" && timeout 30 "$ZAP" -ez80 "$base.s" f.bin > /dev/null 2>&1) || continue
+        [ -f "$W/f.bin" ] || continue
+
+        orgfiles=$(grep -liE '^[[:space:]]*\.?org[[:space:]]' "$W"/* 2>/dev/null || true)
+        norg=0
+        [ -n "$orgfiles" ] && norg=$(cat $orgfiles | grep -ciE '^[[:space:]]*\.?org[[:space:]]')
+        if [ "$norg" = 1 ]; then
+            sed -i -E '/^[[:space:]]*\.?[oO][rR][gG][[:space:]]/d' $orgfiles
+        fi
+
+        (cd "$W" && timeout 30 "$ZAP" -ez80 -f elf "$base.s" o.o > /dev/null 2>&1) || true
+        if [ ! -f "$W/o.o" ]; then
+            corpus_refused=$((corpus_refused + 1))
+            continue
+        fi
+        good=1
+        for at in 040000 7A0000; do
+            rm -f "$W/f.bin" "$W/l.bin"
+            (cd "$W" && "$ZAP" -ez80 "$base.s" f.bin -o "$at" > /dev/null 2>&1)
+            "$BIN-ld" -e 0 -Ttext="0x$at" --oformat binary -o "$W/l.bin" \
+                "$W/o.o" > /dev/null 2>&1
+            if [ ! -f "$W/f.bin" ] || [ ! -f "$W/l.bin" ] \
+               || ! cmp -s -n "$(stat -c%s "$W/f.bin")" "$W/l.bin" "$W/f.bin"; then
+                good=0
+            fi
+        done
+        if [ "$good" = 1 ]; then
+            corpus_ok=$((corpus_ok + 1))
+            corpus_relocs=$((corpus_relocs + $("$BIN-readelf" -r "$W/o.o" | grep -c R_Z80 || true)))
+            [ "$base" = rokky ] && rokky=yes
+        else
+            corpus_bad=$((corpus_bad + 1))
+            echo "FAIL  corpus ${dir#test/}$base: linked bytes differ from flat"
+            status=1
+        fi
+    done
+done
+echo "      corpus: $corpus_ok linked identically, $corpus_bad differed, $corpus_refused refused as objects, $corpus_relocs relocations"
+check "no corpus object links differently from its flat assembly" "$corpus_bad" 0
+check "at least 90 corpus sources were linked and compared" \
+    "$([ "$corpus_ok" -ge 90 ] && echo yes || echo "only $corpus_ok")" yes
+check "Rokky links at two addresses to its flat bytes" "$rokky" yes
+
+# ----------------------------------------------------------------------
 # Refusals. Each one is a source that must not produce an object, and the
 # message that says why.
 # ----------------------------------------------------------------------
@@ -216,14 +386,23 @@ refused "EQU of \$" 'lb2: equ $\n' "not known until it is linked"
 refused "DS of a label" 'lab: nop\n  ds lab\n' "not known until it is linked"
 refused "ALIGN of a label" 'lab: nop\n  align lab\n' "not known until it is linked"
 refused "IF on a label" 'lab: nop\n  if lab\n  endif\n' "not known until it is linked"
-refused "an address in an instruction" 'lab: nop\n  ld hl, lab\n' "cannot write yet"
-refused "an address ahead in an instruction" '  call lab\nlab: nop\n' "cannot write yet"
-refused "an address in DL" 'lab: nop\n  dl lab\n' "cannot write yet"
+refused "an address in DW" 'lab: nop\n  dw lab\n' "cannot write yet"
 refused "an address in DB" 'lab: nop\n  db lab\n' "cannot write yet"
 refused "a byte of an address" 'lab: nop\n  ld a, lab >> 8\n' "cannot write yet"
-refused "\$ as an address" '  ld hl, $\n' "cannot write yet"
-refused "@b as an address" '@@: ld hl, @b\n' "cannot write yet"
-refused "@b as an address in an expression" '@@: dl @b + 1\n' "cannot write yet"
+refused "a 16-bit address" 'lab: nop\n  ld.sis hl, lab\n' "cannot write yet"
+refused "a relative jump to an import" '  xref ext\n  jr ext\n' "cannot write yet"
+refused "an address in DW32" 'lab: nop\n  dw32 lab\n' "cannot be used this way"
+refused "an import subtracted" '  xref ext\nlab: nop\n  dl lab - ext\n' "cannot be used this way"
+refused "two imports added" '  xref e1, e2\n  dl e1 + e2\n' "cannot be used this way"
+refused "XREF of a label defined here" '  xref lab\nlab: nop\n' "imported with XREF is defined here"
+refused "XREF after the definition" 'lab: nop\n  xref lab\n' "imported with XREF is defined here"
+refused "EQU of an import" '  xref lab\nlab: equ 5\n' "imported with XREF is defined here"
+refused "XDEF of a label never defined" '  xdef nowhere\n  nop\n' "exported with XDEF is never defined"
+refused "XDEF of a local" 'lab: nop\n  xdef @loc\n@loc: nop\n' "local label cannot be exported"
+refused "XREF of a local" '  xref @loc\n' "local label cannot be exported"
+refused "a label both exported and imported" '  xdef lab\n  xref lab\nlab: nop\n' "both exported and imported"
+refused "XDEF with no name" '  xdef\n' "expected a label name"
+refused "XDEF with a trailing comma" 'lab: nop\n  xdef lab,\n' "expected a label name"
 refused "a jump into another segment" '  jr lab\n  .data\nlab: db 0\n' "cannot write yet"
 refused "a relative jump to a number" '  jr n\nn: equ 5\n' "cannot write yet"
 refused "a bit number from a label" 'lab: nop\n  bit lab, a\n' "cannot be used this way"

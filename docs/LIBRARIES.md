@@ -3,8 +3,9 @@
 This is the design for letting zap produce relocatable objects, so functions
 written in assembly can be linked into C programs built with agondev on a PC
 or with acc on the Agon itself. It's being built in the steps listed under
-[Plan](#plan). Step 1 is in: `-f elf` writes an object with segments, but any
-value that needs a relocation is still refused.
+[Plan](#plan). Steps 1 and 2 are in: `-f elf` writes an object with
+segments, exports and imports, and 24-bit relocations. The other relocation
+types are still refused.
 
 ## Why objects
 
@@ -161,9 +162,12 @@ relocation.
 
 **ELF.** An ELF32 relocatable file with `.text`, `.rodata`, `.data` and `.bss`
 sections, a `.rela` section for each one that has relocations, and a symbol
-table: section symbols, then exported and imported labels. Relocations are
-`RELA`, with the addend in the entry and zeros in the field, as GNU `as`
-writes them. Local labels aren't written.
+table: section symbols, then exported labels and the imported ones a
+relocation uses, sorted by name. Relocations are `RELA`, with the addend in
+the entry and zeros in the field, as GNU `as` writes them. A label defined in
+the object, exported or not, is relocated against its section symbol plus its
+offset, as `as` does; only an import is relocated against its own symbol.
+Labels that aren't exported aren't written.
 
 **ACC v6.** `CODE`, `RODATA` and `DATA` go into acc's single text blob in that
 order, each padded to its own alignment, and `BSS` becomes the bss length and
@@ -198,7 +202,7 @@ the same format independently.
 1. Object mode: `-f`, segments held in memory, the new directives and
    refusals, and an ELF writer for code with no relocations yet. **Done.**
 2. Relocatable labels: `XDEF`, `XREF`, 24-bit relocations, the symbol table,
-   the two-address test and the corpus.
+   the two-address test and the corpus. **Done.**
 3. The other relocation types, label differences, and `$`.
 4. Calling-convention tests with agondev on the emulator.
 5. The ACC v6 writer, tested against `objv6.py` and with acc on the emulator.

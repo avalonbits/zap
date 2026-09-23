@@ -491,6 +491,12 @@ typedef enum {
     ZAP_E_OBJ_NOT_RELOCATABLE,
     ZAP_E_OBJ_SEGMENT_TOO_LARGE,
     ZAP_E_OBJ_ALIGN_TOO_LARGE,
+    ZAP_E_OBJ_XREF_DEFINED,
+    ZAP_E_OBJ_XDEF_UNDEFINED,
+    ZAP_E_OBJ_LOCAL_LINKED,
+    ZAP_E_OBJ_XDEF_AND_XREF,
+    ZAP_E_OBJ_TOO_MANY_SYMBOLS,
+    ZAP_E_EXPECTED_LABEL_NAME,
 
     /* Not a code: the number of them, so the table below cannot be short. */
     ZAP_E_COUNT
@@ -544,13 +550,16 @@ struct sym {
      * ldir and this is written once per distinct label. */
     bool islocal;
 
-    /* A label placed in a segment of an object, whose address is not known
-     * until the object is linked. Never true together with `defined`, which
-     * is what sends every read of one down the forward-reference path: that
-     * path already records a symbol and an addend, which is what a
-     * relocation is, and a flat assembly pays nothing for it. `addr` holds
-     * the segment and the offset in it -- see SEG_SHIFT. */
-    bool reloc;
+    /* What an object makes of the name; zero in a flat assembly. See the
+     * SYM_ flags.
+     *
+     * A label placed in a segment of an object has an address that is not
+     * known until the object is linked, and an imported one has none at all.
+     * Neither is ever `defined`, which is what sends every read of one down
+     * the forward-reference path: that path already records a symbol and an
+     * addend, which is what a relocation is, and a flat assembly pays nothing
+     * for it. */
+    uint8_t reloc;
 
     /* The value: an address for an ordinary label, whatever was written for an
      * EQU. Four bytes, not the machine's three, because the reference keeps
@@ -1862,6 +1871,20 @@ _Static_assert((R_IXL | R_IYL)
 #define OBJ_ELF  1
 
 #define OBJ_ACC  2
+
+/* `sym.reloc`. A placed label's `addr` holds its segment and its offset in
+ * it -- see SEG_SHIFT; an imported one's is 0 until the object is written,
+ * when it becomes the symbol's index. */
+#define SYM_PLACED 1    /* defined here, at an offset in a segment */
+
+#define SYM_XREF   2    /* imported: defined in another object */
+
+#define SYM_XDEF   4    /* exported */
+
+#define SYM_USED   8    /* imported, and named by a relocation */
+
+/* Known, but only as an address the linker will decide. */
+#define SYM_LINKED (SYM_PLACED | SYM_XREF)
 
 /* The segments, numbered as the ELF writer numbers its sections. */
 #define SEG_CODE   1

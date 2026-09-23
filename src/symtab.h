@@ -33,7 +33,7 @@ static inline bool anon_define(int addr) {
     if (state.anon_fwd != NULL) {
         /* Placed rather than defined in an object; see sym_place. */
         if (obj_format != OBJ_NONE) {
-            state.anon_fwd->reloc = true;
+            state.anon_fwd->reloc = SYM_PLACED;
         } else {
             state.anon_fwd->defined = true;
         }
@@ -84,12 +84,17 @@ static inline bool fits_width(evalue v, int width) {
 /* A label in an object: its segment and offset, which are all that is known
  * of it until the object is linked. See `sym.reloc`. */
 static inline sym* sym_place(sym* sp, int addr) {
-    if (sp->reloc) {
+    if ((sp->reloc & SYM_PLACED) != 0) {
         state.err = ZAP_E_LABEL_DEFINED_TWICE;
 
         return NULL;
     }
-    sp->reloc = true;
+    if ((sp->reloc & SYM_XREF) != 0) {
+        state.err = ZAP_E_OBJ_XREF_DEFINED;
+
+        return NULL;
+    }
+    sp->reloc |= SYM_PLACED;
     sp->addr = addr;
 
     return sp;

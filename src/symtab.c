@@ -110,6 +110,12 @@ const char* const zap_err_text[] = {
     [ZAP_E_OBJ_NOT_RELOCATABLE] = "an address in an object cannot be used this way",
     [ZAP_E_OBJ_SEGMENT_TOO_LARGE] = "segment larger than 1 MB",
     [ZAP_E_OBJ_ALIGN_TOO_LARGE] = "alignment too large for an object",
+    [ZAP_E_OBJ_XREF_DEFINED] = "a label imported with XREF is defined here",
+    [ZAP_E_OBJ_XDEF_UNDEFINED] = "a label exported with XDEF is never defined",
+    [ZAP_E_OBJ_LOCAL_LINKED] = "a local label cannot be exported or imported",
+    [ZAP_E_OBJ_XDEF_AND_XREF] = "a label cannot be both exported and imported",
+    [ZAP_E_OBJ_TOO_MANY_SYMBOLS] = "too many symbols for an object",
+    [ZAP_E_EXPECTED_LABEL_NAME] = "expected a label name",
 };
 
 /* A code with no text prints nothing and looks like a message somebody forgot
@@ -481,7 +487,7 @@ sym* sym_intern(const char* name, int len) {
         dec->len = (uint8_t) len;
         dec->defined = false;
         dec->islocal = false;
-        dec->reloc = false;
+        dec->reloc = 0;
         dec->addr = 0;
         dec->next = state.syms[b].head;
         state.syms[b].head = dec;
@@ -516,7 +522,7 @@ sym* sym_intern(const char* name, int len) {
      * referenced before it is defined has to answer this the moment the
      * reference records a fixup against it. */
     sp->islocal = false;
-    sp->reloc = false;
+    sp->reloc = 0;
     sp->addr = 0;
 
     sp->next = state.syms[b].head;
@@ -802,7 +808,7 @@ bool fold_subs(int from) {
         if (f->sub == NULL) {
             continue;
         }
-        if (f->sub->reloc) {
+        if ((f->sub->reloc & SYM_PLACED) != 0) {
             /* A local placed in an object segment, whose address is not a
              * number to fold. It becomes its segment plus an offset, and the
              * segment's symbol outlives the scope. */
@@ -968,7 +974,7 @@ sym* loc_intern(const char* name, int len) {
     sp->len = (uint8_t) len;
     sp->defined = false;
     sp->islocal = true;
-    sp->reloc = false;
+    sp->reloc = 0;
     sp->addr = 0;
     sp->next = state.locs[b].head;
     state.locs[b].head = sp;
@@ -992,7 +998,7 @@ sym* anon_next(void) {
         sp->len = 0;
         sp->defined = false;
         sp->islocal = false;
-        sp->reloc = false;
+        sp->reloc = 0;
         sp->addr = 0;
         state.anon_fwd = sp;
     }

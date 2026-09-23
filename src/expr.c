@@ -143,7 +143,7 @@ sym* defer_text(const char* text, int n) {
     sp->len = 0;
     sp->defined = false;
     sp->islocal = false;
-    sp->reloc = false;
+    sp->reloc = 0;
     sp->addr = 0;
 
     defexpr* d = &state.defer[state.defer_used++];
@@ -650,7 +650,8 @@ bool equ_line(const char* name, int nlen, const char* p,
      * gave it. The reference refuses it too. Three stores, on the EQU path
      * only. */
     named->defined = false;
-    named->reloc = false;
+    /* Kept exported: `XDEF n` then `n: EQU 5` exports a number. */
+    named->reloc &= (uint8_t) ~SYM_PLACED;
 
     evalue value = 0;
     const char* const lit = lit_value(p, e, &value);

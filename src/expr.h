@@ -37,8 +37,8 @@ static inline void fwd_reset(const sym* seed) {
  * must be defined already would send the reader looking for a definition that
  * is right there. */
 static inline zap_err fwd_refusal(void) {
-    if ((expr_fwd != NULL && expr_fwd->reloc)
-        || (expr_fwd2 != NULL && expr_fwd2->reloc)) {
+    if ((expr_fwd != NULL && (expr_fwd->reloc & SYM_LINKED) != 0)
+        || (expr_fwd2 != NULL && (expr_fwd2->reloc & SYM_LINKED) != 0)) {
         return ZAP_E_OBJ_NEEDS_NUMBER;
     }
 

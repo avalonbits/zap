@@ -53,7 +53,7 @@ flowchart TD
 [`parse_args()`](../src/zap.c#L904) ·
 [`run()`](../src/zap.c#L591) ·
 [`run_lines()`](../src/zap.c#L449) ·
-[`scope_end()`](../src/symtab.c#L843) ·
+[`scope_end()`](../src/symtab.c#L849) ·
 [`resolve_fixups()`](../src/zap.c#L425) ·
 [`out_flush()`](../src/directive.c#L59) ·
 [`resolve_late()`](../src/zap.c#L383)
@@ -92,7 +92,7 @@ unknown label, a jump out of range, a value that doesn't fit) is reported
 against the line that used the label.
 
 The fixup list normally only grows. If it can't grow any more because memory
-has run out, [`fix_sweep()`](../src/symtab.c#L1064) settles every entry whose
+has run out, [`fix_sweep()`](../src/symtab.c#L1070) settles every entry whose
 labels are now known, compacts the list, and carries on. Section 7a covers
 what can be settled early.
 
@@ -113,17 +113,17 @@ Three kinds of thing wait for the end of the run:
 
 | | resolved by | holds |
 |---|---|---|
-| fixup | [`patch_fixup()`](../src/symtab.c#L633) | one or two symbols, an addend, a width, an offset |
+| fixup | [`patch_fixup()`](../src/symtab.c#L639) | one or two symbols, an addend, a width, an offset |
 | deferred expression | [`resolve_deferred()`](../src/zap.c#L262) | expression text a fixup can't represent |
 | deferred fill | [`resolve_fills()`](../src/zap.c#L294) | a `BLK` whose fill value wasn't known yet |
 
-A [`fixup`](../src/zap.h#L687)'s width is usually a byte count (1 to 4) or 0 for
+A [`fixup`](../src/zap.h#L696)'s width is usually a byte count (1 to 4) or 0 for
 a relative jump. A few special widths cover operands that aren't simply bytes
 after the opcode:
 
 - Three "folds", where the value goes into the opcode byte itself: a bit
   number, an interrupt mode, or a restart address. This is how `bit n, a`
-  works when `n` is defined later. [`fold_mask()`](../src/symtab.c#L588) turns
+  works when `n` is defined later. [`fold_mask()`](../src/symtab.c#L594) turns
   the value into a mask, range-checks it, and it's OR'd into the opcode.
 - Two for an index displacement, the signed byte in `(ix+d)`. These need their
   own widths because the byte isn't just the low eight bits of the value: the
@@ -139,7 +139,7 @@ window only the last 64 KB of output is still in memory.
 
 For a patch whose target is behind the window, zap still computes the bytes in
 the usual place, so all the diagnostics stay the same, and records just the
-finished bytes in a [`latepatch`](../src/zap.h#L609). It stores bytes rather
+finished bytes in a [`latepatch`](../src/zap.h#L618). It stores bytes rather
 than the symbol because a local label's node is reused once its scope ends, so
 by the time the patch was applied the symbol could name a different label. The
 folds are stored as a checked mask for the same reason.
@@ -157,7 +157,7 @@ The late-patch list isn't sorted. It's a series of ascending runs, because
 patches are recorded at different moments: when a scope ends, when the fixup
 list is swept, and at the end of the source (where globals start again from
 the top). Each of those walks its fixups in output order, so the list climbs
-and then drops back. A [`laterun`](../src/zap.h#L632) marks one of those
+and then drops back. A [`laterun`](../src/zap.h#L641) marks one of those
 climbs and keeps its own cursor, so the final pass looks at each patch once.
 [`out_late()`](../src/directive.c#L168) starts a new run whenever a patch is
 lower than the previous one. If it didn't, that patch would be skipped
@@ -177,7 +177,7 @@ fixup is settled long after its bytes were written.
 ## 3. The state
 
 Everything the assembler knows is in one global object,
-[`state`](../src/symtab.c#L230), of type [`zap_state`](../src/zap.h#L1191),
+[`state`](../src/symtab.c#L236), of type [`zap_state`](../src/zap.h#L1200),
 defined in `symtab.c` and declared in `zap.h`.
 
 ```mermaid
@@ -352,17 +352,17 @@ flowchart TD
 ```
 
 Global labels and EQU values ([`sym`](../src/zap.h#L211),
-[`sym_intern()`](../src/symtab.c#L460)) are added to the table the first time
+[`sym_intern()`](../src/symtab.c#L466)) are added to the table the first time
 they're seen, defined or not, so a forward reference gets an entry for its
 fixup to point at. Nodes and names come from blocks that are never moved or
 resized. A growing array would need `realloc`, and a `realloc` that moves the
 data briefly needs memory for both copies.
 
-Local labels (`@name`, [`loc_intern()`](../src/symtab.c#L906)) belong to the
+Local labels (`@name`, [`loc_intern()`](../src/symtab.c#L912)) belong to the
 global label above them. A scope ends at every global label, which happens
 thousands of times in a real program, so clearing the table has to be cheap.
 Each bucket records which scope it belongs to, so bumping a generation counter
-in [`scope_end()`](../src/symtab.c#L843) makes every bucket read as empty
+in [`scope_end()`](../src/symtab.c#L849) makes every bucket read as empty
 without touching them.
 
 Anonymous labels (`@@`, used as `@f` and `@b`) aren't in a table at all.
@@ -376,18 +376,18 @@ then, because the local's node is about to be reused.
 
 ### 7a. The fixup list and when it's swept
 
-Each fixup is 16 bytes, and [`fix_add()`](../src/symtab.c#L1101) grows the list
+Each fixup is 16 bytes, and [`fix_add()`](../src/symtab.c#L1107) grows the list
 `FIX_STEP` records at a time. Normally nothing is removed until the end, so the
 list holds one record per forward reference. `-x` reports both the total and
 the peak, which are equal unless the list was swept.
 
-When memory runs out, [`fix_sweep()`](../src/symtab.c#L1064) settles what it
+When memory runs out, [`fix_sweep()`](../src/symtab.c#L1070) settles what it
 can instead of giving up. Real programs usually have plenty to settle: at any
 point, BBC BASIC for Agon only needs about 490 of its 2,209 fixups, and a CP/M
 implementation 950 of 1,859. The rest refer to labels that have already been
 defined.
 
-A fixup can be settled early only if ([`fix_ready()`](../src/symtab.c#L1034)):
+A fixup can be settled early only if ([`fix_ready()`](../src/symtab.c#L1040)):
 
 - its target (and second symbol, if any) is defined. The placeholder symbols
   used for deferred expressions stay undefined until the end, so they're
@@ -399,7 +399,7 @@ A fixup can be settled early only if ([`fix_ready()`](../src/symtab.c#L1034)):
   label's value to be folded in.
 
 `subfix` stores indices into the fixup list, and
-[`fold_subs()`](../src/symtab.c#L799) uses them at every scope end, so
+[`fold_subs()`](../src/symtab.c#L805) uses them at every scope end, so
 compacting the list would break them. Both lists are in ascending order, so the
 sweep updates each index as it moves the entry.
 
@@ -544,7 +544,7 @@ flowchart TD
 [`macro_expand()`](../src/macro.c#L507) ·
 [`macro_args()`](../src/macro.c#L358) ·
 [`macro_subst()`](../src/macro.c#L421) ·
-[`scope_push()`](../src/expr.c#L715)
+[`scope_push()`](../src/expr.c#L716)
 
 Expanding a macro doesn't need a reader or a nested line loop, because the body
 is already a sequence of lines. Substitution is plain text with no parentheses
@@ -561,7 +561,7 @@ allocated per expansion.
 ## 11. Diagnostics
 
 Errors are codes rather than strings: `state.err` is a
-[`zap_err`](../src/zap.h#L497), and the messages live in
+[`zap_err`](../src/zap.h#L503), and the messages live in
 [one table](../src/symtab.c#L24) next to the enum. Code other than `main` can
 check the code directly, which makes the assembler usable as a library.
 
@@ -577,7 +577,7 @@ flowchart LR
     E4 --> RP["report — prints all of it"]
 ```
 
-[`err_line()`](../src/symtab.c#L250) ·
+[`err_line()`](../src/symtab.c#L256) ·
 [`err_tok()`](../src/symtab.h#L52) ·
 [`report()`](../src/zap.c#L1719)
 
@@ -724,7 +724,7 @@ looking at the bytes, not from reasoning about what an assembler ought to do.
   [`directive_line()`](../src/directive.c#L1062), a test file under
   `test/cases` compared against ez80asm, and a row in the README's directive
   table.
-- A diagnostic needs a [`zap_err`](../src/zap.h#L497) code and one line in the
+- A diagnostic needs a [`zap_err`](../src/zap.h#L503) code and one line in the
   message table. A static assert on the table size catches a code with no
   message.
 - Measure anything on the hot path on the Agon before and after. The host

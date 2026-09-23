@@ -2,8 +2,9 @@
 
 This is the design for letting zap produce relocatable objects, so functions
 written in assembly can be linked into C programs built with agondev on a PC
-or with acc on the Agon itself. It isn't implemented yet; it's the spec the
-work will follow.
+or with acc on the Agon itself. It's being built in the steps listed under
+[Plan](#plan). Step 1 is in: `-f elf` writes an object with segments, but any
+value that needs a relocation is still refused.
 
 ## Why objects
 
@@ -32,7 +33,8 @@ explains why acc keeps its own format rather than using ELF.
     zap lib.s lib.bin          a flat binary, as today
 
 With `-f`, the output name defaults to `<source>.o`. Without it, nothing
-changes.
+changes. `-o` and `-a 0` mean nothing in an object and are refused with `-f`,
+and so are `-l`, `-d` and `-s` until they're written for objects.
 
 ## Writing a library
 
@@ -135,7 +137,8 @@ relocation.
 | | why |
 |---|---|
 | `ORG`, `.RELOCATE` | an object has no address until it's linked |
-| `ASSUME ADL=0` | Z80-mode relocations aren't supported yet |
+| `ASSUME ADL=0`, `.CPU Z80`, `.CPU Z180` | Z80-mode relocations aren't supported yet |
+| `ALIGN` above 32768 | ACC records alignment as 4 bits of log2 |
 | an instruction or `DB` in `BSS` | the bss holds no bytes |
 | `IF`, `ALIGN`, `DS` or `BLK` with a relocatable value | these need a number while assembling |
 | `EQU` of a relocatable value | not supported yet |
@@ -193,7 +196,7 @@ the same format independently.
 ## Plan
 
 1. Object mode: `-f`, segments held in memory, the new directives and
-   refusals, and an ELF writer for code with no relocations yet.
+   refusals, and an ELF writer for code with no relocations yet. **Done.**
 2. Relocatable labels: `XDEF`, `XREF`, 24-bit relocations, the symbol table,
    the two-address test and the corpus.
 3. The other relocation types, label differences, and `$`.

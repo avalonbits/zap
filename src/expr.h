@@ -31,6 +31,20 @@ static inline void fwd_reset(const sym* seed) {
     expr_fwd_bad = false;
 }
 
+/* Why a value that had to be known now was not.
+ *
+ * In an object a label is known but its address is not, and saying the label
+ * must be defined already would send the reader looking for a definition that
+ * is right there. */
+static inline zap_err fwd_refusal(void) {
+    if ((expr_fwd != NULL && expr_fwd->reloc)
+        || (expr_fwd2 != NULL && expr_fwd2->reloc)) {
+        return ZAP_E_OBJ_NEEDS_NUMBER;
+    }
+
+    return ZAP_E_LABEL_DEFINED_ALREADY;
+}
+
 /* A displacement as the reference keeps it: the machine word, signed.
  *
  * Not a detail of the evaluator but of the reference's operand. 2.3 holds this
@@ -392,6 +406,15 @@ full_expression:
              * hex digits after it the scan has already taken them and it is
              * the radix prefix instead. */
             v = state.org + out_here();
+            if (obj_format != OBJ_NONE) {
+                /* In an object `$` is its segment plus an offset, carried as
+                 * a forward reference is. */
+                if (neg) {
+                    goto full_expression;
+                }
+                op->fwd = obj_section(v);
+                v &= SEG_MAX;
+            }
             got = true;
         } else if (ns[0] == '@') {
             /* `@f` and `@n` are the next anonymous label, `@b` and `@p` the
@@ -410,6 +433,13 @@ full_expression:
                     return false;
                 }
                 v = state.anon_prev;
+                if (obj_format != OBJ_NONE) {
+                    if (neg) {
+                        goto full_expression;
+                    }
+                    op->fwd = obj_section(v);
+                    v &= SEG_MAX;
+                }
             } else {
                 const sym* sp;
                 if (k2 == 'f' || k2 == 'n') {

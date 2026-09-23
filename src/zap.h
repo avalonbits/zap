@@ -482,6 +482,15 @@ typedef enum {
     ZAP_E_UNSUPPORTED_CPU_TYPE,
     ZAP_E_WRONG_NUMBER_MACRO_ARGUMENTS,
     ZAP_E_OUTPUT_PAST_24_BIT_RANGE,
+    ZAP_E_OBJ_NO_ADDRESS,
+    ZAP_E_OBJ_ADL_ONLY,
+    ZAP_E_OBJ_BSS_HOLDS_NO_BYTES,
+    ZAP_E_OBJ_UNKNOWN_SEGMENT,
+    ZAP_E_OBJ_NEEDS_NUMBER,
+    ZAP_E_OBJ_NO_RELOCATIONS_YET,
+    ZAP_E_OBJ_NOT_RELOCATABLE,
+    ZAP_E_OBJ_SEGMENT_TOO_LARGE,
+    ZAP_E_OBJ_ALIGN_TOO_LARGE,
 
     /* Not a code: the number of them, so the table below cannot be short. */
     ZAP_E_COUNT
@@ -534,6 +543,14 @@ struct sym {
      * than on the operand because the operand is copied twice a line with an
      * ldir and this is written once per distinct label. */
     bool islocal;
+
+    /* A label placed in a segment of an object, whose address is not known
+     * until the object is linked. Never true together with `defined`, which
+     * is what sends every read of one down the forward-reference path: that
+     * path already records a symbol and an addend, which is what a
+     * relocation is, and a flat assembly pays nothing for it. `addr` holds
+     * the segment and the offset in it -- see SEG_SHIFT. */
+    bool reloc;
 
     /* The value: an address for an ordinary label, whatever was written for an
      * EQU. Four bytes, not the machine's three, because the reference keeps
@@ -1827,6 +1844,44 @@ _Static_assert((R_IXL | R_IYL)
 #define TRUNC_AT(n, v) do { } while (0)
 #endif
 
+/* ======================================================================
+ * OBJECTS
+ *
+ * With `-f`, the output is a relocatable object rather than a flat binary.
+ * The code and data go into segments held in memory, and a label is an
+ * offset in one of them.
+ *
+ * A position in an object carries its segment in the bits above SEG_SHIFT,
+ * so `out_here()`, a label's address and a fixup's offset all say which
+ * segment they are in without a field of their own. The difference of two
+ * labels in one segment comes out right because the segment cancels; a
+ * relative jump into another segment comes out far out of range.
+ * ====================================================================== */
+#define OBJ_NONE 0
+
+#define OBJ_ELF  1
+
+#define OBJ_ACC  2
+
+/* The segments, numbered as the ELF writer numbers its sections. */
+#define SEG_CODE   1
+
+#define SEG_DATA   2
+
+#define SEG_BSS    3
+
+#define SEG_RODATA 4
+
+#define SEG_COUNT  5
+
+#define SEG_SHIFT  20
+
+#define SEG_MAX    ((1 << SEG_SHIFT) - 1)
+
+/* The largest ALIGN an object takes. ACC keeps an alignment as four bits of
+ * log2, so this is what both formats can say. */
+#define OBJ_ALIGN_MAX 0x8000
+
 /* Defined in one part, used from others.
  * The comment on each definition says what it does. */
 /* directive.c */ bool directive_line(const char* s, int n, const char* p, const char* e, const char** stop);
@@ -1838,6 +1893,7 @@ _Static_assert((R_IXL | R_IYL)
 /* directive.c */ bool out_peek(int off, uint8_t* dst, int n);
 /* directive.c */ bool out_reserve(void);
 /* directive.c */ int str_escape(char c);
+/* directive.c */ bool out_settle(void);
 /* expr.c      */ bool defer_expr(const char* text, int n, dop* op);
 /* expr.c      */ sym* defer_text(const char* text, int n);
 /* expr.c      */ bool equ_line(const char* name, int nlen, const char* p, const char* e, const char** stop);
@@ -1888,6 +1944,17 @@ _Static_assert((R_IXL | R_IYL)
 /* macro.c     */ bool macro_begin(const char** pp, const char* e);
 /* macro.c     */ bool macro_expand(const macro* m, const char* p, const char* e, const char** stop);
 /* macro.c     */ bool macro_line(const char* p, const char* e);
+/* object.c    */ bool obj_align(evalue n);
+/* object.c    */ bool obj_directive(const char* s, int n, const char* p, const char* e, const char** stop, bool* mine);
+/* object.c    */ bool obj_finish(void);
+/* object.c    */ extern uint8_t obj_format;
+/* object.c    */ void obj_free(void);
+/* object.c    */ bool obj_grow(void);
+/* object.c    */ uint8_t* obj_ptr(int off);
+/* object.c    */ const sym* obj_section(int addr);
+/* object.c    */ bool obj_start(void);
+/* object.c    */ bool obj_value(const fixup* f, evalue* val);
+/* object.c    */ bool obj_write(int* written);
 /* scan.c      */ void build_cclass(void);
 /* scan.c      */ extern uint8_t cclass[256];
 /* scan.c      */ extern const dop dop_none;

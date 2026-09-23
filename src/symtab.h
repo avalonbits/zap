@@ -31,7 +31,12 @@ static inline bool anon_define(int addr) {
     state.anon_prev = addr;
     state.anon_has_prev = true;
     if (state.anon_fwd != NULL) {
-        state.anon_fwd->defined = true;
+        /* Placed rather than defined in an object; see sym_place. */
+        if (obj_format != OBJ_NONE) {
+            state.anon_fwd->reloc = true;
+        } else {
+            state.anon_fwd->defined = true;
+        }
         state.anon_fwd->addr = addr;
         state.anon_fwd = NULL;
     }
@@ -76,6 +81,20 @@ static inline bool fits_width(evalue v, int width) {
     return true;
 }
 
+/* A label in an object: its segment and offset, which are all that is known
+ * of it until the object is linked. See `sym.reloc`. */
+static inline sym* sym_place(sym* sp, int addr) {
+    if (sp->reloc) {
+        state.err = ZAP_E_LABEL_DEFINED_TWICE;
+
+        return NULL;
+    }
+    sp->reloc = true;
+    sp->addr = addr;
+
+    return sp;
+}
+
 static inline sym* sym_define(const char* name, int len, int addr) {
     sym* sp = sym_intern(name, len);
     if (sp == NULL) {
@@ -85,6 +104,9 @@ static inline sym* sym_define(const char* name, int len, int addr) {
         state.err = ZAP_E_LABEL_DEFINED_TWICE;
 
         return NULL;
+    }
+    if (obj_format != OBJ_NONE) {
+        return sym_place(sp, addr);
     }
     sp->defined = true;
     sp->addr = addr;
@@ -101,6 +123,9 @@ static inline sym* loc_define(const char* name, int len, int addr) {
         state.err = ZAP_E_LABEL_DEFINED_TWICE;
 
         return NULL;
+    }
+    if (obj_format != OBJ_NONE) {
+        return sym_place(sp, addr);
     }
     sp->defined = true;
     sp->addr = addr;

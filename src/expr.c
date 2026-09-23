@@ -87,6 +87,15 @@ static void fwd_take(const sym* sp) {
     }
 }
 
+/* A position in an object, which is its segment plus an offset: the segment
+ * becomes a symbol the expression refers to, and the offset is what is left
+ * as the value. */
+static evalue obj_here(int addr) {
+    fwd_take(obj_section(addr));
+
+    return addr & SEG_MAX;
+}
+
 /* Subtraction, and unary minus, flip the sign of everything on their right. */
 static void fwd_negate(uint8_t mask) {
     if (mask & 1) {
@@ -134,6 +143,7 @@ sym* defer_text(const char* text, int n) {
     sp->len = 0;
     sp->defined = false;
     sp->islocal = false;
+    sp->reloc = false;
     sp->addr = 0;
 
     defexpr* d = &state.defer[state.defer_used++];
@@ -245,6 +255,9 @@ bool expr_atom(evalue* out, const char* ns, int nn) {
                     return false;
                 }
                 *out = state.anon_prev;
+                if (obj_format != OBJ_NONE) {
+                    *out = obj_here(state.anon_prev);
+                }
 
                 return true;
             }
@@ -399,6 +412,9 @@ static bool expr_term(evalue* out, const char** pp, const char* e,
              * with hex digits after it, it is the radix prefix instead, and
              * the scan above has already taken them. */
             v = state.org + out_here();
+            if (obj_format != OBJ_NONE) {
+                v = obj_here((int) v);
+            }
         } else if (!expr_atom(&v, ts, n)) {
             return false;
         }
@@ -631,9 +647,10 @@ bool equ_line(const char* name, int nlen, const char* p,
 
     /* Undefined while its own value is being worked out, so that `X: EQU X+1`
      * is refused rather than quietly reading the address the label path just
-     * gave it. The reference refuses it too. Two stores, on the EQU path
+     * gave it. The reference refuses it too. Three stores, on the EQU path
      * only. */
     named->defined = false;
+    named->reloc = false;
 
     evalue value = 0;
     const char* const lit = lit_value(p, e, &value);
@@ -646,7 +663,7 @@ bool equ_line(const char* name, int nlen, const char* p,
             return false;
         }
         if (expr_fwd != NULL) {
-            state.err = ZAP_E_LABEL_DEFINED_ALREADY;
+            state.err = fwd_refusal();
 
             return false;
         }

@@ -1,36 +1,34 @@
 # How zap works
 
-zap assembles eZ80 source into a binary in **one pass**, on a machine with
-**512 KB of RAM and no cache**. Those two facts explain most of the design;
-this document describes the parts and how they fit together.
+zap assembles eZ80 source in a single pass, on a machine with 512 KB of RAM and
+no cache. Most of the design follows from those two facts. This document walks
+through the parts and how they fit together.
 
-The assembler is seven files. Each has a header holding what the other parts
-need from it, and the sections below follow them:
+The assembler is split into seven parts, each with a header for what the
+others need from it:
 
-| file | what is in it | sections |
+| file | contents | sections |
 |---|---|---|
-| [`zap.c`](../src/zap.c) | the line loop, listing, reporting, the command line, `main` | 1, 11, 12 |
+| [`zap.c`](../src/zap.c) | the line loop, listing, error reporting, command line, `main` | 1, 11, 12 |
 | [`scan.c`](../src/scan.c) | character classes, tokens, registers | 4 |
 | [`insn.c`](../src/insn.c) | mnemonic tables, row selection, emitting | 5, 6 |
-| [`symtab.c`](../src/symtab.c) | symbols, interning, local labels, fixups | 7 |
+| [`symtab.c`](../src/symtab.c) | symbols, local labels, fixups | 7 |
 | [`expr.c`](../src/expr.c) | expressions, forward references, `EQU` | 8 |
-| [`directive.c`](../src/directive.c) | directives, and the output window | 9 |
-| [`macro.c`](../src/macro.c) | definition and expansion | 10 |
+| [`directive.c`](../src/directive.c) | directives and the output window | 9 |
+| [`macro.c`](../src/macro.c) | macro definition and expansion | 10 |
 
-[`zap.h`](../src/zap.h) holds what all of them share: the types, the state, the
-constants that size it, and one declaration per symbol a part offers the
-others. The instruction table is generated into
-[`src/isa_table.c`](../src/isa_table.c); the buffered reader, the number parser
-and the character conversions are small units of their own.
+[`zap.h`](../src/zap.h) holds what they all share: types, the global state,
+size constants, and declarations. The instruction table is generated into
+[`src/isa_table.c`](../src/isa_table.c), and the buffered reader, number parser
+and character conversions are small units of their own.
 
-The hot path crosses those boundaries on purpose. `assemble_line` has the
-operand parser, the row match and the emitter inlined into it, and a compiler
-inlines only what it can see — so the twenty functions in that position have
-their bodies in `<part>.h` rather than `<part>.c`. Nothing else does; rule 5 in
-section 14 is the long version.
+The hot path deliberately crosses these boundaries. `assemble_line` has the
+operand parser, row matcher and emitter inlined into it, and the compiler can
+only inline what it can see, so those twenty or so functions live in
+`<part>.h` rather than `<part>.c`. Rule 5 in section 14 explains why.
 
-Links in this document point at the definition of the thing being described,
-which for those twenty is the header.
+Code links in this document point at definitions, which for those functions
+means the header.
 
 ---
 
@@ -46,7 +44,7 @@ flowchart TD
     loop --> scope["scope_end() — settle the last local scope"]
     scope --> fix["resolve_fixups() — deferred expressions,<br/>block fills, then every forward reference"]
     fix --> tail["out_flush() — the tail of the output"]
-    tail --> late["resolve_late() — one ascending sweep,<br/>applying everything owed to bytes<br/>already on the card"]
+    tail --> late["resolve_late() — one ascending sweep,<br/>patching bytes already on the card"]
     late --> side["listing, symbol file, statistics<br/>(optional; none can fail the run)"]
 ```
 
@@ -59,18 +57,18 @@ flowchart TD
 [`out_flush()`](../src/directive.c#L61) ·
 [`resolve_late()`](../src/zap.c#L379)
 
-There is no intermediate representation and no syntax tree. A line is read,
-turned into bytes, and forgotten. What survives a line is only what a later
-line might need: the symbols it defined, the fixups it left behind, and the
-bytes themselves.
+There's no intermediate representation or syntax tree. Each line is read,
+turned into bytes and forgotten. The only things that outlive a line are what
+later lines might need: the symbols it defined, any fixups it left, and the
+bytes.
 
 ---
 
 ## 2. One pass, and what it costs
 
-A reference to a label further down the file cannot be resolved where it is
-read. A two-pass assembler reads the source twice; zap reads it once and
-**patches the output afterwards**.
+A reference to a label further down the file can't be resolved when it's read.
+A two-pass assembler reads the source twice; zap reads it once and patches the
+output afterwards.
 
 ```mermaid
 sequenceDiagram
@@ -88,111 +86,103 @@ sequenceDiagram
     F->>O: overwrite the three bytes at that offset
 ```
 
-Nothing leaves the fixup list on its own, so on a long source it only grows.
-When it will not grow any further — the allocation refused, on a machine with
-no more to give — [`fix_sweep()`](../src/symtab.c#L1024) settles everything in
-it whose labels have since been read and closes the gaps, and the assembly
-carries on with what is left. §7 is what may be settled there and what may not.
+Each fixup also records the line number, so an error found while patching (an
+unknown label, a jump out of range, a value that doesn't fit) is reported
+against the line that used the label.
 
-The fixup carries the line number as well as the offset, so a failure found at
-patch time — an unknown label, a jump out of range, a value that does not fit —
-is reported against the line that *used* the label rather than wherever the
-patching happened to be.
+The fixup list normally only grows. If it can't grow any more because memory
+has run out, [`fix_sweep()`](../src/symtab.c#L1024) settles every entry whose
+labels are now known, compacts the list, and carries on. Section 7a covers
+what can be settled early.
 
-The price used to be that the whole output had to be in memory at once, which
-on a 512 KB machine bounded what could be assembled. It does not any more: the
-buffer is a **window** onto a file written as it fills, `OUT_WINDOW` wide, and
-what an assembly costs in memory no longer depends on how much it emits. §2a
-is how a patch reaches output the window has already passed.
+Originally the whole output had to fit in memory, which limited what zap could
+assemble on a 512 KB machine. Now the output buffer is a window (`OUT_WINDOW`
+bytes) onto a file that's written as the window fills, so memory use doesn't
+depend on output size. Section 2a covers how patches reach bytes that have
+already been written out.
 
-What bounds the output now is the card, and the addressing: every position in
-it is an `int`, and `int` is three bytes on the eZ80, so past `OUT_TOTAL_MAX`
-— 0x7FFFFF — the position would wrap negative and the file would corrupt in
-silence. Every writer asks `out_reserve` or `out_reserve_n` first, and those
-refuse the byte that would cross the ceiling; `DS`, `BLK`, `ORG` padding and
-`INCBIN` check their whole amount up front, since each can ask for more than a
-window at once. §13 has what this refuses that the reference would assemble.
+The real limits now are the SD card and addressing. Output positions are
+`int`, which is three bytes on the eZ80, so past `OUT_TOTAL_MAX` (0x7FFFFF) a
+position would silently wrap negative. `out_reserve` and `out_reserve_n` refuse
+any write that would cross that line, and `DS`, `BLK`, `ORG` padding and
+`INCBIN` check their full size up front, since each can ask for more than a
+window at once. Section 13 notes what this refuses that ez80asm would accept.
 
-Four kinds of thing wait for the end of the run:
+Three kinds of thing wait for the end of the run:
 
 | | resolved by | holds |
 |---|---|---|
 | fixup | [`patch_fixup()`](../src/symtab.c#L622) | one or two symbols, an addend, a width, an offset |
-| deferred expression | [`resolve_deferred()`](../src/zap.c#L262) | expression text a fixup cannot represent |
-| deferred fill | [`resolve_fills()`](../src/zap.c#L290) | a `BLK` whose fill value was not known yet |
+| deferred expression | [`resolve_deferred()`](../src/zap.c#L262) | expression text a fixup can't represent |
+| deferred fill | [`resolve_fills()`](../src/zap.c#L290) | a `BLK` whose fill value wasn't known yet |
 
-A [`fixup`](../src/zap.h#L690)'s width is normally a byte count, 1 to 4, or 0
-for a relative displacement. Five values above those are operands that are not
-whole fields after the opcode:
+A [`fixup`](../src/zap.h#L690)'s width is usually a byte count (1 to 4) or 0 for
+a relative jump. A few special widths cover operands that aren't simply bytes
+after the opcode:
 
-* three **folds**, where the operand belongs in the **opcode byte itself** — a
-  bit number, an interrupt mode, a restart address — so `bit n, a` with `n`
-  defined later still assembles correctly. The value is turned into a mask by
-  [`fold_mask()`](../src/symtab.c#L577), checked there, and OR'd in;
-* two for an **index displacement**, the signed byte of `(ix+d)`. It has widths
-  of its own rather than being a one-byte fixup because what goes in that byte
-  is not the low eight bits of the value: the reference truncates to sixteen
-  and then refuses anything outside a signed byte, and a sign written outside
-  the brackets negates the whole expression rather than its first term, which
-  is what the second of the two records.
+- Three "folds", where the value goes into the opcode byte itself: a bit
+  number, an interrupt mode, or a restart address. This is how `bit n, a`
+  works when `n` is defined later. [`fold_mask()`](../src/symtab.c#L577) turns
+  the value into a mask, range-checks it, and it's OR'd into the opcode.
+- Two for an index displacement, the signed byte in `(ix+d)`. These need their
+  own widths because the byte isn't just the low eight bits of the value: the
+  value is taken as a machine word and must fit a signed byte, and a minus
+  sign outside the brackets negates the whole expression, not just its first
+  term.
+- `FIX_DSINIT`, which writes nothing (see section 9).
 
-### 2a. Patching output that is no longer in memory
+### 2a. Patching output that's no longer in memory
 
-A fixup is settled long after its site was written, and with a window only the
-last 64 KB of the output is still there. The rest is on the card.
+Fixups are often settled long after their bytes were written, and with a
+window only the last 64 KB of output is still in memory.
 
-So a patch whose site is behind the window is *worked out* where it always was
-— which keeps every diagnostic where it was, reported against the line that
-used the label — and only the finished bytes are recorded, in a
-[`latepatch`](../src/zap.h#L592). Only the bytes: a local symbol's node is
-handed back when its scope ends, so a record that kept the symbol would name a
-different label by the time it was applied. The three folds become a checked
-mask for the same reason, checked here and OR'd into the opcode byte later.
+For a patch whose target is behind the window, zap still computes the bytes in
+the usual place, so all the diagnostics stay the same, and records just the
+finished bytes in a [`latepatch`](../src/zap.h#L592). It stores bytes rather
+than the symbol because a local label's node is reused once its scope ends, so
+by the time the patch was applied the symbol could name a different label. The
+folds are stored as a checked mask for the same reason.
 
-[`resolve_late()`](../src/zap.c#L379) then sweeps the file once, ascending, in
-window-sized chunks, applying the late patches and the deferred fills
-together, and skipping chunks none of them touch. Ascending and
-chunked because of the filesystem: `FF_FS_TINY` means a `FIL` has no sector
-buffer of its own and every partial write is a read-modify-write through the
-one the FAT is also using, and `FF_USE_FASTSEEK` is off, so a seek walks the
-cluster chain. A seek and a write per patch would be two sector transfers and a
-chain walk each; this is two transfers per chunk.
+At the end, [`resolve_late()`](../src/zap.c#L379) makes one ascending pass over
+the file in window-sized chunks, applying late patches and deferred fills, and
+skipping chunks that need nothing. It's ascending and chunked because of the
+filesystem: MOS's FatFS is built with `FF_FS_TINY`, so a file has no sector
+buffer of its own and every partial write is a read-modify-write through a
+shared buffer, and `FF_USE_FASTSEEK` is off, so seeking walks the cluster
+chain. One seek and write per patch would cost two sector transfers and a
+chain walk each; this costs two transfers per chunk.
 
-The list is **a sequence of ascending runs** rather than one sorted list, and
-that is not an accident of ordering. Patches are recorded when their fixups are
-settled, and settling happens at three sorts of moment: a scope ending, a sweep
-of the fixup list, and the end of the source, where the globals start again
-from the top of the file. Each walks its own records in output order, so the
-list climbs and then steps back. A [`laterun`](../src/zap.h#L615) is one of
-those stretches, opened where a record is appended below the one before it, and
-it carries its own cursor so that the sweep looks at each patch once rather
-than once per chunk. A step backwards with no run opened for it is walked past
-in silence -- the bytes are simply never written -- which is why the run is
-opened in [`out_late()`](../src/directive.c#L166) itself rather than by
-whoever happens to be settling.
+The late-patch list isn't sorted. It's a series of ascending runs, because
+patches are recorded at different moments: when a scope ends, when the fixup
+list is swept, and at the end of the source (where globals start again from
+the top). Each of those walks its fixups in output order, so the list climbs
+and then drops back. A [`laterun`](../src/zap.h#L615) marks one of those
+climbs and keeps its own cursor, so the final pass looks at each patch once.
+[`out_late()`](../src/directive.c#L166) starts a new run whenever a patch is
+lower than the previous one. If it didn't, that patch would be skipped
+silently and its bytes never written.
 
-Nothing in the corpus emits enough to fill a real window, so the flush, the
-recording and the sweep are tested by forcing a small one:
+Nothing in the test corpus produces enough output to fill a real window, so
+this path is tested by forcing a tiny one:
 
     ZAP_WINDOW=512 test/corpus.sh
 
 Every source must produce the same bytes at any window size. `test/window.sh`
-is the other half — a generated source whose output is several windows wide and
-whose every fixup is settled long after its site was written.
+covers the other side: a generated source several windows long, where every
+fixup is settled long after its bytes were written.
 
 ---
 
 ## 3. The state
 
-Everything the assembler knows lives in one object,
-[`state`](../src/symtab.c#L231), of type
-[`zap_state`](../src/zap.h#L1187). It is defined in `symtab.c` and declared in
-`zap.h`, so every part reaches the same one.
+Everything the assembler knows is in one global object,
+[`state`](../src/symtab.c#L231), of type [`zap_state`](../src/zap.h#L1187),
+defined in `symtab.c` and declared in `zap.h`.
 
 ```mermaid
 flowchart LR
     S["state<br/>(one object, shared by every part)"]
-    S --- O["output window<br/>win, o, lim, wbase, pend, org<br/>and the file it is a view on"]
+    S --- O["output window<br/>win, o, lim, wbase, pend, org<br/>and the file behind it"]
     S --- G["global symbols<br/>2048 buckets + node/name arenas"]
     S --- L["local scope<br/>64 buckets, generation stamp"]
     S --- F["fixups<br/>global list + per-scope list"]
@@ -202,25 +192,23 @@ flowchart LR
     S --- LS["listing<br/>position, rows to rewrite"]
 ```
 
-A file-scope object is addressed absolutely on the eZ80: the address of a field
-is a constant written into the instruction. Reached through a pointer parameter
-instead, every access would first load that pointer out of the frame.
+On the eZ80, a global's field addresses are constants built into each
+instruction. Passing the state around by pointer would mean loading that
+pointer from the stack frame before every access. The trade-off is that one
+process can only assemble one source at a time.
 
-The consequence is that **one process assembles one source**. A library API
-able to assemble two would have to pass this around again.
-
-Field order inside the struct is deliberate. The fields a line touches — the
-cursor, the line number, the error code — are near the front, and the bulky,
-rarely-read ones (the 256-byte local bucket array, the include path) are at the
-end, so that a displacement from a base register reaches the hot ones.
+Field order matters. The fields touched on every line (cursor, line number,
+error code) come first, and the big, rarely used ones (the 256-byte local
+bucket array, the include path) come last, so the hot fields stay within reach
+of a short displacement.
 
 ---
 
 ## 4. Reading the source
 
-[`buf_reader`](../src/buf_reader.h#L42) hands out **whole lines**. It reads a
-buffer, trims the read back to the last newline in it, and carries the partial
-line at the end forward to the front of the next buffer.
+[`buf_reader`](../src/buf_reader.h#L42) hands out whole lines. It fills a
+buffer, trims it back to the last newline, and carries the partial line at the
+end over to the start of the next fill.
 
 ```mermaid
 flowchart LR
@@ -230,26 +218,25 @@ flowchart LR
     T --> N["sentinel newline<br/>one byte past the content"]
 ```
 
-Two consequences the rest of the assembler relies on:
+The rest of the assembler relies on two things this gives it:
 
-* a token can point straight into the buffer, because a refill only ever
-  happens at a line boundary;
-* there is always a newline one byte past the content — the **sentinel** — so
-  every scan terminates on it without testing the end.
+- tokens can point straight into the buffer, because refills only happen
+  between lines;
+- there's always a newline right after the content (the sentinel), so scans
+  can stop on it without checking for the end.
 
-[`include_file()`](../src/directive.c#L858) opens a second reader and re-enters the same
-line loop; the parent's reader is saved in the include's own stack frame. The
-parent's file handle is closed while the child runs and reopened afterwards,
-seeking back to where the parent had reached, because MOS has few handles.
+[`include_file()`](../src/directive.c#L858) opens a second reader and runs the
+same line loop on it, saving the parent's reader in its own stack frame. MOS
+has few file handles, so the parent's file is closed while the include runs
+and reopened afterwards at the same position.
 
 ---
 
 ## 5. Assembling a line
 
-[`assemble_line()`](../src/zap.c#L26) is the hot path, and everything it
-needs is inlined into it: the label parser, the mnemonic lookup, the operand
-parser, the row matcher and the emitter. A line is examined once, left to
-right.
+[`assemble_line()`](../src/zap.c#L26) is the hot path, and everything it needs
+is inlined into it: label parsing, mnemonic lookup, operand parsing, row
+matching and emitting. Each line is examined once, left to right.
 
 ```mermaid
 flowchart TD
@@ -278,24 +265,23 @@ flowchart TD
 [`suffixed_mnemonic()`](../src/insn.c#L569) ·
 [`third_operand()`](../src/insn.c#L660)
 
-* **The mnemonic lookup** buckets by first letter *and* length, so it compares
-  one or two candidates rather than five, and never measures a length at run
-  time.
-* **Operands** are parsed into a fixed 21-byte [`dop`](../src/zap.h#L260): a
+- The mnemonic lookup buckets by first letter and length, so it usually
+  compares one or two candidates and never has to measure a string.
+- Operands are parsed into a fixed 21-byte [`dop`](../src/zap.h#L260): a
   register-set bitmask in three byte-wide planes, a mode (register, indirect,
-  immediate, indirect-immediate), an immediate, a displacement, and any forward
-  reference the operand is carrying.
-* Everything that is not an instruction is reached by a **tail call** from the
-  point where the mnemonic lookup failed, so an ordinary instruction never
-  tests for any of it.
+  immediate, indirect immediate), an immediate value, a displacement, and any
+  forward reference.
+- Anything that isn't an instruction (directives, macros, suffixed mnemonics)
+  is reached by a tail call once the mnemonic lookup fails, so ordinary
+  instructions never pay for those checks.
 
 ---
 
 ## 6. Selecting an instruction
 
 [`src/isa_table.c`](../src/isa_table.c) holds the whole instruction set,
-transcribed mechanically from the reference assembler by
-[`tools/gen_isa.py`](../tools/gen_isa.py). It is arranged in three levels.
+generated from ez80asm's tables by [`tools/gen_isa.py`](../tools/gen_isa.py).
+It has three levels:
 
 ```mermaid
 flowchart TD
@@ -308,16 +294,15 @@ flowchart TD
     R1 --> E["emit_row"]
 ```
 
-* An [`isa_row`](../src/isa.h#L112) says what the two operands must be, how each
-  folds into the opcode, the prefix and opcode bytes, which CPUs have it, and
-  which mode suffixes it accepts.
-* A **mode group** collects the rows of one mnemonic that expect the same
-  operand shapes, so a group whose shape does not match is rejected once rather
-  than row by row. The four mnemonics that take condition codes — `call`,
-  `jp`, `jr`, `ret` — are left ungrouped, because a condition code can arrive
-  in a shape the group test would reject.
-* [`match_row()`](../src/insn.h#L150) tests operand A first and reaches B only
-  if A survives. Most rejections are rows of the right shape with the wrong
+- An [`isa_row`](../src/isa.h#L112) describes what the two operands must be,
+  how each is folded into the opcode, the prefix and opcode bytes, which CPUs
+  support it, and which mode suffixes it accepts.
+- A mode group collects a mnemonic's rows that expect the same operand shapes,
+  so a whole group can be rejected at once. `call`, `jp`, `jr` and `ret` aren't
+  grouped, because a condition code can arrive in a shape the group test would
+  wrongly reject.
+- [`match_row()`](../src/insn.h#L150) checks operand A first and only looks at
+  B if A matches. Most rejections are rows of the right shape with the wrong
   registers.
 
 Once a row is chosen, [`emit_row()`](../src/insn.h#L327) writes the bytes in
@@ -332,18 +317,18 @@ flowchart LR
     D --> IM["immediates<br/>emit_imm"]
 ```
 
-`bit n, (ix+d)` is the one shape where the displacement comes *before* the
+The one exception is `bit n, (ix+d)`, where the displacement comes before the
 opcode.
 
-**`.CPU`** selects an instruction set by masking rows: the Z80 set includes the
-undocumented instructions, and neither the Z80 nor the Z180 has ADL or mode
-suffixes.
+`.CPU` selects an instruction set by masking rows. The Z80 set includes the
+undocumented instructions, and neither the Z80 nor the Z180 has ADL mode or
+mode suffixes.
 
 ---
 
 ## 7. Symbols
 
-Three kinds, in two tables.
+There are three kinds of label, kept in two tables.
 
 ```mermaid
 flowchart TD
@@ -365,118 +350,111 @@ flowchart TD
     LN -.-> A2
 ```
 
-**Global labels and EQU values** ([`sym`](../src/zap.h#L211),
-[`sym_intern()`](../src/symtab.c#L451)) are **interned on first sight**, defined
-or not, so a reference to a label that has not appeared yet gets an entry and a
-fixup points at it. Nodes and names come from arenas of blocks that never move:
-a growing array would have to be reallocated, and a realloc that moves holds
-both copies at once.
+Global labels and EQU values ([`sym`](../src/zap.h#L211),
+[`sym_intern()`](../src/symtab.c#L451)) are added to the table the first time
+they're seen, defined or not, so a forward reference gets an entry for its
+fixup to point at. Nodes and names come from blocks that are never moved or
+resized. A growing array would need `realloc`, and a `realloc` that moves the
+data briefly needs memory for both copies.
 
-**Local labels** (`@name`, [`loc_intern()`](../src/symtab.c#L868)) belong to the
-global label above them. A scope ends at the next global label — thousands of
-times in a real source — so it must empty in constant time. Each slot carries
-the generation it belongs to: advancing the counter in
-[`scope_end()`](../src/symtab.c#L805) makes every bucket read as empty, whatever
-chain it still holds.
+Local labels (`@name`, [`loc_intern()`](../src/symtab.c#L868)) belong to the
+global label above them. A scope ends at every global label, which happens
+thousands of times in a real program, so clearing the table has to be cheap.
+Each bucket records which scope it belongs to, so bumping a generation counter
+in [`scope_end()`](../src/symtab.c#L805) makes every bucket read as empty
+without touching them.
 
-**Anonymous labels** (`@@`, referred to as `@f` and `@b`) are not table entries
-at all. [`anon_define()`](../src/symtab.h#L30) keeps the address of the last
-`@@` for `@b`, and one nameless symbol that every `@f` since the last `@@`
-waits on, settled the moment the next `@@` appears.
+Anonymous labels (`@@`, used as `@f` and `@b`) aren't in a table at all.
+[`anon_define()`](../src/symtab.h#L30) keeps the address of the last `@@` for
+`@b`, plus one nameless symbol that every `@f` since the last `@@` waits on,
+settled when the next `@@` appears.
 
-When a scope ends, its local fixups are patched, and any fixup naming a global
-*and* a local has the local half folded into its addend there and then — the
-local's node is about to be recycled.
+When a scope ends, its local fixups are patched. A fixup that involves both a
+global and a local label gets the local half folded into its addend right
+then, because the local's node is about to be reused.
 
-### 7a. The fixup list, and when it is swept
+### 7a. The fixup list and when it's swept
 
-Sixteen bytes a record, grown `FIX_STEP` at a time by
-[`fix_add()`](../src/symtab.c#L1061), and nothing ever leaves it during an
-ordinary assembly: what a source costs here is one record per forward
-reference, however early the label it names turns up. `-x` prints both the
-total and the high-water mark, which are the same number for a file that never
-filled the list.
+Each fixup is 16 bytes, and [`fix_add()`](../src/symtab.c#L1061) grows the list
+`FIX_STEP` records at a time. Normally nothing is removed until the end, so the
+list holds one record per forward reference. `-x` reports both the total and
+the peak, which are equal unless the list was swept.
 
-They stop being the same number when the allocation is refused. Rather than
-give up, [`fix_sweep()`](../src/symtab.c#L1024) settles what it can and closes
-the gaps. Real programs have much to settle: measured by span, BBC BASIC for
-Agon would hold 490 of its 2,209 records at once and a CP/M implementation 950
-of 1,859, the rest being references whose labels had long since been read.
+When memory runs out, [`fix_sweep()`](../src/symtab.c#L1024) settles what it
+can instead of giving up. Real programs usually have plenty to settle: at any
+point, BBC BASIC for Agon only needs about 490 of its 2,209 fixups, and a CP/M
+implementation 950 of 1,859. The rest refer to labels that have already been
+defined.
 
-Four things must be true of a record before it may be settled early, and each
-is a correctness requirement rather than a refinement
-([`fix_ready()`](../src/symtab.c#L994)):
+A fixup can be settled early only if ([`fix_ready()`](../src/symtab.c#L994)):
 
-* its target — and its second symbol, if it has one — is **defined**. The
-  nameless stand-ins `resolve_deferred()` fills in stay undefined until the end
-  of the run, so they are excluded without a special case;
-* it is **not a relative displacement while a `RELOCATE` is open**, because
-  that width is measured from `state.org`, which `RELOCATE` moves. Outside a
-  relocate the origin is the file's own and is what it will still be at the
-  end, so `!state.reloc` is the whole test;
-* it is **not named by `subfix`**, whose entries are waiting for a local that
-  the scope has not folded yet.
+- its target (and second symbol, if any) is defined. The placeholder symbols
+  used for deferred expressions stay undefined until the end, so they're
+  skipped automatically;
+- it isn't a relative jump inside an open `RELOCATE`, since that depends on
+  `state.org`, which `RELOCATE` changes. Outside a relocate, the origin is the
+  same as it will be at the end;
+- it isn't listed in `subfix`, which holds fixups still waiting for a local
+  label's value to be folded in.
 
-`subfix` holds *indices* into the list, and [`fold_subs()`](../src/symtab.c#L771)
-walks them at every scope end, so compacting under it would corrupt them
-silently. Both lists ascend, so one pass rewrites each index as its entry moves.
+`subfix` stores indices into the fixup list, and
+[`fold_subs()`](../src/symtab.c#L771) uses them at every scope end, so
+compacting the list would break them. Both lists are in ascending order, so the
+sweep updates each index as it moves the entry.
 
-A site the window has already written out is settled here like any other: the
-bytes are worked out and recorded as a late patch, exactly as they are at the
-end of the run. There used to be a fourth condition refusing that, because the
-late list was two runs and could not take a third, and it was what decided how
-much the assembler could assemble -- every flush stranded whatever the last
-sweep had not reached, the strandings accumulated, and a reference-dense source
-was refused at about four windows' worth of output however short its references
-reached. Measured with `test/gen_worst.sh`'s span argument: 256 KB of output
-was refused at a reach of 200 bytes, and is not now. What is left is the bound
-that belongs to a one-pass assembler -- the references outstanding at one
-moment have to fit in memory -- and the file's size is no longer part of it.
+A fixup whose bytes have already been written to the card is settled like any
+other, with the result recorded as a late patch. That didn't use to be
+possible. The late-patch list could only hold two runs, so the sweep had to
+skip anything behind the window, and each flush left behind whatever the last
+sweep hadn't reached. Those leftovers piled up until nothing could be freed,
+which capped a reference-heavy source at about four windows of output no
+matter how short its references were. Measured with `test/gen_worst.sh`, 256 KB
+of output used to fail even when every reference reached only 200 bytes ahead;
+now it assembles. The remaining limit is the one any single-pass assembler has:
+the references outstanding at any moment have to fit in memory.
 
-**The trigger is growth and not a label being defined**, and that is not a
-performance choice. `X: EQU v` is defined twice — the label path stores the
-line's program counter and `equ_line` overwrites it with the real value a
-moment later — so a sweep hung off "a label became defined" would settle every
-reference to every EQU against a program counter. Nothing creates a fixup
-between those two points, because `EQU` refuses a forward reference outright,
-so a sweep in `fix_add` cannot see that window. Sweeping only on refusal is
-also what makes it free: on the Agon, sweeping at every growth costs BBC BASIC
-3.1% and saves it 161 records it did not need saving.
+The sweep runs when the list can't grow, not when a label is defined, and
+there's a correctness reason for that. `X: EQU v` is briefly defined twice: the
+label code first records the current address, and `equ_line` then replaces it
+with the real value. A sweep triggered by "a label was defined" would settle
+references to every EQU with the wrong value. No fixup is created between
+those two steps, because `EQU` doesn't allow forward references, so a sweep in
+`fix_add` can never see that state. Sweeping only when memory runs out also
+keeps it free in practice: sweeping on every growth cost BBC BASIC 3.1% on the
+Agon for no benefit.
 
-Settling early moves when a fixup's diagnostic happens. A `-w` truncation
-warning is printed where the list filled rather than after the last line of the
-source, and a failure there — a jump out of range, a value that does not fit —
-ends the run at that point, so it is reported in place of whatever the rest of
-the file would have been refused for. Both still name the line that *used* the
-label: `patch_fixup` sets `state.line` for exactly that, and the sweep puts the
-assembler's own line number back on the way out — except on the failing path,
-where the number `patch_fixup` set is the one the report needs.
+Settling early does change when a fixup's diagnostic appears. A `-w` warning
+is printed when the list fills up rather than at the end, and an error there
+(a jump out of range, say) stops the run immediately, so it's reported instead
+of whatever else might have failed later. Either way the message names the line
+that used the label: `patch_fixup` sets `state.line` for that, and the sweep
+restores the current line afterwards, except when it fails, where the line
+`patch_fixup` set is the one the report needs.
 
 ---
 
 ## 8. Expressions
 
-Most operands never reach the evaluator: a register, a plain literal
-([`lit_value()`](../src/directive.h#L27)) and a bare name each have a reader of
-their own. What does reach it is a precedence climb
-([`expr_value()`](../src/expr.c#L533),
-[`expr_atom()`](../src/expr.c#L190)) over `+ - * / << >> & | ^` with unary `-`
-and `~`, grouped with `[...]` because parentheses already mean indirection.
+Most operands never reach the expression evaluator: registers, plain literals
+([`lit_value()`](../src/directive.h#L27)) and bare names each have their own
+fast reader. What does reach it is a precedence-climbing parser
+([`expr_value()`](../src/expr.c#L533), [`expr_atom()`](../src/expr.c#L190))
+over `+ - * / << >> & | ^`, unary `-` and `~`, with `[...]` for grouping since
+parentheses already mean indirection.
 
-Two things make it unusual:
+Two things about it are unusual:
 
-* **Two binding-power tables.** Under `-ez80` every operator binds equally, and
-  a precedence climb in which everything binds equally is exactly the
-  left-to-right fold the reference performs. The compatible behaviour falls out
-  of the same code.
-* **The evaluator is 32 bits wide** where the machine's word is 24. `DW32` and
-  `BLKL` are four bytes, and the reference evaluates in 32 bits; truncation
-  happens at the emitter, on the width the directive asked for. The fast
-  readers stay in the machine's word and hand anything wider to `num_parse`, so
-  the extra width is not paid on the common path.
+- There are two operator-precedence tables. Under `-ez80` every operator has
+  the same precedence, and precedence climbing with equal precedences gives
+  exactly ez80asm's left-to-right evaluation, so the compatible mode comes for
+  free.
+- The evaluator is 32 bits wide while the machine word is 24. `DW32` and `BLKL`
+  need four bytes, and ez80asm evaluates in 32 bits, so truncation happens only
+  when a value is written. The fast readers stay 24-bit and hand anything wider
+  to `num_parse`, so the common case doesn't pay for the extra width.
 
-While an expression is evaluated, the labels it names that are still undefined
-are tracked with their signs, and what happens next depends on the shape:
+While evaluating, labels that aren't defined yet are tracked along with their
+signs, and what happens next depends on the expression's shape:
 
 ```mermaid
 flowchart TD
@@ -491,10 +469,10 @@ flowchart TD
 
 ## 9. Directives
 
-Reached only after the mnemonic lookup has failed, and dispatched by
-[`directive_of()`](../src/directive.c#L274) — a switch on the token's length and
-characters rather than a table — then handled in
-[`directive_line()`](../src/directive.c#L1060).
+Directives are only checked once the mnemonic lookup has failed.
+[`directive_of()`](../src/directive.c#L274) identifies them with a switch on
+length and characters rather than a table, and
+[`directive_line()`](../src/directive.c#L1060) handles them.
 
 | group | directives |
 |---|---|
@@ -507,46 +485,40 @@ characters rather than a table — then handled in
 | macros | `MACRO` `ENDMACRO` |
 | target | `.CPU` |
 
-Two distinctions in this group are easy to get wrong and worth stating:
+A few of these behave in ways that are easy to get wrong:
 
-* **`DS` reserves ([`fill_take()`](../src/directive.c#L621)), `BLK` emits
-  ([`emit_block()`](../src/directive.c#L668)).** A reservation is a count, not
-  bytes: nothing is written until something is written *after* it, which is
-  what `out_settle()` does from `out_reserve()`. So space that reaches the end
-  of the file with nothing after it is never written at all, and a `FILLBYTE`
-  while a run is still pending simply changes what it will be written with.
-  A block always is written.
-* **`ORG` padding is not a reservation.** It goes through
-  [`fill_put()`](../src/directive.c#L578) and is written where it stands, as
-  the reference writes it: it survives at the end of a file where a `DS` is
-  dropped, and a later `FILLBYTE` does not reach back to it. `fillbyte 0x11 /
-  org $+4 / fillbyte 0xAA` is four `0x11`; the same shape with `DS` is `0xAA`.
-* **A `FILLBYTE` decides the reservations below it and none above.** A run
-  already written keeps the byte it was written with, so `fillbyte` never
-  reaches backwards. 2.2 did reach backwards -- it filled the gaps in its
-  second pass, with a `fillbyte` that survived the pass boundary, so a run
-  above the file's first one took the file's *last* value -- and zap kept a
-  list of those runs to reproduce it. There is no second pass in 2.3 and the
-  list is gone.
-* **The initializer after the count is evaluated and then dropped.** `ds 4, v`
-  is four fill bytes, not four `v`. It is said when `v` differs from the fill
-  byte and it is an *error* when `v` names a label the file never defines,
-  because the reference does both from a fixup -- `FIX_DSINIT` is the one that
-  writes nothing.
-* **`ORG` is two directives sharing a name.** The first in a file moves the
-  origin; every later one pads out to its address.
+- `DS` reserves ([`fill_take()`](../src/directive.c#L621)) while `BLK` emits
+  ([`emit_block()`](../src/directive.c#L668)). A reservation is just a count:
+  nothing is written until something comes after it (`out_settle()`, called
+  from `out_reserve()`). Reserved space at the very end of a file is never
+  written at all, and a `FILLBYTE` while a reservation is pending changes what
+  it will be filled with. A block is always written.
+- `ORG` padding isn't a reservation. It goes through
+  [`fill_put()`](../src/directive.c#L578) and is written immediately, as
+  ez80asm does, so it survives at the end of a file where a `DS` wouldn't, and
+  a later `FILLBYTE` doesn't change it. `fillbyte 0x11 / org $+4 / fillbyte
+  0xAA` gives four `0x11` bytes; the same thing with `DS` gives `0xAA`.
+- `FILLBYTE` only affects reservations after it. ez80asm 2.2 filled gaps in its
+  second pass with whatever the last `FILLBYTE` was, so earlier reservations
+  picked up a later value, and zap used to reproduce that. 2.3 has no second
+  pass, and neither does zap.
+- The initializer in `ds 4, v` is evaluated and then ignored: it's four fill
+  bytes, not four `v`. zap warns when `v` differs from the fill byte, and it's
+  an error if `v` names a label that's never defined, because ez80asm handles
+  it as a fixup. `FIX_DSINIT` is the fixup width that writes nothing.
+- `ORG` is really two directives. The first one in a file sets the origin;
+  every later one pads up to its address.
 
-The conditional directives are ordered in the enum so that a line inside a
-switched-off branch can decide what to do with a single comparison: everything
-at or above `IF` is still handled while skipping, everything below it is
-skipped.
+The conditional directives are ordered in the enum so that, inside a skipped
+block, one comparison decides whether a line still needs handling: everything
+from `IF` up is processed while skipping, and everything below it is ignored.
 
 ---
 
 ## 10. Macros
 
-A definition captures the body **as text** and finds the places its parameters
-occur *once*, when the body is read. Each occurrence is a
+A macro definition stores its body as text and records where its parameters
+appear, once, when the body is read. Each occurrence is a
 [`macmark`](../src/zap.h#L344): an offset into the body, a parameter number and
 a length.
 
@@ -573,26 +545,27 @@ flowchart TD
 [`macro_subst()`](../src/macro.c#L421) ·
 [`scope_push()`](../src/expr.c#L698)
 
-There is no reader and no nested line loop for an expansion: the body is
-already a run of lines. Substitution is textual and by whole identifier, which
-is what the reference does — with `x` bound to `1+1`, `db 10-x` is ten there,
-not eight.
+Expanding a macro doesn't need a reader or a nested line loop, because the body
+is already a sequence of lines. Substitution is plain text with no parentheses
+added, as in ez80asm: with `x` bound to `1+1`, `db 10-x` is 10, not 8. zap
+only substitutes whole identifiers, though, which is one of the deliberate
+differences in section 13.
 
-Nesting is bounded at eight levels — the same bound as `INCLUDE` — and each
-level has its own substitution buffer, kept and grown between invocations
-rather than allocated per expansion.
+Macros nest up to eight levels, the same limit as `INCLUDE`. Each level has its
+own substitution buffer, which is kept and grown between uses rather than
+allocated per expansion.
 
 ---
 
 ## 11. Diagnostics
 
-Errors are **codes**, not strings: `state.err` is a
-[`zap_err`](../src/zap.h#L488), and the message text lives in
-[one table](../src/symtab.c#L24) beside the enum. A caller other than `main` can
-branch on the code, which is what makes the assembler usable as a library.
+Errors are codes rather than strings: `state.err` is a
+[`zap_err`](../src/zap.h#L488), and the messages live in
+[one table](../src/symtab.c#L24) next to the enum. Code other than `main` can
+check the code directly, which makes the assembler usable as a library.
 
-Everything a report needs is **captured at the moment of failure and never
-maintained in advance**, so a source that assembles cleanly pays nothing:
+Everything a report needs is captured at the point of failure, never tracked
+in advance, so a clean run pays nothing for it:
 
 ```mermaid
 flowchart LR
@@ -614,164 +587,145 @@ Invoked from "main.s" line 84 as
   mos_call MOS_SYSVARS
 ```
 
-There is one warning, [`warn_trunc()`](../src/zap.c#L1571), for a value too
-large for the space it is written into. It is the only diagnostic that asks a
-question of every value in every source rather than doing work after something
-has gone wrong, so it is behind `-w`.
+The truncation warning, [`warn_trunc()`](../src/zap.c#L1571), is different
+from other diagnostics: it has to check every value in every source, rather
+than doing work only after something has gone wrong. That's why it's behind
+`-w`.
 
 ---
 
-## 12. Listing and sidecars
+## 12. Listings and other output files
 
-`-l` and `-d` write a listing in the reference's columns — address, up to four
-bytes per row, line number, and the source line as written — through
+`-l` and `-d` write a listing in ez80asm's format (address, up to four bytes
+per row, line number, then the source line as written) through
 [`list_line()`](../src/zap.c#L1113) and [`list_out()`](../src/zap.c#L1091). A
-macro expansion is listed as the reference lists it: the invocation with no
-bytes, the arguments, then a row per body line tagged with its depth.
+macro expansion is listed the way ez80asm lists it: the invocation with no
+bytes, the arguments, then one row per body line tagged with its depth.
 
-A line holding a forward reference is listed before that reference is patched,
-so those lines are remembered by [`lstfix_add()`](../src/zap.c#L1219) and their
-byte columns written again from the finished output by
-[`lstfix_apply()`](../src/zap.c#L1252) before the file is closed. The console
-listing cannot be given that treatment and shows the bytes as they were
-emitted.
+A line containing a forward reference is listed before the reference is
+patched. [`lstfix_add()`](../src/zap.c#L1219) remembers those lines, and
+[`lstfix_apply()`](../src/zap.c#L1252) rewrites their byte columns from the
+finished output before the file is closed. The console listing (`-d`) can't be
+rewritten, so it shows the bytes as first emitted.
 
-After the line number comes a **depth column of a fixed ten characters**: one
-`*` per level of `INCLUDE` below the top, then `M<n> ` for a macro body or
-three spaces for anything else, then padding. Fixed width is what lets a
-single pass write it. 2.2 widened that column for the whole file when the file
-listed an expansion — a decision taken before line 1, with the whole source
-already read, and one of the things this could not do.
+After the line number comes a fixed ten-character depth column: a `*` for each
+level of `INCLUDE`, then `M<n> ` for a macro body or three spaces otherwise,
+then padding. Because the width is fixed, a single pass can write it. ez80asm
+2.2 only widened this column when the file contained a macro expansion, which
+it decided before writing line 1, so zap couldn't match it until 2.3 made the
+width constant.
 
-Two differences are left, and `test/regress/listing` holds only sources that
-avoid both:
+Two differences remain, and the sources in `test/regress/listing` avoid both:
 
-* **a macro body's indentation.** The body is stored from its first token, so
-  the spaces it was written with are not there to list;
-* **a reservation's fill.** The reference lists it on a continuation row with
-  the first row left empty. zap leaves the first row empty as the reference
-  does and writes no continuation row. An `ORG`'s padding is written where it
-  stands and is listed inline by both.
+- A macro body loses its indentation, because zap stores the body starting at
+  its first token.
+- ez80asm lists a reservation's fill bytes on an extra row under the directive.
+  zap leaves the first row empty the same way but doesn't write the extra row.
+  `ORG` padding is listed inline by both.
 
-Two others used to belong on that list. A line holding a forward reference
-showed the bytes as they were emitted rather than as they were patched, which
-is what `lstfix_add` and `lstfix_apply` above are for; and the column width
-above, which 2.3 made a constant.
-
-[`write_symbols()`](../src/zap.c#L1431) writes the global symbols sorted, in
-the reference's format. [`write_stats()`](../src/zap.c#L1497) prints what the
-run used. None of the three can fail an assembly: the output file is already
-written when they run.
+[`write_symbols()`](../src/zap.c#L1431) writes the sorted global symbols in
+ez80asm's format, and [`write_stats()`](../src/zap.c#L1497) prints resource
+usage. None of these can fail an assembly, since the output file is already
+written by the time they run.
 
 ---
 
 ## 13. Compatibility
 
-Byte-for-byte agreement with `ez80asm` is the point of the project, so where
-the reference does something surprising, `-ez80` reproduces it rather than
-being right and incompatible: no operator precedence, `IF a == b` discarding
-the comparison, `0bh` read as hex.
+Matching ez80asm byte for byte is the point of the project, so where ez80asm
+does something surprising, `-ez80` reproduces it: no operator precedence,
+`IF a == b` ignoring the comparison, and `0bh` read as hex.
 
-Three differences are deliberate and permanent:
+There are three intentional differences:
 
-* **A negative reservation is refused.** `DS -1` is a count the reference
-  treats as unsigned, so it writes about four gigabytes; zap says so and stops.
-  This is the one place zap refuses something the reference accepts, and it is
-  refused rather than reproduced because reproducing it means filling the card.
-* **An output past the 24-bit range is refused.** On a desktop the reference
-  assembles an eight-megabyte file happily; on the Agon it has nowhere to put
-  it, and zap's positions are `int`, which is three bytes there — past
-  0x7FFFFF the arithmetic wraps and the file corrupts rather than failing. So
-  the ceiling is checked, and the byte that would cross it is refused. The
-  last thirteen bytes under the ceiling go with it, because an instruction is
-  granted room for the largest one there is — the same headroom the window's
-  own limit carries. On the host the check reads the same constant, which is
-  what lets the tests write past the ceiling and watch the refusal.
-* **A macro parameter is substituted as a whole identifier.** The reference
-  substitutes any occurrence that *ends* an identifier, so with a parameter `x`
-  bound to `1`, a body line `db max` becomes `db ma1` and the expansion fails
-  on an unknown identifier. Matching that would make a macro body's meaning
-  depend on the spelling of its parameters against every name it mentions.
+- A negative `DS` is an error. ez80asm treats the count as unsigned and writes
+  about 4 GB; reproducing that would just fill the SD card.
+- Output past the 24-bit address range is an error. ez80asm on a desktop will
+  happily write an 8 MB file, but on the Agon there's nowhere to put it, and
+  zap's positions are 24-bit `int`s that would silently wrap. The last 13
+  bytes below the limit are refused too, because each instruction reserves
+  room for the longest possible one. The host build uses the same limit, so
+  the tests can check the refusal.
+- Macro parameters are only substituted as whole identifiers. ez80asm
+  substitutes any occurrence at the end of an identifier, so with a parameter
+  `x`, `db max` becomes `db ma1`. Copying that would make a macro's meaning
+  depend on whether its parameter names happen to end other names.
 
-All three are files that would fail by design, which is why none of them is
-in `test/regress`; its README says the same from the other side. Checked
-against 2.3 rather than carried forward: a negative reservation still writes
-four gigabytes there, and `db max` inside a macro with a parameter `x` still
-becomes `db ma1`.
+All three still hold against ez80asm 2.3. Tests for them would fail by design,
+so none are in `test/regress`.
 
-A third used to be listed here — `@local - global` with both labels still
-ahead — and is not a difference any more. The local half of such a fixup is
-folded into its addend when the scope ends, which is the last moment the local
-still means what it said, and the rest is settled with the globals;
-`test/regress/scopes` is the source that keeps the three shapes agreeing.
+`@local - global` with both labels defined later used to be on this list, but
+zap now handles it: the local half is folded in when the scope ends, and the
+rest is settled with the globals. `test/regress/scopes` checks the three
+variants.
 
-`-w` is zap's own flag, and the truncation check being off by default is the
-one place the two command lines mean different things.
+`-w` is zap's own flag, and its warning being off by default is the only case
+where the same command line behaves differently in the two assemblers.
 
 ---
 
 ## 14. What the target imposes
 
-The eZ80 shapes this code more than any other single factor. Five rules run
-through the whole of it:
+The eZ80 shapes this code more than anything else. Five rules come up
+throughout:
 
-1. **Ordinary C becomes library calls.** A 24-bit AND, a multiply, a variable
-   shift, a signed comparison — each is a call, not an instruction. Byte
-   quantities, powers of two and unsigned compares avoid them.
-2. **A stack frame must stay under 128 bytes.** A frame displacement is a
-   signed byte; past that, every access needs a computed address. Adding three
-   bytes to `assemble_line`'s frame is measurable in the whole program. (The
-   optimization guide's [section 0](../ez80_advanced_optimization_guide.md)
-   defines the terms in this list, frames and spills among them.)
-3. **A `static inline` helper is inlined at the compiler's discretion**, and
-   one cold caller can take that away from every hot one. The helpers on the
-   hot path carry `always_inline` for that reason.
-4. **Every character scan carries its bound.** Without it the compiler may
-   rotate the loop so that the first character is never examined — correct on
-   the host, wrong on the target. [`test/run.sh`](../test/run.sh) checks the
-   source for it.
-5. **A function inlined across a file boundary needs its body in a header.**
-   There is no link-time optimisation here: a compiler given a declaration
-   emits a call. The twenty functions folded into `assemble_line` are
-   therefore defined in `<part>.h`. Left in `<part>.c` they measured 3% on
-   bbcbasic, which is what that rule is worth.
+1. Ordinary C turns into library calls. A 24-bit AND, a multiply, a variable
+   shift, a signed comparison: each is a function call rather than an
+   instruction. Byte-sized values, powers of two and unsigned comparisons avoid
+   most of them.
+2. Stack frames must stay under 128 bytes. Frame offsets are a signed byte, and
+   past that every access needs a computed address. Adding three bytes to
+   `assemble_line`'s frame shows up in the whole program's timing. (Section 0
+   of the [optimization guide](../ez80_advanced_optimization_guide.md) defines
+   frames, spills and the rest.)
+3. `static inline` is only a hint, and a single cold call site can stop a
+   function being inlined everywhere. The hot-path helpers use
+   `always_inline`.
+4. Every character scan checks its bound. Without it the compiler may rotate
+   the loop so the first character is never examined, which works on the host
+   and fails on the target. [`test/run.sh`](../test/run.sh) checks the source
+   for this.
+5. A function inlined across files needs its body in a header. There's no
+   link-time optimization, so a compiler that only sees a declaration emits a
+   call. The functions inlined into `assemble_line` are defined in
+   `<part>.h`; leaving them in `<part>.c` cost 3% on bbcbasic.
 
-[`ez80_advanced_optimization_guide.md`](../ez80_advanced_optimization_guide.md)
-is the long form, with the measurements behind each rule.
+The [optimization guide](../ez80_advanced_optimization_guide.md) has the
+details and measurements behind each rule.
 
 ---
 
-## 15. How it is checked
+## 15. How it's tested
 
 | | |
 |---|---|
-| [`test/run.sh`](../test/run.sh) | unit and CLI tests, and every source in `test/cases` assembled by both zap and the vendored reference and compared byte for byte |
-| [`test/corpus.sh`](../test/corpus.sh) | the reference's own 507-source corpus plus zap's regression sources, the same way |
-| `ZAP_WINDOW=512 test/corpus.sh` | the same again with the window forced small, so every source is written out in pieces and patched behind |
-| `FIX_CAP=1024 test/corpus.sh` | and again with the fixup list capped, so the sweep in §7a runs on sources that would never have filled it |
-| [`test/window.sh`](../test/window.sh) | a generated source several windows wide, holding one of every fixup width, each settled long after the bytes carrying it were written |
-| [`test/bench/bench.sh`](../test/bench/bench.sh) | throughput against ez80asm on the emulator |
-| [`test/bench/corpus-target.sh`](../test/bench/corpus-target.sh) | per-source speedups over the whole corpus, on the Agon |
-| [`test/hwkit.sh`](../test/hwkit.sh) | builds an SD card of binaries, sources and an Obey script that measure the window on real hardware, which is the one thing the emulator cannot: it models no SD write cost |
+| [`test/run.sh`](../test/run.sh) | unit and CLI tests, plus every source in `test/cases` assembled by zap and the vendored ez80asm and compared byte for byte |
+| [`test/corpus.sh`](../test/corpus.sh) | ez80asm's 507-source test suite plus zap's regression sources, compared the same way |
+| `ZAP_WINDOW=512 test/corpus.sh` | the same with a tiny output window, so every source goes through the streaming path |
+| `FIX_CAP=1024 test/corpus.sh` | the same with a capped fixup list, so the sweep in section 7a runs everywhere |
+| [`test/window.sh`](../test/window.sh) | a generated source several windows long, with every fixup width settled long after its bytes were written |
+| [`test/bench/bench.sh`](../test/bench/bench.sh) | timings against ez80asm on the emulator |
+| [`test/bench/corpus-target.sh`](../test/bench/corpus-target.sh) | per-source speedups across the whole test suite on the emulated Agon |
+| [`test/hwkit.sh`](../test/hwkit.sh) | builds an SD card image with binaries, sources and an Obey script to measure the output window on real hardware, since the emulator doesn't model SD write speed |
 
-The rule the project runs on is that **the reference is the oracle**: a
-question about what zap should do is answered by assembling the case with
-`ez80asm` and reading the bytes, not by reasoning about what an assembler ought
-to do.
+The ground rule is that ez80asm is the reference. When there's a question about
+what zap should do, the answer comes from assembling the case with ez80asm and
+looking at the bytes, not from reasoning about what an assembler ought to do.
 
 ---
 
 ## 16. Adding something
 
-* **An instruction form** belongs in the generator,
-  [`tools/gen_isa.py`](../tools/gen_isa.py), not in the generated table.
-* **A directive** needs a `DIR_` constant, a spelling in
+- An instruction form goes in the generator,
+  [`tools/gen_isa.py`](../tools/gen_isa.py), not the generated table.
+- A directive needs a `DIR_` constant, a spelling in
   [`directive_of()`](../src/directive.c#L274), a case in
-  [`directive_line()`](../src/directive.c#L1060), a case file under `test/cases`
-  compared against the reference, and a row in the README's directive table.
-* **A diagnostic** needs a [`zap_err`](../src/zap.h#L488) code and one line in
-  the message table. The static assert on the table size catches a code with no
-  text.
-* Anything that touches the hot path should be measured on the Agon before and
-  after. The host does not predict the target: the same change can read 0.71x
-  on a desktop and 0.98x on the machine this is for.
+  [`directive_line()`](../src/directive.c#L1060), a test file under
+  `test/cases` compared against ez80asm, and a row in the README's directive
+  table.
+- A diagnostic needs a [`zap_err`](../src/zap.h#L488) code and one line in the
+  message table. A static assert on the table size catches a code with no
+  message.
+- Measure anything on the hot path on the Agon before and after. The host
+  doesn't predict the target: the same change measured 0.71x on a desktop and
+  0.98x on the Agon.

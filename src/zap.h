@@ -586,6 +586,14 @@ typedef struct {
     const char* text;
     int len;
     int line;
+    /* Where it was written, which the text alone does not say: `$`, and the
+     * anonymous labels either side. Evaluated again at the end without
+     * these, `$` would be the end of the output and `@b` the last `@@` in the
+     * file. */
+    int here;
+    int anon_prev;
+    bool anon_has_prev;
+    sym* anon_fwd;
 } defexpr;
 
 /* A block of n units whose fill named something not yet defined. The bytes
@@ -1927,6 +1935,7 @@ _Static_assert((R_IXL | R_IYL)
 /* expr.c      */ extern bool expr_fwd2_neg;
 /* expr.c      */ extern bool expr_fwd_bad;
 /* expr.c      */ extern bool expr_fwd_neg;
+/* expr.c      */ extern const defexpr* expr_replay;
 /* expr.c      */ bool expr_value(evalue* out, const char** pp, const char* e, uint8_t* fwdmask);
 /* expr.c      */ bool fwd_finish(dop* op);
 /* expr.c      */ uint8_t fwd_live(void);

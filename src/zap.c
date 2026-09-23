@@ -267,7 +267,15 @@ static bool resolve_deferred(void) {
         uint8_t mask = 0;
         fwd_reset(NULL);
         state.line = d->line;
-        if (!expr_value(&v, &p, d->text + d->len, &mask)) {
+        /* Read again where it was written: `$` through expr_replay, and the
+         * anonymous labels either side put back for the length of it. */
+        expr_replay = d;
+        state.anon_prev = d->anon_prev;
+        state.anon_has_prev = d->anon_has_prev;
+        state.anon_fwd = d->anon_fwd;
+        const bool ok = expr_value(&v, &p, d->text + d->len, &mask);
+        expr_replay = NULL;
+        if (!ok) {
             return false;
         }
         if (expr_fwd != NULL || expr_fwd_bad) {

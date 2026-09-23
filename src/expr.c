@@ -58,6 +58,11 @@ bool expr_fwd2_neg;
 
 bool expr_fwd_bad;
 
+/* The deferred expression being evaluated again at the end, whose `$` is
+ * where it was written rather than where the output has got to. NULL the
+ * rest of the time. */
+const defexpr* expr_replay;
+
 /* Which slots hold a symbol. A term reports the ones it filled by taking this
  * before and after itself, so a bracketed sub-expression needs no special
  * case: whatever it left behind belongs to the term that contained it. */
@@ -151,6 +156,10 @@ sym* defer_text(const char* text, int n) {
     d->text = copy;
     d->len = n;
     d->line = state.line;
+    d->here = state.org + out_here();
+    d->anon_prev = state.anon_prev;
+    d->anon_has_prev = state.anon_has_prev;
+    d->anon_fwd = state.anon_fwd;
     state.err = ZAP_OK;
     fwd_reset(NULL);
 
@@ -265,6 +274,13 @@ bool expr_atom(evalue* out, const char* ns, int nn) {
                 sp = anon_next();
                 if (sp == NULL) {
                     return false;
+                }
+                /* Defined only when a deferred expression is read again at
+                 * the end, with the `@@` below it long since written. */
+                if (sp->defined) {
+                    *out = sp->addr;
+
+                    return true;
                 }
                 fwd_take(sp);
                 *out = 0;
@@ -411,7 +427,7 @@ static bool expr_term(evalue* out, const char** pp, const char* e,
             /* The address of the instruction being assembled. `$` on its own;
              * with hex digits after it, it is the radix prefix instead, and
              * the scan above has already taken them. */
-            v = state.org + out_here();
+            v = expr_replay != NULL ? expr_replay->here : state.org + out_here();
             if (obj_format != OBJ_NONE) {
                 v = obj_here((int) v);
             }

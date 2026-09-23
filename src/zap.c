@@ -262,28 +262,38 @@ trunc_done:
 static bool resolve_deferred(void) {
     for (int i = 0; i < state.defer_used; i++) {
         defexpr* d = &state.defer[i];
+        /* Settled where it was written; only an object does that. */
+        if (d->sp->defined || (d->sp->reloc & SYM_PROXY) != 0) {
+            continue;
+        }
         const char* p = d->text;
         evalue v = 0;
         uint8_t mask = 0;
         fwd_reset(NULL);
         state.line = d->line;
         /* Read again where it was written: `$` through expr_replay, and the
-         * anonymous labels either side put back for the length of it. */
+         * anonymous labels either side put back for the length of it. In an
+         * object a byte of an address can be a relocation, and this is the
+         * one place it may become one. */
         expr_replay = d;
         state.anon_prev = d->anon_prev;
         state.anon_has_prev = d->anon_has_prev;
         state.anon_fwd = d->anon_fwd;
+        expr_sel_ok = obj_format != OBJ_NONE;
         const bool ok = expr_value(&v, &p, d->text + d->len, &mask);
+        expr_sel_ok = false;
         expr_replay = NULL;
         if (!ok) {
             return false;
         }
+        if (obj_format != OBJ_NONE) {
+            if (!obj_deferred(d, v)) {
+                return false;
+            }
+            continue;
+        }
         if (expr_fwd != NULL || expr_fwd_bad) {
-            /* Every name in it is known, and some are placed in an object's
-             * segments: the value exists, but only as a relocation. */
-            const bool placed = expr_fwd != NULL && (expr_fwd->reloc & SYM_LINKED) != 0
-                                && (expr_fwd2 == NULL || (expr_fwd2->reloc & SYM_LINKED) != 0);
-            state.err = placed ? ZAP_E_OBJ_NO_RELOCATIONS_YET : ZAP_E_UNKNOWN_LABEL;
+            state.err = ZAP_E_UNKNOWN_LABEL;
 
             return false;
         }
@@ -304,7 +314,8 @@ static bool resolve_fills(void) {
         const fillpatch* fp = &state.fillp[i];
         if (!fp->sp->defined) {
             state.line = fp->line;
-            state.err = ZAP_E_UNKNOWN_LABEL;
+            state.err = (fp->sp->reloc & SYM_PROXY) != 0 ? ZAP_E_OBJ_NOT_RELOCATABLE
+                                                         : ZAP_E_UNKNOWN_LABEL;
 
             return false;
         }

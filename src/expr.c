@@ -63,6 +63,14 @@ bool expr_fwd_bad;
  * rest of the time. */
 const defexpr* expr_replay;
 
+/* Which byte of an address the expression took, in an object: 0 for none,
+ * then 1, 2 and 3 for `& 0xFF`, `>> 8` and `>> 16`. Allowed only where
+ * `expr_sel_ok` says a relocation can be made of it -- a deferred expression
+ * being settled at the end -- and a reason to defer anywhere else. */
+uint8_t expr_sel;
+
+bool expr_sel_ok;
+
 /* Which slots hold a symbol. A term reports the ones it filled by taking this
  * before and after itself, so a bracketed sub-expression needs no special
  * case: whatever it left behind belongs to the term that contained it. */
@@ -99,6 +107,68 @@ static evalue obj_here(int addr) {
     fwd_take(obj_section(addr));
 
     return addr & SEG_MAX;
+}
+
+/* Two labels placed in the same segment, one added and one subtracted, are a
+ * distance: the segment cancels and what is left is a number. `mask` is the
+ * slots the operand at hand holds, and it has to hold both. */
+static void fwd_cancel(evalue* v, uint8_t* mask) {
+    if (*mask != 3 || expr_fwd_neg == expr_fwd2_neg
+        || (expr_fwd->reloc & SYM_PLACED) == 0
+        || (expr_fwd2->reloc & SYM_PLACED) == 0
+        || (expr_fwd->addr >> SEG_SHIFT) != (expr_fwd2->addr >> SEG_SHIFT)) {
+        return;
+    }
+    *v += expr_fwd_neg ? -expr_fwd->addr : expr_fwd->addr;
+    *v += expr_fwd2_neg ? -expr_fwd2->addr : expr_fwd2->addr;
+    expr_fwd = NULL;
+    expr_fwd2 = NULL;
+    expr_fwd_neg = false;
+    expr_fwd2_neg = false;
+    *mask = 0;
+}
+
+/* An operator other than `+` and `-` meeting an address in an object.
+ *
+ * A distance is a number, and is settled into one first. What is left may be
+ * one of the three byte selections a relocation can express, which are
+ * recorded rather than applied: the linker takes the byte of the address plus
+ * the addend, so the constant the expression has gathered is left as it is.
+ * Returns true where the operator has been dealt with and is not to be
+ * applied. */
+__attribute__((noinline))
+static bool obj_operator(char c, evalue* total, evalue* t, uint8_t* lmask,
+                         uint8_t* rmask) {
+    if (expr_sel != 0) {
+        if (c == '&' && *rmask == 0 && *t == 0xFF && *lmask != 0 && expr_sel != 1) {
+            return true;
+        }
+        expr_fwd_bad = true;
+
+        return true;
+    }
+    if (c == '+' || c == '-') {
+        return false;
+    }
+    fwd_cancel(total, lmask);
+    fwd_cancel(t, rmask);
+    if ((*lmask | *rmask) == 0 || !expr_sel_ok) {
+        return false;
+    }
+    if (*rmask == 0 && *lmask == 1 && expr_fwd2 == NULL && !expr_fwd_neg) {
+        if (c == '>' && (*t == 8 || *t == 16)) {
+            expr_sel = *t == 8 ? 2 : 3;
+
+            return true;
+        }
+        if (c == '&' && *t == 0xFF) {
+            expr_sel = 1;
+
+            return true;
+        }
+    }
+
+    return false;
 }
 
 /* Subtraction, and unary minus, flip the sign of everything on their right. */
@@ -162,6 +232,9 @@ sym* defer_text(const char* text, int n) {
     d->anon_fwd = state.anon_fwd;
     state.err = ZAP_OK;
     fwd_reset(NULL);
+    if (obj_format != OBJ_NONE && !obj_defer_now(d)) {
+        return NULL;
+    }
 
     return sp;
 }
@@ -510,6 +583,10 @@ bool expr_climb(evalue* total, const char** pp, const char* e,
                         &rhs_mask)) {
             return false;
         }
+        if ((*fwdmask | rhs_mask) != 0 && obj_format != OBJ_NONE
+            && obj_operator(c, total, &t, fwdmask, &rhs_mask)) {
+            continue;
+        }
         if ((*fwdmask | rhs_mask) != 0) {
             /* A forward reference survives `+` and `-`, which move it between
              * added and subtracted and nothing more. Every other operator
@@ -570,6 +647,9 @@ bool expr_value(evalue* out, const char** pp, const char* e,
     }
     if (!expr_climb(&total, pp, e, 1, 0, fwdmask)) {
         return false;
+    }
+    if (obj_format != OBJ_NONE && *fwdmask == 3) {
+        fwd_cancel(&total, fwdmask);
     }
     *out = total;
 

@@ -106,7 +106,6 @@ const char* const zap_err_text[] = {
     [ZAP_E_OBJ_BSS_HOLDS_NO_BYTES] = "the bss holds no bytes",
     [ZAP_E_OBJ_UNKNOWN_SEGMENT] = "unknown segment",
     [ZAP_E_OBJ_NEEDS_NUMBER] = "an address in an object is not known until it is linked",
-    [ZAP_E_OBJ_NO_RELOCATIONS_YET] = "that needs a relocation, which zap cannot write yet",
     [ZAP_E_OBJ_NOT_RELOCATABLE] = "an address in an object cannot be used this way",
     [ZAP_E_OBJ_SEGMENT_TOO_LARGE] = "segment larger than 1 MB",
     [ZAP_E_OBJ_ALIGN_TOO_LARGE] = "alignment too large for an object",
@@ -642,8 +641,12 @@ bool patch_fixup(const fixup* f) {
     if (obj_format != OBJ_NONE) {
         /* In an object a label may be placed rather than defined, and what
          * that allows depends on where the value goes. */
-        if (!obj_value(f, &val)) {
+        bool done;
+        if (!obj_value(f, &val, &done)) {
             return false;
+        }
+        if (done) {
+            return true;
         }
         goto have_value;
     }

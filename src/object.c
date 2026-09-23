@@ -17,6 +17,7 @@
  */
 
 #include "zap.h"
+#include "expr.h"
 #include "scan.h"
 #include "symtab.h"
 
@@ -343,6 +344,77 @@ static const sym* base_of(const sym* sp) {
     return NULL;
 }
 
+/* A deferred expression, settled at the end of the assembly with every label
+ * placed: a number, or one address plus a constant -- possibly one byte of
+ * it -- which the fixups that stand on it become relocations of. Two labels
+ * in the same segment have already cancelled into a number by here. */
+bool obj_deferred(defexpr* d, evalue v) {
+    if (expr_fwd == NULL && !expr_fwd_bad) {
+        d->sp->addr = v;
+        d->sp->defined = true;
+
+        return true;
+    }
+    const sym* t = expr_fwd;
+    if (!expr_fwd_bad && expr_fwd2 == NULL && !expr_fwd_neg
+        && (t->reloc & SYM_LINKED) != 0) {
+        const sym* base = base_of(t);
+        d->base = base;
+        d->addend = v + t->addr - base->addr;
+        d->sel = expr_sel;
+        d->sp->reloc = SYM_PROXY;
+        d->sp->addr = (evalue) (d - state.defer);
+
+        return true;
+    }
+    const sym* t2 = expr_fwd2;
+    const bool unknown = (t != NULL && (t->reloc & SYM_LINKED) == 0)
+                         || (t2 != NULL && (t2->reloc & SYM_LINKED) == 0);
+    state.err = unknown ? ZAP_E_UNKNOWN_LABEL : ZAP_E_OBJ_NOT_RELOCATABLE;
+
+    return false;
+}
+
+/* A deferred expression in an object, settled where it was written if every
+ * label in it is already placed or imported.
+ *
+ * Deferring is for labels still ahead. An expression that is only waiting
+ * for a relocation -- `hi >> 8` of a label above -- can be settled now, and
+ * has to be if it names a local, whose scope is gone by the end. Errors are
+ * then reported against the line that wrote it. */
+bool obj_defer_now(defexpr* d) {
+    const char* p = d->text;
+    evalue v = 0;
+    uint8_t mask = 0;
+    fwd_reset(NULL);
+    expr_sel_ok = true;
+    const bool ok = expr_value(&v, &p, d->text + d->len, &mask);
+    expr_sel_ok = false;
+    if (!ok) {
+        return false;
+    }
+    const bool later = (expr_fwd != NULL && (expr_fwd->reloc & SYM_LINKED) == 0)
+                       || (expr_fwd2 != NULL && (expr_fwd2->reloc & SYM_LINKED) == 0);
+    bool settled = true;
+    if (!later) {
+        settled = obj_deferred(d, v);
+    }
+    fwd_reset(NULL);
+
+    return settled;
+}
+
+/* The relocation types, as agondev's binutils number them.
+ *
+ * A 16- or 8-bit field takes WORD0 and BYTE0, the low word and the low byte,
+ * rather than R_Z80_16 and R_Z80_8, which GNU `as` writes for `.dw` and `.db`:
+ * `ld` refuses those when the address does not fit, and zap truncates, saying
+ * so only under -w. A linked object has to be the bytes a flat assembly
+ * would have been. */
+#define R_Z80_8_PCREL  3
+#define R_Z80_BYTE0    7
+#define R_Z80_WORD0    11
+
 /* A fixup's value in an object, and whether it can be written as a number.
  *
  * An address counts once, and one subtracted counts minus once. Where the
@@ -350,14 +422,18 @@ static const sym* base_of(const sym* sp) {
  * distance between two labels in the same segment, where the segments cancel.
  * A relative jump to a label in its own segment is a distance too.
  *
- * An address counted once in a 24-bit field becomes a relocation, and the
- * field is written as zeros: the linker adds the addend it carries. Anything
- * else needs a relocation zap does not write yet, or is not something an
- * object can express at all. */
-bool obj_value(const fixup* f, evalue* val) {
+ * An address counted once becomes a relocation of the field's width, and the
+ * field is written as zeros: the linker adds the addend it carries. A
+ * relative jump anywhere else is one too, measured, as GNU `as` writes it,
+ * from the displacement byte with the addend one less. What a relocation
+ * cannot express -- a sum of two addresses, a difference across segments, an
+ * address in an opcode or an index offset -- is refused. */
+bool obj_value(const fixup* f, evalue* val, bool* done) {
     const sym* t = f->target;
     const sym* s = f->sub;
-    if (!t->defined && (t->reloc & SYM_LINKED) == 0) {
+    const uint8_t w = (uint8_t) (f->width & FIX_WIDTH);
+    *done = false;
+    if (!t->defined && (t->reloc & (SYM_LINKED | SYM_PROXY)) == 0) {
         state.line = f->line;
         err_tok(t->name, t->len);
         state.err = ZAP_E_UNKNOWN_LABEL;
@@ -372,58 +448,80 @@ bool obj_value(const fixup* f, evalue* val) {
         return false;
     }
 
-    evalue v = t->addr + f->addend;
-    const sym* base = base_of(t);
-    int net = base != NULL;
-    if (s != NULL) {
-        const bool minus = (f->width & FIX_SUB2) != 0;
-        v += minus ? -s->addr : s->addr;
-        const sym* sb = base_of(s);
-        if (sb != NULL) {
-            if (minus && base == sb) {
-                net = 0;
-                base = NULL;
-            } else if (!minus && base == NULL) {
-                net = 1;
-                base = sb;
-            } else {
-                net = 2;
+    evalue v;
+    const sym* base;
+    int net;
+    uint8_t sel = 0;
+    if ((t->reloc & SYM_PROXY) != 0) {
+        /* A deferred expression that came out as an address. */
+        const defexpr* d = &state.defer[(int) t->addr];
+        base = d->base;
+        v = base->addr + d->addend + f->addend;
+        sel = d->sel;
+        net = s == NULL ? 1 : 2;
+    } else {
+        v = t->addr + f->addend;
+        base = base_of(t);
+        net = base != NULL;
+        if (s != NULL) {
+            const bool minus = (f->width & FIX_SUB2) != 0;
+            v += minus ? -s->addr : s->addr;
+            const sym* sb = base_of(s);
+            if (sb != NULL) {
+                if (minus && base == sb) {
+                    net = 0;
+                    base = NULL;
+                } else if (!minus && base == NULL) {
+                    net = 1;
+                    base = sb;
+                } else {
+                    net = 2;
+                }
             }
         }
     }
     *val = v;
 
-    const uint8_t w = (uint8_t) (f->width & FIX_WIDTH);
-    if (w == FIX_DSINIT) {
+    if (w == FIX_DSINIT || (net == 0 && w != 0)) {
         return true;
     }
-    if (w == 0) {
-        if (net == 1 && base == obj_section(f->off)) {
-            return true;
+    if (net == 1 && w == 0 && sel == 0 && base == obj_section(f->off)) {
+        return true;
+    }
+
+    uint8_t type = 0;
+    evalue addend = base != NULL ? v - base->addr : 0;
+    if (net == 1) {
+        if (sel != 0) {
+            if (w == 1) {
+                type = (uint8_t) (R_Z80_BYTE0 + sel - 1);
+            }
+        } else if (w == 0) {
+            type = R_Z80_8_PCREL;
+            addend -= 1;
+        } else if (w == 1) {
+            type = R_Z80_BYTE0;
+        } else if (w == 2) {
+            type = R_Z80_WORD0;
+        } else if (w == 3) {
+            type = R_Z80_24;
         }
+    }
+    if (type == 0) {
         state.line = f->line;
-        state.err = net == 2 ? ZAP_E_OBJ_NOT_RELOCATABLE : ZAP_E_OBJ_NO_RELOCATIONS_YET;
+        state.err = ZAP_E_OBJ_NOT_RELOCATABLE;
 
         return false;
     }
-    if (net == 0) {
-        return true;
+    if ((base->reloc & SYM_XREF) != 0) {
+        ((sym*) base)->reloc |= SYM_USED;
     }
-    if (net == 1 && w == 3) {
-        /* The addend is what is left once the base's own address is taken
-         * out: a segment's offset, or whatever was added to an import. */
-        if ((base->reloc & SYM_XREF) != 0) {
-            ((sym*) base)->reloc |= SYM_USED;
-        }
-        *val = 0;
+    /* The field is left as zeros, which is what the emitter wrote in it,
+     * and the relocation is the whole of what is written. */
+    memset(obj_ptr(f->off), 0, w == 0 ? 1 : w);
+    *done = true;
 
-        return reloc_add(f->off, base, v - base->addr, R_Z80_24);
-    }
-    state.line = f->line;
-    state.err = (net == 1 && w <= 2) ? ZAP_E_OBJ_NO_RELOCATIONS_YET
-                                     : ZAP_E_OBJ_NOT_RELOCATABLE;
-
-    return false;
+    return reloc_add(f->off, base, addend, type);
 }
 
 /* XDEF and XREF, with the GNU spellings: a list of names, each exported or
@@ -787,7 +885,9 @@ static bool elf_write(int* written) {
             ((sym*) globals[i])->addr = SEG_COUNT + i;
         }
     }
-    qsort(relocs, (size_t) reloc_used, sizeof(objreloc), reloc_cmp);
+    if (reloc_used > 1) {
+        qsort(relocs, (size_t) reloc_used, sizeof(objreloc), reloc_cmp);
+    }
 
     /* Where everything goes, worked out before a byte is written: the
      * header, the segments' bytes, the symbol table and the strings, then

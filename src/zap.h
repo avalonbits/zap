@@ -487,7 +487,6 @@ typedef enum {
     ZAP_E_OBJ_BSS_HOLDS_NO_BYTES,
     ZAP_E_OBJ_UNKNOWN_SEGMENT,
     ZAP_E_OBJ_NEEDS_NUMBER,
-    ZAP_E_OBJ_NO_RELOCATIONS_YET,
     ZAP_E_OBJ_NOT_RELOCATABLE,
     ZAP_E_OBJ_SEGMENT_TOO_LARGE,
     ZAP_E_OBJ_ALIGN_TOO_LARGE,
@@ -594,6 +593,12 @@ typedef struct {
     int anon_prev;
     bool anon_has_prev;
     sym* anon_fwd;
+    /* In an object, where the value turned out to be an address: what it is
+     * relative to, the addend, and which byte of it is wanted -- 0 for the
+     * whole of it, then 1, 2 and 3 for the low, high and upper byte. */
+    const sym* base;
+    evalue addend;
+    uint8_t sel;
 } defexpr;
 
 /* A block of n units whose fill named something not yet defined. The bytes
@@ -1891,6 +1896,11 @@ _Static_assert((R_IXL | R_IYL)
 
 #define SYM_USED   8    /* imported, and named by a relocation */
 
+/* The nameless stand-in for a deferred expression whose value is an address
+ * rather than a number: `addr` is its index in `state.defer`, where the
+ * relocation it stands for is kept. */
+#define SYM_PROXY  16
+
 /* Known, but only as an address the linker will decide. */
 #define SYM_LINKED (SYM_PLACED | SYM_XREF)
 
@@ -1936,6 +1946,8 @@ _Static_assert((R_IXL | R_IYL)
 /* expr.c      */ extern bool expr_fwd_bad;
 /* expr.c      */ extern bool expr_fwd_neg;
 /* expr.c      */ extern const defexpr* expr_replay;
+/* expr.c      */ extern uint8_t expr_sel;
+/* expr.c      */ extern bool expr_sel_ok;
 /* expr.c      */ bool expr_value(evalue* out, const char** pp, const char* e, uint8_t* fwdmask);
 /* expr.c      */ bool fwd_finish(dop* op);
 /* expr.c      */ uint8_t fwd_live(void);
@@ -1977,6 +1989,8 @@ _Static_assert((R_IXL | R_IYL)
 /* macro.c     */ bool macro_expand(const macro* m, const char* p, const char* e, const char** stop);
 /* macro.c     */ bool macro_line(const char* p, const char* e);
 /* object.c    */ bool obj_align(evalue n);
+/* object.c    */ bool obj_defer_now(defexpr* d);
+/* object.c    */ bool obj_deferred(defexpr* d, evalue v);
 /* object.c    */ bool obj_directive(const char* s, int n, const char* p, const char* e, const char** stop, bool* mine);
 /* object.c    */ bool obj_finish(void);
 /* object.c    */ extern uint8_t obj_format;
@@ -1985,7 +1999,7 @@ _Static_assert((R_IXL | R_IYL)
 /* object.c    */ uint8_t* obj_ptr(int off);
 /* object.c    */ const sym* obj_section(int addr);
 /* object.c    */ bool obj_start(void);
-/* object.c    */ bool obj_value(const fixup* f, evalue* val);
+/* object.c    */ bool obj_value(const fixup* f, evalue* val, bool* done);
 /* object.c    */ bool obj_write(int* written);
 /* scan.c      */ void build_cclass(void);
 /* scan.c      */ extern uint8_t cclass[256];

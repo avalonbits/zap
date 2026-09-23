@@ -482,6 +482,7 @@ static bool emit_data(uint8_t width, const char** pp, const char* e) {
              * Only when what ends the digit run also ends the item: `DB 1+2`
              * goes through the evaluator, and deciding that costs one class
              * lookup on a character already in hand. */
+            const char* const item = p;
             const char* const q = lit_value(p, e, &value);
             if (q != NULL) {
                 p = q;
@@ -512,7 +513,20 @@ static bool emit_data(uint8_t width, const char** pp, const char* e) {
                 const sym* sub = NULL;
                 bool subneg = false;
                 if (!fwd_result(&target, &sub, &subneg)) {
-                    return false;
+                    if (obj_format == OBJ_NONE) {
+                        return false;
+                    }
+                    /* In an object a label here may be one already placed,
+                     * and `hi >> 8` of it is a relocation rather than a label
+                     * still ahead -- so the item is kept as text and settled
+                     * at the end, as an instruction's operand is. */
+                    target = defer_text(item, (int) (p - item));
+                    if (target == NULL) {
+                        return false;
+                    }
+                    sub = NULL;
+                    subneg = false;
+                    value = 0;
                 }
                 if (value < ADDEND_MIN || value > ADDEND_MAX) {
                     /* See fixup.addend. The alternative is three bytes of the

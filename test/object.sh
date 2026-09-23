@@ -214,6 +214,70 @@ else
     status=1
 fi
 
+# Every kind of relocation, linked against a second object that defines the
+# imports, and compared at two addresses with the flat assembly of the two
+# sources in the same order: relative jumps to an import, 16-bit and 8-bit
+# fields, each byte of an address, distances and `$` in expressions that need
+# a number, and a local label in an expression settled on its own line.
+cat > "$OUT/kinds_x.s" <<'EOF'
+        XDEF    ext, tbl
+ext:    nop
+        nop
+        nop
+tbl:    dl 0x123456
+EOF
+cat > "$OUT/kinds.s" <<'EOF'
+        XREF    ext, tbl
+start:  jr ext
+        djnz ext+2
+        dw start, ext, fin - start
+        db start, ext
+        ld a, start >> 8
+        ld a, (ext + 3) >> 16
+        ld a, start & 0xFF
+        ld a, (start >> 8) & 0xFF
+        ld hl, (fin - start) / 2
+        ld a, fin - start & 0xFF
+        ld bc, fin - start
+        ld.sis hl, start + 1
+msg:    db "hello"
+len:    equ $ - msg
+        ds len
+        if len == 5
+        db 1
+        endif
+        ld hl, (@f - msg) * 3
+@@:     ld de, ($ - start) << 1
+later:  jr @b
+fin:    ret
+@t:     ld a, @t >> 8
+        db tbl >> 8, (tbl + 1) >> 16, later & 0xff, fin >> 16
+        dw (fin - msg) >> 1
+EOF
+grep -v XDEF "$OUT/kinds_x.s" > "$OUT/kinds_flat.s"
+grep -v XREF "$OUT/kinds.s" >> "$OUT/kinds_flat.s"
+if obj kinds && obj kinds_x; then
+    readelf_quiet kinds
+    got=$("$BIN-readelf" -r -W "$OUT/kinds.o" | awk '/R_Z80/ { print $3 }' | sort | uniq -c \
+          | awk '{ print $2 "=" $1 }' | tr '\n' ' ')
+    check "each kind of relocation is written" "$got" \
+        "R_Z80_8_PCREL=2 R_Z80_BYTE0=4 R_Z80_BYTE1=4 R_Z80_BYTE2=3 R_Z80_WORD0=3 "
+    got=$("$BIN-readelf" -r -W "$OUT/kinds.o" | awk '$1 == "00000001" || $1 == "00000003" { print $1, $3, $5, $6, $7 }' \
+          | tr '\n' ';')
+    check "a relative jump to an import is measured from the byte after it" "$got" \
+        "00000001 R_Z80_8_PCREL ext - 1;00000003 R_Z80_8_PCREL ext + 1;"
+    for at in 050000 7A0000; do
+        "$ZAP" -c "$OUT/kinds_flat.s" "$OUT/kinds.flat" -o "$at" > /dev/null 2>&1
+        "$BIN-ld" -e 0 -Ttext="0x$at" --oformat binary -o "$OUT/kinds.lnk" \
+            "$OUT/kinds_x.o" "$OUT/kinds.o" > /dev/null 2>&1
+        check "every kind of relocation, linked at $at, is the flat assembly" \
+            "$(cmp -s "$OUT/kinds.lnk" "$OUT/kinds.flat" && echo same)" same
+    done
+else
+    echo "FAIL  kinds: $(cat "$OUT/kinds.log" "$OUT/kinds_x.log" 2>/dev/null | tr -d '\r')"
+    status=1
+fi
+
 # Two objects, one calling into the other, linked at two addresses: the
 # result is exactly the flat assembly of the two sources one after the other.
 cat > "$OUT/main.s" <<'EOF'
@@ -386,11 +450,6 @@ refused "EQU of \$" 'lb2: equ $\n' "not known until it is linked"
 refused "DS of a label" 'lab: nop\n  ds lab\n' "not known until it is linked"
 refused "ALIGN of a label" 'lab: nop\n  align lab\n' "not known until it is linked"
 refused "IF on a label" 'lab: nop\n  if lab\n  endif\n' "not known until it is linked"
-refused "an address in DW" 'lab: nop\n  dw lab\n' "cannot write yet"
-refused "an address in DB" 'lab: nop\n  db lab\n' "cannot write yet"
-refused "a byte of an address" 'lab: nop\n  ld a, lab >> 8\n' "cannot write yet"
-refused "a 16-bit address" 'lab: nop\n  ld.sis hl, lab\n' "cannot write yet"
-refused "a relative jump to an import" '  xref ext\n  jr ext\n' "cannot write yet"
 refused "an address in DW32" 'lab: nop\n  dw32 lab\n' "cannot be used this way"
 refused "an import subtracted" '  xref ext\nlab: nop\n  dl lab - ext\n' "cannot be used this way"
 refused "two imports added" '  xref e1, e2\n  dl e1 + e2\n' "cannot be used this way"
@@ -403,8 +462,16 @@ refused "XREF of a local" '  xref @loc\n' "local label cannot be exported"
 refused "a label both exported and imported" '  xdef lab\n  xref lab\nlab: nop\n' "both exported and imported"
 refused "XDEF with no name" '  xdef\n' "expected a label name"
 refused "XDEF with a trailing comma" 'lab: nop\n  xdef lab,\n' "expected a label name"
-refused "a jump into another segment" '  jr lab\n  .data\nlab: db 0\n' "cannot write yet"
-refused "a relative jump to a number" '  jr n\nn: equ 5\n' "cannot write yet"
+refused "a relative jump to a number" '  jr n\nn: equ 5\n' "cannot be used this way"
+refused "a byte of an address in a wider field" 'lab: nop\n  ld hl, lab >> 8\n' "cannot be used this way"
+refused "a byte of an address with more added" 'lab: nop\n  ld a, (lab >> 8) + 1\n' "cannot be used this way"
+refused "a shift a relocation cannot take" 'lab: nop\n  ld a, lab >> 4\n' "cannot be used this way"
+refused "a mask a relocation cannot take" 'lab: nop\n  ld a, lab & 0xF0\n' "cannot be used this way"
+refused "an address multiplied" 'lab: nop\n  ld hl, lab * 2\n' "cannot be used this way"
+refused "an address negated" 'lab: nop\n  ld hl, -lab\n' "cannot be used this way"
+refused "a label ahead multiplied" '  ld hl, lab * 2\nlab: nop\n' "cannot be used this way"
+refused "a relative jump to a byte of an address" 'lab: nop\n  jr lab >> 8\n' "cannot be used this way"
+refused "EQU of a distance across segments" 'lab: nop\n  .data\nlb2: db 0\nd: equ lb2 - lab\n' "not known until it is linked"
 refused "a bit number from a label" 'lab: nop\n  bit lab, a\n' "cannot be used this way"
 refused "an index offset from a label" 'lab: nop\n  ld a, (ix+lab)\n' "cannot be used this way"
 refused "the difference of two segments" 'lab: nop\n  .data\nlb2: db 0\n  dl lb2 - lab\n' "cannot be used this way"

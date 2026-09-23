@@ -29,6 +29,7 @@ static inline void fwd_reset(const sym* seed) {
     expr_fwd_neg = false;
     expr_fwd2_neg = false;
     expr_fwd_bad = false;
+    expr_sel = 0;
 }
 
 /* Why a value that had to be known now was not.

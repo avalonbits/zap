@@ -43,6 +43,22 @@ doesn't charge for writing to the card; on a real Agon that 1 MiB takes 15.2s.
 I'm glad the gap closed. Two independent assemblers that agree byte for byte
 are more useful than one, because each keeps the other honest.
 
+## Libraries for C
+
+zap can also assemble relocatable objects, so you can write the fast parts of
+a C program in assembly and link them in. `-f elf` writes an ELF object for
+[agondev](https://github.com/AgonPlatform/agondev) on a PC, and `-f acc`
+writes one for acc, the C compiler that runs on the Agon itself:
+
+    zap bytes.s bytes.o -f elf      # for agondev
+    zap bytes.s bytes.o -f acc      # for acc
+
+The same source works for both. `XDEF` exports a routine, `XREF` imports a C
+function or variable, and `SEGMENT CODE`, `DATA`, `RODATA` and `BSS` say where
+things go. [Using zap with agondev](docs/zap-with-agondev.md) and
+[using zap with acc](docs/zap-with-acc.md) walk through a complete example
+with each, and [docs/LIBRARIES.md](docs/LIBRARIES.md) has the details.
+
 ## Getting it
 
 Grab `zap.bin` from the [latest release](https://github.com/avalonbits/zap/releases/latest).
@@ -96,7 +112,7 @@ mean the same thing.
 | `-i` | Accepted for compatibility (truncation warnings are already off) |
 | `-m` | Accepted for compatibility (zap has only one memory mode) |
 | `-ez80` | Use ez80asm's expression rules (see below) |
-| `-f elf\|acc` | Write a relocatable object for agondev or acc instead (see [docs/LIBRARIES.md](docs/LIBRARIES.md)) |
+| `-f elf\|acc` | Write a relocatable object for agondev or acc instead of a flat binary (see [Libraries for C](#libraries-for-c)) |
 
 ## What it assembles
 
@@ -123,6 +139,7 @@ and numbers written as `1234`, `0x1234`, `$1234`, `1234h`, `0b1010`, `%1010` or
 | Conditional | `IF` / `ELSE` / `ENDIF` |
 | Macros | `MACRO` / `ENDMACRO`, up to 8 parameters |
 | Target | `.CPU EZ80`, `.CPU Z80`, `.CPU Z180` |
+| Objects only (`-f`) | `XDEF` (`.GLOBAL`), `XREF` (`.EXTERN`), `SEGMENT` (`.SECTION`, `.TEXT`, `.DATA`, `.RODATA`, `.BSS`) |
 
 Directives are case-insensitive and the leading `.` is optional. `.CPU` picks
 an instruction set: the Z80 set includes the undocumented instructions, and
@@ -191,16 +208,26 @@ check is off by default because it costs about 2% of the run time.
     FIX_CAP=1024 test/corpus.sh    the same with a capped fixup list
     test/window.sh                 a large generated source with every kind of
                                    fixup patched long after it was written
+    test/object.sh                 objects: linked by agondev's ld and compared
+                                   with flat output, and ACC objects compared
+                                   with acc's own writer
+    test/abi.sh                    C built by agondev and by acc calling zap's
+                                   objects, run on the emulator
     test/bench/bench.sh            timings against ez80asm on the emulator
 
 The reference assembler and its test suite are vendored, so none of this needs
-network access. The benchmarks need
-[fab-agon-emulator](https://github.com/tomm/fab-agon-emulator); everything else
-runs on the host.
+network access. The benchmarks and `test/abi.sh` need
+[fab-agon-emulator](https://github.com/tomm/fab-agon-emulator), and the object
+tests need agondev (and acc's source tree for the ACC checks); they're
+skipped without them. Everything else runs on the host.
 
 ## Documentation
 
 - [`docs/DESIGN.md`](docs/DESIGN.md) explains how the assembler works.
+- [`docs/zap-with-agondev.md`](docs/zap-with-agondev.md) and
+  [`docs/zap-with-acc.md`](docs/zap-with-acc.md) show how to call assembly
+  from C with each compiler, and [`docs/LIBRARIES.md`](docs/LIBRARIES.md)
+  covers how objects work.
 - [`ez80_advanced_optimization_guide.md`](ez80_advanced_optimization_guide.md)
   covers writing fast C for the eZ80: which ordinary C turns into library
   calls, what inlining really does, a couple of compiler bugs, and how to

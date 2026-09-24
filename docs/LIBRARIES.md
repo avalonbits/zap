@@ -3,8 +3,9 @@
 This is the design for letting zap produce relocatable objects, so functions
 written in assembly can be linked into C programs built with agondev on a PC
 or with acc on the Agon itself. It's being built in the steps listed under
-[Plan](#plan). Steps 1 to 3 are in: `-f elf` writes an object with segments,
-exports and imports, and every relocation type below.
+[Plan](#plan). Steps 1 to 4 are in: `-f elf` writes an object with segments,
+exports and imports, and every relocation type below, and C built by agondev
+calls into it and back out on the emulator.
 
 ## Why objects
 
@@ -93,7 +94,8 @@ and imported between assembly objects, but C can't name it.
 
 ### Calling convention
 
-Both compilers follow agondev's convention, pinned by acc's `test/abi.sh`:
+Both compilers follow agondev's convention, which acc's `test/abi.sh` pins
+and zap's `test/abi.sh` runs against zap's objects:
 
 | | |
 |---|---|
@@ -102,6 +104,24 @@ Both compilers follow agondev's convention, pinned by acc's `test/abi.sh`:
 | results | `A` for 1 byte, `HL` for 2 or 3, `E:HL` for 4, `HL`, `DE`, `BC` for 8 |
 | struct results | through a hidden first argument; the pointer comes back in `HL` |
 | registers | a function may change every register except `IX` and `SP` |
+
+### Using it with agondev
+
+Assemble the library with zap, put it in an archive in the project's `lib`
+directory, and name it in the project's `Makefile`; agondev links `LIBS`
+before its own library:
+
+    zap mylib.s mylib.o -f elf
+    ez80-none-elf-ar rcs lib/libmylib.a mylib.o
+
+    # Makefile
+    NAME=myprog
+    LIBS=-lmylib
+    include $(shell agondev-config --makefile)
+
+C declares the functions as usual, without the underscore:
+`extern int sum3(int a, int b, int c);` for `_sum3`. `test/abi/` is a
+complete example, and `test/abi.sh` builds it and runs it on the emulator.
 
 ## Values and relocations
 
@@ -214,7 +234,7 @@ the same format independently.
 2. Relocatable labels: `XDEF`, `XREF`, 24-bit relocations, the symbol table,
    the two-address test and the corpus. **Done.**
 3. The other relocation types, label differences, and `$`. **Done.**
-4. Calling-convention tests with agondev on the emulator.
+4. Calling-convention tests with agondev on the emulator. **Done.**
 5. The ACC v6 writer, tested against `objv6.py` and with acc on the emulator.
 
 Each step is its own pull request, and each is checked against the bbcbasic

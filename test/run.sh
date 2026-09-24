@@ -1839,6 +1839,10 @@ done
 echo "=== test_object ==="
 test/object.sh "$OUT/zap" || status=1
 
+# And those objects called from C built by agondev, run on the emulator.
+echo "=== test_abi ==="
+test/abi.sh "$OUT/zap" || status=1
+
 # The guide's index links to its own headings, and a renamed heading breaks a
 # link silently. Every anchor in it has to resolve to a heading in it.
 if command -v python3 > /dev/null 2>&1 && [ -f ez80_advanced_optimization_guide.md ]; then

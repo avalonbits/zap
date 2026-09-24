@@ -19,7 +19,7 @@ both. Only the object format differs:
 
 | | agondev | acc |
 |---|---|---|
-| format | ELF32 relocatable (`EM_Z80`, flags `0x84`) | ACC v6 (acc's `src/obj.c`) |
+| format | ELF32 relocatable (`EM_Z80`, flags `0x84`) | ACC v1 (acc's `src/obj.c`) |
 | linker | `ez80-none-elf-ld` | acc |
 | archives | `ez80-none-elf-ar` | `acc -a` |
 
@@ -30,7 +30,7 @@ explains why acc keeps its own format rather than using ELF.
 ## Command line
 
     zap lib.s lib.o -f elf     an ELF object for agondev
-    zap lib.s lib.o -f acc     an ACC v6 object for acc
+    zap lib.s lib.o -f acc     an ACC v1 object for acc
     zap lib.s lib.bin          a flat binary, as today
 
 With `-f`, the output name defaults to `<source>.o`. Without it, nothing
@@ -140,7 +140,7 @@ label, or `$`, plus a constant.
 Where a relocatable value is written, zap writes a relocation instead of an
 address:
 
-| written as | ELF | ACC v6 |
+| written as | ELF | ACC v1 |
 |---|---|---|
 | a 24-bit field: `call`, `ld hl, label`, `dl label` | `R_Z80_24` | `ABS24` |
 | a 16-bit field: `dw label`, `ld.sis hl, label` | `R_Z80_WORD0` | `ABS16` |
@@ -199,13 +199,14 @@ the object, exported or not, is relocated against its section symbol plus its
 offset, as `as` does; only an import is relocated against its own symbol.
 Labels that aren't exported aren't written.
 
-**ACC v6.** `CODE`, `RODATA` and `DATA` go into acc's single text blob in that
-order, each padded to its own alignment, and `BSS` becomes the bss length and
+**ACC v1.** The file starts `'A'`, `'C'`, `'C'`, 1, and acc refuses any
+other version. `CODE`, `RODATA` and `DATA` go into acc's single text blob in
+that order, each padded to its own alignment, and `BSS` becomes the bss length and
 alignment. The file is one item, whose alignment is the largest `ALIGN` in the
 text. Symbols are sorted by name, and only the undefined ones a relocation
 uses are written. Relocations whose addend fits the field go in the main
 table; `HIGH8` and `UPPER8` always go in the second table with a 24-bit
-addend. The build id and dependency count are 0. acc's `test/objv6.py` writes
+addend. The build id and dependency count are 0. acc's `test/accobj.py` writes
 the same format independently.
 
 ## How it's tested
@@ -223,7 +224,7 @@ the same format independently.
   once the ACC writer exists), run on the emulator. Assembly also calls back
   into C through `XREF`.
 - **The formats.** Every ELF object zap writes must be accepted silently by
-  `readelf` and `ld`. Every ACC object must match what `objv6.py` writes for
+  `readelf` and `ld`. Every ACC object must match what `accobj.py` writes for
   the same content, byte for byte.
 - **Errors.** Every refusal above has a test.
 
@@ -235,7 +236,7 @@ the same format independently.
    the two-address test and the corpus. **Done.**
 3. The other relocation types, label differences, and `$`. **Done.**
 4. Calling-convention tests with agondev on the emulator. **Done.**
-5. The ACC v6 writer, tested against `objv6.py` and with acc on the emulator.
+5. The ACC v1 writer, tested against `accobj.py` and with acc on the emulator.
 
 Each step is its own pull request, and each is checked against the bbcbasic
 and rokky benchmarks so that flat assembly doesn't slow down.

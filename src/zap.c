@@ -884,7 +884,7 @@ static void usage(void) {
     printf("  -c\tNo color codes in output\r\n");
     printf("  -x\tDisplay assembly statistics\r\n");
     printf("  -ez80\tThe reference assembler's expression rules\r\n");
-    printf("  -f\tWrite a relocatable object: -f elf\r\n");
+    printf("  -f\tWrite a relocatable object: -f elf or -f acc\r\n");
 }
 
 /* The reference's options, taken by the same letters and in the same forms.
@@ -990,18 +990,16 @@ __attribute__((noinline)) static bool parse_args(int argc, char* argv[],
                     used = 1;
                 }
                 if (f == NULL) {
-                    printf("Option -f needs a format: elf\r\n");
+                    printf("Option -f needs a format: elf or acc\r\n");
 
                     return false;
                 }
                 if (strcmp(f, "elf") == 0) {
                     obj_format = OBJ_ELF;
                 } else if (strcmp(f, "acc") == 0) {
-                    printf("Option -f acc is not supported yet\r\n");
-
-                    return false;
+                    obj_format = OBJ_ACC;
                 } else {
-                    printf("Option -f: unknown format \"%s\"; only elf is supported\r\n", f);
+                    printf("Option -f: unknown format \"%s\"; elf and acc are supported\r\n", f);
 
                     return false;
                 }

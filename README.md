@@ -96,7 +96,7 @@ mean the same thing.
 | `-i` | Accepted for compatibility (truncation warnings are already off) |
 | `-m` | Accepted for compatibility (zap has only one memory mode) |
 | `-ez80` | Use ez80asm's expression rules (see below) |
-| `-f elf` | Write a relocatable object instead (in progress; see [docs/LIBRARIES.md](docs/LIBRARIES.md)) |
+| `-f elf\|acc` | Write a relocatable object for agondev or acc instead (see [docs/LIBRARIES.md](docs/LIBRARIES.md)) |
 
 ## What it assembles
 

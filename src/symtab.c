@@ -114,6 +114,7 @@ const char* const zap_err_text[] = {
     [ZAP_E_OBJ_LOCAL_LINKED] = "a local label cannot be exported or imported",
     [ZAP_E_OBJ_XDEF_AND_XREF] = "a label cannot be both exported and imported",
     [ZAP_E_OBJ_TOO_MANY_SYMBOLS] = "too many symbols for an object",
+    [ZAP_E_OBJ_ACC_NUMBER] = "an ACC object cannot export a number",
     [ZAP_E_EXPECTED_LABEL_NAME] = "expected a label name",
 };
 

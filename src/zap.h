@@ -495,6 +495,7 @@ typedef enum {
     ZAP_E_OBJ_LOCAL_LINKED,
     ZAP_E_OBJ_XDEF_AND_XREF,
     ZAP_E_OBJ_TOO_MANY_SYMBOLS,
+    ZAP_E_OBJ_ACC_NUMBER,
     ZAP_E_EXPECTED_LABEL_NAME,
 
     /* Not a code: the number of them, so the table below cannot be short. */

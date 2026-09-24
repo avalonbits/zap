@@ -82,6 +82,32 @@ linked_same() {
     fi
 }
 
+# The ACC object for the same source is what acc's own independent writer,
+# test/accobj.py, makes of this ELF object: test/elf_to_acc.py reads the one
+# and writes the other. The ELF side is checked by binutils, so the two
+# writers agreeing is the ACC writer being right. Needs acc's source tree.
+ACC_REPO="${ACC_REPO:-$HOME/code/acc}"
+acc_checked=0
+acc_same() {
+    local src="$1" elf="$2" dir="$3"
+    [ -f "$ACC_REPO/test/accobj.py" ] || return 0
+    rm -f "$elf.acc" "$elf.ref"
+    (cd "$dir" && "$ZAP" -c "${@:4}" -f acc "$src" "$elf.acc" > /dev/null 2>&1) || true
+    python3 test/elf_to_acc.py "$ACC_REPO/test" "$elf" "$elf.ref" > /dev/null 2>&1 || true
+    if [ ! -f "$elf.acc" ] && [ ! -f "$elf.ref" ]; then
+        # Both refuse: an exported number, which ACC has no way to say.
+        acc_checked=$((acc_checked + 1))
+    elif [ ! -f "$elf.acc" ] || [ ! -f "$elf.ref" ]; then
+        echo "FAIL  $src: one of zap and accobj.py refused it and the other did not"
+        status=1
+    elif ! cmp -s "$elf.acc" "$elf.ref"; then
+        echo "FAIL  $src: the ACC object is not what accobj.py writes"
+        status=1
+    else
+        acc_checked=$((acc_checked + 1))
+    fi
+}
+
 # ----------------------------------------------------------------------
 # Code with no relocations: jumps within the segment, `$`, anonymous labels,
 # locals, label differences, and a segment larger than the first buffer, so
@@ -278,6 +304,28 @@ else
     status=1
 fi
 
+# How acc's one text is laid out: rodata after the code on its own alignment,
+# then data, with relocations in each and into the bss. Linking it is not the
+# point -- the ACC comparison below is -- but binutils still has to read it.
+cat > "$OUT/acclayout.s" <<'EOF'
+start:  ld hl, kbuf + 1
+        ld de, rtab
+        SEGMENT DATA
+dtab:   dl start, rtab
+        SEGMENT RODATA
+        align 8
+rtab:   dl dtab, kbuf
+        SEGMENT BSS
+        ds 3
+kbuf:   ds 4
+EOF
+if obj acclayout; then
+    readelf_quiet acclayout
+else
+    echo "FAIL  acclayout: $(tr -d '\r' < "$OUT/acclayout.log")"
+    status=1
+fi
+
 # Two objects, one calling into the other, linked at two addresses: the
 # result is exactly the flat assembly of the two sources one after the other.
 cat > "$OUT/main.s" <<'EOF'
@@ -398,6 +446,7 @@ for dir in test/corpus/*/ test/regress/*/; do
             fi
         done
         if [ "$good" = 1 ]; then
+            acc_same "$base.s" "$W/o.o" "$W" -ez80
             corpus_ok=$((corpus_ok + 1))
             corpus_relocs=$((corpus_relocs + $("$BIN-readelf" -r "$W/o.o" | grep -c R_Z80 || true)))
             [ "$base" = rokky ] && rokky=yes
@@ -413,6 +462,19 @@ check "no corpus object links differently from its flat assembly" "$corpus_bad" 
 check "at least 90 corpus sources were linked and compared" \
     "$([ "$corpus_ok" -ge 90 ] && echo yes || echo "only $corpus_ok")" yes
 check "Rokky links at two addresses to its flat bytes" "$rokky" yes
+
+# The ACC writer, against every object above that assembled.
+if [ -f "$ACC_REPO/test/accobj.py" ]; then
+    for elf in "$OUT"/*.o; do
+        src="${elf%.o}.s"
+        [ -f "$src" ] || continue
+        acc_same "$src" "$elf" "$OUT"
+    done
+    check "every ACC object is what accobj.py writes (at least 100 compared)" \
+        "$([ "$acc_checked" -ge 100 ] && echo yes || echo "only $acc_checked")" yes
+else
+    echo "SKIP  no acc tree at $ACC_REPO; the ACC writer is not compared"
+fi
 
 # ----------------------------------------------------------------------
 # Refusals. Each one is a source that must not produce an object, and the
@@ -477,6 +539,9 @@ refused "an index offset from a label" 'lab: nop\n  ld a, (ix+lab)\n' "cannot be
 refused "the difference of two segments" 'lab: nop\n  .data\nlb2: db 0\n  dl lb2 - lab\n' "cannot be used this way"
 refused "the sum of two addresses" 'lab: nop\nlb2: nop\n  dl lab + lb2\n' "cannot be used this way"
 refused "a label nothing defines" '  dl nowhere\n' "unknown label"
+printf '  xdef n\nn: equ 5\n' > "$OUT/accnum.s"
+check "an exported number is refused in an ACC object" \
+    "$("$ZAP" -c -f acc "$OUT/accnum.s" "$OUT/accnum.o" 2>&1 | tr -d '\r' | grep -c 'ACC object cannot export a number')" 1
 
 # Options that mean nothing in an object, or are not written for one yet.
 printf '  nop\n' > "$OUT/opt.s"
@@ -485,7 +550,7 @@ for bad in "-o 50000" "-a 0" "-l" "-d" "-s"; do
     m=$("$ZAP" -c -f elf $bad "$OUT/opt.s" "$OUT/opt.o" 2>&1 | tr -d '\r' || true)
     check "$bad with -f is refused" "$(printf '%s' "$m" | grep -c 'cannot be used with -f')" 1
 done
-for f in "acc" "coff" ""; do
+for f in "coff" ""; do
     # shellcheck disable=SC2086
     m=$("$ZAP" -c "$OUT/opt.s" "$OUT/opt.o" -f $f 2>&1 | tr -d '\r' || true)
     check "-f '$f' is refused" "$(printf '%s' "$m" | grep -c '^Option -f')" 1
@@ -496,6 +561,8 @@ check "-f with an unknown format names it" \
 m=$("$ZAP" -c "$OUT/opt.s" "$OUT/opt.o" -f 2>&1 | tr -d '\r' || true)
 check "-f with no format says one is needed" \
     "$(printf '%s' "$m" | grep -c 'needs a format')" 1
+check "-facc attached is taken" \
+    "$("$ZAP" -c -facc "$OUT/opt.s" "$OUT/opt.o" 2>&1 | tr -d '\r' | grep -c '^Wrote ')" 1
 check "-felf attached is taken" \
     "$("$ZAP" -c -felf "$OUT/opt.s" "$OUT/opt.o" 2>&1 | tr -d '\r' | grep -c '^Wrote ')" 1
 check "-x counts the object file's bytes" \

@@ -12,7 +12,7 @@
         XDEF    _asm_add3, _asm_char_sum, _asm_short_sub, _asm_long_add
         XDEF    _asm_llong_pass, _asm_after_llong, _asm_store, _asm_make_pair
         XDEF    _asm_call_c, _asm_bump, _asm_clobber
-        XDEF    _asm_table_hi, _asm_table_up, _asm_table_lo
+        XDEF    _asm_table_hi, _asm_table_up, _asm_table_lo, _asm_buffer_at
         XDEF    _asm_table, _asm_words, _asm_message, _asm_buffer, _asm_table_end
 
         XREF    _c_sub, _c_counter
@@ -149,6 +149,11 @@ _asm_table_hi:
 
 _asm_table_up:
         ld      a, _asm_table >> 16
+        ret
+
+; unsigned char *asm_buffer_at(void): an address in the bss
+_asm_buffer_at:
+        ld      hl, _asm_buffer + 4
         ret
 
         SEGMENT DATA

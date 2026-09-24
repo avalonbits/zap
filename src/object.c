@@ -847,6 +847,38 @@ static int reloc_cmp(const void* a, const void* b) {
 /* The symbols past the section symbols, in the order they are written. */
 static const sym** globals;
 
+/* The symbols an object names: every export, and every import a relocation
+ * uses, sorted by name. Returns how many, or -1.
+ *
+ * An import's address is 0, and nothing reads it once every fixup is
+ * settled, so it is given the index a relocation names it by: `first` plus
+ * its place in the list. */
+static int globals_collect(int first, int* strsize) {
+    Z_SITE("object symbols");
+    globals = (const sym**) malloc((size_t) (link_used + 1) * sizeof(sym*));
+    if (globals == NULL) {
+        state.err = ZAP_E_OUT_MEMORY_LABELS;
+
+        return -1;
+    }
+    int n = 0;
+    for (int i = 0; i < link_used; i++) {
+        const sym* sp = links[i].sp;
+        if ((sp->reloc & SYM_XDEF) != 0 || (sp->reloc & SYM_USED) != 0) {
+            globals[n++] = sp;
+            *strsize += sp->len + 1;
+        }
+    }
+    qsort(globals, (size_t) n, sizeof(sym*), name_cmp);
+    for (int i = 0; i < n; i++) {
+        if ((globals[i]->reloc & SYM_XREF) != 0) {
+            ((sym*) globals[i])->addr = first + i;
+        }
+    }
+
+    return n;
+}
+
 static bool elf_write(int* written) {
     static const uint8_t ident[16] = {0x7F, 'E', 'L', 'F', 1, 1, 1};
     static const uint8_t sflags[SEG_COUNT] = {0, 6, 3, 3, 2};
@@ -855,35 +887,15 @@ static bool elf_write(int* written) {
     static uint8_t buf[ELF_SHENTSIZE];
     int pos = 0;
 
-    /* The globals: every export, and every import a relocation names. */
-    int nglob = 0;
-    Z_SITE("object symbols");
-    globals = (const sym**) malloc((size_t) (link_used + 1) * sizeof(sym*));
-    if (globals == NULL) {
-        state.err = ZAP_E_OUT_MEMORY_LABELS;
-
-        return false;
-    }
     int strsize = 1;
-    for (int i = 0; i < link_used; i++) {
-        const sym* sp = links[i].sp;
-        if ((sp->reloc & SYM_XDEF) != 0 || (sp->reloc & SYM_USED) != 0) {
-            globals[nglob++] = sp;
-            strsize += sp->len + 1;
-        }
+    const int nglob = globals_collect(SEG_COUNT, &strsize);
+    if (nglob < 0) {
+        return false;
     }
     if (nglob + SEG_COUNT > ELF_SYM_MAX) {
         state.err = ZAP_E_OBJ_TOO_MANY_SYMBOLS;
 
         return false;
-    }
-    qsort(globals, (size_t) nglob, sizeof(sym*), name_cmp);
-    /* An import's address is 0, and nothing reads it now that every fixup
-     * is settled, so it holds the symbol's index for its relocations. */
-    for (int i = 0; i < nglob; i++) {
-        if ((globals[i]->reloc & SYM_XREF) != 0) {
-            ((sym*) globals[i])->addr = SEG_COUNT + i;
-        }
     }
     if (reloc_used > 1) {
         qsort(relocs, (size_t) reloc_used, sizeof(objreloc), reloc_cmp);
@@ -1056,13 +1068,274 @@ static bool elf_write(int* written) {
     return true;
 }
 
+/* ----------------------------------------------------------------------
+ * ACC
+ *
+ * acc's own format, version 1, as acc's src/obj.c specifies it and its
+ * test/accobj.py writes it independently. Every number is three bytes.
+ *
+ * acc has one text per object, so CODE, RODATA and DATA go into it in that
+ * order, each started on its own alignment, and the whole is one item
+ * aligned to the largest of them. BSS is the object's bss. A relocation
+ * against a label here is against the text or the bss with the label's
+ * offset as the addend, and only an import is named; the symbols are the
+ * exports and the imports a relocation uses, sorted by name, as the ELF
+ * writer has them.
+ *
+ * A relocation in the main table keeps its addend in the slot, as wide as
+ * the slot; one in the second table carries it and leaves the slot zero.
+ * HIGH8 and UPPER8 always go in the second, since the carry out of the bytes
+ * below them needs the whole addend, and so does a PCREL8 whose addend is
+ * past what a signed byte holds.
+ * ---------------------------------------------------------------------- */
+
+#define ACC_HEADER  31
+
+#define ACC_SYM     7
+
+#define ACC_RELOC   6
+
+#define ACC_RELOC_A 9
+
+#define ACC_LOW20   0xFFFFF
+
+#define ACC_DEFINED 1
+
+#define ACC_FUNC    2
+
+#define ACC_BSS     4
+
+/* The kinds, and a bit of zap's own saying which table one goes in. */
+#define ACC_ABS24   0
+#define ACC_LOW8    1
+#define ACC_HIGH8   2
+#define ACC_UPPER8  3
+#define ACC_PCREL8  4
+#define ACC_ABS16   5
+#define ACC_SECOND  0x80
+
+/* Where each segment starts in the text. */
+static int acc_base[SEG_COUNT];
+
+static void le24(uint8_t* p, int v) {
+    p[0] = (uint8_t) v;
+    p[1] = (uint8_t) (v >> 8);
+    p[2] = (uint8_t) (v >> 16);
+}
+
+/* An alignment, which ALIGN only takes as a power of two, as its log2. */
+static int log2_of(int n) {
+    int k = 0;
+    while ((1 << k) < n) {
+        k++;
+    }
+
+    return k;
+}
+
+static int acc_at(const objreloc* r) {
+    return acc_base[r->off >> SEG_SHIFT] + (r->off & SEG_MAX);
+}
+
+static int acc_cmp(const void* a, const void* b) {
+    const int x = acc_at((const objreloc*) a);
+    const int y = acc_at((const objreloc*) b);
+
+    return x < y ? -1 : x > y;
+}
+
+static int align_up(int n, int a) {
+    return (n + a - 1) & -a;
+}
+
+static bool acc_write(int* written) {
+    static uint8_t buf[ACC_HEADER];
+    int pos = 0;
+
+    /* acc has no absolute symbols: an exported EQU has nowhere to go. */
+    for (int i = 0; i < link_used; i++) {
+        const sym* sp = links[i].sp;
+        if ((sp->reloc & SYM_XDEF) != 0 && sp->defined) {
+            state.line = links[i].line;
+            err_tok(sp->name, sp->len);
+            state.err = ZAP_E_OBJ_ACC_NUMBER;
+
+            return false;
+        }
+    }
+
+    int align = segs[SEG_CODE].align;
+    if (segs[SEG_RODATA].align > align) {
+        align = segs[SEG_RODATA].align;
+    }
+    if (segs[SEG_DATA].align > align) {
+        align = segs[SEG_DATA].align;
+    }
+    acc_base[SEG_CODE] = 0;
+    acc_base[SEG_RODATA] = align_up(segs[SEG_CODE].len, segs[SEG_RODATA].align);
+    acc_base[SEG_DATA] = align_up(acc_base[SEG_RODATA] + segs[SEG_RODATA].len,
+                                  segs[SEG_DATA].align);
+    acc_base[SEG_BSS] = 0;
+    const int text_len = acc_base[SEG_DATA] + segs[SEG_DATA].len;
+    if (segs[SEG_BSS].pend > ACC_LOW20) {
+        state.err = ZAP_E_OBJ_SEGMENT_TOO_LARGE;
+
+        return false;
+    }
+
+    /* acc's strings start with the first name, not an empty one. */
+    int strsize = 0;
+    const int nglob = globals_collect(2, &strsize);
+    if (nglob < 0) {
+        return false;
+    }
+
+    /* Each relocation in acc's terms: its target and kind, and its addend,
+     * which a main-table one also puts in its slot. */
+    if (reloc_used > 1) {
+        qsort(relocs, (size_t) reloc_used, sizeof(objreloc), acc_cmp);
+    }
+    int nsecond = 0;
+    for (int i = 0; i < reloc_used; i++) {
+        objreloc* r = &relocs[i];
+        evalue a = r->addend;
+        uint8_t kind;
+        switch (r->type) {
+            case R_Z80_24:      kind = ACC_ABS24; break;
+            case R_Z80_WORD0:   kind = ACC_ABS16; break;
+            case R_Z80_BYTE0:   kind = ACC_LOW8; break;
+            case R_Z80_BYTE0 + 1: kind = ACC_HIGH8; break;
+            case R_Z80_BYTE0 + 2: kind = ACC_UPPER8; break;
+            default:
+                /* ELF's is measured from the slot and acc's from the byte
+                 * after it. */
+                kind = ACC_PCREL8;
+                a += 1;
+                break;
+        }
+        if ((r->base->reloc & SYM_XREF) == 0) {
+            a += acc_base[(int) (r->base->addr >> SEG_SHIFT)];
+        }
+        const bool second = kind == ACC_HIGH8 || kind == ACC_UPPER8
+                            || (kind == ACC_PCREL8 && (a < -128 || a > 127));
+        if (second) {
+            kind |= ACC_SECOND;
+            nsecond++;
+        } else {
+            uint8_t* slot = obj_ptr(r->off);
+            slot[0] = (uint8_t) a;
+            if (kind == ACC_ABS16 || kind == ACC_ABS24) {
+                slot[1] = (uint8_t) (a >> 8);
+            }
+            if (kind == ACC_ABS24) {
+                slot[2] = (uint8_t) (a >> 16);
+            }
+        }
+        r->type = kind;
+        r->addend = a;
+    }
+
+    memcpy(buf, "ACC\x01", 4);
+    le24(buf + 4, 0);                   /* build: not an acc */
+    le24(buf + 7, text_len);
+    le24(buf + 10, segs[SEG_BSS].pend | log2_of(segs[SEG_BSS].align) << 20);
+    le24(buf + 13, nglob);
+    le24(buf + 16, reloc_used - nsecond);
+    le24(buf + 19, 0);                  /* dependencies: none */
+    le24(buf + 22, strsize);
+    le24(buf + 25, 1);                  /* one item */
+    le24(buf + 28, nsecond);
+    if (!put(buf, ACC_HEADER, &pos)) {
+        return false;
+    }
+
+    int name = 0;
+    for (int i = 0; i < nglob; i++) {
+        const sym* sp = globals[i];
+        int value = 0;
+        uint8_t flags = 0;
+        if ((sp->reloc & SYM_PLACED) != 0) {
+            const int k = (int) (sp->addr >> SEG_SHIFT);
+            value = acc_base[k] + ((int) sp->addr & SEG_MAX);
+            flags = ACC_DEFINED;
+            if (k == SEG_BSS) {
+                flags |= ACC_BSS;
+            } else if (k == SEG_CODE) {
+                flags |= ACC_FUNC;
+            }
+        }
+        le24(buf, name);
+        le24(buf + 3, value);
+        buf[6] = flags;
+        name += sp->len + 1;
+        if (!put(buf, ACC_SYM, &pos)) {
+            return false;
+        }
+    }
+
+    /* The two tables, each in order of where its slots are. */
+    for (int second = 0; second < 2; second++) {
+        for (int i = 0; i < reloc_used; i++) {
+            const objreloc* r = &relocs[i];
+            if (((r->type & ACC_SECOND) != 0) != (second != 0)) {
+                continue;
+            }
+            int target;
+            if ((r->base->reloc & SYM_XREF) != 0) {
+                target = (int) r->base->addr;
+            } else {
+                target = (r->base->addr >> SEG_SHIFT) == SEG_BSS ? 1 : 0;
+            }
+            le24(buf, acc_at(r));
+            le24(buf + 3, target | (r->type & 0x0F) << 20);
+            le24(buf + 6, (int) r->addend);
+            if (!put(buf, second ? ACC_RELOC_A : ACC_RELOC, &pos)) {
+                return false;
+            }
+        }
+    }
+
+    le24(buf, log2_of(align) << 20);
+    if (!put(buf, 3, &pos)) {
+        return false;
+    }
+    buf[0] = 0;
+    for (int i = 0; i < nglob; i++) {
+        if (!put(globals[i]->name, globals[i]->len, &pos) || !put(buf, 1, &pos)) {
+            return false;
+        }
+    }
+
+    /* The text: the segments at their places, and zeros between. */
+    int at = 0;
+    static const uint8_t zero[16];
+    const uint8_t order[3] = {SEG_CODE, SEG_RODATA, SEG_DATA};
+    for (int j = 0; j < 3; j++) {
+        const int k = order[j];
+        while (at < acc_base[k]) {
+            const int n = acc_base[k] - at < 16 ? acc_base[k] - at : 16;
+            if (!put(zero, n, &pos)) {
+                return false;
+            }
+            at += n;
+        }
+        if (!put(segs[k].buf, segs[k].len, &pos)) {
+            return false;
+        }
+        at += segs[k].len;
+    }
+    *written = pos;
+
+    return true;
+}
+
 /* The object, once the assembly has succeeded. */
 bool obj_write(int* written) {
     obj_fills();
     if (!out_create()) {
         return false;
     }
-    const bool ok = elf_write(written);
+    const bool ok = obj_format == OBJ_ACC ? acc_write(written) : elf_write(written);
     free(globals);
     globals = NULL;
 

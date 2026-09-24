@@ -43,9 +43,9 @@ fi
 
 status=0
 
-# Runs one program on the emulator and reads its report. $1 names it, $2 is
-# the binary.
-run_program() {
+# Runs one program on the emulator; its console output is left in
+# $W/cap-$1. $2 is the binary.
+emu_run() {
     local name="$1" bin="$2"
     local sd="$W/sd-$name"
     rm -rf "$sd"
@@ -62,6 +62,12 @@ run_program() {
     (cd "$EMU" && timeout 120 ./agon-cli-emulator --sdcard "$sd" -z < "$fifo" > "$W/cap-$name" 2>&1)
     kill "$hold" 2>/dev/null
     wait "$hold" 2>/dev/null
+}
+
+# Runs test/abi's program and reads its report.
+run_program() {
+    local name="$1" bin="$2"
+    emu_run "$name" "$bin"
 
     local out
     out=$(tr -d '\r' < "$W/cap-$name" | grep -aE '^(PASS|FAIL|ABI) ')
@@ -125,6 +131,49 @@ if [ -x "$ACC" ] && [ -f "$ACC_REPO/bin/libc.a" ]; then
     fi
 else
     echo "SKIP  no acc at $ACC_REPO; the calling convention with acc is not checked"
+fi
+
+# The example in docs/examples, built both ways exactly as
+# docs/zap-with-agondev.md and docs/zap-with-acc.md say, so that what the
+# guides tell a reader to type is known to work.
+run_example() {
+    local name="$1" bin="$2"
+    emu_run "$name" "$bin"
+    if tr -d '\r' < "$W/cap-$name" | grep -aq '^all correct$'; then
+        echo "PASS  $name: the example in docs/examples runs"
+    else
+        echo "FAIL  $name: the example in docs/examples did not say it was correct:"
+        tr -d '\r' < "$W/cap-$name" | tail -8 | sed 's/^/      /'
+        status=1
+    fi
+}
+if [ -x "$AGONDEV/bin/agondev-config" ]; then
+    cp -r docs/examples "$W/ex-agondev"
+    mkdir -p "$W/ex-agondev/lib"
+    if (cd "$W/ex-agondev" \
+        && "$ZAP" bytes.s bytes.o -f elf \
+        && "$AGONDEV/bin/ez80-none-elf-ar" rcs lib/libbytes.a bytes.o \
+        && PATH="$AGONDEV/bin:$PATH" make) > "$W/ex-agondev.log" 2>&1; then
+        run_example example-agondev "$W/ex-agondev/bin/bytes.bin"
+    else
+        echo "FAIL  the example does not build with agondev:"
+        tail -10 "$W/ex-agondev.log" | sed 's/^/      /'
+        status=1
+    fi
+fi
+if [ -x "$ACC" ] && [ -f "$ACC_REPO/bin/libc.a" ]; then
+    cp -r docs/examples "$W/ex-acc"
+    if (cd "$W/ex-acc" \
+        && "$ZAP" bytes.s bytes.o -f acc \
+        && "$ACC" -c src/main.c -o main.o -I "$ACC_REPO/include" \
+        && "$ACC" main.o bytes.o "$ACC_REPO/bin/libc.a" -o bytes.bin) \
+        > "$W/ex-acc.log" 2>&1; then
+        run_example example-acc "$W/ex-acc/bytes.bin"
+    else
+        echo "FAIL  the example does not build with acc:"
+        tail -10 "$W/ex-acc.log" | sed 's/^/      /'
+        status=1
+    fi
 fi
 
 exit $status

@@ -1,0 +1,6 @@
+# What building the example leaves behind.
+bin/
+obj/
+lib/
+*.o
+*.a

@@ -2,10 +2,10 @@
 
 This is the design for letting zap produce relocatable objects, so functions
 written in assembly can be linked into C programs built with agondev on a PC
-or with acc on the Agon itself. It's being built in the steps listed under
-[Plan](#plan). Steps 1 to 4 are in: `-f elf` writes an object with segments,
-exports and imports, and every relocation type below, and C built by agondev
-calls into it and back out on the emulator.
+or with acc on the Agon itself. All five steps of the [Plan](#plan) are in:
+`-f elf` and `-f acc` write objects with segments, exports and imports, and
+every relocation type below, and C built by agondev and by acc calls into
+them and back out on the emulator.
 
 ## Why objects
 
@@ -123,6 +123,17 @@ C declares the functions as usual, without the underscore:
 `extern int sum3(int a, int b, int c);` for `_sum3`. `test/abi/` is a
 complete example, and `test/abi.sh` builds it and runs it on the emulator.
 
+### Using it with acc
+
+The same source, as an ACC object, goes into an acc library or straight onto
+acc's command line:
+
+    zap mylib.s mylib.o -f acc
+    acc -a mylib.a mylib.o
+    acc main.o mylib.a libc.a -o myprog.bin
+
+`test/abi.sh` builds `test/abi/` this way too.
+
 ## Values and relocations
 
 In an object, a label's address isn't known until the program is linked. So a
@@ -201,13 +212,16 @@ Labels that aren't exported aren't written.
 
 **ACC v1.** The file starts `'A'`, `'C'`, `'C'`, 1, and acc refuses any
 other version. `CODE`, `RODATA` and `DATA` go into acc's single text blob in
-that order, each padded to its own alignment, and `BSS` becomes the bss length and
-alignment. The file is one item, whose alignment is the largest `ALIGN` in the
-text. Symbols are sorted by name, and only the undefined ones a relocation
-uses are written. Relocations whose addend fits the field go in the main
-table; `HIGH8` and `UPPER8` always go in the second table with a 24-bit
-addend. The build id and dependency count are 0. acc's `test/accobj.py` writes
-the same format independently.
+that order, each started on its own alignment, and `BSS` becomes the bss
+length and alignment. The file is one item, whose alignment is the largest
+`ALIGN` in the text. A relocation against a label defined here is against the
+text or the bss, with the label's place as the addend; only an import is
+named. Symbols are the exports and the imports a relocation uses, sorted by
+name, and a label in `CODE` is marked as a function. A relocation keeps its
+addend in its slot, except that `HIGH8`, `UPPER8` and a `PCREL8` whose addend
+doesn't fit a signed byte go in the second table with a 24-bit addend and a
+zero slot. The build id and dependency count are 0. acc's `test/accobj.py`
+writes the same format independently.
 
 ## How it's tested
 
@@ -220,12 +234,13 @@ the same format independently.
 - **The corpus.** Every corpus source that already matches ez80asm and uses
   none of the refused directives goes through the two-address test.
 - **Calling from C.** Assembly functions taking every argument width and
-  returning every result type, called from C built with agondev (and with acc
-  once the ACC writer exists), run on the emulator. Assembly also calls back
-  into C through `XREF`.
+  returning every result type, called from C built with agondev and with acc,
+  run on the emulator. Assembly also calls back into C through `XREF`.
 - **The formats.** Every ELF object zap writes must be accepted silently by
   `readelf` and `ld`. Every ACC object must match what `accobj.py` writes for
-  the same content, byte for byte.
+  the same content, byte for byte: `test/elf_to_acc.py` rewrites zap's ELF
+  object through `accobj.py`, for every test source and every corpus source
+  the two-address test links.
 - **Errors.** Every refusal above has a test.
 
 ## Plan
@@ -237,6 +252,7 @@ the same format independently.
 3. The other relocation types, label differences, and `$`. **Done.**
 4. Calling-convention tests with agondev on the emulator. **Done.**
 5. The ACC v1 writer, tested against `accobj.py` and with acc on the emulator.
+   **Done.**
 
 Each step is its own pull request, and each is checked against the bbcbasic
 and rokky benchmarks so that flat assembly doesn't slow down.

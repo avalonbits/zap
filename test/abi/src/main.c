@@ -24,6 +24,7 @@ extern void asm_clobber(void);
 extern unsigned char asm_table_lo(void);
 extern unsigned char asm_table_hi(void);
 extern unsigned char asm_table_up(void);
+extern unsigned char* asm_buffer_at(void);
 
 extern int asm_table[3];
 extern int asm_table_end[1];
@@ -31,9 +32,12 @@ extern unsigned short asm_words[2];
 extern const char asm_message[];
 extern unsigned char asm_buffer[16];
 
-/* Where agondev's linker script starts and ends the bss. */
+#ifdef AGONDEV
+/* Where agondev's linker script starts and ends the bss. acc has no such
+ * names, so this one check is agondev's only. */
 extern char __low_bss[];
 extern char __heapbot[];
+#endif
 
 int c_counter = 41;
 
@@ -109,8 +113,11 @@ int main(void) {
     check("the bss starts zeroed", zero, 1);
     asm_buffer[15] = 0x77;
     check("the bss is writable", asm_buffer[15], 0x77);
+    check("an address in the bss", (long) asm_buffer_at(), (long) (asm_buffer + 4));
+#ifdef AGONDEV
     check("the buffer is placed in the bss",
           (char*) asm_buffer >= __low_bss && (char*) asm_buffer + 16 <= __heapbot, 1);
+#endif
 
     printf("ABI %d FAILED\r\n", failed);
 

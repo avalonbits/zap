@@ -286,6 +286,7 @@ _Static_assert(sizeof(dop) == 21, "an operand is twenty-one bytes");
  * writes, and a line longer than this is truncated rather than refused --
  * the report is a courtesy and must never itself be a failure. */
 #define ERRLINE_MAX 128
+#define ERRTOK_MAX 64      /* the most of a token a message quotes */
 
 /* What the reference takes on one line, and what it counts: everything up to
  * the newline, a carriage return included. */
@@ -1073,6 +1074,10 @@ typedef struct _zap_state {
     const char* errmacro; /* the macro, or NULL */
     const char* errat;    /* the token to point at, or NULL */
     int erratlen;
+    /* The token's own copy, which errat points at. The token itself sits in
+     * the reader's buffer, and an included file's reader is freed as the
+     * failure unwinds out of the include -- before the report reads it. */
+    char errtok[ERRTOK_MAX];
 
     /* Anonymous labels: `@@`, which may be written any number of times and is
      * reached by position rather than by name -- `@b`/`@p` for the one above,

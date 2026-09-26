@@ -885,6 +885,7 @@ static void usage(void) {
     printf("  -x\tDisplay assembly statistics\r\n");
     printf("  -ez80\tThe reference assembler's expression rules\r\n");
     printf("  -f\tWrite a relocatable object: -f elf or -f acc\r\n");
+    printf("  -e\tWrite the error to a file too, for a program to read\r\n");
 }
 
 /* The reference's options, taken by the same letters and in the same forms.
@@ -918,6 +919,29 @@ static void usage(void) {
  * there is not, and any directory kept. Static because the name outlives
  * parse_args and has to last as long as the run does. */
 static char derived_output[INCLUDE_NAME_MAX];
+
+/* -e: where to write the error as well as printing it, or NULL.
+ *
+ * For a program that runs zap and needs to know what went wrong -- an editor
+ * that jumps to the failing line. It can't read the console: MOS has no
+ * output redirection, and a program can't capture what another prints. So
+ * zap writes the error to this file, in the format compilers use,
+ *
+ *     file:line:column: error: text
+ *
+ * one message per line, column 0 when it isn't known. A failure inside a
+ * macro gives the line in the macro, then a note for the line that invoked
+ * it. A run that succeeds removes the file, so what a reader finds there is
+ * always this run's.
+ *
+ * It also changes the exit code, on the Agon as well as the host: a failure
+ * returns DIAG_EXIT. See EXIT_ERROR for why zap normally returns 0 on the
+ * Agon; a program that asked for -e is reading the code, and 100 is past
+ * MOS's own table, so MOS passes it back unchanged and prints nothing for
+ * it -- unlike 1, 4 and 5, which mos_exec turns into "Invalid command". */
+static const char* diag_path = NULL;
+static bool diag_asked = false;   /* -e was given, even without a file */
+#define DIAG_EXIT 100
 static bool sidecar_name(const char* src, const char* ext, char* out, int cap);
 
 __attribute__((noinline)) static bool parse_args(int argc, char* argv[],
@@ -1003,6 +1027,23 @@ __attribute__((noinline)) static bool parse_args(int argc, char* argv[],
 
                     return false;
                 }
+                break;
+            }
+            case 'e': {
+                /* The file, attached or in the next argument. -ez80 was
+                 * taken above, so a path starting "z80" needs the space. */
+                const char* f = a + 2;
+                diag_asked = true;
+                if (*f == 0) {
+                    f = next;
+                    used = 1;
+                }
+                if (f == NULL) {
+                    printf("Option -e needs a file name\r\n");
+
+                    return false;
+                }
+                diag_path = f;
                 break;
             }
             case 'c': use_color = false; break;
@@ -1733,6 +1774,67 @@ static void kit_log(const char* fmt, ...) {
 }
 #endif
 
+/* The column the error's token starts at, from 1, or 0 if it can't be found.
+ *
+ * The token is known only as a pointer into the reader's buffer, which may be
+ * gone by now, and a length; the line was copied to errline. So the column is
+ * where that text first appears in the copy -- right unless the same text
+ * appears earlier on the line, where it points at the earlier one. Inside a
+ * macro it is 0, "not known". */
+static int diag_column(void) {
+    /* A macro body line is kept without its indentation, so a column counted
+     * in it would be wrong for the line in the file. */
+    if (!state.errhave || state.errat == NULL || state.erratlen <= 0
+        || state.errmacro != NULL) {
+        return 0;
+    }
+    const int len = (int) strlen(state.errline);
+    for (int i = 0; i + state.erratlen <= len; i++) {
+        if (memcmp(state.errline + i, state.errat, (size_t) state.erratlen) == 0) {
+            return i + 1;
+        }
+    }
+
+    return 0;
+}
+
+/* Write the error to diag_path, in the -e format. A file that can't be
+ * written costs the reader the details, not the assembly its result: the
+ * exit code still says it failed. */
+static void diag_write(const char* file) {
+    char buf[ERRLINE_MAX + 2 * INCLUDE_NAME_MAX + 96];
+    const uint8_t fh = mos_fopen(diag_path, FA_WRITE | FA_CREATE_ALWAYS);
+    if (fh == 0) {
+        printf("Cannot write %s\r\n", diag_path);
+
+        return;
+    }
+
+    int n = snprintf(buf, sizeof(buf), "%s:%d:%d: error: %s", file, state.line,
+                     diag_column(), zap_err_text[state.err]);
+    if (n > 0 && n < (int) sizeof(buf) && state.errat != NULL && state.erratlen > 0) {
+        n += snprintf(buf + n, sizeof(buf) - (size_t) n, " '%.*s'", state.erratlen,
+                      state.errat);
+    }
+    if (n > 0 && n < (int) sizeof(buf) && state.errmacro != NULL) {
+        n += snprintf(buf + n, sizeof(buf) - (size_t) n, " (in macro %s)",
+                      state.errmacro);
+    }
+    if (n > 0 && n < (int) sizeof(buf) - 1) {
+        buf[n++] = '\n';
+        mos_fwrite(fh, buf, (uint24_t) n);
+    }
+
+    if (state.errfrompath != NULL) {
+        n = snprintf(buf, sizeof(buf), "%s:%d:0: note: invoked from here\n",
+                     state.errfrompath, state.errfromline);
+        if (n > 0 && n < (int) sizeof(buf)) {
+            mos_fwrite(fh, buf, (uint24_t) n);
+        }
+    }
+    mos_fclose(fh);
+}
+
 static void report(const char* in) {
     const char* const red = use_color ? "\033[31m" : "";
     const char* const yellow = use_color ? "\033[33m" : "";
@@ -1770,6 +1872,10 @@ static void report(const char* in) {
             printf("%s%s%s\r\n", yellow, state.errfrom, off);
         }
     }
+
+    if (diag_path != NULL) {
+        diag_write(file);
+    }
 }
 
 /* How main reports failure.
@@ -1795,7 +1901,7 @@ int main(int argc, char* argv[]) {
     const char* out;
     bool stop = false;
     if (!parse_args(argc, argv, &in, &out, &stop)) {
-        return EXIT_ERROR;
+        return diag_asked ? DIAG_EXIT : EXIT_ERROR;
     }
     if (stop) {
         return 0;
@@ -1855,7 +1961,7 @@ int main(int argc, char* argv[]) {
         out_discard();
         dz_free();
 
-        return EXIT_ERROR;
+        return diag_asked ? DIAG_EXIT : EXIT_ERROR;
     }
 
     /* The tail of the output, and then everything the window left behind.
@@ -1880,7 +1986,12 @@ int main(int argc, char* argv[]) {
         out_discard();
         dz_free();
 
-        return EXIT_ERROR;
+        return diag_asked ? DIAG_EXIT : EXIT_ERROR;
+    }
+
+    /* It worked: no errors to read, and none left over from a run before. */
+    if (diag_path != NULL) {
+        mos_del(diag_path);
     }
     if (list_fh != 0) {
         /* Every fixup is settled by now, so the lines that held one can be

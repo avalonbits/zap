@@ -49,8 +49,8 @@ flowchart TD
     late --> side["listing, symbol file, statistics<br/>(optional; none can fail the run)"]
 ```
 
-[`main()`](../src/zap.c#L1793) ·
-[`parse_args()`](../src/zap.c#L923) ·
+[`main()`](../src/zap.c#L1899) ·
+[`parse_args()`](../src/zap.c#L947) ·
 [`run()`](../src/zap.c#L610) ·
 [`run_lines()`](../src/zap.c#L468) ·
 [`scope_end()`](../src/symtab.c#L853) ·
@@ -579,7 +579,7 @@ flowchart LR
 
 [`err_line()`](../src/symtab.c#L256) ·
 [`err_tok()`](../src/symtab.h#L52) ·
-[`report()`](../src/zap.c#L1736)
+[`report()`](../src/zap.c#L1838)
 
 ```
 Macro [mos_call] in "kernel.s" line 12 - unknown label 'MOS_SYSVARS'
@@ -588,7 +588,7 @@ Invoked from "main.s" line 84 as
   mos_call MOS_SYSVARS
 ```
 
-The truncation warning, [`warn_trunc()`](../src/zap.c#L1660), is different
+The truncation warning, [`warn_trunc()`](../src/zap.c#L1701), is different
 from other diagnostics: it has to check every value in every source, rather
 than doing work only after something has gone wrong. That's why it's behind
 `-w`.
@@ -599,13 +599,13 @@ than doing work only after something has gone wrong. That's why it's behind
 
 `-l` and `-d` write a listing in ez80asm's format (address, up to four bytes
 per row, line number, then the source line as written) through
-[`list_line()`](../src/zap.c#L1202) and [`list_out()`](../src/zap.c#L1180). A
+[`list_line()`](../src/zap.c#L1243) and [`list_out()`](../src/zap.c#L1221). A
 macro expansion is listed the way ez80asm lists it: the invocation with no
 bytes, the arguments, then one row per body line tagged with its depth.
 
 A line containing a forward reference is listed before the reference is
-patched. [`lstfix_add()`](../src/zap.c#L1308) remembers those lines, and
-[`lstfix_apply()`](../src/zap.c#L1341) rewrites their byte columns from the
+patched. [`lstfix_add()`](../src/zap.c#L1349) remembers those lines, and
+[`lstfix_apply()`](../src/zap.c#L1382) rewrites their byte columns from the
 finished output before the file is closed. The console listing (`-d`) can't be
 rewritten, so it shows the bytes as first emitted.
 
@@ -624,8 +624,8 @@ Two differences remain, and the sources in `test/regress/listing` avoid both:
   zap leaves the first row empty the same way but doesn't write the extra row.
   `ORG` padding is listed inline by both.
 
-[`write_symbols()`](../src/zap.c#L1520) writes the sorted global symbols in
-ez80asm's format, and [`write_stats()`](../src/zap.c#L1586) prints resource
+[`write_symbols()`](../src/zap.c#L1561) writes the sorted global symbols in
+ez80asm's format, and [`write_stats()`](../src/zap.c#L1627) prints resource
 usage. None of these can fail an assembly, since the output file is already
 written by the time they run.
 

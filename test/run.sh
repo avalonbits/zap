@@ -101,6 +101,16 @@ printf '  jp later\n' > "$OUT/e2.s"
 cli_check "-E works as -e, and a label found missing at the end has its line" \
     "$(cat "$OUT/e2.err" 2>/dev/null)" "$OUT/e2.s:1:6: error: unknown label 'later'"
 
+# An error in an included file, with a token to quote. The token is in the
+# include's own read buffer, which is freed as the failure unwinds out of the
+# include; the report and the file both read it after that, so it has to have
+# been copied. Under the sanitizers this run is a use-after-free otherwise.
+printf '  nop\n  include "%s"\n' "$OUT/e3.inc" > "$OUT/e3.s"
+printf '  nop\n  frob\n' > "$OUT/e3.inc"
+"$OUT/zap" -c "$OUT/e3.s" "$OUT/e3.bin" -e "$OUT/e3.err" > /dev/null 2>&1 || true
+cli_check "-e: an error in an included file names that file" \
+    "$(cat "$OUT/e3.err" 2>/dev/null)" "$OUT/e3.inc:2:3: error: unknown instruction 'frob'"
+
 # Inside a macro: the body's line, then a note for the line that invoked it.
 # The column is 0, "not known": the body line is kept without its indent.
 printf '  macro mm\n  frob\n  endmacro\n  nop\n  mm\n' > "$OUT/e4.s"

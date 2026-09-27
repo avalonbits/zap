@@ -74,10 +74,11 @@ library calls is where the big wins are, and you can't see it in the source.
 - [Allocating is cheap; touching memory isn't](#allocating-is-cheap-touching-memory-isnt)
 - [Measure memory like you measure time](#measure-memory-like-you-measure-time)
 
-**[3b. Two miscompiles to know about](#3b-two-miscompiles-to-know-about)**
+**[3b. Three miscompiles to know about](#3b-three-miscompiles-to-know-about)**
 
 - [Unbounded character scans can be compiled rotated](#unbounded-character-scans-can-be-compiled-rotated)
 - [A backwards trim reads one byte too far](#a-backwards-trim-reads-one-byte-too-far)
+- [A 32-bit `va_arg` reads its top byte from the wrong slot](#a-32-bit-va_arg-reads-its-top-byte-from-the-wrong-slot)
 - [What they have in common](#what-they-have-in-common)
 
 **[3c. Width and sign](#3c-width-and-sign)**
@@ -85,6 +86,16 @@ library calls is where the big wins are, and you can't see it in the source.
 - [Comparing different widths tests the wrong bytes](#comparing-different-widths-tests-the-wrong-bytes)
 - [Signed comparisons are calls](#signed-comparisons-are-calls)
 - [Out-parameters force values into memory](#out-parameters-force-values-into-memory)
+
+**[3d. Code size](#3d-code-size)**
+
+- [Find out what the library costs](#find-out-what-the-library-costs)
+- [Replace printf with what you use](#replace-printf-with-what-you-use)
+- [Pack the messages](#pack-the-messages)
+- [Measure the heap, not only the image](#measure-the-heap-not-only-the-image)
+- [Count up to a count with `!=`](#count-up-to-a-count-with-)
+- [Inline less than `-Oz` does](#inline-less-than--oz-does)
+- [Hold the size with a test](#hold-the-size-with-a-test)
 
 **[4. What's verified](#4-whats-verified)**
 
@@ -116,13 +127,15 @@ library calls is where the big wins are, and you can't see it in the source.
 | a helper marked `static inline` is being called | [Inlining and outlining](#inlining-and-outlining), [One cold caller can de-inline a hot helper](#one-cold-caller-can-de-inline-a-hot-helper-everywhere) |
 | a disabled feature still costs time | [Don't inline a cold function with a big buffer](#dont-inline-a-cold-function-with-a-big-buffer-into-a-hot-one), [Code that's merely present still costs](#code-thats-merely-present-still-costs) |
 | a value keeps being written to the frame and read back | [Spilling](#spilling), [Out-parameters force values into memory](#out-parameters-force-values-into-memory) |
-| wrong bytes on the target, right bytes on the host | [Two miscompiles to know about](#3b-two-miscompiles-to-know-about), [Comparing different widths](#comparing-different-widths-tests-the-wrong-bytes) |
+| wrong bytes on the target, right bytes on the host | [Three miscompiles to know about](#3b-three-miscompiles-to-know-about), [Comparing different widths](#comparing-different-widths-tests-the-wrong-bytes) |
+| a `long` printed through `%lu` has a stray top byte | [A 32-bit `va_arg` reads its top byte from the wrong slot](#a-32-bit-va_arg-reads-its-top-byte-from-the-wrong-slot) |
 | a scan skips its first character | [Unbounded character scans can be compiled rotated](#unbounded-character-scans-can-be-compiled-rotated) |
 | out of memory while growing a buffer | [A `realloc` that moves needs both copies](#a-realloc-that-moves-needs-both-copies) |
 | which integer width to use | [Choosing integer widths](#1-choosing-integer-widths), [Narrowing only pays if everything stays narrow](#narrowing-only-pays-if-everything-stays-narrow) |
 | should this branch become a table | [Branchless isn't always better](#branchless-isnt-always-better) |
 | how to measure any of this | [How to measure on this target](#5-how-to-measure-on-this-target), [Read the generated assembly](#read-the-generated-assembly) |
 | is this claim actually verified | [What's verified](#4-whats-verified) |
+| the program is too big for the heap it needs | [Code size](#3d-code-size) |
 
 ---
 
@@ -616,8 +629,18 @@ further than that: storing byte indexes removes the scale from the table read
 but adds the same one to the array being indexed.
 
 Watch out for portability. `(uint8_t*) table + b + b + b` does avoid the call,
-but it's wrong anywhere pointers aren't three bytes, including the host where
-the unit tests run. Change the element size, not the arithmetic.
+but for a table of pointers it's wrong anywhere pointers aren't three bytes,
+including the host where the unit tests run. Change the element size, not the
+arithmetic.
+
+It's the right thing when the entries are three bytes on every machine: a
+record in a file format, say. The adds survive only when they're made to the
+pointer. `p + i + i + i` stays three adds; `int t = i + i + i; p + t` and
+`p + i * 3` are both `call __imulu`. acc's linker reads 3-, 6- and 9-byte
+entries out of object files for every relocation it follows; indexing them
+by adds to the pointer, with its binary search halved by an unsigned shift
+rather than a signed `/ 2` (`__idivs`), took linking a hello world from 5.9M
+cycles to 3.4M, 42%.
 
 ### Use `memcpy`, `memmove` and `memset`
 
@@ -740,10 +763,10 @@ renaming the allocators on the compile line:
 
 ---
 
-## 3b. Two miscompiles to know about
+## 3b. Three miscompiles to know about
 
-Both happen at `-Oz` with agondev's clang, both are silent, and both work
-correctly on the host.
+All three happen at `-Oz` with agondev's clang, all are silent, and all
+work correctly on the host.
 
 ### Unbounded character scans can be compiled rotated
 
@@ -780,9 +803,43 @@ The fix is not to trim backwards at all: track the last non-space character
 while scanning forwards, which needs no backward index and takes one pass
 instead of two.
 
+### A 32-bit `va_arg` reads its top byte from the wrong slot
+
+A variadic `long` takes two stack slots: its low three bytes in one, its top
+byte in the next. `va_arg(ap, unsigned long)` should read the three, then the
+byte at `+3`, and advance the list by six. In acc's own `printf` replacement
+(`src/fmt.c`), inside a `switch` that also read `int`s and pointers, clang
+advanced the list first and read the top byte from the advanced pointer:
+
+```
+    lea  bc, iy + 6        ; the list, moved past the long
+    ld   hl, (iy)          ; the low three bytes: right
+    push bc
+    pop  iy                ; iy is now the moved list
+    ld   a, (iy + 3)       ; the top byte, nine bytes on: wrong
+```
+
+Every `%lu` came out with a stray top byte (`7944909` printed as
+`24722125`). The same `va_arg` in a small function of its own compiles
+correctly, so the fix is to read the long in one:
+
+```c
+    __attribute__((noinline))
+    static unsigned long arg_long(Args *a)   /* Args holds the va_list */
+    {
+        return va_arg(a->ap, unsigned long);
+    }
+```
+
+(Passing the `va_list` by address needs it wrapped in a struct: on the host,
+`va_list` is an array type and `&ap` of a parameter has the wrong type.)
+acc's test/fmt_agon.sh builds the formatter's unit test with agondev and
+runs it on the emulator against libagon's `snprintf`; the original code fails
+it on every `%lu` and `%lx`.
+
 ### What they have in common
 
-The host build is correct in both cases, under every sanitizer and at every
+The host build is correct in all three cases, under every sanitizer and at every
 buffer size. Only reading the generated assembly or running on the target will
 find them.
 
@@ -836,6 +893,115 @@ data-directive path, even with the helper inlined.
 
 The same thing happens wherever you pass `&local`, including to a function
 that ends up inlined.
+
+---
+
+## 3d. Code size
+
+On the Agon a program's image and its heap share the same 448 KB, so every
+byte of code is a byte the program can't allocate. For a compiler, whose
+heap decides which programs it can compile, size is a feature in its own
+right. These are from acc, built by agondev at `-Oz`.
+
+### Find out what the library costs
+
+The link map says what each library member added:
+
+```
+    awk '/^ \.(text|rodata|data)/ && /libagon/ { split($4, a, "(");
+         m = a[2]; sub(/\)/, "", m); s[m] += strtonum($3) }
+         END { for (k in s) print s[k], k }' prog.map | sort -rn
+```
+
+In acc that was 11.8 KB of libagon, and 5.2 KB of it was `nanoprintf.o`,
+agondev's printf: floats, precisions, every flag and length.
+
+### Replace printf with what you use
+
+acc prints messages, a map and a list of offsets, and every format it uses is
+one of `%s %c %% %d %u %x`, with an optional `l`, width and `0`. A formatter
+for exactly those, defining `printf`, `fprintf`, `vfprintf`, `snprintf` and
+`vsnprintf` so libagon's aren't linked, took acc.bin from 254,562 bytes to
+250,840: 3.7 KB, with the float helpers nanoprintf brings. Two things to get
+right:
+
+- Write to a file through a small buffer. One `fwrite` per character is one
+  MOS call per character.
+- Test it against the library's own `snprintf` on the host, and again built
+  by agondev and run on the target. The target run is what found the
+  `va_arg` miscompile above.
+
+### Pack the messages
+
+A program that explains itself carries its sentences. acc's 485 error
+messages were 20 KB of acc.bin, 8% of it. Packing them at build time, with
+the 128 words that save the most each replaced by one byte (0x80-0xff) and
+expanded by the formatter as it reads a format, took acc.bin down another
+7,081 bytes. The source stays as written: a script (acc's src/msgpack.py)
+writes packed copies for the target build only. What to get right:
+
+- Pack only the format argument. A `%s` argument can be a file name with its
+  own bytes above 0x7f, and those have to pass through untouched.
+- Keep a conversion whole. Split into words, `'%s' is` makes `s' ` a word,
+  and packed that way the `%` loses its letter.
+- Write each code as a three-digit octal escape. `"\x80" "abc"` reads as one
+  escape `\x80abc` without the break; `\200` can't swallow what follows.
+- Keep the line count. A literal spread over three lines becomes one, and
+  every `__LINE__` and diagnostic after it moves.
+- Keep the dictionary as one string of NUL-ended words and walk it, rather
+  than a table of pointers: 384 bytes fewer, on a path that only runs when
+  something has already gone wrong.
+- Test by building the host program from the packed copies, printing through
+  the same formatter, and running every error test against it. That's how
+  acc found both a word that ate a conversion and a `%.*s` its own formatter
+  had never supported.
+
+### Measure the heap, not only the image
+
+Making a big local buffer `static` fixes a frame past 128 bytes (section 3),
+and the image does get smaller: 1,466 bytes, for acc's four largest. But the
+buffers move into bss, and bss is the start of the heap. The heap, which is
+what the program actually runs out of, came out 1,094 bytes *smaller*. On
+the stack a buffer sits in the room the stack keeps anyway.
+
+So measure both: the image's size, and `___heaptop - ___heapbot` from the
+link map. To fix the frame without moving the buffer, give the buffer a
+function of its own and pass it to a worker (`copy_member`, `do_include` in
+acc): the worker's locals are all in reach, and the buffer's function has
+nothing else past 128. Doing this for acc's two biggest frames (1,141 and 446
+bytes, 105 computed accesses between them) saved 1,722 bytes and gave the
+heap the same.
+
+It doesn't always pay. Clang puts spill slots past the buffer whatever order
+the declarations are in, and for three smaller cold functions the split came
+out 11 bytes bigger. Measure each.
+
+### Count up to a count with `!=`
+
+`for (i = 0; i < n; i++)` on ints is a signed compare: the subtract, then
+`call pe, __setflag` (section 3c). When `n` is a count, and so never
+negative, `i != n` means the same and needs no repair. In acc, 119 such loops
+went from `<` to `!=` for 1,120 bytes. Leave alone any bound that can be
+negative, such as an array's count that is -1 when its size wasn't given:
+against that, `!=` never stops. Leave alone, too, any loop whose body writes
+the counter.
+
+### Inline less than `-Oz` does
+
+At `-Oz`, clang still inlines small functions where it judges the copy
+smaller than the call. On acc it wasn't. `-mllvm -inline-threshold=-10`
+made acc.bin 1,391 bytes smaller and compiling 0.4% slower; functions called
+once and `always_inline` ones are inlined as before. At -40 it saved 238 bytes
+more for another 1.3% of time, and past that nothing. Keep `always_inline` on
+anything hot.
+
+### Hold the size with a test
+
+Every one of these is lost the moment someone adds a buffer or an `i < n`.
+acc's test/budget.sh builds with the real flags and fails if acc.bin grows,
+the heap shrinks, or the count of `__setflag` or `__imulu` sites rises; each
+size change lowers the numbers to what it measured. test/frames.sh fails a
+frame past 128 bytes unless it's on a list that only shrinks.
 
 ---
 

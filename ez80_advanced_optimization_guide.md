@@ -64,6 +64,7 @@ library calls is where the big wins are, and you can't see it in the source.
 - [Even a constant shift by two costs a call](#even-a-constant-shift-by-two-costs-a-call)
 - [Use `memcpy`, `memmove` and `memset`](#use-memcpy-memmove-and-memset)
 - [Use power-of-two sizes to avoid division](#use-power-of-two-sizes-to-avoid-division)
+- [Divide in the narrowest width the value fits](#divide-in-the-narrowest-width-the-value-fits)
 - [Inline small hot functions](#inline-small-hot-functions)
 - [Keep every stack frame under 128 bytes](#keep-every-stack-frame-under-128-bytes)
 - [Buffer file writes](#buffer-file-writes)
@@ -108,6 +109,7 @@ library calls is where the big wins are, and you can't see it in the source.
 
 - [The host isn't a stand-in](#the-host-isnt-a-stand-in)
 - [Use the program's own clock, and don't unthrottle](#use-the-programs-own-clock-and-dont-unthrottle)
+- [Count cycles when the emulator can](#count-cycles-when-the-emulator-can)
 - [Repeat short runs and add them up](#repeat-short-runs-and-add-them-up)
 - [One change at a time, nothing else running](#one-change-at-a-time-nothing-else-running)
 - [Measuring a piece of code without changing it](#measuring-a-piece-of-code-without-changing-it)
@@ -120,6 +122,7 @@ library calls is where the big wins are, and you can't see it in the source.
 | `call __imulu` / `__ishl` / `__iand` in the assembly | [The usual suspects](#the-usual-suspects) |
 | an array subscript or `p += n` is slow | [The usual suspects](#the-usual-suspects), [Even a constant shift by two costs a call](#even-a-constant-shift-by-two-costs-a-call) |
 | a shift by a constant isn't free | [Shifts: prefer bytes and tables](#shifts-prefer-bytes-and-tables) |
+| printing numbers is slow, or `call __lldivu` / `__ldivu` in a loop | [Divide in the narrowest width the value fits](#divide-in-the-narrowest-width-the-value-fits) |
 | `call pe, __setflag` in a loop | [Signed comparisons are calls](#signed-comparisons-are-calls) |
 | a function got slower when an unrelated one was added | [One cold caller can de-inline a hot helper](#one-cold-caller-can-de-inline-a-hot-helper-everywhere), [Register allocation](#register-allocation) |
 | a loop got slower and its source didn't change | [Code that's merely present still costs](#code-thats-merely-present-still-costs), [One index register per loop](#one-index-register-per-loop) |
@@ -334,6 +337,7 @@ reading the generated assembly rather than staring at the C.
 | `arr[i]` where `sizeof(*arr) != 1` | `call __imulu` | the subscript is `i * size`, and `MLT` is 8-bit |
 | `p += n` on a pointer to a struct | `call __imulu` | same, and easy to miss because it looks like pointer arithmetic |
 | anything on `uint32_t` / `long` | `call __l*` | twice the machine's width |
+| `v / 10` on a `long long` | `call __lldivu` | the costliest helper there is: 64 steps over eight bytes |
 | `x / y`, `x % y` | `call __idivu` / `__irems` | no divide instruction at all |
 
 ### Fixes, most common first
@@ -607,6 +611,29 @@ don't copy a value into a local just to pull bytes out of it. Reading the
 struct field fresh for each byte keeps all three as indexed loads. That was
 worth 1.5% of zap's total runtime, from one function.
 
+In assembly the top byte can be reached, through the stack. `push hl` puts
+`HL` at `SP` a byte at a time, lowest first; `inc sp` then `pop af` reads it
+back one byte up, so `A` is `HL`'s top byte and `F` its middle one, and
+`dec sp` puts `SP` back:
+
+```
+    push hl
+    inc  sp
+    pop  af         ; A = bits 16-23 of HL
+    dec  sp
+    or   a, a
+    sbc  hl, hl
+    ld   l, a       ; HL = HL >> 16, unsigned
+```
+
+Seven instructions and eight bytes. The same with `add a, a; sbc hl, hl; rra`
+in place of `or a, a; sbc hl, hl` widens it with its sign, and a `srl a` or
+`sra a` before that makes it a shift by 17 to 23. agondev's clang doesn't do
+this, so it's only for hand-written assembly or another compiler. acc writes
+`>> 16` to `>> 23` this way, where it had called a loop that rotates the
+value through memory a bit at a time: `cur >> 16` in its float printing had
+been a third of the time, and printing floats got 41% faster.
+
 ### Even a constant shift by two costs a call
 
 `x * 4` on a 24-bit value compiles to `ld c, 2; call __ishl`, and so does
@@ -663,6 +690,67 @@ each line number with `(line / 1000) % 10` and its neighbours, five library
 calls per line and 37,000 for one large source. Replacing them with a
 four-digit counter measured 10.80s before and 10.82s after, which is no
 difference at all, and the change was reverted.
+
+### Divide in the narrowest width the value fits
+
+The cost of a divide is set by its width, not its operands. A 24-bit divide
+walks three bytes, a 32-bit one four, and a 64-bit one eight, with a longer
+helper for each. So when a value only needs 24 bits, divide it as 24 bits,
+even if its type is wider.
+
+These are from acc's C library, compiled by acc, measured in emulator cycles
+(section 5). acc's helpers aren't agondev's, but the calls a wide type turns
+into are the same.
+
+**Printing an integer.** printf widened every value to `unsigned long long`,
+so that one routine served `%d`, `%ld` and `%lld`, and took each digit with
+`v % base` and then `v /= base`. That was two 64-bit divides per digit of
+every `int` it printed, and 46% of the time of a `sprintf` with five integer
+conversions. The fix has two parts:
+
+- While the value is wider than 24 bits, divide it a byte at a time from its
+  top byte that isn't zero. Each step divides the remainder so far, shifted
+  up a byte, plus the next byte. The remainder is under the base, so the
+  step is under 256 times the base and fits an `int`. Where the top byte is
+  also says when the value has come to fit an `int`, without a 64-bit
+  compare, which would be a call of its own.
+- Then divide the `int` that's left.
+
+```c
+unsigned char *b = (unsigned char *) &v;   /* little-endian */
+int top = 7, i;
+unsigned u;
+
+for (;;) {
+    unsigned r = 0;
+
+    while (top > 0 && !b[top])
+        top--;
+    if (top < 3)
+        break;                      /* fits 24 bits */
+    for (i = top; i >= 0; i--) {
+        unsigned cur = r << 8 | b[i];
+        unsigned q = cur / base;
+
+        b[i] = (unsigned char) q;
+        r = cur - q * base;
+    }
+    *out++ = digits[r];
+}
+u = (unsigned) v;
+/* ... and the usual loop on u */
+```
+
+That made integer `sprintf` 26% faster. The program also no longer links the
+64-bit divide, so it got about 220 bytes smaller too.
+
+**A bound can make a narrower type exact.** Float printing worked out digits
+in 16-bit limbs using `unsigned long`: a remainder times 65,536 plus a limb,
+divided by ten, and a limb times ten plus a carry. The remainder and the
+carry are both under ten, so every one of those values is under 655,360,
+which fits 24 bits. In `unsigned` the same code was 18% faster, and it
+dropped the `long` multiply and divide from the program. Look for the bound
+before accepting the wide type.
 
 ### Inline small hot functions
 
@@ -1025,7 +1113,8 @@ From the instruction Attributes tables (page 79 onwards):
 
 Each figure is the program's own reported time, with the emulator running at
 the real 18.432 MHz (never `-u`; see section 5). Results repeat to within about
-0.25%.
+0.25%. The rows marked (acc) are from acc's C library, compiled by acc
+rather than agondev, and are counted in cycles instead.
 
 | finding | effect | section |
 |---|---|---|
@@ -1051,6 +1140,9 @@ the real 18.432 MHz (never `-u`; see section 5). Results repeat to within about
 | three signed loop counters made unsigned | −1.4% | 3c |
 | an out-parameter replaced with a return value | −2.4% | 3c |
 | host speedup compared with Agon speedup | 1.36x vs 3.20x | 5 |
+| (acc) integers printed in 24 bits, not 64 | −26% on `sprintf` | 3 |
+| (acc) float digits in `unsigned`, not `unsigned long` | −18% on `sprintf` | 3 |
+| (acc) `>> 16` through the stack, not a helper | −41% on `sprintf` of floats | 3 |
 
 A few results don't appear elsewhere:
 
@@ -1113,6 +1205,28 @@ Use the host for correctness and the target for speed.
 With `-u`, fab-agon-emulator runs as fast as the host can manage, so the
 guest's `clock()` no longer reflects the work being done. Run at the real
 18.432 MHz and read the time the program prints.
+
+### Count cycles when the emulator can
+
+fab-agon-emulator from commit 2037657 on counts cycles itself. A write to I/O
+port `0x40` starts the count, and a write to `0x41` prints it on the host:
+
+```
+    Debug OUT(0x41): 127007592 CPU cycles elapsed since last OUT(0x40)
+```
+
+With agondev that's `IO(0x40) = 0;` before the work and `IO(0x41) = 0;`
+after, from `<ez80f92.h>`. The count is of the emulated CPU, so it's exact
+even with `-u`, and it's the one exception to the section above. Two runs
+agree to within a few thousand cycles: the vertical-blank interrupt MOS
+takes during the run adds its handler's cycles. Count only the work, and
+leave setup and printing outside.
+
+If you go further and charge cycles to each address, name the addresses
+with the symbols inside each object, not only the ones the link map lists.
+A map line covers a whole object under its first name. In acc's runtime the
+long multiply and the long divide are in one file, so a whole profile of
+divide time showed up as "multiply" until the object's own labels were used.
 
 ### Repeat short runs and add them up
 

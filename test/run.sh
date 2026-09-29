@@ -1856,6 +1856,25 @@ if command -v python3 > /dev/null 2>&1 && [ -f ez80_advanced_optimization_guide.
     fi
 fi
 
+# The anchors the check expects are GitHub's, so the check is checked: a code
+# span keeps its underscore, emphasis loses its marks, and a link to a heading
+# that is not there is still caught. It once dropped every underscore, and
+# read the guide's link to `va_arg`'s heading as broken.
+if command -v python3 > /dev/null 2>&1; then
+    printf '%s\n' '- [a](#a-32-bit-va_arg-read)' '- [b](#snake_case-and-bold-and-this)' \
+        '### A 32-bit `va_arg` read' '### snake_case and **bold** and _this_' \
+        > "$OUT/anchors.md"
+    printf '%s\n' '- [c](#a-32-bit-vaarg-read)' '### A 32-bit `va_arg` read' \
+        > "$OUT/anchors-bad.md"
+    if python3 tools/check_doc_links.py --anchors "$OUT/anchors.md" > /dev/null 2>&1 \
+       && ! python3 tools/check_doc_links.py --anchors "$OUT/anchors-bad.md" > /dev/null 2>&1; then
+        echo "PASS  heading anchors are made as GitHub makes them"
+    else
+        echo "FAIL  heading anchors are not made as GitHub makes them"
+        status=1
+    fi
+fi
+
 # The design document links to the definition of everything it describes, and
 # a line number goes stale the moment the source moves. Every one is checked
 # here: the symbol named in the link has to appear on the line it points at.

@@ -70,7 +70,7 @@ buf_reader* br_open_mem(buf_reader* br, const char* text, int len) {
     if (buf == NULL) {
         return NULL;
     }
-    for (int i = 0; i < len; i++) {
+    for (register int i = 0; i < len; i++) {
         buf[i] = text[i];
     }
     br_take_mem(br, buf, len);
@@ -101,7 +101,7 @@ void br_use_mem(buf_reader* br, char* buf, int len) {
     buf[len > 0 ? len : 0] = '\n';
 }
 
-void br_close(buf_reader* br) {
+void br_close(register buf_reader* br) {
     br_suspend(br);
     if (br->owned_) {
         free(br->buf_);
@@ -275,7 +275,7 @@ bool br_fill_lines(buf_reader* br, bool* too_long) {
         return true;
     }
 
-    for (uint24_t i = br->raw_; i > 0; i--) {
+    for (register uint24_t i = br->raw_; i > 0; i--) {
         if (br->buf_[i - 1] == '\n') {
             br->bsz_ = i;
 

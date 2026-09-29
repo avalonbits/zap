@@ -23,7 +23,7 @@
 #include "scan.h"
 #include "symtab.h"
 
-__attribute__((noinline)) bool assemble_line(const char* p, const char* e, const char** stop) {
+__attribute__((noinline)) bool assemble_line(const char* p, register const char* e, const char** stop) {
     /* Bounded, like every character scan in the file. Every line of the source
      * starts here, so the generated assembly is worth re-reading whenever this
      * function changes: `dec iy` before a loop head is the sign of a rotated
@@ -261,7 +261,7 @@ trunc_done:
  * ever defined, and is reported against the line that wrote it. */
 static bool resolve_deferred(void) {
     for (int i = 0; i < state.defer_used; i++) {
-        defexpr* d = &state.defer[i];
+        register defexpr* d = &state.defer[i];
         /* Settled where it was written; only an object does that. */
         if (d->sp->defined || (d->sp->reloc & SYM_PROXY) != 0) {
             continue;
@@ -310,7 +310,7 @@ static bool resolve_deferred(void) {
  * only the part that has to happen here, where the line that wrote the block
  * is still the line a failure is reported against. */
 static bool resolve_fills(void) {
-    for (int i = 0; i < state.fillp_used; i++) {
+    for (register int i = 0; i < state.fillp_used; i++) {
         const fillpatch* fp = &state.fillp[i];
         if (!fp->sp->defined) {
             state.line = fp->line;
@@ -347,7 +347,7 @@ static void apply_late(uint8_t* buf, int lo, int hi, laterun* run, int to) {
             buf[lp->off - lo] |= lp->b[0];
             continue;
         }
-        for (int k = 0; k < n; k++) {
+        for (register int k = 0; k < n; k++) {
             const int at = lp->off + k;
             if (at >= lo && at < hi) {
                 buf[at - lo] = lp->b[k];
@@ -377,7 +377,7 @@ static void apply_range(uint8_t* buf, int lo, int hi, int* cur) {
             continue;
         }
         const evalue v = fp->sp->addr;
-        for (int k = 0; k < n; k++) {
+        for (register int k = 0; k < n; k++) {
             const int at = fp->off + k;
             if (at >= lo && at < hi) {
                 buf[at - lo] = (uint8_t) (v >> (8 * (k % fp->width)));
@@ -445,7 +445,7 @@ static bool resolve_fixups(void) {
     if (!resolve_deferred() || !resolve_fills()) {
         return false;
     }
-    for (int i = 0; i < state.fix_used; i++) {
+    for (register int i = 0; i < state.fix_used; i++) {
         if (!patch_fixup(&state.fixups[i])) {
             return false;
         }
@@ -540,7 +540,7 @@ __attribute__((noinline)) bool run_lines(void) {
              * would store it to the frame on every character of every comment.
              * A local that is never addressed stays in a register, and
              * comments are a quarter of the bytes in a real program. */
-            const char* q = stop;
+            register const char* q = stop;
             while (q < end && is_space_ch(*q)) {
                 q++;
             }
@@ -828,7 +828,7 @@ static bool is_ez80_opt(const char* a) {
  * quietly assembling at an address nobody asked for. */
 static bool opt_hex(const char* attached, const char* next, int* used,
                     int* out) {
-    const char* p = attached;
+    register const char* p = attached;
     if (*p == 0) {
         if (next == NULL) {
             return false;
@@ -1189,7 +1189,7 @@ static void list_out(const char* buf, int n) {
 }
 
 static void list_hex(char* buf, int* w, uint32_t v, int digits) {
-    for (int shift = (digits - 1) * 4; shift >= 0; shift -= 4) {
+    for (register int shift = (digits - 1) * 4; shift >= 0; shift -= 4) {
         const int d = (int) ((v >> shift) & 0xF);
         buf[(*w)++] = (char) (d < 10 ? '0' + d : 'A' + d - 10);
     }
@@ -1431,7 +1431,7 @@ void list_args(const macro* m, int base, int depth) {
         const char* pp = m->params;
         for (int k = 0; k < m->nparam; k++) {
             const int pn = (uint8_t) pp[0];
-            for (int i = 0; i < pn && w < lim; i++) {
+            for (register int i = 0; i < pn && w < lim; i++) {
                 buf[w++] = pp[1 + i];
             }
             if (w < lim) {
@@ -1480,7 +1480,7 @@ static bool sidecar_name(const char* src, const char* ext, char* out, int cap) {
     if (n + e + 1 > cap) {
         return false;
     }
-    for (int i = 0; i < n; i++) {
+    for (register int i = 0; i < n; i++) {
         out[i] = src[i];
     }
     for (int i = 0; i <= e; i++) {
@@ -1506,7 +1506,7 @@ static int sym_cmp(const void* a, const void* b) {
     const sym* const x = *(const sym* const*) a;
     const sym* const y = *(const sym* const*) b;
     const int n = x->len < y->len ? x->len : y->len;
-    for (int i = 0; i < n; i++) {
+    for (register int i = 0; i < n; i++) {
         const uint8_t cx = (uint8_t) x->name[i];
         const uint8_t cy = (uint8_t) y->name[i];
         if (cx != cy) {

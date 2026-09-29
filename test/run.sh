@@ -1843,6 +1843,10 @@ test/object.sh "$OUT/zap" || status=1
 echo "=== test_abi ==="
 test/abi.sh "$OUT/zap" || status=1
 
+# zap itself built by acc, which reads the `register` agondev ignores.
+echo "=== test_acc_build ==="
+test/acc-build.sh || status=1
+
 # The guide's index links to its own headings, and a renamed heading breaks a
 # link silently. Every anchor in it has to resolve to a heading in it.
 if command -v python3 > /dev/null 2>&1 && [ -f ez80_advanced_optimization_guide.md ]; then

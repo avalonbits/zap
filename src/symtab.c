@@ -254,7 +254,7 @@ zap_state state;
  *
  * Returns nothing and cannot fail, for the same reason. */
 void err_line(char* dst, const char* p, const char* e) {
-    int n = 0;
+    register int n = 0;
     while (p < e && *p != '\n' && n + 1 < ERRLINE_MAX) {
         dst[n++] = *p++;
     }
@@ -448,7 +448,7 @@ static const sym* sym_at(int b, const char* name, int len) {
         /* Walked with pointers rather than indices: the node holds the name as
          * a pointer, so the compare needs no address arithmetic. */
         const char* t = sp->name;
-        const char* q = name;
+        register const char* q = name;
         const char* const qend = name + len;
         while (q != qend && *t == *q) {
             t++;
@@ -808,7 +808,7 @@ have_value:;
  * an ordinary global fixup. */
 bool fold_subs(int from) {
     for (int i = from; i < state.subfix_used; i++) {
-        fixup* f = &state.fixups[state.subfix[i]];
+        register fixup* f = &state.fixups[state.subfix[i]];
         if (f->sub == NULL) {
             continue;
         }
@@ -870,7 +870,7 @@ bool scope_end(void) {
         /* The stamp has wrapped, so a slot left over from 256 scopes ago would
          * read as belonging to this one. Once every 256 scopes, empty them
          * properly. */
-        for (int b = 0; b < NLOCB; b++) {
+        for (register int b = 0; b < NLOCB; b++) {
             state.locs[b].gen = 0;
             state.locs[b].head = NULL;
         }
@@ -1134,7 +1134,7 @@ bool fix_add(const sym* target, const sym* sub, int addend,
     state.fix_touched = true;
 
     fixup** list = &state.fixups;
-    int* used = &state.fix_used;
+    register int* used = &state.fix_used;
     int* cap = &state.fix_cap;
     if (target->islocal) {
         list = &state.lfixups;

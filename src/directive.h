@@ -25,7 +25,7 @@
 /* Inlined into callers in other files, so the bodies live here. */
 
 static inline const char* lit_value(const char* p, const char* e, evalue* out) {
-    const char* q = p;
+    register const char* q = p;
 
     /* A sign, which the operand parser has always taken and these did not.
      * `DB 1, 2, 3, -1` sends one item in four back to the evaluator without

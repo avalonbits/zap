@@ -64,7 +64,7 @@ static bool macro_room(macro* m, int need) {
 const macro* macro_at(const char* s, int n) {
     const char c0 = (char) (*s | 0x20);
     macro* prev = NULL;
-    for (macro* m = state.macros; m != NULL; prev = m, m = m->next) {
+    for (register macro* m = state.macros; m != NULL; prev = m, m = m->next) {
         /* Length and first character before the call, for the same reason the
          * substitution loop asks them: the list is walked once per invocation
          * and most of it is not this macro. */
@@ -316,7 +316,7 @@ bool macro_line(const char* p, const char* e) {
         return false;
     }
     const int at = state.defining->bodylen;
-    for (int i = 0; i < n - 1; i++) {
+    for (register int i = 0; i < n - 1; i++) {
         state.defining->body[at + i] = p[i];
     }
     state.defining->body[at + n - 1] = '\n';
@@ -355,7 +355,7 @@ bool macro_line(const char* p, const char* e) {
  * A macro takes as many arguments as it declares, and a mismatch is counted:
  * "0 provided, 1 expected". */
 __attribute__((noinline))
-static bool macro_args(const macro* m, const char* p, const char* e,
+static bool macro_args(const macro* m, register const char* p, const char* e,
                        const char** stop, int base) {
     int nargs = 0;
     for (;;) {
@@ -448,7 +448,7 @@ static int macro_subst(const macro* m, int lo, int hi, int base,
         }
         const char* b = m->body + cur;
         char* o = out + len;
-        for (int i = 0; i < span; i++) {
+        for (register int i = 0; i < span; i++) {
             o[i] = b[i];
         }
         len += span;
@@ -631,7 +631,7 @@ bool macro_expand(const macro* m, const char* p, const char* e,
          * file. suffixed_insn duplicates assemble_line's tail for the same
          * reason. */
         if (*st != '\n') {
-            const char* q = st;
+            register const char* q = st;
             while (q < lend && is_space_ch(*q)) {
                 q++;
             }

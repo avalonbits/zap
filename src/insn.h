@@ -75,7 +75,7 @@ static inline bool same_ci(const char* name, const char* s, int n) {
      * cannot be done in one subtract, so the compiler emits a
      * `call pe, __setflag` to repair the flags on overflow -- here, inside the
      * loop that compares a mnemonic on every line of the source. */
-    for (unsigned i = 1; i < (unsigned) n; i++) {
+    for (register unsigned i = 1; i < (unsigned) n; i++) {
         if (name[i] != (s[i] | 0x20)) {
             return false;
         }
@@ -121,7 +121,7 @@ __attribute__((always_inline)) static inline const isa_row* match_row_cc(
     const uint8_t b0 = b->r0, b1 = b->r1, b2 = b->r2;
     const uint8_t anone = a->noreg;
     const uint8_t bnone = b->noreg;
-    const rowinfo* ri = insn->rows;
+    register const rowinfo* ri = insn->rows;
 
     for (uint8_t n = insn->count; n != 0; n--, ri++) {
         const uint8_t ccok = ri->ccok;
@@ -195,7 +195,7 @@ __attribute__((always_inline)) static inline const isa_row* match_row(const insn
      *
      * No mode test here and no ccok test: being in the group is the answer,
      * and a mnemonic with a ccok row anywhere in it has no groups at all. */
-    const rowinfo* ri = g->rows;
+    register const rowinfo* ri = g->rows;
     for (uint8_t k = g->count; k != 0; k--, ri++) {
         if ((uint8_t) ((ri->a0 & a0) | (ri->a1 & a1) | (ri->a2 & a2)
                        | (ri->aempty & anone)) != 0
@@ -224,7 +224,7 @@ __attribute__((always_inline)) static inline uint8_t ddfd_prefix(const dop* op) 
     return 0;
 }
 
-__attribute__((always_inline)) static inline uint8_t transform(emitted* out, dop* op, uint8_t type) {
+__attribute__((always_inline)) static inline uint8_t transform(emitted* out, register dop* op, uint8_t type) {
     switch (type) {
         case TR_IR0:
             if (((op->r1 & RP1_XYL) | (op->r2 & RP2_XYL)) != 0) {

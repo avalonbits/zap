@@ -264,7 +264,7 @@ static bool out_reserve_n(int n) {
  * while nothing cold calls it, which is a lesson this file has now learned
  * three times. */
 static bool dir_is(const char* s, const char* want, int n) {
-    for (int i = 0; i < n; i++) {
+    for (register int i = 0; i < n; i++) {
         if ((s[i] | 0x20) != want[i]) {
             return false;
         }
@@ -370,7 +370,7 @@ static bool emit_string(const char** pp, const char* e) {
      * byte past the last valid character, so a backslash in the last position
      * steps over the sentinel and the `q < e` test above ends the scan -- as
      * "string not terminated", which is what it is. */
-    const char* q = p;
+    register const char* q = p;
     while (q < e && *q != '"' && *q != '\n') {
         q += (*q == '\\') ? 2 : 1;
     }
@@ -428,7 +428,7 @@ static const char* name_item(const char* p, const char* e) {
 
     /* What ended the run has to end the item too, or an operator follows and
      * the evaluator is what reads it. */
-    const char* r = q;
+    register const char* r = q;
     while (r < e && is_space_ch(*r)) {
         r++;
     }
@@ -717,7 +717,7 @@ static bool emit_block(evalue n, int width, evalue fill) {
         /* Narrowed once, outside the loop, for the reason emit_data splits its
          * write: three of the four widths fit the machine and only BLKL does
          * not. */
-        uint8_t* o = state.o;
+        register uint8_t* o = state.o;
         if (width > 3) {
             while (fit-- != 0) {
                 *o++ = (uint8_t) fill;
@@ -760,7 +760,7 @@ static bool emit_block(evalue n, int width, evalue fill) {
  * both a "String format error", so a bare word is not a file name there. */
 static bool file_name(const char** pp, const char* e,
                       char* out, int cap) {
-    const char* p = *pp;
+    register const char* p = *pp;
     while (p < e && is_space_ch(*p)) {
         p++;
     }
@@ -942,7 +942,7 @@ static bool include_file(const char* name) {
          * away as soon as this returns. The report happens after every frame
          * has unwound, so it is copied somewhere that outlives them. */
         if (state.path != state.errpath) {
-            int i = 0;
+            register int i = 0;
             while (i + 1 < (int) sizeof(state.errpath) && state.path[i] != 0) {
                 state.errpath[i] = state.path[i];
                 i++;

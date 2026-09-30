@@ -45,14 +45,9 @@ static inline bool anon_define(int addr) {
 }
 
 /* The token a message is about, when the site that failed has it in hand.
- *
- * Not every one does -- an unresolved label is reported long after its line is
- * gone -- so this is set where it is cheap and true, and the report simply
- * leaves the quotation off where it is not. */
-static inline void err_tok(const char* s, int n) {
-    state.errat = s;
-    state.erratlen = n;
-}
+ * See symtab.c: out of line, since it runs only when something has failed
+ * and would otherwise be inlined into the hottest code in the assembler. */
+void err_tok(const char* s, int n);
 
 /* Inlined into callers in other files, so the bodies live here. */
 

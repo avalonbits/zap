@@ -113,6 +113,7 @@ mean the same thing.
 | `-m` | Accepted for compatibility (zap has only one memory mode) |
 | `-ez80` | Use ez80asm's expression rules (see below) |
 | `-f elf\|acc` | Write a relocatable object for agondev or acc instead of a flat binary (see [Libraries for C](#libraries-for-c)) |
+| `-e <file>` | Write the error to a file too, as `file:line:column: error: text`, and fail with 100 instead of the usual code: for a program that runs zap and reads what went wrong. A run that works removes the file |
 
 ## What it assembles
 

@@ -253,7 +253,7 @@ bool obj_finish(void) {
     }
     /* Every export has to be something: a label placed here, or a number. */
     for (int i = 0; i < link_used; i++) {
-        const sym* sp = links[i].sp;
+        register const sym* sp = links[i].sp;
         if ((sp->reloc & SYM_XDEF) != 0 && !sp->defined
             && (sp->reloc & SYM_PLACED) == 0) {
             state.line = links[i].line;
@@ -527,7 +527,7 @@ bool obj_value(const fixup* f, evalue* val, bool* done) {
 /* XDEF and XREF, with the GNU spellings: a list of names, each exported or
  * imported. ZDS writes `XREF name:ROM` to say where an import lives, which
  * means nothing here, so the suffix is read and dropped. */
-static bool link_names(const char* p, const char* e, const char** stop,
+static bool link_names(register const char* p, const char* e, const char** stop,
                        uint8_t flag) {
     while (true) {
         while (p < e && is_space_ch(*p)) {
@@ -613,7 +613,7 @@ static bool link_names(const char* p, const char* e, const char** stop,
  * `*mine` says whether this was one of them at all; a line that is not goes
  * on to be a macro or an unknown instruction, as it would in a flat
  * assembly. */
-static const char* seg_token(const char* p, const char* e, const char** end) {
+static const char* seg_token(register const char* p, const char* e, const char** end) {
     while (p < e && is_space_ch(*p)) {
         p++;
     }
@@ -630,7 +630,7 @@ static const char* seg_token(const char* p, const char* e, const char** end) {
 }
 
 static bool same_word(const char* s, int n, const char* want) {
-    int i = 0;
+    register int i = 0;
     for (; i < n; i++) {
         if (want[i] == 0 || (s[i] | 0x20) != want[i]) {
             return false;
@@ -816,7 +816,7 @@ static void obj_fills(void) {
         uint8_t* at = obj_ptr(fp->off);
         const evalue v = fp->sp->addr;
         const int n = fp->count * fp->width;
-        for (int k = 0; k < n; k++) {
+        for (register int k = 0; k < n; k++) {
             at[k] = (uint8_t) (v >> (8 * (k % fp->width)));
         }
     }
@@ -828,7 +828,7 @@ static int name_cmp(const void* a, const void* b) {
     const sym* x = *(const sym* const*) a;
     const sym* y = *(const sym* const*) b;
     const int n = x->len < y->len ? x->len : y->len;
-    for (int i = 0; i < n; i++) {
+    for (register int i = 0; i < n; i++) {
         if (x->name[i] != y->name[i]) {
             return (uint8_t) x->name[i] - (uint8_t) y->name[i];
         }
@@ -1125,7 +1125,7 @@ static void le24(uint8_t* p, int v) {
 
 /* An alignment, which ALIGN only takes as a power of two, as its log2. */
 static int log2_of(int n) {
-    int k = 0;
+    register int k = 0;
     while ((1 << k) < n) {
         k++;
     }

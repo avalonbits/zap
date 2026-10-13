@@ -386,7 +386,7 @@ __attribute__((noinline)) void build_tables(void) {
  * because its caller has already matched it through the bucket. */
 /* The same, without the folding. Macro parameters are matched exactly. */
 bool same_full(const char* name, const char* s, int n) {
-    for (int i = 0; i < n; i++) {
+    for (register int i = 0; i < n; i++) {
         if (name[i] != s[i]) {
             return false;
         }
@@ -396,7 +396,7 @@ bool same_full(const char* name, const char* s, int n) {
 }
 
 bool same_ci_full(const char* name, const char* s, int n) {
-    for (int i = 0; i < n; i++) {
+    for (register int i = 0; i < n; i++) {
         if ((name[i] | 0x20) != (s[i] | 0x20)) {
             return false;
         }
@@ -568,7 +568,7 @@ bool cond_skip(const char* s, int n, const char* p,
 __attribute__((noinline))
 const insninfo* suffixed_mnemonic(const char* s, int n,
                                          uint8_t* suffix) {
-    int i = 1;
+    register int i = 1;
     while (i < n && s[i] != '.') {
         i++;
     }

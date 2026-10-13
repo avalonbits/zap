@@ -22,7 +22,7 @@
 #include <stdint.h>
 
 static void reverse(char* buf, int sz) {
-    int start = 0;
+    register int start = 0;
     int end = sz -1;
     while (start < end) {
         char ch = buf[start];

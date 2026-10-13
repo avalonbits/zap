@@ -27,7 +27,7 @@ uint8_t cclass[256];
 uint8_t hexval[256];
 
 void build_cclass(void) {
-    for (int i = 0; i < 256; i++) {
+    for (register int i = 0; i < 256; i++) {
         hexval[i] = 0xFF;
     }
     for (int i = 0; i < 10; i++) {

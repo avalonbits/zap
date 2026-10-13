@@ -126,13 +126,15 @@ complete example, and `test/abi.sh` builds it and runs it on the emulator.
 ### Using it with acc
 
 The same source, as an ACC object, goes into an acc library or straight onto
-acc's command line:
+[acc](https://github.com/avalonbits/acc)'s command line, beside the C source
+or objects; acc adds its own C library and runtime:
 
     zap mylib.s mylib.o -f acc
     acc -a mylib.a mylib.o
-    acc main.o mylib.a libc.a -o myprog.bin
+    acc main.c mylib.a -o myprog.bin
 
-`test/abi.sh` builds `test/abi/` this way too.
+[zap-with-acc.md](zap-with-acc.md) walks through it, and `test/abi.sh` builds
+`test/abi/` this way too.
 
 ## Values and relocations
 

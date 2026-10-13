@@ -1888,6 +1888,10 @@ test/object.sh "$OUT/zap" || status=1
 echo "=== test_abi ==="
 test/abi.sh "$OUT/zap" || status=1
 
+# zap itself built by acc, which reads the `register` agondev ignores.
+echo "=== test_acc_build ==="
+test/acc-build.sh || status=1
+
 # The guide's index links to its own headings, and a renamed heading breaks a
 # link silently. Every anchor in it has to resolve to a heading in it.
 if command -v python3 > /dev/null 2>&1 && [ -f ez80_advanced_optimization_guide.md ]; then
@@ -1897,6 +1901,25 @@ if command -v python3 > /dev/null 2>&1 && [ -f ez80_advanced_optimization_guide.
     else
         echo "FAIL  an index link in the optimization guide does not resolve"
         printf '      %s\n' "$anchorbad"
+        status=1
+    fi
+fi
+
+# The anchors the check expects are GitHub's, so the check is checked: a code
+# span keeps its underscore, emphasis loses its marks, and a link to a heading
+# that is not there is still caught. It once dropped every underscore, and
+# read the guide's link to `va_arg`'s heading as broken.
+if command -v python3 > /dev/null 2>&1; then
+    printf '%s\n' '- [a](#a-32-bit-va_arg-read)' '- [b](#snake_case-and-bold-and-this)' \
+        '### A 32-bit `va_arg` read' '### snake_case and **bold** and _this_' \
+        > "$OUT/anchors.md"
+    printf '%s\n' '- [c](#a-32-bit-vaarg-read)' '### A 32-bit `va_arg` read' \
+        > "$OUT/anchors-bad.md"
+    if python3 tools/check_doc_links.py --anchors "$OUT/anchors.md" > /dev/null 2>&1 \
+       && ! python3 tools/check_doc_links.py --anchors "$OUT/anchors-bad.md" > /dev/null 2>&1; then
+        echo "PASS  heading anchors are made as GitHub makes them"
+    else
+        echo "FAIL  heading anchors are not made as GitHub makes them"
         status=1
     fi
 fi

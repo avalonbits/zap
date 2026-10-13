@@ -831,7 +831,7 @@ bool scope_push(locsave* sv) {
         /* The stamp has wrapped, so a bucket left over from 256 scopes ago
          * would read as belonging to this one. The undo log is what puts them
          * back, and it records what it finds, so emptying them here is safe. */
-        for (int b = 0; b < NLOCB; b++) {
+        for (register int b = 0; b < NLOCB; b++) {
             state.locs[b].gen = 0;
             state.locs[b].head = NULL;
         }
@@ -870,7 +870,7 @@ bool scope_pop(locsave* sv) {
     }
 
     while (state.undo_used > sv->undo_used) {
-        const locundo* u = &state.undo[--state.undo_used];
+        register const locundo* u = &state.undo[--state.undo_used];
         state.locs[u->b].head = u->head;
         state.locs[u->b].gen = u->gen;
     }

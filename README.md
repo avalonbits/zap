@@ -48,7 +48,8 @@ are more useful than one, because each keeps the other honest.
 zap can also assemble relocatable objects, so you can write the fast parts of
 a C program in assembly and link them in. `-f elf` writes an ELF object for
 [agondev](https://github.com/AgonPlatform/agondev) on a PC, and `-f acc`
-writes one for acc, the C compiler that runs on the Agon itself:
+writes one for [acc](https://github.com/avalonbits/acc), the C compiler that
+runs on the Agon itself:
 
     zap bytes.s bytes.o -f elf      # for agondev
     zap bytes.s bytes.o -f acc      # for acc

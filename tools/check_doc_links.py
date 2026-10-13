@@ -50,9 +50,16 @@ def check(path):
 
 
 def slug(text):
-    """GitHub's heading anchor: lowercased, punctuation dropped, spaces hyphened."""
-    t = text.strip().lower().replace('`', '')
-    t = re.sub(r'[*_]', '', t)
+    """GitHub's heading anchor: lowercased, punctuation dropped, spaces hyphened.
+
+    The anchor is made from the rendered heading, so emphasis marks are gone
+    from it but a code span keeps what is in it: `va_arg` keeps its
+    underscore, and _this_ loses both of its. Underscores are the one
+    punctuation GitHub keeps, so they have to be told apart here."""
+    parts = text.strip().lower().split('`')
+    for i in range(0, len(parts), 2):
+        parts[i] = re.sub(r'\*|(?<!\w)_|_(?!\w)', '', parts[i])
+    t = ''.join(parts)
     t = re.sub(r'[^\w\s-]', '', t)
     return t.replace(' ', '-')
 

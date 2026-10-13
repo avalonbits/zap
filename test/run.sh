@@ -226,6 +226,11 @@ done
 optv=$("$OUT/zap" -v 2>&1 | tr -d '\r' || true)
 cli_check "-v prints a version and assembles nothing" \
     "$(printf '%s' "$optv" | grep -c '^zap version ')" 1
+# The README names the current release, and a release bumps both; this is
+# what notices when only one of them moved.
+cli_check "-v reports the release the README names" \
+    "$(printf '%s' "$optv" | sed -n 's/^zap version //p')" \
+    "$(grep -o 'releases/tag/v[0-9.]*' README.md | head -1 | sed 's|.*/v||')"
 cli_check "-h lists the options" \
     "$("$OUT/zap" -h 2>&1 | tr -d '\r' | grep -c '^  -o\b')" 1
 cli_check "-h lists -w, which is zap's own" \

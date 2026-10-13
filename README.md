@@ -48,7 +48,8 @@ are more useful than one, because each keeps the other honest.
 zap can also assemble relocatable objects, so you can write the fast parts of
 a C program in assembly and link them in. `-f elf` writes an ELF object for
 [agondev](https://github.com/AgonPlatform/agondev) on a PC, and `-f acc`
-writes one for acc, the C compiler that runs on the Agon itself:
+writes one for [acc](https://github.com/avalonbits/acc), the C compiler that
+runs on the Agon itself:
 
     zap bytes.s bytes.o -f elf      # for agondev
     zap bytes.s bytes.o -f acc      # for acc
@@ -113,6 +114,7 @@ mean the same thing.
 | `-m` | Accepted for compatibility (zap has only one memory mode) |
 | `-ez80` | Use ez80asm's expression rules (see below) |
 | `-f elf\|acc` | Write a relocatable object for agondev or acc instead of a flat binary (see [Libraries for C](#libraries-for-c)) |
+| `-e <file>` | Write the error to a file too, as `file:line:column: error: text`, and fail with 100 instead of the usual code: for a program that runs zap and reads what went wrong. A run that works removes the file |
 
 ## What it assembles
 

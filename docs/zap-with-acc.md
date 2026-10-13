@@ -1,44 +1,68 @@
 # Using zap with acc
 
-acc is a C compiler that runs on the Agon itself. zap can assemble a library
-for it: write the time-critical parts in assembly, assemble them into an ACC
-object, and link that into your acc program. Both tools run on the Agon, so
-the whole build can happen on the machine, as well as on a PC with acc's host
-build.
+[acc](https://github.com/avalonbits/acc) is a C compiler that runs on the
+Agon itself. zap can assemble a library for it: write the time-critical parts
+in assembly, assemble them into an ACC object, and link that into your acc
+program. Both tools run on the Agon, so the whole build can happen on the
+machine. acc also has a host build, if you'd rather work on a PC.
 
 This walks through the example in [`examples/`](examples/): a small library
 of byte routines in [`bytes.s`](examples/bytes.s) and a C program,
 [`src/main.c`](examples/src/main.c), that calls them. The same two files build
-with agondev too; see [zap-with-agondev.md](zap-with-agondev.md).
+with agondev too; see [zap-with-agondev.md](zap-with-agondev.md). Everything
+here was checked with acc 0.5.0.
+
+## Installing
+
+- **acc:** unzip `acc-<version>.zip` from
+  [acc's releases](https://github.com/avalonbits/acc/releases) onto the root
+  of the SD card. It puts `acc.bin` in `/bin`, and acc's headers and libraries
+  in `/lib/acc`, where acc finds them by itself.
+- **zap:** copy `zap.bin` from
+  [zap's releases](https://github.com/avalonbits/zap/releases/latest) into
+  `/bin`.
+
+Both then work as commands from any directory.
 
 ## Build the example
 
-From `docs/examples`:
+Copy `bytes.s` and the `src` directory to the card, and in that directory:
 
-    zap bytes.s bytes.o -f acc              # the library, as an ACC object
-    acc -c src/main.c -o main.o             # the program
-    acc main.o bytes.o libc.a -o bytes.bin  # linked with acc's C library
-
-`libc.a` is the C library that comes with acc. On a PC it's `bin/libc.a` in
-acc's tree, and `-I` points `acc -c` at acc's `include` directory. On the
-Agon, use wherever your acc installation keeps them.
-
-Copy `bytes.bin` to the Agon's `/bin` and run `bytes`:
-
+    */ zap bytes.s bytes.o -f acc
+    */ acc src/main.c bytes.o -o bytes.bin
+    */ bytes
     Hello from zap
     fill and sum_bytes: 70
     apply_twice(triple, 5): 45
     apply_twice was called 2 times
     all correct
 
+The first line assembles the library as an ACC object. The second compiles
+the program and links it with the library in one go; acc adds its own C
+library and runtime without being asked, so nothing else goes on the line.
+
+The same can be done a step at a time, which is the way to go once a program
+has several C files. `acc -c` writes `src/main.o` beside its source, and does
+nothing the next time if the source hasn't changed:
+
+    */ zap bytes.s bytes.o -f acc
+    */ acc -c src/main.c
+    */ acc src/main.o bytes.o -o bytes.bin
+
+Those three lines make a good obey file: put them in `build.obey` and run
+`obey build.obey` after each edit.
+
+On a PC, acc's host build takes the same commands and finds its headers and
+libraries in its own tree.
+
 ## A library of your own
 
 A library you'll use from several programs is better kept as an acc archive.
 A link then takes only the parts a program calls:
 
-    zap bytes.s bytes.o -f acc
-    acc -a bytes.a bytes.o
-    acc main.o bytes.a libc.a -o bytes.bin
+    */ zap bytes.s bytes.o -f acc
+    */ acc -a bytes.a bytes.o
+    */ acc src/main.c bytes.a -o bytes.bin
 
 Several objects, from zap or from acc, can go in one archive.
 

@@ -112,17 +112,17 @@ else
     echo "SKIP  no agondev; the calling convention with agondev is not checked"
 fi
 
-# acc, with the object in acc's format, linked with its C library.
+# acc, with the object in acc's format. acc adds its own C library and
+# runtime, so the C source and the object are all the link names.
 ACC="$ACC_REPO/bin/acc"
 if [ -x "$ACC" ] && [ -f "$ACC_REPO/bin/libc.a" ]; then
     if ! "$ZAP" -c -f acc test/abi/asm.s "$W/asm_acc.o" > "$W/zap.log" 2>&1; then
         echo "FAIL  acc: zap could not assemble test/abi/asm.s:"
         sed 's/^/      /' "$W/zap.log"
         status=1
-    elif ! "$ACC" -c test/abi/src/main.c -o "$W/main_acc.o" -I "$ACC_REPO/include" \
-            > "$W/acc.log" 2>&1 \
-         || ! "$ACC" "$W/main_acc.o" "$W/asm_acc.o" "$ACC_REPO/bin/libc.a" \
-            -o "$W/abi_acc.bin" >> "$W/acc.log" 2>&1; then
+    elif ! (cp -r test/abi "$W/acc" \
+            && "$ACC" "$W/acc/src/main.c" "$W/asm_acc.o" -o "$W/abi_acc.bin") \
+            > "$W/acc.log" 2>&1; then
         echo "FAIL  acc could not build the C half:"
         sed 's/^/      /' "$W/acc.log" | tail -20
         status=1
@@ -165,8 +165,7 @@ if [ -x "$ACC" ] && [ -f "$ACC_REPO/bin/libc.a" ]; then
     cp -r docs/examples "$W/ex-acc"
     if (cd "$W/ex-acc" \
         && "$ZAP" bytes.s bytes.o -f acc \
-        && "$ACC" -c src/main.c -o main.o -I "$ACC_REPO/include" \
-        && "$ACC" main.o bytes.o "$ACC_REPO/bin/libc.a" -o bytes.bin) \
+        && "$ACC" src/main.c bytes.o -o bytes.bin) \
         > "$W/ex-acc.log" 2>&1; then
         run_example example-acc "$W/ex-acc/bytes.bin"
     else

@@ -83,6 +83,51 @@ incbad=$("$OUT/zap" -c "$OUT/inctop.s" "$OUT/inc.bin" 2>&1 | tr -d '\r' || true)
 cli_check "an error names the included file" \
     "$(printf '%s' "$incbad" | grep -c "^File \"$OUT/broken.inc\" line 1 - ")" 1
 
+# -e: the error written to a file as well, for a program that runs zap and
+# needs to know what went wrong -- an editor jumping to the failing line.
+# `file:line:column: error: text`, one message per line, and a failed run
+# returns 100 instead of the usual code, since the program is reading it. A
+# run that works removes the file, so nothing stale is left to be read.
+printf '  nop\n  frob a\n' > "$OUT/e1.s"
+rc=0; "$OUT/zap" -c "$OUT/e1.s" "$OUT/e1.bin" -e "$OUT/e1.err" > /dev/null 2>&1 || rc=$?
+cli_check "-e: a failure returns 100" "$rc" 100
+cli_check "-e: the error, with its line and column" \
+    "$(cat "$OUT/e1.err" 2>/dev/null)" "$OUT/e1.s:2:3: error: unknown instruction 'frob'"
+rc=0; "$OUT/zap" -c "$OUT/e1.s" "$OUT/e1.bin" > /dev/null 2>&1 || rc=$?
+cli_check "without -e a failure still returns 1" "$rc" 1
+
+printf '  jp later\n' > "$OUT/e2.s"
+"$OUT/zap" -c "$OUT/e2.s" "$OUT/e2.bin" -E "$OUT/e2.err" > /dev/null 2>&1 || true
+cli_check "-E works as -e, and a label found missing at the end has its line" \
+    "$(cat "$OUT/e2.err" 2>/dev/null)" "$OUT/e2.s:1:6: error: unknown label 'later'"
+
+# An error in an included file, with a token to quote. The token is in the
+# include's own read buffer, which is freed as the failure unwinds out of the
+# include; the report and the file both read it after that, so it has to have
+# been copied. Under the sanitizers this run is a use-after-free otherwise.
+printf '  nop\n  include "%s"\n' "$OUT/e3.inc" > "$OUT/e3.s"
+printf '  nop\n  frob\n' > "$OUT/e3.inc"
+"$OUT/zap" -c "$OUT/e3.s" "$OUT/e3.bin" -e "$OUT/e3.err" > /dev/null 2>&1 || true
+cli_check "-e: an error in an included file names that file" \
+    "$(cat "$OUT/e3.err" 2>/dev/null)" "$OUT/e3.inc:2:3: error: unknown instruction 'frob'"
+
+# Inside a macro: the body's line, then a note for the line that invoked it.
+# The column is 0, "not known": the body line is kept without its indent.
+printf '  macro mm\n  frob\n  endmacro\n  nop\n  mm\n' > "$OUT/e4.s"
+"$OUT/zap" -c "$OUT/e4.s" "$OUT/e4.bin" -e "$OUT/e4.err" > /dev/null 2>&1 || true
+cli_check "-e: a macro's error and the line that invoked it" \
+    "$(cat "$OUT/e4.err" 2>/dev/null | tr '\n' '|')" \
+    "$OUT/e4.s:2:0: error: unknown instruction 'frob' (in macro mm)|$OUT/e4.s:5:0: note: invoked from here|"
+
+cp "$OUT/e1.err" "$OUT/ok.err"
+rc=0; "$OUT/zap" -c "$OUT/ok.s" "$OUT/ok.bin" -e "$OUT/ok.err" > /dev/null 2>&1 || rc=$?
+cli_check "-e: a run that works returns 0" "$rc" 0
+cli_check "-e: a run that works removes the file" \
+    "$([ -e "$OUT/ok.err" ] && echo left || echo removed)" removed
+
+rc=0; "$OUT/zap" -c "$OUT/ok.s" "$OUT/ok.bin" -e > /dev/null 2>&1 || rc=$?
+cli_check "-e without a file name is refused, with -e's code" "$rc" 100
+
 # The report itself, which is the thing a user actually meets.
 #
 # Every part of it is captured when the failure happens and none of it is kept

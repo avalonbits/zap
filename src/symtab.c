@@ -245,6 +245,32 @@ __attribute__((always_inline)) static inline int sym_bucket(const char* name,
  * zero-initialises it. */
 zap_state state;
 
+/* The token a message is about, when the site that failed has it in hand.
+ *
+ * Not every one does -- an unresolved label is reported long after its line is
+ * gone -- so this is set where it is cheap and true, and the report simply
+ * leaves the quotation off where it is not.
+ *
+ * Copied, not pointed at, for the same reason errline is: the token lives in
+ * the reader's buffer, and when the failure is in an included file that
+ * reader is freed on the way out of the include, before report() quotes it.
+ * A token longer than the copy is quoted cut short.
+ *
+ * Out of line: it runs only on the way to a failure, and inlined it would put
+ * its comparisons in assemble_line and the other hot paths that call it --
+ * which test/run.sh counts. */
+void err_tok(const char* s, int n) {
+    if (n > ERRTOK_MAX) {
+        n = ERRTOK_MAX;
+    }
+    if (n < 0) {
+        n = 0;
+    }
+    memcpy(state.errtok, s, (size_t) n);
+    state.errat = state.errtok;
+    state.erratlen = n;
+}
+
 /* The failing line, copied out of whatever held it.
  *
  * Called only after something has returned false. Trailing space and the
